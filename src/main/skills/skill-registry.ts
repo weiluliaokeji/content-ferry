@@ -190,7 +190,9 @@ export class SkillRegistry {
       description: definition.description,
       category: definition.category,
       enabled: setting ? Boolean(setting.enabled) : true,
-      provider: setting?.provider ?? definition.defaultProvider,
+      // Detection skills run through a visible browser session. Older builds
+      // allowed a model setting to be saved here; ignore that stale setting.
+      provider: isBrowserAutomationSkill(skillId) ? null : (setting?.provider ?? definition.defaultProvider),
       markdown: fs.readFileSync(filePath, "utf8"),
       filePath
     };
@@ -207,7 +209,7 @@ export class SkillRegistry {
     this.db.prepare(`INSERT INTO skill_settings (skill_id, enabled, provider, updated_at)
       VALUES (?, ?, ?, ?) ON CONFLICT(skill_id)
       DO UPDATE SET enabled = excluded.enabled, provider = excluded.provider, updated_at = excluded.updated_at`)
-      .run(skillId, input.enabled ? 1 : 0, input.provider, new Date().toISOString());
+      .run(skillId, input.enabled ? 1 : 0, isBrowserAutomationSkill(skillId) ? null : input.provider, new Date().toISOString());
     return this.get(skillId);
   }
 
@@ -224,4 +226,8 @@ export class SkillRegistry {
     if (!/^[a-z0-9-]+$/.test(skillId)) throw new Error("技能 ID 不合法。");
     return path.join(this.rootDirectory, skillId, "SKILL.md");
   }
+}
+
+function isBrowserAutomationSkill(skillId: string): boolean {
+  return skillId === "zhuque-detection" || skillId === "contentany-detection";
 }
