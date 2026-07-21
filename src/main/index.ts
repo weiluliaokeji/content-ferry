@@ -1,0 +1,670 @@
+import path from "node:path";
+import fs from "node:fs";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, type OpenDialogOptions } from "electron";
+import { openDatabase } from "./db/database";
+import { getDataDirectory } from "./config/paths";
+import { createServer } from "./server/create-server";
+import { ElectronCredentialVault } from "./security/credential-vault";
+import { OpenAICodexProvider } from "./ai/openai-codex-provider";
+import { LocalAssetStore } from "./content/local-asset-store";
+import { dailyLogFilePath } from "./logging/daily-log-stream";
+
+let mainWindow: BrowserWindow | undefined;
+let zhuqueWindow: BrowserWindow | undefined;
+let contentAnyWindow: BrowserWindow | undefined;
+let wechatBackendWindow: BrowserWindow | undefined;
+
+type ZhuqueSegmentKind = "human" | "uncertain" | "ai";
+type ZhuqueReport = {
+  verdict: string;
+  humanPercent: number | null;
+  uncertainPercent: number | null;
+  aiPercent: number | null;
+  ratioSource: "official" | "segments";
+  segments: Array<{ text: string; kind: ZhuqueSegmentKind }>;
+};
+type ZhuqueDetectionResponse = {
+  status: "completed" | "needs_user";
+  result?: string;
+  report?: ZhuqueReport;
+  message?: string;
+};
+type ContentAnyDetectionResponse = {
+  status: "completed" | "needs_user";
+  result?: string;
+  message?: string;
+};
+
+async function createMainWindow(): Promise<void> {
+  mainWindow = new BrowserWindow({
+    title: "文渡",
+    icon: createWenduWindowIcon(),
+    width: 1280,
+    height: 800,
+    minWidth: 1024,
+    minHeight: 680,
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.js")
+    }
+  });
+
+  const devServerUrl = process.env.CONTENTFERRY_DEV_SERVER_URL;
+  if (devServerUrl) {
+    await mainWindow.loadURL(devServerUrl);
+  } else {
+    await mainWindow.loadFile(path.join(__dirname, "../../renderer/index.html"));
+  }
+}
+
+function createWenduWindowIcon() {
+  const iconName = process.platform === "win32" ? "wendu-icon.ico" : "wendu-icon.png";
+  return nativeImage.createFromPath(path.join(app.getAppPath(), "assets", iconName));
+}
+
+async function bootstrap(): Promise<void> {
+  Menu.setApplicationMenu(null);
+  const dataDirectory = getDataDirectory();
+  const logDirectory = path.join(dataDirectory, "logs");
+  fs.mkdirSync(logDirectory, { recursive: true });
+  const logFilePath = dailyLogFilePath(logDirectory);
+  const database = openDatabase(dataDirectory);
+  const modelProvider = new OpenAICodexProvider(path.join(dataDirectory, "ai-sandbox"));
+  const assetStore = new LocalAssetStore(path.join(dataDirectory, "content-assets"));
+  const server = await createServer(
+    new Date().toISOString(),
+    database,
+    new ElectronCredentialVault(safeStorage),
+    modelProvider,
+    assetStore,
+    logFilePath,
+    path.join(dataDirectory, "skills")
+  );
+
+  ipcMain.handle("contentferry:select-directory", async () => {
+    const options: OpenDialogOptions = {
+      title: "选择 VitePress 的 docs 文章库文件夹",
+      properties: ["openDirectory", "createDirectory"]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? undefined : result.filePaths[0];
+  });
+  ipcMain.handle("contentferry:select-image", async () => {
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, {
+      title: "选择文章封面",
+      properties: ["openFile"],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "gif", "webp"] }]
+    }) : await dialog.showOpenDialog({
+      title: "选择文章封面",
+      properties: ["openFile"],
+      filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "gif", "webp"] }]
+    });
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    const filePath = result.filePaths[0];
+    const bytes = fs.readFileSync(filePath);
+    if (bytes.length > 15 * 1024 * 1024) throw new Error("封面图片必须小于 15 MB。");
+    const extension = path.extname(filePath).toLowerCase();
+    const mimeType = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" }[extension];
+    if (!mimeType) throw new Error("不支持这种图片格式。");
+    return { fileName: path.basename(filePath), mimeType, base64: bytes.toString("base64") };
+  });
+  ipcMain.handle("contentferry:open-zhuque", async () => {
+    const window = await getOrCreateZhuqueWindow();
+    window.show();
+    window.focus();
+  });
+  ipcMain.handle("contentferry:open-wechat-backend", async () => {
+    const window = await getOrCreateWechatBackendWindow();
+    window.show();
+    window.focus();
+    await driveWechatBackendToDrafts(window);
+  });
+  ipcMain.handle("contentferry:open-contentany", async () => {
+    const window = await getOrCreateContentAnyWindow();
+    window.show();
+    window.focus();
+  });
+  ipcMain.handle("contentferry:show-log-file", async (_event, requestedDate: unknown) => {
+    const date = typeof requestedDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? new Date(`${requestedDate}T12:00:00`) : new Date();
+    const selectedLogFilePath = dailyLogFilePath(logDirectory, date);
+    if (fs.existsSync(selectedLogFilePath)) {
+      shell.showItemInFolder(selectedLogFilePath);
+      return;
+    }
+    await shell.openPath(logDirectory);
+  });
+  ipcMain.handle("contentferry:run-zhuque", async (_event, markdown: unknown) => {
+    if (typeof markdown !== "string" || markdown.length === 0 || markdown.length > 100_000) {
+      throw new Error("待检测正文为空或过长。");
+    }
+    return runZhuqueDetection(markdown);
+  });
+  ipcMain.handle("contentferry:run-contentany", async (_event, markdown: unknown) => {
+    if (typeof markdown !== "string" || markdown.length === 0 || markdown.length > 100_000) {
+      throw new Error("待检测正文为空或过长。");
+    }
+    return runContentAnyDetection(markdown);
+  });
+
+  await createMainWindow();
+
+  app.on("before-quit", async () => {
+    await server.close();
+    database.close();
+  });
+}
+
+app.whenReady().then(bootstrap).catch((error: unknown) => {
+  console.error("ContentFerry failed to start", error);
+  app.quit();
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+async function getOrCreateZhuqueWindow(): Promise<BrowserWindow> {
+  if (zhuqueWindow && !zhuqueWindow.isDestroyed()) return zhuqueWindow;
+  const window = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    show: true,
+    title: "文渡 · 腾讯朱雀自动检测",
+    icon: createWenduWindowIcon(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: "persist:contentferry-zhuque"
+    }
+  });
+  zhuqueWindow = window;
+  window.on("closed", () => { if (zhuqueWindow === window) zhuqueWindow = undefined; });
+  await window.loadURL("https://matrix.tencent.com/ai-detect/ai_gen_txt/");
+  await delay(1200);
+  return window;
+}
+
+async function runZhuqueDetection(markdown: string): Promise<ZhuqueDetectionResponse> {
+  const window = await getOrCreateZhuqueWindow();
+  window.show();
+  window.focus();
+
+  const filled = await window.webContents.executeJavaScript(`(async () => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 100 && rect.height > 30 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    let candidates = [...document.querySelectorAll("textarea, [contenteditable='true']")].filter(visible);
+    if (candidates.length === 0) {
+      document.querySelector(".clear-btn")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      candidates = [...document.querySelectorAll("textarea, [contenteditable='true']")].filter(visible);
+    }
+    const editor = document.querySelector(".txt-input textarea") || candidates.sort((left, right) => right.getBoundingClientRect().width * right.getBoundingClientRect().height - left.getBoundingClientRect().width * left.getBoundingClientRect().height)[0];
+    if (!editor) return { ok: false, reason: "未找到正文输入区域" };
+    const previousResult = (document.querySelector(".txt-segment-box")?.textContent || "").trim();
+    const value = ${JSON.stringify(markdown)};
+    if (editor instanceof HTMLTextAreaElement) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(editor, value);
+    } else {
+      editor.focus();
+      editor.textContent = value;
+    }
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    editor.dispatchEvent(new Event("change", { bubbles: true }));
+    window.__contentFerryChartLabels = [];
+    window.__contentFerryNetworkPayloads = [];
+    window.__contentFerryDetectionStartedAt = Date.now();
+    if (!window.__contentFerryNetworkPatched) {
+      window.__contentFerryNetworkPatched = true;
+      const recordPayload = (url, body) => {
+        try {
+          const text = String(body || "");
+          if (text && text.length <= 2_000_000) {
+            window.__contentFerryNetworkPayloads.push({ url: String(url || ""), body: text, capturedAt: Date.now() });
+          }
+        } catch {}
+      };
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        response.clone().text().then((body) => recordPayload(args[0]?.url || args[0], body)).catch(() => {});
+        return response;
+      };
+      const originalOpen = XMLHttpRequest.prototype.open;
+      const originalSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this.__contentFerryUrl = url;
+        return originalOpen.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function(...args) {
+        this.addEventListener("load", () => {
+          if (typeof this.responseText === "string") recordPayload(this.__contentFerryUrl, this.responseText);
+        }, { once: true });
+        return originalSend.apply(this, args);
+      };
+    }
+    if (!window.__contentFerryCanvasPatched) {
+      window.__contentFerryCanvasPatched = true;
+      const originalFillText = CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText = function(text, x, y, ...rest) {
+        try {
+          const value = String(text).trim();
+          if (/^\\d+(?:\\.\\d+)?\\s*%$/.test(value)) {
+            window.__contentFerryChartLabels.push({
+              text: value,
+              x,
+              y,
+              width: this.canvas.width,
+              height: this.canvas.height,
+              capturedAt: Date.now()
+            });
+          }
+        } catch {}
+        return originalFillText.call(this, text, x, y, ...rest);
+      };
+    }
+    const buttons = [...document.querySelectorAll("button, [role='button']")].filter(visible);
+    const detect = document.querySelector(".submit-btn") || buttons.find((button) => /开始检测|立即检测|检测|detect now/i.test((button.textContent || "").trim()));
+    if (!detect) return { ok: false, reason: "未找到检测按钮" };
+    detect.click();
+    return { ok: true, previousResult };
+  })()`, true) as { ok: boolean; reason?: string; previousResult?: string };
+
+  if (!filled.ok) {
+    window.focus();
+    return { status: "needs_user", message: `${filled.reason ?? "网页结构发生变化"}。请在已打开的朱雀窗口中完成操作，然后回到文渡重试。` };
+  }
+
+  await delay(3500);
+  let incompleteReportAttempts = 0;
+  for (let attempt = 0; attempt < 58 && !window.isDestroyed(); attempt += 1) {
+    await delay(2000);
+    const report = await window.webContents.executeJavaScript(`(() => {
+      const text = document.body?.innerText || "";
+      const resultBox = document.querySelector(".txt-segment-box");
+      const resultText = (resultBox?.textContent || "").trim();
+      const previousResult = ${JSON.stringify(filled.previousResult ?? "")};
+      if (!resultText || resultText === previousResult) return null;
+
+      const segmentSelector = ".txt-segmentType-danger, .txt-segmentType-warning, .txt-segmentType-success";
+      const segments = [...document.querySelectorAll(segmentSelector)]
+        .filter((segment) => !segment.querySelector(segmentSelector))
+        .map((segment) => {
+          const value = (segment.textContent || "").trim();
+          const kind = segment.classList.contains("txt-segmentType-success")
+            ? "human"
+            : segment.classList.contains("txt-segmentType-warning") ? "uncertain" : "ai";
+          return { text: value, kind };
+        })
+        .filter((segment) => segment.text.length > 0)
+        .slice(0, 500);
+
+      let humanPercent = null;
+      let uncertainPercent = null;
+      let aiPercent = null;
+      let ratioSource = "official";
+      const percent = (value) => {
+        const number = Number.parseFloat(String(value).replace("%", ""));
+        return Number.isFinite(number) ? number : null;
+      };
+      const normalizeTriple = (values) => {
+        if (!Array.isArray(values) || values.length !== 3 || values.some((value) => !Number.isFinite(value) || value < 0)) return null;
+        const total = values.reduce((sum, value) => sum + value, 0);
+        if (total >= .995 && total <= 1.005) return values.map((value) => value * 100);
+        if (total >= 99.5 && total <= 100.5) return values;
+        return null;
+      };
+      const applyTriple = (values) => {
+        const normalized = normalizeTriple(values);
+        if (!normalized) return false;
+        humanPercent = normalized[0];
+        uncertainPercent = normalized[1];
+        aiPercent = normalized[2];
+        return true;
+      };
+      const featureKind = (name) => {
+        const normalized = String(name || "").toLowerCase().replace(/[\\s_-]+/g, "");
+        if (/疑似|suspect|uncertain|maybe/.test(normalized)) return "uncertain";
+        if (/人工|人类|human|manual/.test(normalized)) return "human";
+        if (/ai特征|ai生成|aigc|machine|artificial/.test(normalized)) return "ai";
+        return null;
+      };
+      const findNamedTriple = (root) => {
+        const found = {};
+        const visit = (value, depth = 0) => {
+          if (depth > 12 || value == null || Object.keys(found).length === 3) return;
+          if (Array.isArray(value)) {
+            for (const item of value) visit(item, depth + 1);
+            return;
+          }
+          if (typeof value !== "object") return;
+          const entries = Object.entries(value);
+          const nameEntry = entries.find(([key]) => /name|label|type|feature|category|title/i.test(key));
+          const numberEntry = entries.find(([key, item]) => /value|percent|percentage|ratio|score|rate/i.test(key) && Number.isFinite(Number(item)));
+          if (nameEntry && numberEntry) {
+            const kind = featureKind(nameEntry[1]);
+            if (kind) found[kind] = Number(numberEntry[1]);
+          }
+          for (const [key, item] of entries) {
+            const kind = featureKind(key);
+            if (kind && Number.isFinite(Number(item))) found[kind] = Number(item);
+            else visit(item, depth + 1);
+          }
+        };
+        visit(root);
+        return found.human != null && found.uncertain != null && found.ai != null
+          ? normalizeTriple([found.human, found.uncertain, found.ai])
+          : null;
+      };
+
+      const startedAt = window.__contentFerryDetectionStartedAt || 0;
+      for (const payload of (window.__contentFerryNetworkPayloads || []).filter((item) => item.capturedAt >= startedAt).reverse()) {
+        try {
+          const triple = findNamedTriple(JSON.parse(payload.body));
+          if (triple && applyTriple(triple)) break;
+        } catch {}
+      }
+
+      const chartElements = [...document.querySelectorAll("[_echarts_instance_]")];
+      for (const chartElement of chartElements) {
+        if (humanPercent !== null && uncertainPercent !== null && aiPercent !== null) break;
+        try {
+          let echartsApi = window.echarts;
+          if (!echartsApi?.getInstanceByDom) {
+            for (const key of Object.getOwnPropertyNames(window)) {
+              try {
+                const candidate = window[key];
+                if (candidate?.getInstanceByDom && candidate?.getInstanceById) {
+                  echartsApi = candidate;
+                  break;
+                }
+              } catch {}
+            }
+          }
+          const instance = echartsApi?.getInstanceByDom?.(chartElement);
+          const data = instance?.getOption?.()?.series?.flatMap((series) => series.data || []) || [];
+          for (const item of data) {
+            const name = String(item?.name || "");
+            const value = percent(item?.value);
+            if (value === null) continue;
+            if (/人工特征|人类特征/.test(name)) humanPercent = value;
+            else if (/疑似/.test(name)) uncertainPercent = value;
+            else if (/AI特征|AI生成/.test(name)) aiPercent = value;
+          }
+        } catch {}
+      }
+
+      if (humanPercent === null || uncertainPercent === null || aiPercent === null) {
+        const svgCandidates = [...document.querySelectorAll("svg")]
+          .map((svg) => [...svg.querySelectorAll("text")]
+            .map((node) => (node.textContent || "").trim())
+            .filter((value) => /^\\d+(?:\\.\\d+)?\\s*%$/.test(value))
+            .map((value) => percent(value)))
+          .filter((values) => values.length >= 3);
+        let svgTriple = null;
+        for (const values of svgCandidates) {
+          for (let index = 0; index <= values.length - 3; index += 1) {
+            const candidate = normalizeTriple(values.slice(index, index + 3));
+            if (candidate) {
+              svgTriple = candidate;
+              break;
+            }
+          }
+          if (svgTriple) break;
+        }
+        if (svgTriple) applyTriple(svgTriple);
+      }
+
+      if (humanPercent === null || uncertainPercent === null || aiPercent === null) {
+        const reportCandidates = [...document.querySelectorAll("div, section")]
+          .filter((element) => {
+            const value = element.textContent || "";
+            return value.includes("人工特征") && value.includes("疑似AI") && value.includes("AI特征") && /\\d+(?:\\.\\d+)?\\s*%/.test(value);
+          })
+          .sort((left, right) => (left.textContent || "").length - (right.textContent || "").length);
+        for (const candidate of reportCandidates) {
+          const values = [...candidate.querySelectorAll("*")]
+            .filter((element) => element.children.length === 0)
+            .map((element) => (element.textContent || "").trim())
+            .filter((value) => /^\\d+(?:\\.\\d+)?\\s*%$/.test(value))
+            .map((value) => percent(value));
+          for (let index = 0; index <= values.length - 3; index += 1) {
+            if (applyTriple(values.slice(index, index + 3))) break;
+          }
+          if (humanPercent !== null && uncertainPercent !== null && aiPercent !== null) break;
+        }
+      }
+
+      if (humanPercent === null || uncertainPercent === null || aiPercent === null) {
+        const captured = (window.__contentFerryChartLabels || [])
+          .filter((item) => item.capturedAt >= startedAt && item.width >= 180 && item.height >= 150)
+          .map((item) => ({ ...item, value: percent(item.text) }))
+          .filter((item) => item.value !== null);
+        const byCanvas = new Map();
+        for (const item of captured) {
+          const key = item.width + "x" + item.height;
+          const values = byCanvas.get(key) || [];
+          values.push(item);
+          byCanvas.set(key, values);
+        }
+        const labelGroups = [...byCanvas.values()].flatMap((items) => {
+          const groups = [];
+          for (let index = items.length - 3; index >= 0; index -= 1) {
+            const candidate = items.slice(index, index + 3);
+            const total = candidate.reduce((sum, item) => sum + item.value, 0);
+            if (total >= 99.5 && total <= 100.5) {
+              groups.push(candidate);
+              break;
+            }
+          }
+          return groups;
+        });
+        const officialLabels = labelGroups
+          .sort((left, right) => right[0].width * right[0].height - left[0].width * left[0].height)[0];
+        if (officialLabels) {
+          applyTriple(officialLabels.map((item) => item.value));
+        }
+      }
+
+      if (humanPercent === null || uncertainPercent === null || aiPercent === null) {
+        const characterCounts = { human: 0, uncertain: 0, ai: 0 };
+        for (const segment of segments) {
+          characterCounts[segment.kind] += Array.from(segment.text.replace(/\\s+/g, "")).length;
+        }
+        const totalCharacters = characterCounts.human + characterCounts.uncertain + characterCounts.ai;
+        if (totalCharacters > 0) {
+          humanPercent = characterCounts.human / totalCharacters * 100;
+          uncertainPercent = characterCounts.uncertain / totalCharacters * 100;
+          aiPercent = characterCounts.ai / totalCharacters * 100;
+          ratioSource = "segments";
+        }
+      }
+
+      const chartRoot = chartElements[0] || [...document.querySelectorAll("svg")].find((svg) => /\\d+(?:\\.\\d+)?\\s*%/.test(svg.textContent || ""));
+      let reportRoot = chartRoot;
+      for (let depth = 0; reportRoot && depth < 7; depth += 1) {
+        const value = reportRoot.innerText || reportRoot.textContent || "";
+        if (value.includes("人工特征") && value.includes("疑似AI") && value.includes("AI特征")) break;
+        reportRoot = reportRoot.parentElement;
+      }
+      const reportLines = (reportRoot?.innerText || reportRoot?.textContent || "").split(/\\n+/).map((line) => line.trim()).filter(Boolean);
+      const verdict = reportLines.find((line) => /人工创作特征|AI创作特征/.test(line) && /较强|较弱|明显|一般/.test(line))
+        || reportLines.find((line) => /人工创作特征|AI创作特征/.test(line))
+        || "腾讯朱雀检测已完成";
+      return { verdict, humanPercent, uncertainPercent, aiPercent, ratioSource, segments };
+    })()`, true) as ZhuqueReport | null;
+    if (report && report.humanPercent !== null && report.uncertainPercent !== null && report.aiPercent !== null) {
+      const formatPercent = (value: number | null) => value === null ? "未读取" : `${value.toFixed(2)}%`;
+      const result = [
+        report.verdict,
+        `人工特征 ${formatPercent(report.humanPercent)} · 疑似 AI ${formatPercent(report.uncertainPercent)} · AI 特征 ${formatPercent(report.aiPercent)}${report.ratioSource === "segments" ? "（按已识别分段字数计算）" : ""}`,
+        `已读取 ${report.segments.length} 个分段，原始朱雀结果窗口已保留。`
+      ].join("\n");
+      if (!window.isDestroyed()) {
+        window.show();
+        window.focus();
+      }
+      return { status: "completed", result, report };
+    }
+    if (report) {
+      incompleteReportAttempts += 1;
+      if (incompleteReportAttempts >= 8) {
+        if (!window.isDestroyed()) {
+          window.show();
+          window.focus();
+        }
+        return {
+          status: "needs_user",
+          message: "朱雀正文分段已经生成，但图表的三项官方比例仍未能读取。原始结果窗口已保留，请核对页面后再次点击检测。"
+        };
+      }
+    }
+  }
+
+  if (!window.isDestroyed()) window.focus();
+  return { status: "needs_user", message: "自动填充和检测已经执行，但未能可靠读取结果。请在已打开的朱雀窗口中检查是否需要登录、验证码或其他确认。" };
+}
+
+async function getOrCreateWechatBackendWindow(): Promise<BrowserWindow> {
+  if (wechatBackendWindow && !wechatBackendWindow.isDestroyed()) return wechatBackendWindow;
+  const window = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    show: true,
+    title: "文渡 · 微信公众号后台",
+    icon: createWenduWindowIcon(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: "persist:contentferry-wechat"
+    }
+  });
+  wechatBackendWindow = window;
+  window.on("closed", () => { if (wechatBackendWindow === window) wechatBackendWindow = undefined; });
+  window.webContents.on("did-finish-load", () => { void driveWechatBackendToDrafts(window); });
+  await window.loadURL("https://mp.weixin.qq.com/");
+  return window;
+}
+
+async function driveWechatBackendToDrafts(window: BrowserWindow): Promise<void> {
+  if (window.isDestroyed()) return;
+  await window.webContents.executeJavaScript(`(() => {
+    if (window.__contentFerryWechatDraftDriver) return;
+    window.__contentFerryWechatDraftDriver = true;
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 4 && rect.height > 4 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const clickText = (patterns) => {
+      const nodes = [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span")].filter(visible);
+      const node = nodes.find((item) => patterns.some((pattern) => pattern.test((item.textContent || "").replace(/\\s+/g, "").trim())));
+      if (!node) return false;
+      const target = node.closest("a, button, [role='button'], [role='link'], li") || node;
+      target.click();
+      return true;
+    };
+    let loginClicked = false;
+    const tick = () => {
+      const text = (document.body?.innerText || "").replace(/\\s+/g, "");
+      // 登录界面交给用户：一旦出现扫码、二维码或账号密码选项，不再自动点击任何“登录”元素。
+      if (/(?:\u626b\u7801|\u4e8c\u7ef4\u7801|\u8d26\u53f7\u5bc6\u7801)/.test(text)) return;
+      if (/草稿箱/.test(text) && /内容管理|草稿/.test(location.href + text)) return;
+      if (clickText([/^草稿箱$/, /草稿箱/])) return;
+      if (clickText([/^内容管理$/, /内容管理/])) return;
+      if (!loginClicked && /登录/.test(text)) loginClicked = clickText([/^登录$/, /登录/]);
+    };
+    // 微信登录组件完成初始化后再触发一次，避免二维码容器尚未准备好时被过早点击。
+    window.setTimeout(tick, 1200);
+    window.setInterval(tick, 1200);
+  })()`, true);
+}
+
+async function getOrCreateContentAnyWindow(): Promise<BrowserWindow> {
+  if (contentAnyWindow && !contentAnyWindow.isDestroyed()) return contentAnyWindow;
+  const window = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    show: true,
+    title: "文渡 · ContentAny AI 检测",
+    icon: createWenduWindowIcon(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: "persist:contentferry-contentany"
+    }
+  });
+  contentAnyWindow = window;
+  window.on("closed", () => { if (contentAnyWindow === window) contentAnyWindow = undefined; });
+  await window.loadURL("https://cn.aifoxs.com/ai-detect");
+  await delay(1500);
+  return window;
+}
+
+async function runContentAnyDetection(markdown: string): Promise<ContentAnyDetectionResponse> {
+  const window = await getOrCreateContentAnyWindow();
+  window.show();
+  window.focus();
+  const filled = await window.webContents.executeJavaScript(`(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 120 && rect.height > 30 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const editor = [...document.querySelectorAll("textarea, [contenteditable='true']")]
+      .filter(visible)
+      .sort((left, right) => right.getBoundingClientRect().width * right.getBoundingClientRect().height - left.getBoundingClientRect().width * left.getBoundingClientRect().height)[0];
+    if (!editor) return { ok: false, reason: "未找到 ContentAny 正文输入区" };
+    const value = ${JSON.stringify(markdown)};
+    if (editor instanceof HTMLTextAreaElement) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(editor, value);
+    } else {
+      editor.textContent = value;
+    }
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    editor.dispatchEvent(new Event("change", { bubbles: true }));
+    const button = [...document.querySelectorAll("button, [role='button']")].find((item) => {
+      const rect = item.getBoundingClientRect();
+      const style = getComputedStyle(item);
+      return /AI指数检测|AI.*检测/i.test((item.textContent || "").replace(/\\s+/g, "").trim()) && rect.width > 30 && rect.height > 20 && style.display !== "none" && style.visibility !== "hidden";
+    });
+    if (!button) return { ok: false, reason: "未找到 ContentAny 的 AI 指数检测按钮" };
+    button.click();
+    return { ok: true };
+  })()`, true) as { ok: boolean; reason?: string };
+  if (!filled.ok) return { status: "needs_user", message: `${filled.reason ?? "ContentAny 页面结构发生变化"}。请在已打开的 ContentAny 窗口中登录或完成必要操作后重试。` };
+  await delay(3500);
+  for (let attempt = 0; attempt < 30 && !window.isDestroyed(); attempt += 1) {
+    const result = await window.webContents.executeJavaScript(`(() => {
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 20 && rect.height > 12 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const isReportText = (value) => /AI\\s*(?:指数|检测|内容|特征)|检测(?:结果|报告)|原创(?:度|指数)|疑似\\s*AI|人工(?:创作|特征)/i.test(value);
+      const tables = [...document.querySelectorAll("table")].filter(visible).map((table) => (table.innerText || "").trim()).filter(isReportText);
+      const reportNodes = [...document.querySelectorAll("[class*='result' i], [class*='report' i], [class*='detect' i], [class*='score' i], [class*='index' i], [id*='result' i], [id*='report' i]")]
+        .filter(visible)
+        .map((node) => (node.innerText || "").trim())
+        .filter((value) => value.length > 0 && value.length < 12000 && isReportText(value));
+      const candidates = [...tables, ...reportNodes];
+      const best = candidates.sort((left, right) => right.length - left.length)[0];
+      if (!best) return null;
+      return best.slice(0, 12000);
+    })()`, true) as string | null;
+    if (result) return { status: "completed", result };
+    await delay(1500);
+  }
+  window.focus();
+  return { status: "needs_user", message: "ContentAny 已打开并提交检测，但暂时未能读取报告。请检查页面是否需要登录或验证码，完成后再次点击检测。" };
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

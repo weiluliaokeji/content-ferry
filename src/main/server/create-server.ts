@@ -1,0 +1,974 @@
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import cors from "@fastify/cors";
+import { z } from "zod";
+import fs from "node:fs";
+import path from "node:path";
+import type { AppDatabase } from "../db/database";
+import { AccountAlreadyExistsError, AccountRepository } from "../accounts/account-repository";
+import { ContentSourceError, ContentSourceService } from "../content/content-source-service";
+import { ContentProjectRepository } from "../content/content-project-repository";
+import { ContentBriefRepository } from "../content/content-brief-repository";
+import { ContentOutlineRepository } from "../content/content-outline-repository";
+import { ContentDraftRepository } from "../content/content-draft-repository";
+import { ContentReviewRepository } from "../content/content-review-repository";
+import { LocalAssetStore } from "../content/local-asset-store";
+import { AiContentService } from "../ai/ai-content-service";
+import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
+import type { CredentialVault } from "../security/credential-vault";
+import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
+import { WechatApiError, WechatPublishingService } from "../wechat/wechat-publishing-service";
+import { WechatCallbackService } from "../wechat/wechat-callback-service";
+import { createDailyLogStream, dailyLogFilePath, listRuntimeLogFiles } from "../logging/daily-log-stream";
+import { AppCredentialRepository } from "../security/app-credential-repository";
+import { CoverGenerationService } from "../content/modelscope-cover-service";
+import { ModelConnectionRepository, modelProviderIds } from "../ai/model-connection-repository";
+import { SkillRegistry } from "../skills/skill-registry";
+import { ConfiguredModelProvider } from "../ai/configured-model-provider";
+
+const accountInput = z.object({
+  platform: z.enum(["wechat_official", "csdn"]),
+  displayName: z.string().trim().min(1).max(100),
+  externalAccountId: z.string().trim().min(1).max(200).optional()
+});
+const accountRenameInput = z.object({ displayName: z.string().trim().min(1).max(100) });
+
+const profileInput = z.object({
+  positioning: z.string().max(4000).default(""),
+  targetAudience: z.string().max(4000).default(""),
+  prohibitedTopics: z.string().max(4000).default(""),
+  writingStyle: z.string().max(4000).default(""),
+  regularColumns: z.string().max(4000).default("")
+});
+
+const credentialInput = z.object({ secret: z.string().min(1).max(10000) });
+const contentSourceInput = z.object({ rootPath: z.string().trim().min(1).max(1000) });
+const contentSourceArticleQuery = z.object({ path: z.string().trim().min(1).max(1000) });
+const contentSourceArticleInput = z.object({ path: z.string().trim().min(1).max(1000), markdown: z.string().max(500000) });
+const contentSourceAssetInput = z.object({
+  path: z.string().trim().min(1).max(1000),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
+  base64: z.string().min(1).max(21_000_000)
+});
+const contentProjectInput = z.object({ topic: z.string().trim().min(1).max(500), targetAccountId: z.string().uuid().optional() });
+const contentBriefInput = z.object({ objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
+const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
+const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
+const contentRevisionInput = z.object({ aiCheckResult: z.string().max(4000), guidance: z.string().max(8000) });
+const contentAssetInput = z.object({
+  contextId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
+  base64: z.string().min(1).max(21_000_000)
+});
+const contentReviewInput = z.object({ status: z.enum(["pending", "needs_revision", "approved"]), factChecked: z.boolean(), accountFitChecked: z.boolean(), aiCheckResult: z.string().max(4000), notes: z.string().max(8000) });
+const wechatDraftInput = z.object({
+  accountId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  author: z.string().max(16).optional(),
+  digest: z.string().max(120).optional(),
+  thumbMediaId: z.string().max(256).optional(),
+  coverSource: z.string().max(2000).optional()
+});
+const wechatSourceDraftInput = z.object({
+  accountId: z.string().uuid(),
+  relativePath: z.string().trim().min(1).max(1000),
+  author: z.string().max(16).optional(),
+  digest: z.string().max(120).optional(),
+  thumbMediaId: z.string().max(256).optional(),
+  coverSource: z.string().max(2000).optional()
+});
+const wechatSubmitInput = z.object({ mode: z.enum(["publish", "mass"]) });
+const modelProviderSchema = z.enum(modelProviderIds);
+const modelConnectionInput = z.object({
+  displayName: z.string().trim().min(1).max(100),
+  modelId: z.string().trim().max(200).default(""),
+  baseUrl: z.string().trim().max(1000).default(""),
+  proxyUrl: z.string().trim().max(1000).default(""),
+  enabled: z.boolean().default(true),
+  credential: z.string().max(10000).optional()
+});
+const skillInput = z.object({
+  markdown: z.string().min(1).max(100000),
+  enabled: z.boolean(),
+  provider: modelProviderSchema.nullable()
+});
+const articleSummaryInput = z.object({
+  platform: z.enum(["wechat_official", "csdn"]),
+  title: z.string().trim().max(500).default(""),
+  markdown: z.string().trim().min(1).max(500000)
+});
+const articleSummaryOutput = z.object({ summary: z.string().trim().min(1).max(500) });
+const selectionEditInput = z.object({
+  action: z.enum(["rewrite", "expand", "shorten", "example", "humanize"]),
+  selectedText: z.string().min(1).max(20000),
+  beforeText: z.string().max(6000).default(""),
+  afterText: z.string().max(6000).default(""),
+  title: z.string().max(500).default("")
+});
+const selectionEditOutput = z.object({ replacement: z.string().min(1).max(50000) });
+const coverPromptInput = z.object({
+  title: z.string().trim().max(500).default(""),
+  markdown: z.string().trim().min(1).max(500000)
+});
+const coverPromptOutput = z.object({ prompt: z.string().trim().min(1).max(2000) });
+
+export function buildServer(
+  startedAt: string,
+  database: AppDatabase,
+  vault: CredentialVault,
+  modelProvider: ModelProvider = new UnavailableModelProvider(),
+  assetStore?: LocalAssetStore,
+  options?: { logFilePath?: string; skillsDirectory?: string }
+) {
+  const server = Fastify({
+    bodyLimit: 22 * 1024 * 1024,
+    logger: options?.logFilePath
+      ? { level: "info", stream: createDailyLogStream(path.dirname(options.logFilePath)) }
+      : true
+  });
+  const accounts = new AccountRepository(database.connection);
+  const contentSources = new ContentSourceService(database.connection);
+  const contentProjects = new ContentProjectRepository(database.connection);
+  const contentBriefs = new ContentBriefRepository(database.connection);
+  const contentOutlines = new ContentOutlineRepository(database.connection);
+  const contentDrafts = new ContentDraftRepository(database.connection);
+  const contentReviews = new ContentReviewRepository(database.connection);
+  const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
+  const wechatCallbacks = new WechatCallbackService(database.connection, accounts, vault);
+  const appCredentials = new AppCredentialRepository(database.connection, vault);
+  const modelConnections = new ModelConnectionRepository(database.connection, appCredentials);
+  const skills = options?.skillsDirectory ? new SkillRegistry(database.connection, options.skillsDirectory) : undefined;
+  const effectiveModelProvider = skills
+    ? new ConfiguredModelProvider(modelConnections, skills, modelProvider)
+    : modelProvider;
+  const aiContent = new AiContentService(database.connection, effectiveModelProvider);
+  const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources);
+
+  server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
+    done(null, body);
+  });
+
+  // The desktop UI normally shares the Electron origin. During development it
+  // runs at Vite's fixed local address, so only that origin may call this API.
+  server.register(cors, {
+    origin: "http://127.0.0.1:5175",
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"]
+  });
+
+  server.setErrorHandler((error, request, reply) => {
+    if (error instanceof AccountAlreadyExistsError) {
+      return reply.code(409).send({ error: error.message });
+    }
+    if (error instanceof ContentSourceError) {
+      request.log.warn({ err: error }, "Content source request rejected");
+      return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof ModelProviderUnavailableError) {
+      return reply.code(503).send({ error: error.message });
+    }
+    if (error instanceof WechatApiError) {
+      return reply.code(400).send({ error: error.message, errcode: error.errcode });
+    }
+    if (error instanceof z.ZodError) {
+      return reply.code(400).send({ error: "提交的信息不符合要求。" });
+    }
+    if ((error as { statusCode?: number }).statusCode === 413) {
+      return reply.code(413).send({ error: "图片文件过大，请选择 15 MB 以内的图片。" });
+    }
+    request.log.error({ err: error }, "Unhandled local API request error");
+    const sqliteCode = (error as { code?: string }).code;
+    if (sqliteCode === "SQLITE_BUSY" || sqliteCode === "SQLITE_LOCKED") {
+      return reply.code(409).send({ error: "本地数据库正在被另一个 ContentFerry 进程占用。请关闭其他 ContentFerry 窗口，重新启动后再试。" });
+    }
+    if (sqliteCode?.startsWith("SQLITE_CONSTRAINT")) {
+      return reply.code(409).send({ error: "该账号仍有关联数据，暂时无法删除。详细原因已写入本地日志。" });
+    }
+    return reply.code(500).send({ error: "本地服务处理请求时发生错误。" });
+  });
+
+  server.get<{ Reply: HealthResponse }>("/api/health", async () => ({
+    status: "ok",
+    database: "ready",
+    startedAt
+  }));
+
+  server.get("/api/runtime-logs", async (request) => {
+    const query = z.object({
+      limit: z.coerce.number().int().min(20).max(500).default(200),
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      scope: z.enum(["all", "errors", "wechat", "callbacks"]).default("all"),
+      search: z.string().trim().max(120).default("")
+    }).parse(request.query);
+    const logFilePath = options?.logFilePath;
+    const logDirectory = logFilePath ? path.dirname(logFilePath) : "";
+    const allFiles = logDirectory ? listRuntimeLogFiles(logDirectory) : [];
+    const files = query.date
+      ? allFiles.filter((filePath) => path.basename(filePath).startsWith(`contentferry-${query.date}`))
+      : allFiles;
+    const maxBytes = 2 * 1024 * 1024;
+    let remainingBytes = maxBytes;
+    let text = "";
+    let truncated = false;
+    for (const filePath of files) {
+      if (remainingBytes <= 0) {
+        truncated = true;
+        break;
+      }
+      const stat = fs.statSync(filePath);
+      const length = Math.min(stat.size, remainingBytes);
+      const start = stat.size - length;
+      const handle = fs.openSync(filePath, "r");
+      const buffer = Buffer.alloc(length);
+      try {
+        fs.readSync(handle, buffer, 0, length, start);
+      } finally {
+        fs.closeSync(handle);
+      }
+      let part = buffer.toString("utf8");
+      if (start > 0) {
+        part = part.replace(/^[^\n]*(?:\n|$)/, "");
+        truncated = true;
+      }
+      text = `${part}\n${text}`;
+      remainingBytes -= length;
+    }
+    const parsedFileItems = text.split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          const value = JSON.parse(line) as {
+            time?: number; level?: number; msg?: string; reqId?: string;
+            req?: { method?: string; url?: string };
+            res?: { statusCode?: number };
+            responseTime?: number;
+            err?: { message?: string; stack?: string; code?: string };
+          };
+          return {
+            time: value.time ?? null,
+            level: value.level ?? 30,
+            message: `${value.msg ?? ""}${value.reqId ? ` · requestId ${value.reqId}` : ""}`,
+            requestId: value.reqId ?? "",
+            method: value.req?.method ?? "",
+            url: redactLogValue(value.req?.url ?? ""),
+            statusCode: value.res?.statusCode ?? null,
+            responseTime: value.responseTime ?? null,
+            error: redactLogValue(value.err?.stack ?? value.err?.message ?? value.err?.code ?? "").slice(0, 4000)
+          };
+        } catch {
+          return { time: null, level: 30, message: redactLogValue(line), requestId: "", method: "", url: "", statusCode: null, responseTime: null, error: "" };
+        }
+      });
+    const callbackItems = query.date
+      ? database.connection.prepare(`SELECT account_id, signature_status, received_at, processed_at
+          FROM callback_events WHERE received_at LIKE ? ORDER BY received_at DESC LIMIT ?`)
+        .all(`${query.date}%`, 500) as Array<{ account_id: string; signature_status: string; received_at: string; processed_at: string | null }>
+      : database.connection.prepare(`SELECT account_id, signature_status, received_at, processed_at
+          FROM callback_events ORDER BY received_at DESC LIMIT ?`)
+        .all(500) as Array<{ account_id: string; signature_status: string; received_at: string; processed_at: string | null }>;
+    const callbackLogItems = callbackItems.map((event) => ({
+      time: Date.parse(event.received_at),
+      level: event.signature_status === "valid" ? 30 : 50,
+      message: event.processed_at ? "微信回调已接收并处理" : "微信回调已接收，尚未完成处理",
+      requestId: "",
+      method: "POST",
+      url: `/wechat/callback/${event.account_id}`,
+      statusCode: event.processed_at ? 200 : null,
+      responseTime: null,
+      error: event.signature_status === "valid" ? "" : "微信回调签名验证失败"
+    }));
+    const matchesScope = (entry: { level: number; message: string; method: string; url: string; statusCode: number | null; error: string }): boolean => {
+      const combined = `${entry.message} ${entry.error}`;
+      const matchesSearch = !query.search || `${entry.method} ${entry.url} ${combined}`.toLocaleLowerCase().includes(query.search.toLocaleLowerCase());
+      if (!matchesSearch) return false;
+      if (query.scope === "errors") return entry.level >= 40 || (entry.statusCode ?? 0) >= 400 || Boolean(entry.error);
+      if (query.scope === "callbacks") return entry.url.includes("/wechat/callback");
+      if (query.scope === "wechat") return entry.url.includes("/wechat/") || entry.url.includes("/integrations/wechat") || /微信|Wechat/i.test(combined);
+      return true;
+    };
+    const matchedItems = [...parsedFileItems, ...callbackLogItems].filter(matchesScope);
+    const items = matchedItems
+      .sort((left, right) => (right.time ?? 0) - (left.time ?? 0))
+      .slice(0, query.limit);
+    return {
+      filePath: logDirectory ? (query.date ? dailyLogFilePath(logDirectory, new Date(`${query.date}T12:00:00`)) : dailyLogFilePath(logDirectory)) : "",
+      logDirectory,
+      availableDates: [...new Set(allFiles.map((filePath) => /^contentferry-(\d{4}-\d{2}-\d{2})/.exec(path.basename(filePath))?.[1]).filter((value): value is string => Boolean(value)))],
+      items,
+      totalMatched: matchedItems.length,
+      hasMore: matchedItems.length > query.limit,
+      sourceTruncated: truncated,
+      readWindowBytes: maxBytes
+    };
+  });
+
+  server.get<{ Reply: WorkspaceResponse }>("/api/workspaces/default", async () => accounts.getOrCreateDefaultWorkspace());
+
+  server.get("/api/article-settings", async (request) => {
+    const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
+    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id FROM article_settings WHERE context_key = ?")
+      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null } | undefined;
+    const projectId = query.contextKey.startsWith("project:") ? query.contextKey.slice("project:".length) : "";
+    const sourcePath = query.contextKey.startsWith("source:") ? query.contextKey.slice("source:".length) : "";
+    const project = projectId
+      ? database.connection.prepare("SELECT target_account_id FROM content_projects WHERE id = ?").get(projectId) as { target_account_id: string | null } | undefined
+      : sourcePath
+        ? database.connection.prepare("SELECT target_account_id FROM content_projects WHERE source_relative_path = ? ORDER BY updated_at DESC LIMIT 1").get(sourcePath) as { target_account_id: string | null } | undefined
+        : undefined;
+    return {
+      author: row?.author ?? "",
+      digest: row?.digest ?? "",
+      coverSource: row?.cover_source ?? "",
+      accountId: project?.target_account_id ?? row?.account_id ?? ""
+    };
+  });
+
+  server.put("/api/article-settings", async (request) => {
+    const input = z.object({
+      contextKey: z.string().trim().min(1).max(1200),
+      author: z.string().max(16),
+      digest: z.string().max(200),
+      coverSource: z.string().max(2000),
+      accountId: z.string().uuid().or(z.literal("")).default("")
+    }).parse(request.body);
+    const now = new Date().toISOString();
+    database.connection.prepare(`INSERT INTO article_settings
+      (context_key, author, digest, cover_source, account_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(context_key) DO UPDATE SET author = excluded.author, digest = excluded.digest,
+        cover_source = excluded.cover_source, account_id = excluded.account_id, updated_at = excluded.updated_at`)
+      .run(input.contextKey, input.author, input.digest, input.coverSource, input.accountId || null, now);
+    if (input.contextKey.startsWith("project:")) {
+      database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE id = ?")
+        .run(input.accountId || null, now, input.contextKey.slice("project:".length));
+    } else if (input.contextKey.startsWith("source:")) {
+      database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE source_relative_path = ?")
+        .run(input.accountId || null, now, input.contextKey.slice("source:".length));
+    }
+    return { author: input.author, digest: input.digest, coverSource: input.coverSource, accountId: input.accountId };
+  });
+
+  server.get("/api/article-settings/authors", async () => ({
+    items: (database.connection.prepare(`SELECT author, MAX(updated_at) AS last_used
+      FROM article_settings WHERE author <> '' GROUP BY author ORDER BY last_used DESC LIMIT 20`).all() as Array<{ author: string }>)
+      .map((row) => row.author)
+  }));
+
+  server.get("/api/article-quality-check", async (request) => {
+    const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
+    const row = database.connection.prepare("SELECT ai_check_result, ai_check_report, override_reason, updated_at FROM article_quality_checks WHERE context_key = ?")
+      .get(query.contextKey) as { ai_check_result: string; ai_check_report: string; override_reason: string; updated_at: string } | undefined;
+    return {
+      aiCheckResult: row?.ai_check_result ?? "",
+      aiCheckReport: row?.ai_check_report ?? "",
+      overrideReason: row?.override_reason ?? "",
+      updatedAt: row?.updated_at ?? null
+    };
+  });
+
+  server.put("/api/article-quality-check", async (request) => {
+    const input = z.object({
+      contextKey: z.string().trim().min(1).max(1200),
+      aiCheckResult: z.string().max(10000).default(""),
+      aiCheckReport: z.string().max(500_000).default(""),
+      overrideReason: z.string().max(1000).default("")
+    }).parse(request.body);
+    const updatedAt = new Date().toISOString();
+    database.connection.prepare(`INSERT INTO article_quality_checks
+      (context_key, ai_check_result, ai_check_report, override_reason, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(context_key) DO UPDATE SET ai_check_result = excluded.ai_check_result,
+        ai_check_report = excluded.ai_check_report, override_reason = excluded.override_reason, updated_at = excluded.updated_at`)
+      .run(input.contextKey, input.aiCheckResult, input.aiCheckReport, input.overrideReason, updatedAt);
+    return { ...input, updatedAt };
+  });
+
+  server.get("/api/content-source", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { rootPath: contentSources.getSource(workspace.id) };
+  });
+
+  server.post("/api/content-assets", async (request, reply) => {
+    if (!assetStore) return reply.code(503).send({ error: "本地素材服务尚未启用。" });
+    const input = contentAssetInput.parse(request.body);
+    return reply.code(201).send(assetStore.save(input.contextId, input.mimeType, input.base64));
+  });
+
+  server.get("/api/content-assets/:contextId/:fileName", async (request, reply) => {
+    if (!assetStore) return reply.code(404).send();
+    const params = z.object({
+      contextId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+      fileName: z.string().regex(/^[A-Fa-f0-9-]{36}\.(jpg|png|gif|webp)$/)
+    }).parse(request.params);
+    try {
+      const asset = assetStore.read(params.contextId, params.fileName);
+      return reply.type(asset.mimeType).send(asset.stream);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
+  server.put("/api/content-source", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { rootPath: contentSources.setSource(workspace.id, contentSourceInput.parse(request.body).rootPath) };
+  });
+
+  server.get("/api/content-source/preview", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return contentSources.preview(workspace.id);
+  });
+
+  server.get("/api/content-source/article", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = contentSourceArticleQuery.parse(request.query);
+    return contentSources.getArticle(workspace.id, query.path);
+  });
+
+  server.put("/api/content-source/article", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = contentSourceArticleInput.parse(request.body);
+    return contentSources.saveArticle(workspace.id, input.path, input.markdown);
+  });
+
+  server.post("/api/content-source/article-asset", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = contentSourceAssetInput.parse(request.body);
+    return reply.code(201).send(contentSources.saveArticleAsset(workspace.id, input.path, input.mimeType, input.base64));
+  });
+
+  server.get("/api/content-source/article-asset", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({
+      path: z.string().trim().min(1).max(1000),
+      file: z.string().regex(/^[A-Fa-f0-9-]{36}\.(jpg|png|gif|webp)$/)
+    }).parse(request.query);
+    try {
+      const asset = contentSources.readArticleAsset(workspace.id, query.path, query.file);
+      return reply.type(asset.mimeType).send(asset.stream);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
+  server.get("/api/content-source/article-resource", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({
+      path: z.string().trim().min(1).max(1000),
+      src: z.string().trim().min(1).max(2000)
+    }).parse(request.query);
+    try {
+      const asset = contentSources.readArticleResource(workspace.id, query.path, query.src);
+      return reply.type(asset.mimeType).send(asset.stream);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
+  server.get("/api/content-projects", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: contentProjects.list(workspace.id) };
+  });
+
+  server.post("/api/content-projects", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = contentProjectInput.parse(request.body);
+    const article = contentSources.createArticle(workspace.id, input.topic);
+    return reply.code(201).send(contentProjects.create({
+      workspaceId: workspace.id,
+      ...input,
+      sourceRelativePath: article.relativePath
+    }));
+  });
+
+  server.delete("/api/content-projects/:projectId", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const project = contentProjects.require(params.projectId);
+    if (!project.sourceRelativePath) throw new ContentSourceError("这篇旧草稿尚未迁移到 VitePress 文章库，请先打开正文完成迁移。");
+    const staged = contentSources.stageArticleDeletion(project.workspaceId, project.sourceRelativePath);
+    try {
+      database.connection.transaction(() => {
+        database.connection.prepare("UPDATE wechat_publish_jobs SET project_id = NULL WHERE project_id = ?").run(project.id);
+        database.connection.prepare("DELETE FROM article_settings WHERE context_key IN (?, ?)")
+          .run(`project:${project.id}`, `source:${project.sourceRelativePath}`);
+        database.connection.prepare("DELETE FROM content_projects WHERE id = ?").run(project.id);
+      })();
+      staged.finalize();
+      return reply.code(204).send();
+    } catch (error) {
+      staged.rollback();
+      throw error;
+    }
+  });
+
+  server.get("/api/content-projects/:projectId/brief", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentBriefs.get(params.projectId);
+  });
+
+  server.put("/api/content-projects/:projectId/brief", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentBriefs.save(params.projectId, contentBriefInput.parse(request.body));
+  });
+
+  server.get("/api/content-projects/:projectId/outline", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentOutlines.get(params.projectId);
+  });
+
+  server.post("/api/content-projects/:projectId/outline/generate", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const generated = await aiContent.generateOutline(params.projectId);
+    return {
+      projectId: params.projectId,
+      markdown: generated.value.markdown,
+      generatedFromBrief: true,
+      provider: generated.provider,
+      usage: generated.usage
+    };
+  });
+
+  server.post("/api/content-projects/:projectId/outline/generate/stream", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return streamMarkdownGeneration(request, reply, (onDelta, signal) => aiContent.generateOutlineStream(params.projectId, onDelta, signal), params.projectId);
+  });
+
+  server.put("/api/content-projects/:projectId/outline", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentOutlines.save(params.projectId, contentOutlineInput.parse(request.body).markdown);
+  });
+
+  server.get("/api/content-projects/:projectId/draft", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const project = ensureProjectArticle(params.projectId);
+    const draft = contentDrafts.get(params.projectId);
+    if (project.draftReady && project.sourceRelativePath) {
+      const article = contentSources.getArticle(project.workspaceId, project.sourceRelativePath);
+      if (article.markdown !== draft.markdown) return { ...contentDrafts.save(project.id, article.markdown), sourceRelativePath: project.sourceRelativePath };
+    }
+    return { ...draft, sourceRelativePath: project.sourceRelativePath };
+  });
+
+  server.post("/api/content-projects/:projectId/draft/generate", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const project = ensureProjectArticle(params.projectId);
+    const generated = await aiContent.generateDraft(params.projectId);
+    return {
+      projectId: params.projectId,
+      markdown: generated.value.markdown,
+      generatedFromOutline: true,
+      sourceRelativePath: project.sourceRelativePath,
+      provider: generated.provider,
+      usage: generated.usage
+    };
+  });
+
+  server.post("/api/content-projects/:projectId/draft/generate/stream", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const project = ensureProjectArticle(params.projectId);
+    return streamMarkdownGeneration(request, reply, (onDelta, signal) => aiContent.generateDraftStream(params.projectId, onDelta, signal), params.projectId, project.sourceRelativePath);
+  });
+
+  server.put("/api/content-projects/:projectId/draft", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const markdown = contentDraftInput.parse(request.body).markdown;
+    const project = ensureProjectArticle(params.projectId);
+    const saved = contentDrafts.save(params.projectId, markdown);
+    const article = contentSources.saveArticle(project.workspaceId, project.sourceRelativePath!, markdown);
+    // VitePress uses the front-matter title / leading H1 as the article's source
+    // of truth. Keep the workflow card in sync after a user or AI changes it.
+    if (article.title && article.title !== project.topic) contentProjects.updateTopic(project.id, article.title);
+    const updated = contentProjects.require(project.id);
+    return { ...saved, sourceRelativePath: updated.sourceRelativePath };
+  });
+
+  server.post("/api/content-projects/:projectId/draft/revise", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = contentRevisionInput.parse(request.body);
+    const generated = await aiContent.reviseDraft(params.projectId, input.aiCheckResult, input.guidance);
+    return {
+      projectId: params.projectId,
+      markdown: generated.value.markdown,
+      generatedFromOutline: false,
+      provider: generated.provider,
+      usage: generated.usage
+    };
+  });
+
+  server.get("/api/content-projects/:projectId/review", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentReviews.get(params.projectId);
+  });
+
+  server.put("/api/content-projects/:projectId/review", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    return contentReviews.save(params.projectId, contentReviewInput.parse(request.body));
+  });
+
+  function ensureProjectArticle(projectId: string) {
+    let project = contentProjects.require(projectId);
+    if (!project.sourceRelativePath) {
+      const article = contentSources.createArticle(project.workspaceId, project.topic);
+      contentProjects.attachSource(project.id, article.relativePath);
+      project = contentProjects.require(projectId);
+      const existing = database.connection.prepare("SELECT markdown FROM content_drafts WHERE project_id = ?")
+        .get(projectId) as { markdown: string } | undefined;
+      if (existing?.markdown) contentSources.saveArticle(project.workspaceId, article.relativePath, existing.markdown);
+    }
+    return project;
+  }
+
+  server.get("/api/media-accounts", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: accounts.listAccounts(workspace.id) };
+  });
+
+  server.post("/api/media-accounts", async (request, reply) => {
+    const input = accountInput.parse(request.body);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const account = accounts.createAccount({ workspaceId: workspace.id, ...input });
+    return reply.code(201).send(account);
+  });
+
+  server.put("/api/media-accounts/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    return accounts.updateDisplayName(params.accountId, accountRenameInput.parse(request.body).displayName);
+  });
+
+  server.put("/api/media-accounts/:accountId/profile", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    return accounts.updateProfile(params.accountId, profileInput.parse(request.body));
+  });
+
+  server.put("/api/media-accounts/:accountId/credentials/:credentialKind", async (request, reply) => {
+    const params = z.object({ accountId: z.string().uuid(), credentialKind: z.string().trim().min(1).max(80) }).parse(request.params);
+    accounts.saveCredential(params.accountId, params.credentialKind, credentialInput.parse(request.body).secret, vault);
+    // The secret is accepted once and is never echoed, logged, or exposed through account reads.
+    return reply.code(204).send();
+  });
+
+  server.get("/api/media-accounts/:accountId/credentials/status", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    return {
+      ...accounts.credentialStatus(params.accountId, vault),
+      localCallbackUrl: `http://127.0.0.1:4317/wechat/callback/${params.accountId}`
+    };
+  });
+
+  server.delete("/api/media-accounts/:accountId", async (request, reply) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    accounts.deleteAccount(params.accountId);
+    return reply.code(204).send();
+  });
+
+  server.get("/api/settings/modelscope", async () => ({ configured: appCredentials.configured("modelscope_api_key") }));
+
+  server.put("/api/settings/modelscope", async (request, reply) => {
+    const input = credentialInput.parse(request.body);
+    appCredentials.save("modelscope_api_key", input.secret);
+    return reply.code(204).send();
+  });
+
+  server.post("/api/covers/modelscope", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = z.object({
+      projectId: z.string().uuid().optional(),
+      relativePath: z.string().trim().min(1).max(1000).optional(),
+      prompt: z.string().max(2000).optional()
+    }).refine((value) => Boolean(value.projectId) !== Boolean(value.relativePath), "必须指定一篇文章。").parse(request.body);
+    try {
+      return await coverGenerator.generate({ workspaceId: workspace.id, provider: "modelscope", ...input });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "ModelScope 生成封面失败。" });
+    }
+  });
+
+  server.get("/api/model-connections", async () => ({ items: modelConnections.list() }));
+
+  server.put("/api/model-connections/:provider", async (request) => {
+    const params = z.object({ provider: modelProviderSchema }).parse(request.params);
+    const input = modelConnectionInput.parse(request.body);
+    return modelConnections.save({ provider: params.provider, ...input });
+  });
+
+  server.get("/api/skills", async (_request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    return { items: skills.list() };
+  });
+
+  server.put("/api/skills/:skillId", async (request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    const params = z.object({ skillId: z.string().regex(/^[a-z0-9-]+$/) }).parse(request.params);
+    return skills.save(params.skillId, skillInput.parse(request.body));
+  });
+
+  server.post("/api/skills/article-summary/run", async (request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    const skill = skills.get("article-summary");
+    if (!skill.enabled) return reply.code(409).send({ error: "文章摘要生成技能已停用。" });
+    const input = articleSummaryInput.parse(request.body);
+    const targets = {
+      wechat_official: { maxLength: 120, platformName: "微信公众号" },
+      csdn: { maxLength: 200, platformName: "CSDN" }
+    } as const;
+    const target = targets[input.platform];
+    const generated = await effectiveModelProvider.generateStructured({
+      task: "summary",
+      prompt: `请根据以下原文生成适合${target.platformName}的文章摘要。
+
+硬性要求：
+- 摘要最多 ${target.maxLength} 个字符，中文标点也计入；
+- 只输出一段摘要，不换行，不使用 Markdown；
+- 不得补充原文中没有的事实；
+- 标题：${input.title || "未单独提供"}
+
+原文：
+${input.markdown}`,
+      outputSchema: {
+        type: "object",
+        properties: { summary: { type: "string", maxLength: target.maxLength } },
+        required: ["summary"],
+        additionalProperties: false
+      },
+      parse: (value) => articleSummaryOutput.parse(value)
+    });
+    const summary = Array.from(generated.value.summary.replace(/\s+/g, " ").trim())
+      .slice(0, target.maxLength)
+      .join("");
+    return {
+      summary,
+      maxLength: target.maxLength,
+      platform: input.platform,
+      provider: generated.provider,
+      model: generated.model,
+      usage: generated.usage
+    };
+  });
+
+  server.post("/api/skills/selection-edit/run", async (request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    const input = selectionEditInput.parse(request.body);
+    const skillId = input.action === "humanize" ? "humanize-selection" : "selection-edit";
+    const skill = skills.get(skillId);
+    if (!skill.enabled) return reply.code(409).send({ error: `“${skill.name}”技能已停用。` });
+    const actionName = {
+      rewrite: "改写得更清楚自然",
+      expand: "扩写并补足必要解释",
+      shorten: "缩写并保留核心信息",
+      example: "补充真实、具体且与上下文一致的案例",
+      humanize: "降低套路感和 AI 写作痕迹"
+    }[input.action];
+    const generated = await effectiveModelProvider.generateStructured({
+      task: "selection",
+      skillId,
+      prompt: `请对选区执行“${actionName}”。
+
+文章标题：${input.title || "未提供"}
+
+选区前文：
+${input.beforeText || "无"}
+
+需要处理的选区：
+${input.selectedText}
+
+选区后文：
+${input.afterText || "无"}
+
+只返回可以直接替换选区的文本。`,
+      outputSchema: {
+        type: "object",
+        properties: { replacement: { type: "string" } },
+        required: ["replacement"],
+        additionalProperties: false
+      },
+      parse: (value) => selectionEditOutput.parse(value)
+    });
+    return {
+      replacement: generated.value.replacement,
+      provider: generated.provider,
+      model: generated.model,
+      usage: generated.usage
+    };
+  });
+
+  server.post("/api/skills/cover-prompt-generation/run", async (request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    const skill = skills.get("cover-prompt-generation");
+    if (!skill.enabled) return reply.code(409).send({ error: "封面提示词生成技能已停用。" });
+    const input = coverPromptInput.parse(request.body);
+    const generated = await effectiveModelProvider.generateStructured({
+      task: "cover_prompt",
+      skillId: "cover-prompt-generation",
+      prompt: `请根据文章标题和完整正文生成一段可编辑的 16:9 文章封面生图提示词。
+
+文章标题：${input.title || "未单独提供"}
+
+文章正文：
+${input.markdown}`,
+      outputSchema: {
+        type: "object",
+        properties: { prompt: { type: "string", maxLength: 2000 } },
+        required: ["prompt"],
+        additionalProperties: false
+      },
+      parse: (value) => coverPromptOutput.parse(value)
+    });
+    return {
+      prompt: generated.value.prompt,
+      provider: generated.provider,
+      model: generated.model,
+      usage: generated.usage
+    };
+  });
+
+  server.post("/api/skills/cover-generation/run", async (request, reply) => {
+    if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
+    const skill = skills.get("cover-generation");
+    if (!skill.enabled) return reply.code(409).send({ error: "文章封面生成技能已停用。" });
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = z.object({
+      projectId: z.string().uuid().optional(),
+      relativePath: z.string().trim().min(1).max(1000).optional(),
+      prompt: z.string().max(2000).optional(),
+      provider: z.enum(["modelscope", "gemini"]).optional()
+    }).refine((value) => Boolean(value.projectId) !== Boolean(value.relativePath), "必须指定一篇文章。").parse(request.body);
+    const provider = input.provider ?? skill.provider;
+    if (provider !== "modelscope" && provider !== "gemini") {
+      return reply.code(400).send({ error: "请在技能设置中选择 ModelScope 或 Gemini。" });
+    }
+    try {
+      return await coverGenerator.generate({ workspaceId: workspace.id, ...input, provider });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "封面生成失败。" });
+    }
+  });
+
+  server.post("/api/integrations/wechat/accounts/:accountId/test", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    return wechat.testConnection(params.accountId);
+  });
+
+  server.get("/api/integrations/wechat/jobs", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: wechat.list(workspace.id) };
+  });
+
+  server.delete("/api/integrations/wechat/jobs/:jobId", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    wechat.deleteJob(params.jobId);
+    return reply.code(204).send();
+  });
+
+  server.get("/api/integrations/wechat/accounts/:accountId/materials/images", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const query = z.object({ offset: z.coerce.number().int().min(0).default(0), count: z.coerce.number().int().min(1).max(20).default(20) }).parse(request.query);
+    return wechat.listImageMaterials(params.accountId, query.offset, query.count);
+  });
+
+  server.get("/api/integrations/wechat/accounts/:accountId/materials/images/:mediaId", async (request, reply) => {
+    const params = z.object({
+      accountId: z.string().uuid(),
+      mediaId: z.string().trim().min(1).max(256)
+    }).parse(request.params);
+    const material = await wechat.getImageMaterial(params.accountId, params.mediaId);
+    return reply.header("cache-control", "private, max-age=300").type(material.mimeType).send(material.bytes);
+  });
+
+  server.post("/api/integrations/wechat/drafts", async (request, reply) => {
+    return reply.code(201).send(await wechat.createProjectDraft(wechatDraftInput.parse(request.body)));
+  });
+
+  server.post("/api/integrations/wechat/source-drafts", async (request, reply) => {
+    return reply.code(201).send(await wechat.createSourceDraft(wechatSourceDraftInput.parse(request.body)));
+  });
+
+  server.post("/api/integrations/wechat/jobs/:jobId/submit", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    return wechat.submit(params.jobId, wechatSubmitInput.parse(request.body).mode);
+  });
+
+  server.patch("/api/integrations/wechat/jobs/:jobId/status", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const input = z.object({
+      status: z.enum(["published", "failed", "cancelled"]),
+      reason: z.string().trim().max(500)
+    }).parse(request.body);
+    return wechat.correctStatus(params.jobId, input.status, input.reason);
+  });
+
+  server.get("/wechat/callback/:accountId", async (request, reply) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const query = z.object({
+      signature: z.string().min(1),
+      timestamp: z.string().min(1),
+      nonce: z.string().min(1),
+      echostr: z.string().min(1)
+    }).parse(request.query);
+    if (!wechatCallbacks.verify(params.accountId, query.signature, query.timestamp, query.nonce)) {
+      return reply.code(403).send("invalid signature");
+    }
+    return reply.type("text/plain; charset=utf-8").send(query.echostr);
+  });
+
+  server.post("/wechat/callback/:accountId", async (request, reply) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const query = z.object({
+      signature: z.string().min(1),
+      timestamp: z.string().min(1),
+      nonce: z.string().min(1)
+    }).parse(request.query);
+    wechatCallbacks.accept(params.accountId, query.signature, query.timestamp, query.nonce, String(request.body ?? ""));
+    return reply.type("text/plain; charset=utf-8").send("success");
+  });
+  server.all("/wechat/callback", async (_request, reply) => {
+    return reply.code(503).send({ error: "请使用带账号 ID 的微信回调地址。" });
+  });
+
+  return server;
+}
+
+export async function createServer(
+  startedAt: string,
+  database: AppDatabase,
+  vault: CredentialVault,
+  modelProvider?: ModelProvider,
+  assetStore?: LocalAssetStore,
+  logFilePath?: string,
+  skillsDirectory?: string
+) {
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory });
+  await server.listen({ host: "127.0.0.1", port: 4317 });
+  return server;
+}
+
+async function streamMarkdownGeneration(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  generate: (onDelta: (markdown: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown }>,
+  projectId: string,
+  sourceRelativePath?: string | null
+) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  request.raw.once("aborted", abort);
+  reply.hijack();
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  const send = (event: string, data: unknown) => {
+    if (!reply.raw.writableEnded) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  send("status", { message: "正在连接 AI，生成过程中可随时停止。" });
+  try {
+    const generated = await generate((markdown) => send("delta", { markdown }), controller.signal);
+    send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage });
+  } catch (error) {
+    send("error", { error: error instanceof Error ? error.message : "AI 生成失败。", cancelled: controller.signal.aborted });
+  } finally {
+    request.raw.off("aborted", abort);
+    reply.raw.end();
+  }
+}
+
+function redactLogValue(value: string): string {
+  return value
+    .replace(/([?&]access_token=)[^&\s]+/gi, "$1***")
+    .replace(/((?:api[_-]?key|appsecret|authorization|token)[\"'=:\s]+)[^,\s\"&]+/gi, "$1***");
+}

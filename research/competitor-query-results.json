@@ -1,0 +1,207 @@
+{
+  "coverage_sql": "SELECT '研究/热点' AS capability,\n       SUM(CASE WHEN research_hotspots = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN research_hotspots = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN research_hotspots = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN research_hotspots >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN research_hotspots >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT 'AI创作' AS capability,\n       SUM(CASE WHEN ai_creation = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN ai_creation = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN ai_creation = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN ai_creation >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN ai_creation >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '品牌/人设上下文' AS capability,\n       SUM(CASE WHEN brand_context = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN brand_context = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN brand_context = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN brand_context >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN brand_context >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '平台适配' AS capability,\n       SUM(CASE WHEN platform_adaptation = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN platform_adaptation = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN platform_adaptation = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN platform_adaptation >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN platform_adaptation >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '多账号发布' AS capability,\n       SUM(CASE WHEN multi_account_publishing = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN multi_account_publishing = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN multi_account_publishing = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN multi_account_publishing >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN multi_account_publishing >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '审批/治理' AS capability,\n       SUM(CASE WHEN approval_governance = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN approval_governance = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN approval_governance = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN approval_governance >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN approval_governance >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '质量/合规' AS capability,\n       SUM(CASE WHEN quality_compliance = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN quality_compliance = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN quality_compliance = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN quality_compliance >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN quality_compliance >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '分析/收件箱' AS capability,\n       SUM(CASE WHEN analytics_inbox = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN analytics_inbox = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN analytics_inbox = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN analytics_inbox >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN analytics_inbox >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT 'Agent/工作流' AS capability,\n       SUM(CASE WHEN agent_workflows = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN agent_workflows = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN agent_workflows = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN agent_workflows >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN agent_workflows >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores\nUNION ALL\nSELECT '本地/自托管' AS capability,\n       SUM(CASE WHEN local_self_host = 2 THEN 1 ELSE 0 END) AS core_count,\n       SUM(CASE WHEN local_self_host = 1 THEN 1 ELSE 0 END) AS partial_count,\n       SUM(CASE WHEN local_self_host = 0 THEN 1 ELSE 0 END) AS not_evidenced_count,\n       SUM(CASE WHEN local_self_host >= 1 THEN 1 ELSE 0 END) AS covered_count,\n       AVG(CASE WHEN local_self_host >= 1 THEN 1.0 ELSE 0.0 END) AS coverage_rate\nFROM competitor_scores",
+  "coverage": [
+    {
+      "capability": "研究/热点",
+      "core_count": 2,
+      "partial_count": 4,
+      "not_evidenced_count": 7,
+      "covered_count": 6,
+      "coverage_rate": 0.46153846153846156
+    },
+    {
+      "capability": "AI创作",
+      "core_count": 3,
+      "partial_count": 10,
+      "not_evidenced_count": 0,
+      "covered_count": 13,
+      "coverage_rate": 1.0
+    },
+    {
+      "capability": "品牌/人设上下文",
+      "core_count": 2,
+      "partial_count": 3,
+      "not_evidenced_count": 8,
+      "covered_count": 5,
+      "coverage_rate": 0.38461538461538464
+    },
+    {
+      "capability": "平台适配",
+      "core_count": 5,
+      "partial_count": 6,
+      "not_evidenced_count": 2,
+      "covered_count": 11,
+      "coverage_rate": 0.8461538461538461
+    },
+    {
+      "capability": "多账号发布",
+      "core_count": 6,
+      "partial_count": 3,
+      "not_evidenced_count": 4,
+      "covered_count": 9,
+      "coverage_rate": 0.6923076923076923
+    },
+    {
+      "capability": "审批/治理",
+      "core_count": 4,
+      "partial_count": 6,
+      "not_evidenced_count": 3,
+      "covered_count": 10,
+      "coverage_rate": 0.7692307692307693
+    },
+    {
+      "capability": "质量/合规",
+      "core_count": 1,
+      "partial_count": 4,
+      "not_evidenced_count": 8,
+      "covered_count": 5,
+      "coverage_rate": 0.38461538461538464
+    },
+    {
+      "capability": "分析/收件箱",
+      "core_count": 7,
+      "partial_count": 3,
+      "not_evidenced_count": 3,
+      "covered_count": 10,
+      "coverage_rate": 0.7692307692307693
+    },
+    {
+      "capability": "Agent/工作流",
+      "core_count": 4,
+      "partial_count": 3,
+      "not_evidenced_count": 6,
+      "covered_count": 7,
+      "coverage_rate": 0.5384615384615384
+    },
+    {
+      "capability": "本地/自托管",
+      "core_count": 2,
+      "partial_count": 2,
+      "not_evidenced_count": 9,
+      "covered_count": 4,
+      "coverage_rate": 0.3076923076923077
+    }
+  ],
+  "bundle_sql": "SELECT '创作 + 发布' AS bundle, COUNT(*) AS core_match_count,\n       COALESCE(GROUP_CONCAT(product, '、'), '无') AS products\nFROM competitor_scores WHERE ai_creation = 2 AND multi_account_publishing = 2\nUNION ALL\nSELECT '发布 + 审批 + 分析', COUNT(*), COALESCE(GROUP_CONCAT(product, '、'), '无')\nFROM competitor_scores WHERE multi_account_publishing = 2 AND approval_governance = 2 AND analytics_inbox = 2\nUNION ALL\nSELECT '品牌上下文 + Agent工作流', COUNT(*), COALESCE(GROUP_CONCAT(product, '、'), '无')\nFROM competitor_scores WHERE brand_context = 2 AND agent_workflows = 2\nUNION ALL\nSELECT '研究 + 质量 + 发布', COUNT(*), COALESCE(GROUP_CONCAT(product, '、'), '无')\nFROM competitor_scores WHERE research_hotspots = 2 AND quality_compliance = 2 AND multi_account_publishing = 2\nUNION ALL\nSELECT '审批 + Agent + 本地', COUNT(*), COALESCE(GROUP_CONCAT(product, '、'), '无')\nFROM competitor_scores WHERE approval_governance = 2 AND agent_workflows = 2 AND local_self_host = 2",
+  "bundles": [
+    {
+      "bundle": "创作 + 发布",
+      "core_match_count": 0,
+      "products": "无"
+    },
+    {
+      "bundle": "发布 + 审批 + 分析",
+      "core_match_count": 2,
+      "products": "Hootsuite、Sprout Social"
+    },
+    {
+      "bundle": "品牌上下文 + Agent工作流",
+      "core_match_count": 2,
+      "products": "Jasper、Copy.ai"
+    },
+    {
+      "bundle": "研究 + 质量 + 发布",
+      "core_match_count": 0,
+      "products": "无"
+    },
+    {
+      "bundle": "审批 + Agent + 本地",
+      "core_match_count": 2,
+      "products": "Dify、n8n"
+    }
+  ],
+  "sample_sql": "SELECT product, region, archetype,\n       research_hotspots + ai_creation + brand_context + platform_adaptation +\n       multi_account_publishing + approval_governance + quality_compliance +\n       analytics_inbox + agent_workflows + local_self_host AS total_score,\n       source_urls AS source_url\nFROM competitor_scores\nORDER BY total_score DESC, product",
+  "competitors": [
+    {
+      "product": "Sprout Social",
+      "region": "海外",
+      "archetype": "企业社媒平台",
+      "total_score": 14,
+      "source_url": "https://sproutsocial.com/features/"
+    },
+    {
+      "product": "Hootsuite",
+      "region": "海外",
+      "archetype": "企业社媒平台",
+      "total_score": 13,
+      "source_url": "https://www.hootsuite.com/whats-new/document-external-approvals"
+    },
+    {
+      "product": "Jasper",
+      "region": "海外",
+      "archetype": "AI营销内容平台",
+      "total_score": 10,
+      "source_url": "https://www.jasper.ai/platform"
+    },
+    {
+      "product": "n8n",
+      "region": "海外",
+      "archetype": "通用自动化平台",
+      "total_score": 10,
+      "source_url": "https://n8n.io/ai-agents/"
+    },
+    {
+      "product": "蚁小二",
+      "region": "中国",
+      "archetype": "矩阵运营平台",
+      "total_score": 10,
+      "source_url": "https://www.yixiaoer.cn/index.html"
+    },
+    {
+      "product": "Buffer",
+      "region": "海外",
+      "archetype": "社媒一体化平台",
+      "total_score": 9,
+      "source_url": "https://buffer.com/"
+    },
+    {
+      "product": "Metricool",
+      "region": "海外",
+      "archetype": "社媒一体化平台",
+      "total_score": 9,
+      "source_url": "https://metricool.com/"
+    },
+    {
+      "product": "新榜小豆芽",
+      "region": "中国",
+      "archetype": "矩阵运营平台",
+      "total_score": 9,
+      "source_url": "https://xdy.newrank.cn/"
+    },
+    {
+      "product": "Dify",
+      "region": "中国/全球",
+      "archetype": "通用Agent平台",
+      "total_score": 8,
+      "source_url": "https://github.com/langgenius/dify"
+    },
+    {
+      "product": "Copy.ai",
+      "region": "海外",
+      "archetype": "AI营销内容平台",
+      "total_score": 7,
+      "source_url": "https://www.copy.ai/agents"
+    },
+    {
+      "product": "壹伴助手",
+      "region": "中国",
+      "archetype": "公众号运营插件",
+      "total_score": 6,
+      "source_url": "https://www.yibancn.com/"
+    },
+    {
+      "product": "易撰",
+      "region": "中国",
+      "archetype": "选题与内容情报",
+      "total_score": 6,
+      "source_url": "https://zmt.yizhuan5.com/"
+    },
+    {
+      "product": "135编辑器",
+      "region": "中国",
+      "archetype": "公众号创作工具",
+      "total_score": 5,
+      "source_url": "https://www.135editor.com/"
+    }
+  ]
+}
