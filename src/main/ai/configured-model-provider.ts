@@ -29,9 +29,10 @@ export class ConfiguredModelProvider implements ModelProvider {
     const skill = this.skills.get(skillId);
     if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
     const provider = skill.provider ?? "openai_codex";
+    const instructions = this.skills.instructionsFor(skillId, request.prompt);
     const enrichedRequest = {
       ...request,
-      prompt: `请遵循以下 ContentFerry 技能说明：\n\n${skill.markdown}\n\n本次任务：\n${request.prompt}`
+      prompt: `请遵循以下 ContentFerry 技能说明：\n\n${instructions}\n\n本次任务：\n${request.prompt}`
     };
     if (provider === "openai_codex") return this.codexProvider.generateStructured(enrichedRequest);
     if (provider === "openai" || provider === "openrouter") return this.generateOpenAiCompatible(provider, enrichedRequest);
@@ -43,7 +44,8 @@ export class ConfiguredModelProvider implements ModelProvider {
     const skillId = request.skillId ?? "wechat-writing";
     const skill = this.skills.get(skillId);
     if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
-    const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${skill.markdown}\n\n本次任务：\n${request.prompt}` };
+    const instructions = this.skills.instructionsFor(skillId, request.prompt);
+    const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${instructions}\n\n本次任务：\n${request.prompt}` };
     if (skill.provider === "openai_codex" || !skill.provider) {
       if (!this.codexProvider.generateMarkdownStream) throw new ModelProviderUnavailableError("当前 Codex 连接不支持流式生成。");
       return this.codexProvider.generateMarkdownStream(enriched);

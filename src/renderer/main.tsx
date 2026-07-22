@@ -2,6 +2,7 @@ import { FormEvent, lazy, StrictMode, Suspense, type ReactNode, useEffect, useRe
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import wenduLogo from "./assets/wendu-icon.png";
+import { locateMarkdownSelection } from "./markdown-selection";
 
 const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
@@ -1340,6 +1341,7 @@ function ArticleWorkspace({
   const [settingsCoverPromptBusy, setSettingsCoverPromptBusy] = useState(false);
   const [settingsSummaryBusy, setSettingsSummaryBusy] = useState(false);
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>();
+  const [selectionDocumentMarkdown, setSelectionDocumentMarkdown] = useState<string>();
   const [selectionAiAction, setSelectionAiAction] = useState<"rewrite" | "expand" | "shorten" | "example" | "humanize">("humanize");
   const [selectionAiBusy, setSelectionAiBusy] = useState(false);
   const [selectionAiResult, setSelectionAiResult] = useState("");
@@ -1526,19 +1528,22 @@ function ArticleWorkspace({
       setSettingsSummaryBusy(false);
     }
   };
-  const captureVisualSelection = (selectedText: string) => {
+  const captureVisualSelection = (selection?: { selectedMarkdown: string; documentMarkdown: string }) => {
     setSelectionAiResult("");
-    if (!selectedText) {
+    if (!selection) {
       setSelectionRange(undefined);
+      setSelectionDocumentMarkdown(undefined);
       return;
     }
-    const start = markdown.indexOf(selectedText);
-    if (start < 0 || markdown.indexOf(selectedText, start + selectedText.length) >= 0) {
+    const range = locateMarkdownSelection(selection.documentMarkdown, selection.selectedMarkdown);
+    if (!range) {
       setSelectionRange(undefined);
-      setWorkspaceError("这段文字在正文中出现了多次，暂时无法准确定位。请切换到 Markdown 原文模式后重新选择。");
+      setSelectionDocumentMarkdown(undefined);
+      setWorkspaceError("暂时无法准确定位这段选区；可能是相同内容出现多次。请缩小选区，或切换到 Markdown 原文模式后重试。");
       return;
     }
-    setSelectionRange({ start, end: start + selectedText.length });
+    setSelectionRange(range);
+    setSelectionDocumentMarkdown(selection.documentMarkdown);
     setSelectionAiAction("humanize");
     setRightPanel("assistant");
     setWorkspaceError("");
@@ -1550,15 +1555,16 @@ function ArticleWorkspace({
     }
     setSelectionAiBusy(true);
     try {
-      const selectedText = markdown.slice(selectionRange.start, selectionRange.end);
+      const selectionSource = selectionDocumentMarkdown ?? markdown;
+      const selectedText = selectionSource.slice(selectionRange.start, selectionRange.end);
       const generated = await request<{ replacement: string }>("/skills/selection-edit/run", {
         method: "POST",
         body: JSON.stringify({
           action: selectionAiAction,
           title,
           selectedText,
-          beforeText: markdown.slice(Math.max(0, selectionRange.start - 3000), selectionRange.start),
-          afterText: markdown.slice(selectionRange.end, selectionRange.end + 3000)
+          beforeText: selectionSource.slice(Math.max(0, selectionRange.start - 3000), selectionRange.start),
+          afterText: selectionSource.slice(selectionRange.end, selectionRange.end + 3000)
         })
       });
       setSelectionAiResult(generated.replacement);
@@ -1571,8 +1577,10 @@ function ArticleWorkspace({
   };
   const applySelectionAiResult = () => {
     if (!selectionRange || !selectionAiResult) return;
-    onChange(`${markdown.slice(0, selectionRange.start)}${selectionAiResult}${markdown.slice(selectionRange.end)}`);
+    const selectionSource = selectionDocumentMarkdown ?? markdown;
+    onChange(`${selectionSource.slice(0, selectionRange.start)}${selectionAiResult}${selectionSource.slice(selectionRange.end)}`);
     setSelectionRange(undefined);
+    setSelectionDocumentMarkdown(undefined);
     setSelectionAiResult("");
   };
   const runSelectionDetection = async () => {
@@ -1586,7 +1594,8 @@ function ArticleWorkspace({
     try {
       if (!window.contentFerry) throw new Error("当前桌面环境未启用 AIGC 检测能力。");
       const desktop = window.contentFerry;
-      const selectedText = markdown.slice(selectionRange.start, selectionRange.end);
+      const selectionSource = selectionDocumentMarkdown ?? markdown;
+      const selectedText = selectionSource.slice(selectionRange.start, selectionRange.end);
       if (selectionDetectionTool === "zhuque") {
         const result = await desktop.runZhuqueDetection(selectedText);
         if (result.status !== "completed" || !result.report) throw new Error(result.message || "腾讯朱雀未返回可用检测结果。");
@@ -1652,7 +1661,7 @@ function ArticleWorkspace({
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
         {editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
           <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
-        </Suspense> : <textarea className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} />}
+        </Suspense> : <textarea className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} />}
       </section>
       <aside className="editor-right-panel">
         <div className="panel-tabs">
@@ -1660,7 +1669,7 @@ function ArticleWorkspace({
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
-        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><h3>AI 处理选中文字</h3>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{markdown.slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>去 AI 味怎么用？</strong><ol><li>在中间正文里拖动选中一段文字</li><li>右侧会自动识别并默认选择“去 AI 味”</li><li>生成建议，确认后再替换原文</li></ol></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionAiResult("")}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“选中文字去 AI 味”技能，可单独修改和切换模型。</small></div>}
+        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><h3>AI 处理选中文字</h3>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>去 AI 味怎么用？</strong><ol><li>在中间正文里拖动选中一段文字</li><li>右侧会自动识别并默认选择“去 AI 味”</li><li>生成建议，确认后再替换原文</li></ol></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionAiResult("")}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!selectionRange || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : "检测选中内容"}</button></div>{!selectionRange && <small>先在正文中选中一段内容，检测不会自动发送整篇文章。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionDetectionResult && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
         {rightPanel === "settings" && <div className="side-panel-content">

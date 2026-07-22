@@ -1,7 +1,13 @@
 import { useEffect, useRef } from "react";
 import { Crepe } from "@milkdown/crepe";
+import { editorViewCtx, serializerCtx } from "@milkdown/kit/core";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic.css";
+
+export type VisualMarkdownSelection = {
+  selectedMarkdown: string;
+  documentMarkdown: string;
+};
 
 export function VisualMarkdownEditor({
   value,
@@ -17,10 +23,11 @@ export function VisualMarkdownEditor({
   assetContextId: string;
   sourceArticlePath?: string;
   onError?: (message: string) => void;
-  onTextSelection?: (text: string) => void;
+  onTextSelection?: (selection?: VisualMarkdownSelection) => void;
   minHeight?: number;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const crepeRef = useRef<Crepe | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -100,10 +107,13 @@ export function VisualMarkdownEditor({
         if (!disposed && userHasEdited && markdown !== previousMarkdown) onChangeRef.current(markdown);
       });
     });
-    void crepe.create();
+    void crepe.create().then(() => {
+      if (!disposed) crepeRef.current = crepe;
+    });
 
     return () => {
       disposed = true;
+      if (crepeRef.current === crepe) crepeRef.current = null;
       root.removeEventListener("beforeinput", markUserEdit);
       root.removeEventListener("paste", markUserEdit);
       root.removeEventListener("drop", markUserEdit);
@@ -120,21 +130,54 @@ export function VisualMarkdownEditor({
       style={{ minHeight }}
       ref={rootRef}
       aria-label="可视化文章编辑器"
-      onMouseUp={() => reportSelection(rootRef.current, onTextSelection)}
-      onKeyUp={() => reportSelection(rootRef.current, onTextSelection)}
+      onMouseUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
+      onKeyUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
     />
   );
 }
 
-function reportSelection(root: HTMLDivElement | null, callback?: (text: string) => void): void {
+function reportSelection(root: HTMLDivElement | null, crepe: Crepe | null, callback?: (selection?: VisualMarkdownSelection) => void): void {
   if (!root || !callback) return;
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode) {
-    callback("");
+    callback(undefined);
     return;
   }
   if (!root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return;
-  callback(selection.toString().trim());
+  const markdownSelection = readMarkdownSelection(crepe);
+  if (markdownSelection) {
+    callback(markdownSelection);
+    return;
+  }
+  const selectedMarkdown = selection.toString().trim();
+  if (crepe && selectedMarkdown) callback({ selectedMarkdown, documentMarkdown: crepe.getMarkdown() });
+}
+
+/**
+ * Browser Selection only exposes rendered text, so headings lose their `##`
+ * markers and can no longer be located in the Markdown source. Serialize the
+ * ProseMirror selection instead, preserving headings, lists, links and marks.
+ */
+function readMarkdownSelection(crepe: Crepe | null): VisualMarkdownSelection | undefined {
+  if (!crepe) return undefined;
+  return crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const serializer = ctx.get(serializerCtx);
+    const { state } = view;
+    if (state.selection.empty) return undefined;
+
+    const { from, to } = state.selection;
+    const slice = state.doc.slice(from, to);
+    const { schema } = state.doc.type;
+    let wrapper = schema.topNodeType.createAndFill(null, slice.content);
+    if (!wrapper) {
+      const paragraph = schema.nodes.paragraph?.createAndFill(null, slice.content);
+      if (paragraph) wrapper = schema.topNodeType.createAndFill(null, paragraph);
+    }
+    const selectedMarkdown = (wrapper ? serializer(wrapper) : state.doc.textBetween(from, to)).trim();
+    if (!selectedMarkdown) return undefined;
+    return { selectedMarkdown, documentMarkdown: serializer(state.doc) };
+  });
 }
 
 function normalizeImageMime(file: File): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {

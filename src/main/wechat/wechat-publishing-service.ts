@@ -414,16 +414,11 @@ function parseContentFerryAsset(source: string): { contextId: string; fileName: 
 export function markdownToWechatHtml(markdown: string, uploadedImages: Map<string, string> = new Map()): string {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const html: string[] = [];
-  let listOpen: "ul" | "ol" | null = null;
   let codeLines: string[] | null = null;
-  const closeList = () => {
-    if (listOpen) { html.push(`</${listOpen}>`); listOpen = null; }
-  };
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index];
     const line = rawLine.trim();
     if (/^```/.test(line)) {
-      closeList();
       if (codeLines) {
         html.push(`<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
         codeLines = null;
@@ -433,9 +428,8 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
       continue;
     }
     if (codeLines) { codeLines.push(rawLine); continue; }
-    if (!line) { closeList(); continue; }
+    if (!line) continue;
     if (isTableRow(line) && isTableDelimiter(lines[index + 1]?.trim() ?? "")) {
-      closeList();
       const header = splitTableRow(line);
       index += 2;
       const rows: string[][] = [];
@@ -449,37 +443,50 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
     }
     const heading = /^(#{1,4})\s+(.+)$/.exec(line);
     if (heading) {
-      closeList();
-      const level = Math.min(4, heading[1].length + 1);
-      html.push(`<h${level} style="margin:1.4em 0 .6em;font-weight:700;line-height:1.4;">${inlineMarkdown(heading[2], uploadedImages)}</h${level}>`);
+      const sourceLevel = heading[1].length;
+      const fontSize = [22, 20, 18, 17][sourceLevel - 1];
+      const topMargin = sourceLevel === 1 ? "1.6em" : "1.4em";
+      // WeChat applies its own typography to native h2/h3/h4 elements and
+      // can make them smaller than the 17px article body. A neutral section
+      // with explicit inline styles keeps the hierarchy stable in drafts and
+      // published articles.
+      html.push(`<section style="margin:${topMargin} 0 .65em;font-size:${fontSize}px;font-weight:700;line-height:1.45;color:#1f2329;">${inlineMarkdown(heading[2], uploadedImages)}</section>`);
+      continue;
+    }
+    // Some Markdown editors leave bare list markers behind after deleting
+    // an item's text (for example `- ` or `* `). Sending those markers as
+    // ordinary paragraphs lets the WeChat editor auto-convert them into
+    // empty bullet items, which produces the large blank gaps seen in draft
+    // previews. They carry no content, so omit them from the channel HTML.
+    if (/^[-*+]\s*$/.test(line) || /^\d+[.)]\s*$/.test(line)) {
       continue;
     }
     const list = /^[-*+]\s+(.+)$/.exec(line);
     const orderedList = /^(\d+)[.)](?:\s+(.*))?$/.exec(line);
     if (list) {
-      if (listOpen !== "ul") { closeList(); html.push('<ul style="padding-left:1.4em;margin:.8em 0;">'); listOpen = "ul"; }
-      html.push(`<li style="margin:.35em 0;line-height:1.8;">${inlineMarkdown(list[1], uploadedImages)}</li>`);
+      // Avoid native <ul>/<li>: the WeChat draft editor may normalize
+      // adjacent or loose Markdown lists into extra empty list items.
+      // An explicit bullet preserves the visual list without giving WeChat
+      // any structural list nodes to rewrite.
+      html.push(`<p style="display:flex;margin:.55em 0;font-size:17px;line-height:1.8;"><span style="flex:0 0 1.4em;font-weight:600;">•</span><span style="min-width:0;">${inlineMarkdown(list[1], uploadedImages)}</span></p>`);
       continue;
     }
     if (orderedList) {
       // WeChat sanitizes <ol>/<li> inconsistently when a list item contains
       // indented paragraphs or images. Render the source number explicitly so
       // preview, draft editor and the published article keep the same sequence.
-      closeList();
-      html.push(`<p style="display:flex;margin:.55em 0;line-height:1.8;"><span style="flex:0 0 2em;font-weight:600;">${orderedList[1]}.</span><span style="min-width:0;">${inlineMarkdown(orderedList[2] ?? "", uploadedImages)}</span></p>`);
+      html.push(`<p style="display:flex;margin:.55em 0;font-size:17px;line-height:1.8;"><span style="flex:0 0 2em;font-weight:600;">${orderedList[1]}.</span><span style="min-width:0;">${inlineMarkdown(orderedList[2] ?? "", uploadedImages)}</span></p>`);
       continue;
     }
-    closeList();
     if (line.startsWith(">")) {
-      html.push(`<blockquote style="margin:1em 0;padding:.6em 1em;border-left:3px solid #07c160;color:#57606a;background:#f6f8fa;">${inlineMarkdown(line.replace(/^>\s?/, ""), uploadedImages)}</blockquote>`);
+      html.push(`<blockquote style="margin:1em 0;padding:.6em 1em;border-left:3px solid #07c160;font-size:17px;line-height:1.8;color:#57606a;background:#f6f8fa;">${inlineMarkdown(line.replace(/^>\s?/, ""), uploadedImages)}</blockquote>`);
     } else if (/^<[\w!/]/.test(line)) {
       html.push(rawLine);
     } else {
-      html.push(`<p style="margin:.8em 0;line-height:1.9;">${inlineMarkdown(line, uploadedImages)}</p>`);
+      html.push(`<p style="margin:.8em 0;font-size:17px;line-height:1.9;">${inlineMarkdown(line, uploadedImages)}</p>`);
     }
   }
   if (codeLines) html.push(`<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-  closeList();
   return html.join("\n");
 }
 
