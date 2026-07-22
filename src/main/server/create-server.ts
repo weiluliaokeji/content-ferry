@@ -24,6 +24,20 @@ import { CoverGenerationService } from "../content/modelscope-cover-service";
 import { ModelConnectionRepository, modelProviderIds } from "../ai/model-connection-repository";
 import { SkillRegistry } from "../skills/skill-registry";
 import { ConfiguredModelProvider } from "../ai/configured-model-provider";
+import {
+  detectCodexBinary,
+  loadAppSettings,
+  markCodexBinaryMissing,
+  markCodexLoginRequired,
+  markCodexReady,
+  markFirstRunCompleted,
+  resolveDataDir,
+  saveAppSettings
+} from "../config/first-run";
+import type {
+  AppSettings as AppSettingsContract,
+  CodexStatus as CodexStatusContract
+} from "../../shared/contracts";
 
 const accountInput = z.object({
   platform: z.enum(["wechat_official", "csdn"]),
@@ -190,6 +204,69 @@ export function buildServer(
     database: "ready",
     startedAt
   }));
+
+  const appSettingsInput = z
+    .object({
+      dataDir: z.string().trim().min(1).max(1000).optional(),
+      aiInitStatus: z
+        .enum(["not_initialized", "ready", "login_required", "binary_missing"])
+        .optional(),
+      codexBinaryPath: z.string().trim().max(2000).nullable().optional(),
+      firstRunCompleted: z.boolean().optional()
+    })
+    .strict();
+
+  server.get<{ Reply: AppSettingsContract }>("/api/app/settings", async () => loadAppSettings());
+
+  server.put<{ Body: unknown; Reply: AppSettingsContract }>(
+    "/api/app/settings",
+    async (request, reply) => {
+      const patch = appSettingsInput.parse(request.body);
+      if (patch.dataDir !== undefined) {
+        const resolved = resolveDataDir(patch.dataDir);
+        if (!resolved.ok) {
+          return reply.code(400).send({ error: resolved.reason ?? "数据目录不可用。" } as never);
+        }
+        patch.dataDir = resolved.path;
+      }
+      return saveAppSettings(patch);
+    }
+  );
+
+  server.post<{ Reply: AppSettingsContract }>("/api/app/settings/complete-first-run", async (request, reply) => {
+    const body = z
+      .object({ dataDir: z.string().trim().min(1).max(1000) })
+      .safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "缺少 dataDir 字段。" } as never);
+    }
+    return markFirstRunCompleted(body.data.dataDir);
+  });
+
+  server.get<{ Reply: CodexStatusContract }>("/api/app/codex-status", async () => detectCodexBinary());
+
+  server.post<{ Body: unknown; Reply: CodexStatusContract }>(
+    "/api/app/codex-status/refresh",
+    async (_request, reply) => {
+      const status = detectCodexBinary();
+      if (status.ok && status.binaryPath) {
+        markCodexReady(status.binaryPath);
+      } else {
+        markCodexBinaryMissing();
+      }
+      return status;
+    }
+  );
+
+  server.post<{ Reply: { ok: boolean; message?: string } }>("/api/app/codex-login", async (_request, reply) => {
+    const status = detectCodexBinary();
+    if (!status.ok || !status.binaryPath) {
+      markCodexBinaryMissing();
+      return reply.code(404).send({ ok: false, message: status.reason ?? "codex 二进制缺失" });
+    }
+    markCodexLoginRequired();
+    return { ok: true, message: "已记录登录请求，请在浏览器中完成 ChatGPT 登录。" };
+  });
 
   server.get("/api/runtime-logs", async (request) => {
     const query = z.object({

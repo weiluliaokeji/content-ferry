@@ -27,3 +27,32 @@ export interface WorkspaceResponse {
   displayName: string;
   timezone: string;
 }
+
+export type CodexAiInitStatus =
+  | "not_initialized"
+  | "ready"
+  | "login_required"
+  | "binary_missing";
+
+export interface AppSettings {
+  schemaVersion: 1;
+  dataDir: string;
+  firstRunCompleted: boolean;
+  aiInitStatus: CodexAiInitStatus;
+  codexBinaryPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CodexStatus {
+  ok: boolean;
+  binaryPath: string | null;
+  authenticated: boolean;
+  authMethod?: string;
+  reason?: string;
+}
+
+export interface CodexLoginResult {
+  ok: boolean;
+  message?: string;
+}

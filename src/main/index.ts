@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { execFile } from "node:child_process";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, type OpenDialogOptions } from "electron";
 import { openDatabase } from "./db/database";
 import { getDataDirectory } from "./config/paths";
@@ -8,11 +9,65 @@ import { ElectronCredentialVault } from "./security/credential-vault";
 import { OpenAICodexProvider } from "./ai/openai-codex-provider";
 import { LocalAssetStore } from "./content/local-asset-store";
 import { dailyLogFilePath } from "./logging/daily-log-stream";
+import {
+  detectCodexBinary,
+  inspectCodexStatus,
+  loadAppSettings,
+  markCodexBinaryMissing,
+  markCodexLoginRequired,
+  markCodexReady,
+  markFirstRunCompleted,
+  resolveDataDir,
+  saveAppSettings
+} from "./config/first-run";
+import type { AppSettings as AppSettingsContract } from "../shared/contracts";
 
 let mainWindow: BrowserWindow | undefined;
 let zhuqueWindow: BrowserWindow | undefined;
 let contentAnyWindow: BrowserWindow | undefined;
 let wechatBackendWindow: BrowserWindow | undefined;
+let runtimeBootstrapPromise: Promise<void> | undefined;
+
+function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
+  const escapedBinary = binaryPath.replace(/'/g, "''");
+  const loginScript = [
+    "$Host.UI.RawUI.WindowTitle = '文渡 - OpenAI Codex 登录'",
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    `$codexBinary = '${escapedBinary}'`,
+    "Write-Host '文渡正在启动 OpenAI Codex OAuth 设备授权。' -ForegroundColor Cyan",
+    "Write-Host '请按照下方提示打开网页并输入设备码；授权完成后回到文渡点击“重新检测”。'",
+    "Write-Host ''",
+    "& $codexBinary login --device-auth",
+    "Write-Host ''",
+    "if ($LASTEXITCODE -eq 0) { Write-Host 'OAuth 授权完成，可以返回文渡。' -ForegroundColor Green } else { Write-Host 'OAuth 授权未完成，请检查上方错误。' -ForegroundColor Red }",
+    "Read-Host '按 Enter 关闭此窗口'"
+  ].join("\r\n");
+  const encodedLoginScript = Buffer.from(loginScript, "utf16le").toString("base64");
+  const launcherScript = [
+    `$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-EncodedCommand', '${encodedLoginScript}') -PassThru`,
+    "$process.Id"
+  ].join("\r\n");
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", launcherScript],
+      { windowsHide: true, timeout: 15_000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`无法创建 Codex OAuth 授权窗口：${stderr.trim() || error.message}`));
+          return;
+        }
+        const processId = Number.parseInt(stdout.trim(), 10);
+        if (!Number.isFinite(processId) || processId <= 0) {
+          reject(new Error("Windows 未返回 OAuth 授权窗口的进程 ID。"));
+          return;
+        }
+        resolve(processId);
+      }
+    );
+  });
+}
 
 type ZhuqueSegmentKind = "human" | "uncertain" | "ai";
 type ZhuqueReport = {
@@ -64,9 +119,106 @@ function createWenduWindowIcon() {
   return nativeImage.createFromPath(path.join(app.getAppPath(), "assets", iconName));
 }
 
+async function registerAppSettingsIpcHandlers(): Promise<void> {
+  ipcMain.handle("app:get-settings", async () => loadAppSettings());
+  ipcMain.handle("app:choose-data-dir", async () => {
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, {
+          title: "选择文渡的内容数据目录",
+          properties: ["openDirectory", "createDirectory"]
+        })
+      : await dialog.showOpenDialog({
+          title: "选择文渡的内容数据目录",
+          properties: ["openDirectory", "createDirectory"]
+        });
+    if (result.canceled) return undefined;
+    const chosen = result.filePaths[0];
+    const resolved = resolveDataDir(chosen);
+    if (!resolved.ok) {
+      throw new Error(resolved.reason ?? "无法使用所选目录。");
+    }
+    return resolved.path;
+  });
+  ipcMain.handle("app:set-data-dir", async (_event, target: unknown) => {
+    if (typeof target !== "string" || target.trim().length === 0) {
+      throw new Error("数据目录路径无效。");
+    }
+    const resolved = resolveDataDir(target);
+    if (!resolved.ok) {
+      throw new Error(resolved.reason ?? "无法使用所选目录。");
+    }
+    return saveAppSettings({ dataDir: resolved.path });
+  });
+  ipcMain.handle("app:detect-codex", async () => {
+    const status = await inspectCodexStatus();
+    if (status.ok && status.binaryPath && status.authenticated) {
+      markCodexReady(status.binaryPath);
+    } else if (status.ok && status.binaryPath) {
+      markCodexLoginRequired();
+    } else {
+      markCodexBinaryMissing();
+    }
+    return status;
+  });
+  ipcMain.handle("app:open-codex-login", async () => {
+    const status = detectCodexBinary();
+    if (!status.ok || !status.binaryPath) {
+      markCodexBinaryMissing();
+      return { ok: false, message: status.reason ?? "codex 二进制缺失" };
+    }
+    markCodexLoginRequired();
+    const processId = await launchCodexOAuthWindow(status.binaryPath);
+    return {
+      ok: true,
+      message: `已启动 OpenAI Codex OAuth 设备授权窗口（进程 ${processId}）。请按窗口提示完成授权，然后点击“重新检测”。`
+    };
+  });
+  ipcMain.handle("app:complete-first-run", async (_event, target: unknown) => {
+    if (typeof target !== "string" || target.trim().length === 0) {
+      throw new Error("数据目录路径无效。");
+    }
+    const settings = markFirstRunCompleted(target);
+    await ensureRuntimeBootstrapped(true);
+    return settings;
+  });
+  ipcMain.handle("app:relaunch", async () => {
+    app.relaunch();
+    app.exit(0);
+  });
+}
+
 async function bootstrap(): Promise<void> {
   Menu.setApplicationMenu(null);
-  const dataDirectory = getDataDirectory();
+  await registerAppSettingsIpcHandlers();
+  const settings = loadAppSettings();
+  if (!settings.firstRunCompleted) {
+    // The first-run wizard uses only preload IPC and must be visible before
+    // the local content service exists. Hiding this window made a clean
+    // portable install appear briefly and then leave the user with no UI.
+    await createMainWindow();
+    return;
+  }
+  await ensureRuntimeBootstrapped(false);
+}
+
+function ensureRuntimeBootstrapped(reuseExistingWindow: boolean): Promise<void> {
+  if (!runtimeBootstrapPromise) {
+    runtimeBootstrapPromise = fullBootstrap(reuseExistingWindow).catch((error: unknown) => {
+      runtimeBootstrapPromise = undefined;
+      throw error;
+    });
+  }
+  return runtimeBootstrapPromise;
+}
+
+async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
+  const appSettings: AppSettingsContract = loadAppSettings();
+  // The data directory is sourced from app-settings.json once the wizard
+  // has run; before that we still rely on getDataDirectory() which respects
+  // CONTENTFERRY_DATA_DIR for development overrides.
+  const dataDirectory = appSettings.dataDir && appSettings.dataDir.length > 0
+    ? appSettings.dataDir
+    : getDataDirectory();
   const logDirectory = path.join(dataDirectory, "logs");
   fs.mkdirSync(logDirectory, { recursive: true });
   const logFilePath = dailyLogFilePath(logDirectory);
@@ -148,7 +300,9 @@ async function bootstrap(): Promise<void> {
     return runContentAnyDetection(markdown);
   });
 
-  await createMainWindow();
+  if (!reuseExistingWindow || !mainWindow || mainWindow.isDestroyed()) {
+    await createMainWindow();
+  }
 
   app.on("before-quit", async () => {
     await server.close();

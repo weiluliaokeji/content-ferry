@@ -28,4 +28,15 @@ npm run dev
 
 不要把 AppSecret、公众号回调 Token、EncodingAESKey、Gitee Token、Cloudflare 凭据或浏览器 Cookie 写入仓库、`.env.example`、日志或 Markdown。
 
-设计与验证文档位于 [spec](spec/)。
+设计与验证文档位于 [spec](spec/)。打包与分发见 [docs/BUILDING.md](docs/BUILDING.md)。
+
+## 打包与分发（开发者）
+
+```powershell
+npm run dist:win         # NSIS 安装包 + Portable EXE，输出到 release/
+npm run dist:portable    # 只产 Portable
+npm run pack             # 只产未压缩目录，最快
+npm run verify:installer # 校验 release/ 下的产物
+```
+
+普通用户拿到 `文渡-Setup-0.1.0.exe` 后双击安装即可，不需要装 Node.js、Codex CLI 或任何开发工具。首次启动会自动弹出四步引导（数据目录选择 + AI 服务初始化），具体设计与验收清单见 `docs/BUILDING.md`。

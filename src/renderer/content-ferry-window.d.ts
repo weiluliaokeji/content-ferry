@@ -1,5 +1,17 @@
 export {};
 
+type AppSettings = {
+  schemaVersion: 1;
+  dataDir: string;
+  firstRunCompleted: boolean;
+  aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
+  codexBinaryPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CodexStatus = { ok: boolean; binaryPath: string | null; authenticated: boolean; authMethod?: string; reason?: string };
+
 declare global {
   interface Window {
     contentFerry?: {
@@ -28,6 +40,15 @@ declare global {
         result?: string;
         message?: string;
       }>;
+      app: {
+        getSettings: () => Promise<AppSettings>;
+        chooseDataDir: () => Promise<string | undefined>;
+        setDataDir: (target: string) => Promise<AppSettings>;
+        detectCodex: () => Promise<CodexStatus>;
+        openCodexLogin: () => Promise<{ ok: boolean; message?: string }>;
+        completeFirstRun: (dataDir: string) => Promise<AppSettings>;
+        relaunch: () => Promise<void>;
+      };
     };
   }
 }

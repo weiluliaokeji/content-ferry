@@ -14,7 +14,12 @@
     "build:renderer": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
     "test": "electron --runAsNode -- node_modules/vitest/vitest.mjs run --config vitest.config.ts",
-    "rebuild:native": "electron-rebuild -f -w better-sqlite3"
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "pack": "node scripts/build-installer.mjs --dir",
+    "dist": "node scripts/build-installer.mjs",
+    "dist:win": "node scripts/build-installer.mjs --win",
+    "dist:portable": "node scripts/build-installer.mjs --win --portable",
+    "verify:installer": "node scripts/verify-installer.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
@@ -40,9 +45,93 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.0.0",
     "electron": "^37.4.0",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.9.2",
     "vite": "^7.1.4",
     "vitest": "^3.2.4",
     "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.contentferry.app",
+    "productName": "文渡",
+    "copyright": "Copyright © 2026 ContentFerry",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "assets/wendu-icon.ico",
+      "assets/wendu-icon.png",
+      "!**/*.map",
+      "!**/__tests__/**",
+      "!**/*.test.ts",
+      "!**/.DS_Store"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/@openai/codex-win32-x64/**",
+      "**/node_modules/bindings/**",
+      "**/node_modules/file-uri-to-path/**"
+    ],
+    "extraMetadata": {
+      "main": "dist/main/main/index.js"
+    },
+    "npmRebuild": false,
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "assets/wendu-icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "文渡 ContentFerry",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}",
+      "requestExecutionLevel": "user"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Office"
+    },
+    "publish": null
   }
 }

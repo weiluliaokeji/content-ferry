@@ -12,3 +12,15 @@ data/
 *.db-wal
 *.pem
 *.key
+*.exe
+*.dmg
+*.AppImage
+*.blockmap
+*.yml
+.cache/
+.tsbuildinfo
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.workbuddy-ai/
+build/

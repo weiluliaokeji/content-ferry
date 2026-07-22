@@ -7,6 +7,87 @@ const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
   import("./components/VisualMarkdownEditor").then((module) => ({ default: module.VisualMarkdownEditor }))
 );
+const FirstRunWizard = lazy(() =>
+  import("./components/FirstRunWizard").then((module) => ({ default: module.FirstRunWizard }))
+);
+
+type AppSettingsContract = {
+  schemaVersion: 1;
+  dataDir: string;
+  firstRunCompleted: boolean;
+  aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
+  codexBinaryPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RootState =
+  | { status: "loading" }
+  | { status: "wizard"; settings: AppSettingsContract }
+  | { status: "ready"; settings: AppSettingsContract };
+
+function Root() {
+  const [state, setState] = useState<RootState>({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadSettings().then((settings) => {
+      if (cancelled) return;
+      if (settings.firstRunCompleted) {
+        setState({ status: "ready", settings });
+      } else {
+        setState({ status: "wizard", settings });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (state.status === "loading") {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "grid",
+          placeItems: "center",
+          color: "#64748b",
+          fontSize: ".9rem"
+        }}
+      >
+        正在加载文渡…
+      </div>
+    );
+  }
+
+  if (state.status === "wizard") {
+    return (
+      <Suspense fallback={<div style={{ padding: "3rem" }}>正在准备首次启动…</div>}>
+        <FirstRunWizard
+          onCompleted={(settings) => {
+            setState({ status: "ready", settings });
+          }}
+        />
+      </Suspense>
+    );
+  }
+
+  return <App />;
+}
+
+async function loadSettings(): Promise<AppSettingsContract> {
+  // On a clean install the first-run wizard is intentionally shown before
+  // the local HTTP service/database starts. Prefer preload IPC there; retain
+  // the HTTP fallback for browser-only development.
+  if (window.contentFerry?.app) {
+    return (await window.contentFerry.app.getSettings()) as AppSettingsContract;
+  }
+  const response = await fetch(`${apiBase}/app/settings`);
+  if (!response.ok) {
+    throw new Error(`无法读取应用设置（${response.status}）。`);
+  }
+  return (await response.json()) as AppSettingsContract;
+}
 
 type AccountPlatform = "wechat_official" | "csdn";
 type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string };
@@ -1926,4 +2007,4 @@ function Modal({ title, eyebrow, children, onClose, disabled, wide = false, prio
   return <div className={`modal-backdrop${priority ? " priority-modal" : ""}`} role="presentation" onMouseDown={() => !disabled && onClose()}><section className={`modal-card${wide ? " wide-modal" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="text-button" onClick={onClose} disabled={disabled}>关闭</button></div>{children}</section></div>;
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><Root /></StrictMode>);

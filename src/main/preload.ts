@@ -14,6 +14,18 @@ type ZhuqueDetectionResponse = {
   message?: string;
 };
 
+type AppSettingsContract = {
+  schemaVersion: 1;
+  dataDir: string;
+  firstRunCompleted: boolean;
+  aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
+  codexBinaryPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CodexStatusContract = { ok: boolean; binaryPath: string | null; authenticated: boolean; authMethod?: string; reason?: string };
+
 contextBridge.exposeInMainWorld("contentFerry", {
   apiBaseUrl: "http://127.0.0.1:4317",
   selectDirectory: (): Promise<string | undefined> => ipcRenderer.invoke("contentferry:select-directory") as Promise<string | undefined>,
@@ -26,5 +38,20 @@ contextBridge.exposeInMainWorld("contentFerry", {
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>
     ipcRenderer.invoke("contentferry:run-zhuque", markdown) as Promise<ZhuqueDetectionResponse>,
   runContentAnyDetection: (markdown: string): Promise<{ status: "completed" | "needs_user"; result?: string; message?: string }> =>
-    ipcRenderer.invoke("contentferry:run-contentany", markdown) as Promise<{ status: "completed" | "needs_user"; result?: string; message?: string }>
+    ipcRenderer.invoke("contentferry:run-contentany", markdown) as Promise<{ status: "completed" | "needs_user"; result?: string; message?: string }>,
+  app: {
+    getSettings: (): Promise<AppSettingsContract> =>
+      ipcRenderer.invoke("app:get-settings") as Promise<AppSettingsContract>,
+    chooseDataDir: (): Promise<string | undefined> =>
+      ipcRenderer.invoke("app:choose-data-dir") as Promise<string | undefined>,
+    setDataDir: (target: string): Promise<AppSettingsContract> =>
+      ipcRenderer.invoke("app:set-data-dir", target) as Promise<AppSettingsContract>,
+    detectCodex: (): Promise<CodexStatusContract> =>
+      ipcRenderer.invoke("app:detect-codex") as Promise<CodexStatusContract>,
+    openCodexLogin: (): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke("app:open-codex-login") as Promise<{ ok: boolean; message?: string }>,
+    completeFirstRun: (dataDir: string): Promise<AppSettingsContract> =>
+      ipcRenderer.invoke("app:complete-first-run", dataDir) as Promise<AppSettingsContract>,
+    relaunch: (): Promise<void> => ipcRenderer.invoke("app:relaunch") as Promise<void>
+  }
 });

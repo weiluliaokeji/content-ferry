@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cmd /d /s /c \"\\.\\\\node_modules\\\\\\.bin\\\\electron-builder\\.cmd --win portable --x64 --publish never & echo PORTABLE_EXIT=%ERRORLEVEL%\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
