@@ -27,6 +27,27 @@ let zhuqueWindow: BrowserWindow | undefined;
 let contentAnyWindow: BrowserWindow | undefined;
 let wechatBackendWindow: BrowserWindow | undefined;
 let runtimeBootstrapPromise: Promise<void> | undefined;
+let runtimeShutdown: (() => Promise<void>) | undefined;
+let shutdownPromise: Promise<void> | undefined;
+
+function destroyAuxiliaryWindows(): void {
+  for (const window of [zhuqueWindow, contentAnyWindow, wechatBackendWindow]) {
+    if (window && !window.isDestroyed()) window.destroy();
+  }
+  zhuqueWindow = undefined;
+  contentAnyWindow = undefined;
+  wechatBackendWindow = undefined;
+}
+
+function shutdownAndExit(exitCode = 0): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    destroyAuxiliaryWindows();
+    if (runtimeShutdown) await runtimeShutdown();
+    app.exit(exitCode);
+  })();
+  return shutdownPromise;
+}
 
 function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
   const escapedBinary = binaryPath.replace(/'/g, "''");
@@ -91,7 +112,7 @@ type ContentAnyDetectionResponse = {
 };
 
 async function createMainWindow(): Promise<void> {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     title: "文渡",
     icon: createWenduWindowIcon(),
     width: 1280,
@@ -105,12 +126,18 @@ async function createMainWindow(): Promise<void> {
       preload: path.join(__dirname, "preload.js")
     }
   });
+  mainWindow = window;
+
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = undefined;
+    if (process.platform !== "darwin") void shutdownAndExit();
+  });
 
   const devServerUrl = process.env.CONTENTFERRY_DEV_SERVER_URL;
   if (devServerUrl) {
-    await mainWindow.loadURL(devServerUrl);
+    await window.loadURL(devServerUrl);
   } else {
-    await mainWindow.loadFile(path.join(__dirname, "../../renderer/index.html"));
+    await window.loadFile(path.join(__dirname, "../../renderer/index.html"));
   }
 }
 
@@ -183,7 +210,7 @@ async function registerAppSettingsIpcHandlers(): Promise<void> {
   });
   ipcMain.handle("app:relaunch", async () => {
     app.relaunch();
-    app.exit(0);
+    await shutdownAndExit();
   });
 }
 
@@ -234,6 +261,24 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     logFilePath,
     path.join(dataDirectory, "skills")
   );
+  let runtimeClosed = false;
+  runtimeShutdown = async () => {
+    if (runtimeClosed) return;
+    runtimeClosed = true;
+    try {
+      await Promise.race([
+        server.close(),
+        delay(3_000).then(() => { throw new Error("本地服务在 3 秒内未能完全关闭。"); })
+      ]);
+    } catch (error) {
+      console.warn("ContentFerry local service shutdown warning", error);
+    }
+    try {
+      database.close();
+    } catch (error) {
+      console.warn("ContentFerry database shutdown warning", error);
+    }
+  };
 
   ipcMain.handle("contentferry:select-directory", async () => {
     const options: OpenDialogOptions = {
@@ -304,19 +349,22 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     await createMainWindow();
   }
 
-  app.on("before-quit", async () => {
-    await server.close();
-    database.close();
-  });
 }
 
 app.whenReady().then(bootstrap).catch((error: unknown) => {
   console.error("ContentFerry failed to start", error);
-  app.quit();
+  void shutdownAndExit(1);
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") void shutdownAndExit();
+});
+
+app.on("before-quit", (event) => {
+  if (!shutdownPromise && runtimeShutdown) {
+    event.preventDefault();
+    void shutdownAndExit();
+  }
 });
 
 async function getOrCreateZhuqueWindow(): Promise<BrowserWindow> {
