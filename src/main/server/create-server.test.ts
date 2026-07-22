@@ -234,7 +234,9 @@ describe("local API scaffold", () => {
         contextKey: "project:11111111-1111-4111-8111-111111111111",
         author: "围炉作者",
         digest: "这是一段公众号摘要。",
-        coverSource: "contentferry-asset://project/cover.jpg"
+        coverSource: "contentferry-asset://project/cover.jpg",
+        needOpenComment: true,
+        onlyFansCanComment: true
       }
     });
     expect(saved.statusCode).toBe(200);
@@ -243,7 +245,12 @@ describe("local API scaffold", () => {
       method: "GET",
       url: "/api/article-settings?contextKey=project%3A11111111-1111-4111-8111-111111111111"
     });
-    expect(loaded.json()).toMatchObject({ author: "围炉作者", digest: "这是一段公众号摘要。" });
+    expect(loaded.json()).toMatchObject({
+      author: "围炉作者",
+      digest: "这是一段公众号摘要。",
+      needOpenComment: true,
+      onlyFansCanComment: true
+    });
 
     const authors = await server.inject({ method: "GET", url: "/api/article-settings/authors" });
     expect(authors.json().items).toContain("围炉作者");
@@ -591,7 +598,8 @@ describe("local API scaffold", () => {
     const assetDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-assets-"));
     const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-wechat-source-"));
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    const draftPayloads: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       calls.push(url);
       if (url.endsWith("/cgi-bin/stable_token")) return Response.json({ access_token: "token-1", expires_in: 7200 });
@@ -605,7 +613,10 @@ describe("local API scaffold", () => {
       });
       if (url.includes("/cgi-bin/media/uploadimg")) return Response.json({ url: "https://mmbiz.qpic.cn/test-inline" });
       if (url.includes("/cgi-bin/material/add_material")) return Response.json({ media_id: "cover-media-id" });
-      if (url.includes("/cgi-bin/draft/add")) return Response.json({ media_id: "draft-media-id" });
+      if (url.includes("/cgi-bin/draft/add")) {
+        draftPayloads.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ media_id: "draft-media-id" });
+      }
       if (url.includes("/cgi-bin/freepublish/submit")) return Response.json({ errcode: 0, publish_id: "publish-id-1" });
       return Response.json({ errcode: -1, errmsg: "unexpected request" });
     }));
@@ -664,6 +675,9 @@ describe("local API scaffold", () => {
       });
       expect(calls.filter((url) => url.endsWith("/cgi-bin/stable_token"))).toHaveLength(1);
       expect(calls.some((url) => url.includes("/cgi-bin/draft/add?access_token="))).toBe(true);
+      expect(draftPayloads[0]).toMatchObject({
+        articles: [{ need_open_comment: 1, only_fans_can_comment: 0 }]
+      });
       expect(calls.some((url) => url.includes("/cgi-bin/freepublish/submit?access_token="))).toBe(true);
       const timestamp = "1784460000";
       const nonce = "callback-nonce";

@@ -80,7 +80,9 @@ const wechatDraftInput = z.object({
   author: z.string().max(16).optional(),
   digest: z.string().max(120).optional(),
   thumbMediaId: z.string().max(256).optional(),
-  coverSource: z.string().max(2000).optional()
+  coverSource: z.string().max(2000).optional(),
+  needOpenComment: z.boolean().default(true),
+  onlyFansCanComment: z.boolean().default(false)
 });
 const wechatSourceDraftInput = z.object({
   accountId: z.string().uuid(),
@@ -88,7 +90,9 @@ const wechatSourceDraftInput = z.object({
   author: z.string().max(16).optional(),
   digest: z.string().max(120).optional(),
   thumbMediaId: z.string().max(256).optional(),
-  coverSource: z.string().max(2000).optional()
+  coverSource: z.string().max(2000).optional(),
+  needOpenComment: z.boolean().default(true),
+  onlyFansCanComment: z.boolean().default(false)
 });
 const wechatSubmitInput = z.object({ mode: z.enum(["publish", "mass"]) });
 const modelProviderSchema = z.enum(modelProviderIds);
@@ -381,8 +385,8 @@ export function buildServer(
 
   server.get("/api/article-settings", async (request) => {
     const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
-    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id FROM article_settings WHERE context_key = ?")
-      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null } | undefined;
+    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment FROM article_settings WHERE context_key = ?")
+      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number } | undefined;
     const projectId = query.contextKey.startsWith("project:") ? query.contextKey.slice("project:".length) : "";
     const sourcePath = query.contextKey.startsWith("source:") ? query.contextKey.slice("source:".length) : "";
     const project = projectId
@@ -394,7 +398,9 @@ export function buildServer(
       author: row?.author ?? "",
       digest: row?.digest ?? "",
       coverSource: row?.cover_source ?? "",
-      accountId: project?.target_account_id ?? row?.account_id ?? ""
+      accountId: project?.target_account_id ?? row?.account_id ?? "",
+      needOpenComment: row ? row.need_open_comment === 1 : true,
+      onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false
     };
   });
 
@@ -404,14 +410,19 @@ export function buildServer(
       author: z.string().max(16),
       digest: z.string().max(200),
       coverSource: z.string().max(2000),
-      accountId: z.string().uuid().or(z.literal("")).default("")
+      accountId: z.string().uuid().or(z.literal("")).default(""),
+      needOpenComment: z.boolean().default(true),
+      onlyFansCanComment: z.boolean().default(false)
     }).parse(request.body);
     const now = new Date().toISOString();
     database.connection.prepare(`INSERT INTO article_settings
-      (context_key, author, digest, cover_source, account_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      (context_key, author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(context_key) DO UPDATE SET author = excluded.author, digest = excluded.digest,
-        cover_source = excluded.cover_source, account_id = excluded.account_id, updated_at = excluded.updated_at`)
-      .run(input.contextKey, input.author, input.digest, input.coverSource, input.accountId || null, now);
+        cover_source = excluded.cover_source, account_id = excluded.account_id,
+        need_open_comment = excluded.need_open_comment, only_fans_can_comment = excluded.only_fans_can_comment,
+        updated_at = excluded.updated_at`)
+      .run(input.contextKey, input.author, input.digest, input.coverSource, input.accountId || null,
+        input.needOpenComment ? 1 : 0, input.needOpenComment && input.onlyFansCanComment ? 1 : 0, now);
     if (input.contextKey.startsWith("project:")) {
       database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE id = ?")
         .run(input.accountId || null, now, input.contextKey.slice("project:".length));
@@ -419,7 +430,14 @@ export function buildServer(
       database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE source_relative_path = ?")
         .run(input.accountId || null, now, input.contextKey.slice("source:".length));
     }
-    return { author: input.author, digest: input.digest, coverSource: input.coverSource, accountId: input.accountId };
+    return {
+      author: input.author,
+      digest: input.digest,
+      coverSource: input.coverSource,
+      accountId: input.accountId,
+      needOpenComment: input.needOpenComment,
+      onlyFansCanComment: input.needOpenComment && input.onlyFansCanComment
+    };
   });
 
   server.get("/api/article-settings/authors", async () => ({

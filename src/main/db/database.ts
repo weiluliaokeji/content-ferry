@@ -153,6 +153,8 @@ function initialiseDatabase(db: Database.Database): void {
       digest TEXT NOT NULL DEFAULT '',
       cover_source TEXT NOT NULL DEFAULT '',
       account_id TEXT,
+      need_open_comment INTEGER NOT NULL DEFAULT 1,
+      only_fans_can_comment INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
 
@@ -249,6 +251,12 @@ function initialiseDatabase(db: Database.Database): void {
   const articleSettingColumns = db.prepare("PRAGMA table_info(article_settings)").all() as Array<{ name: string }>;
   if (!articleSettingColumns.some((column) => column.name === "account_id")) {
     db.exec("ALTER TABLE article_settings ADD COLUMN account_id TEXT");
+  }
+  if (!articleSettingColumns.some((column) => column.name === "need_open_comment")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN need_open_comment INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!articleSettingColumns.some((column) => column.name === "only_fans_can_comment")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN only_fans_can_comment INTEGER NOT NULL DEFAULT 0");
   }
 
   const articleQualityColumns = db.prepare("PRAGMA table_info(article_quality_checks)").all() as Array<{ name: string }>;

@@ -56,6 +56,8 @@ export class WechatPublishingService {
     digest?: string;
     thumbMediaId?: string;
     coverSource?: string;
+    needOpenComment?: boolean;
+    onlyFansCanComment?: boolean;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
     if (account.platform !== "wechat_official") throw new WechatApiError("所选账号不是微信公众号。");
@@ -92,8 +94,8 @@ export class WechatPublishingService {
         digest: input.digest?.trim().slice(0, 120) || "",
         content: prepared.html,
         thumb_media_id: prepared.thumbMediaId,
-        need_open_comment: 0,
-        only_fans_can_comment: 0
+        need_open_comment: input.needOpenComment === false ? 0 : 1,
+        only_fans_can_comment: input.needOpenComment === false || !input.onlyFansCanComment ? 0 : 1
       }]
     });
     if (!result.media_id) throw new WechatApiError("微信没有返回草稿 media_id。");
@@ -114,6 +116,8 @@ export class WechatPublishingService {
     digest?: string;
     thumbMediaId?: string;
     coverSource?: string;
+    needOpenComment?: boolean;
+    onlyFansCanComment?: boolean;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
     if (account.platform !== "wechat_official") throw new WechatApiError("所选账号不是微信公众号。");
@@ -137,8 +141,8 @@ export class WechatPublishingService {
         digest: input.digest?.trim().slice(0, 120) || "",
         content: prepared.html,
         thumb_media_id: prepared.thumbMediaId,
-        need_open_comment: 0,
-        only_fans_can_comment: 0
+        need_open_comment: input.needOpenComment === false ? 0 : 1,
+        only_fans_can_comment: input.needOpenComment === false || !input.onlyFansCanComment ? 0 : 1
       }]
     });
     if (!result.media_id) throw new WechatApiError("微信没有返回草稿 media_id。");

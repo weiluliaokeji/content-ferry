@@ -128,6 +128,25 @@ async function createMainWindow(): Promise<void> {
   });
   mainWindow = window;
 
+  // A renderer `beforeunload` guard is used while an article has unsaved
+  // changes. Electron does not show Chromium's native confirmation UI for
+  // BrowserWindow closes, so without this handler the title-bar close button
+  // appears to do nothing. Convert it into an explicit desktop confirmation.
+  window.webContents.on("will-prevent-unload", (event) => {
+    if (window.isDestroyed()) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: "warning",
+      title: "文渡",
+      message: "当前文章还有未保存的修改",
+      detail: "关闭文渡会丢失这些修改。你可以返回编辑器先保存，或者放弃修改并退出。",
+      buttons: ["返回保存", "放弃修改并退出"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (choice === 1) event.preventDefault();
+  });
+
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = undefined;
     if (process.platform !== "darwin") void shutdownAndExit();

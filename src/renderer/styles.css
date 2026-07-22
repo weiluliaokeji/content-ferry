@@ -207,13 +207,24 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .crop-selection span { z-index: 1; padding: .3rem .55rem; border-radius: 999px; background: rgb(15 23 42 / 68%); font-size: .78rem; pointer-events: none; }
 .crop-resize-handle { position: absolute; right: -9px; bottom: -9px; z-index: 2; width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #315bd8; cursor: nwse-resize; touch-action: none; }
 .settings-cover-section { display: grid; gap: .65rem; }
+.wechat-comment-settings { display: grid; gap: .75rem; margin: 0; padding: .85rem; border: 1px solid #e1e7f1; border-radius: 10px; }
+.wechat-comment-settings legend { padding: 0 .35rem; color: #27364f; font-size: .9rem; font-weight: 700; }
+.wechat-comment-settings .checkbox-row { display: flex; align-items: flex-start; gap: .65rem; }
+.wechat-comment-settings .checkbox-row input { width: 1rem; height: 1rem; margin-top: .18rem; flex: 0 0 auto; }
+.wechat-comment-settings .checkbox-row span { display: grid; gap: .2rem; }
+.wechat-comment-settings .checkbox-row small { font-weight: 400; }
 .settings-cover-section details { padding: .65rem; border: 1px solid #e1e7f1; border-radius: 8px; }
 .settings-cover-section summary { cursor: pointer; color: #44516a; font-size: .85rem; font-weight: 600; }
 .settings-cover-section .ai-cover-details[open] { display: grid; gap: .75rem; }
 .cover-prompt-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .ai-cover-details textarea { min-height: 150px; line-height: 1.65; }
 .ai-cover-details > small { color: #718096; }
-.ai-cover-details > button:last-child { justify-self: start; }
+.ai-cover-details > button.secondary-button { justify-self: start; }
+.cover-action-error { display: grid; gap: .35rem; padding: .75rem .85rem; border: 1px solid #f2b8b5; border-left: 4px solid #d92d20; border-radius: 8px; background: #fff3f2; color: #912018; line-height: 1.5; }
+.cover-action-error strong { font-size: .88rem; }
+.cover-action-error span { font-size: .84rem; overflow-wrap: anywhere; }
+.cover-action-error small { color: #a33a32; }
+.cover-action-error .text-button { justify-self: start; padding: 0; color: #912018; }
 .publish-readiness { display: grid; gap: .65rem; padding: 1rem; border: 1px solid #dce4f5; border-radius: 12px; background: #f8faff; }
 .publish-readiness p { display: flex; justify-content: space-between; gap: 1rem; margin: 0; padding: .65rem .75rem; border-radius: 8px; }
 .publish-readiness p.ready { background: #edf8f1; color: #18794e; }

@@ -108,7 +108,14 @@ type WechatPublishJob = {
 type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string };
 type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
 type SelectedImage = { fileName: string; mimeType: string; base64: string };
-type ArticleSettings = { author: string; digest: string; coverSource: string; accountId: string };
+type ArticleSettings = {
+  author: string;
+  digest: string;
+  coverSource: string;
+  accountId: string;
+  needOpenComment: boolean;
+  onlyFansCanComment: boolean;
+};
 type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "github_copilot" | "modelscope" | "gemini";
 type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
@@ -245,6 +252,8 @@ function App() {
   const [publishAccountId, setPublishAccountId] = useState("");
   const [publishAuthor, setPublishAuthor] = useState("");
   const [publishDigest, setPublishDigest] = useState("");
+  const [publishNeedOpenComment, setPublishNeedOpenComment] = useState(true);
+  const [publishOnlyFansCanComment, setPublishOnlyFansCanComment] = useState(false);
   const [publishThumbMediaId, setPublishThumbMediaId] = useState("");
   const [publishCoverSource, setPublishCoverSource] = useState("");
   const [publishCoverPreview, setPublishCoverPreview] = useState("");
@@ -682,6 +691,8 @@ function App() {
     setPublishAccountId(preferred?.id ?? "");
     setPublishAuthor("");
     setPublishDigest("");
+    setPublishNeedOpenComment(true);
+    setPublishOnlyFansCanComment(false);
     setPublishThumbMediaId("");
     setPublishCheckMarkdown("");
     setPublishAiCheckResult("");
@@ -694,6 +705,7 @@ function App() {
     void request<ArticleSettings>(`/article-settings?contextKey=${encodeURIComponent(contextKey)}`)
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || preferred?.id || "");
+        setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -718,6 +730,8 @@ function App() {
     setPublishAccountId(preferred?.id ?? "");
     setPublishAuthor("");
     setPublishDigest("");
+    setPublishNeedOpenComment(true);
+    setPublishOnlyFansCanComment(false);
     setPublishThumbMediaId("");
     setPublishCheckMarkdown(article.markdown);
     setPublishAiCheckResult("");
@@ -729,6 +743,7 @@ function App() {
     void request<ArticleSettings>(`/article-settings?contextKey=${encodeURIComponent(`source:${article.relativePath}`)}`)
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || "");
+        setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -912,7 +927,9 @@ function App() {
           author: publishAuthor,
           digest: publishDigest,
           thumbMediaId: publishThumbMediaId,
-          coverSource: publishCoverSource
+          coverSource: publishCoverSource,
+          needOpenComment: publishNeedOpenComment,
+          onlyFansCanComment: publishNeedOpenComment && publishOnlyFansCanComment
         })
       });
       setPublishProject(undefined); setPublishSource(undefined); setActiveView("publish"); setError("");
@@ -1225,6 +1242,7 @@ function App() {
           <p className={publishAiCheckResult && !isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport) || publishAiOverrideReason.trim().length >= 5 ? "ready" : "missing"}><strong>AIGC 特征检测</strong><span>{publishAiCheckResult ? isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport) ? "AI 特征偏高，需要填写例外理由" : `${publishAiCheckTool === "contentany" ? "ContentAny" : "腾讯朱雀"} 已完成检测` : publishAiOverrideReason.trim().length >= 5 ? "已填写例外发布理由" : "尚未检测"}</span></p>
           <p className="ready"><strong>作者</strong><span>{publishAuthor || "未填写（允许）"}</span></p>
           <p className="ready"><strong>摘要</strong><span>{publishDigest ? `${publishDigest.length}/120 字` : "未填写（允许）"}</span></p>
+          <p className="ready"><strong>微信留言</strong><span>{publishNeedOpenComment ? publishOnlyFansCanComment ? "已开启 · 仅关注者可留言" : "已开启 · 所有人可留言" : "已关闭"}</span></p>
         </div>
         <section className="publish-ai-check">
           <div className="detector-switch"><label>检测工具<select value={publishDetector} onChange={(event) => setPublishDetector(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select></label><button type="button" className="secondary-button" onClick={() => void (publishDetector === "zhuque" ? runPublishZhuque() : runPublishContentAny())} disabled={publishAiCheckRunning || saving}>{publishAiCheckRunning ? "正在自动检测…" : publishDetector === "zhuque" ? "开始腾讯朱雀检测" : "开始 ContentAny 检测"}</button></div>
@@ -1302,7 +1320,14 @@ function ArticleWorkspace({
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">(initialRightPanel);
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images">("body");
-  const [articleSettings, setArticleSettings] = useState<ArticleSettings>({ author: "", digest: "", coverSource: "", accountId: "" });
+  const [articleSettings, setArticleSettings] = useState<ArticleSettings>({
+    author: "",
+    digest: "",
+    coverSource: "",
+    accountId: "",
+    needOpenComment: true,
+    onlyFansCanComment: false
+  });
   const [authorHistory, setAuthorHistory] = useState<string[]>([]);
   const [workspaceError, setWorkspaceError] = useState("");
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -1311,6 +1336,7 @@ function ArticleWorkspace({
   const [settingsCoverProvider, setSettingsCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
   const [settingsCoverPrompt, setSettingsCoverPrompt] = useState("");
   const [settingsCoverBusy, setSettingsCoverBusy] = useState(false);
+  const [settingsCoverError, setSettingsCoverError] = useState("");
   const [settingsCoverPromptBusy, setSettingsCoverPromptBusy] = useState(false);
   const [settingsSummaryBusy, setSettingsSummaryBusy] = useState(false);
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>();
@@ -1322,7 +1348,14 @@ function ArticleWorkspace({
   const [selectionDetectionResult, setSelectionDetectionResult] = useState("");
   const [selectionZhuqueReport, setSelectionZhuqueReport] = useState<ZhuqueReport>();
   const [savedMarkdown, setSavedMarkdown] = useState(markdown);
-  const [savedSettings, setSavedSettings] = useState<ArticleSettings>({ author: "", digest: "", coverSource: "", accountId: "" });
+  const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
+    author: "",
+    digest: "",
+    coverSource: "",
+    accountId: "",
+    needOpenComment: true,
+    onlyFansCanComment: false
+  });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
   useEffect(() => {
     void Promise.all([
@@ -1430,9 +1463,10 @@ function ArticleWorkspace({
   const generateSettingsCover = async () => {
     if (!sourceArticlePath && !projectId) return;
     if (!settingsCoverPrompt.trim()) {
-      setWorkspaceError("请先让 AI 根据正文生成封面提示词，或自行填写提示词。");
+      setSettingsCoverError("请先让 AI 根据正文生成封面提示词，或自行填写提示词。");
       return;
     }
+    setSettingsCoverError("");
     setSettingsCoverBusy(true);
     try {
       const generated = await request<{ assetUrl: string }>("/skills/cover-generation/run", {
@@ -1444,14 +1478,15 @@ function ArticleWorkspace({
         })
       });
       setArticleSettings((current) => ({ ...current, coverSource: generated.assetUrl }));
-      setWorkspaceError("");
+      setSettingsCoverError("");
     } catch (cause) {
-      setWorkspaceError(cause instanceof Error ? cause.message : "AI 封面生成失败。");
+      setSettingsCoverError(cause instanceof Error ? cause.message : "AI 封面生成失败。");
     } finally {
       setSettingsCoverBusy(false);
     }
   };
   const generateSettingsCoverPrompt = async () => {
+    setSettingsCoverError("");
     setSettingsCoverPromptBusy(true);
     try {
       const generated = await request<{ prompt: string }>("/skills/cover-prompt-generation/run", {
@@ -1459,9 +1494,9 @@ function ArticleWorkspace({
         body: JSON.stringify({ title, markdown })
       });
       setSettingsCoverPrompt(generated.prompt);
-      setWorkspaceError("");
+      setSettingsCoverError("");
     } catch (cause) {
-      setWorkspaceError(cause instanceof Error ? cause.message : "封面提示词生成失败。");
+      setSettingsCoverError(cause instanceof Error ? cause.message : "封面提示词生成失败。");
     } finally {
       setSettingsCoverPromptBusy(false);
     }
@@ -1646,13 +1681,52 @@ function ArticleWorkspace({
             <small>{articleSettings.digest.length}/{digestMaxLength} 字{selectedSettingsAccount ? ` · ${platformName(selectedSettingsAccount.platform)}限制` : " · 选择账号后按平台适配"}</small>
             <button type="button" className="secondary-button" onClick={() => void generateArticleSummary()} disabled={busy}>{settingsSummaryBusy ? "AI 正在提炼摘要…" : "AI 生成适配摘要"}</button>
           </label>
+          {selectedSettingsAccount?.platform === "wechat_official" && <fieldset className="wechat-comment-settings">
+            <legend>微信留言</legend>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={articleSettings.needOpenComment}
+                onChange={(event) => setArticleSettings((current) => ({
+                  ...current,
+                  needOpenComment: event.target.checked,
+                  onlyFansCanComment: event.target.checked ? current.onlyFansCanComment : false
+                }))}
+              />
+              <span><strong>开启留言</strong><small>默认开启；同步到微信草稿箱时一并设置。</small></span>
+            </label>
+            <label>谁可以留言
+              <select
+                value={articleSettings.onlyFansCanComment ? "fans" : "all"}
+                disabled={!articleSettings.needOpenComment}
+                onChange={(event) => setArticleSettings((current) => ({ ...current, onlyFansCanComment: event.target.value === "fans" }))}
+              >
+                <option value="all">所有人</option>
+                <option value="fans">仅关注者</option>
+              </select>
+              <small>{articleSettings.needOpenComment ? "该设置由微信草稿接口支持。" : "开启留言后可设置留言范围。"}</small>
+            </label>
+          </fieldset>}
           <div className="settings-cover-section">
             <strong>封面</strong>
             {articleSettings.coverSource && <><img className="settings-cover-preview" src={resolveArticleImageUrl(articleSettings.coverSource, assetContextId, sourceArticlePath)} alt="文章封面" /><button type="button" className="text-button danger-text" onClick={() => setArticleSettings((current) => ({ ...current, coverSource: "" }))}>移除封面</button></>}
             <button type="button" className="secondary-button" onClick={() => void chooseArticleCover()}>选择本地图片并裁剪</button>
             {coverCandidates.length > 0 && <details><summary>从正文图片选择</summary><div className="article-cover-choices">{coverCandidates.map((image, index) => <button type="button" key={`${image.src}-${index}`} onClick={() => void cropExistingCover(resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath), image.alt || `正文图片-${index + 1}.png`)}><img src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "正文图片"} /><small>选择并裁剪</small></button>)}</div></details>}
             {articleSettings.accountId && accounts.find((account) => account.id === articleSettings.accountId)?.platform === "wechat_official" && <details><summary>从微信素材库选择</summary><button type="button" className="secondary-button" onClick={() => void loadSettingsMaterials()} disabled={settingsCoverBusy}>加载最近图片</button>{settingsMaterials.length > 0 && <div className="article-cover-choices">{settingsMaterials.map((material) => <button type="button" key={material.mediaId} onClick={() => void chooseSettingsMaterial(material)}><img src={`${apiBase}/integrations/wechat/accounts/${articleSettings.accountId}/materials/images/${encodeURIComponent(material.mediaId)}`} alt={material.name || "微信素材"} /><small>{material.name || "未命名图片"}</small></button>)}</div>}</details>}
-            <details className="ai-cover-details"><summary>AI 生成封面</summary><label>图片模型<select value={settingsCoverProvider} onChange={(event) => setSettingsCoverProvider(event.target.value as "modelscope" | "gemini")}><option value="modelscope">ModelScope</option><option value="gemini">Google Gemini</option></select></label><div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : settingsCoverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div><textarea value={settingsCoverPrompt} maxLength={2000} onChange={(event) => setSettingsCoverPrompt(event.target.value)} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" /><small>{settingsCoverPrompt.length}/2000 字 · 图片模型只会收到这里最终确认的提示词</small><button type="button" className="secondary-button" onClick={() => void generateSettingsCover()} disabled={settingsCoverBusy || settingsCoverPromptBusy || !settingsCoverPrompt.trim()}>{settingsCoverBusy ? "正在生成封面…" : "使用此提示词生成并设为封面"}</button></details>
+            <details className="ai-cover-details">
+              <summary>AI 生成封面</summary>
+              <label>图片模型
+                <select value={settingsCoverProvider} onChange={(event) => { setSettingsCoverProvider(event.target.value as "modelscope" | "gemini"); setSettingsCoverError(""); }}>
+                  <option value="modelscope">ModelScope</option>
+                  <option value="gemini">Google Gemini</option>
+                </select>
+              </label>
+              <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : settingsCoverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>
+              <textarea value={settingsCoverPrompt} maxLength={2000} onChange={(event) => { setSettingsCoverPrompt(event.target.value); setSettingsCoverError(""); }} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" />
+              <small>{settingsCoverPrompt.length}/2000 字 · 图片模型只会收到这里最终确认的提示词</small>
+              <button type="button" className="secondary-button" onClick={() => void generateSettingsCover()} disabled={settingsCoverBusy || settingsCoverPromptBusy || !settingsCoverPrompt.trim()}>{settingsCoverBusy ? "正在生成封面…" : "使用此提示词生成并设为封面"}</button>
+              {settingsCoverError && <div className="cover-action-error" role="alert"><strong>封面生成未完成</strong><span>{settingsCoverError}</span>{/凭证|credential|API\s*Key/i.test(settingsCoverError) && <small>请保存文章后，到“技能与模型”配置对应图片模型的访问凭证，再回来重试。</small>}<button type="button" className="text-button" onClick={() => setSettingsCoverError("")}>关闭提示</button></div>}
+            </details>
           </div>
           <button type="button" onClick={() => void persistArticleSettings()} disabled={busy}>保存发布设置</button>
           <p className="hint">发布时只做完整性检查，不再重复填写账号、作者、摘要和封面。</p>
