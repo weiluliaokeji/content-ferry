@@ -37,8 +37,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>
     ipcRenderer.invoke("contentferry:run-zhuque", markdown) as Promise<ZhuqueDetectionResponse>,
-  runContentAnyDetection: (markdown: string): Promise<{ status: "completed" | "needs_user"; result?: string; message?: string }> =>
-    ipcRenderer.invoke("contentferry:run-contentany", markdown) as Promise<{ status: "completed" | "needs_user"; result?: string; message?: string }>,
+  runContentAnyDetection: (markdown: string): Promise<{ status: "completed" | "needs_user"; result?: string; reference?: { label: string; score: string | null; summary: string; detail: string }; message?: string }> =>
+    ipcRenderer.invoke("contentferry:run-contentany", markdown) as Promise<{ status: "completed" | "needs_user"; result?: string; reference?: { label: string; score: string | null; summary: string; detail: string }; message?: string }>,
   app: {
     getSettings: (): Promise<AppSettingsContract> =>
       ipcRenderer.invoke("app:get-settings") as Promise<AppSettingsContract>,

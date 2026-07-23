@@ -40,6 +40,7 @@ export class OpenAICodexProvider implements ModelProvider {
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
+        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
       const turn = await thread.run(request.prompt, {
@@ -57,7 +58,7 @@ export class OpenAICodexProvider implements ModelProvider {
       return {
         value: request.parse(decoded),
         provider: this.id,
-        model: null,
+        model: request.modelId?.trim() || null,
         usage: mapUsage(turn.usage)
       };
     } catch (error) {
@@ -86,6 +87,7 @@ export class OpenAICodexProvider implements ModelProvider {
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
+        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
       const streamed = await thread.runStreamed(`${request.prompt}\n\n直接逐步输出完整 Markdown，不要输出 JSON、解释或代码围栏。`, { signal: controller.signal });
@@ -102,7 +104,7 @@ export class OpenAICodexProvider implements ModelProvider {
         if (event.type === "turn.completed") usage = event.usage;
       }
       if (!markdown.trim()) throw new ModelProviderUnavailableError("AI 没有返回可用的 Markdown 内容，请重新生成。");
-      return { value: { markdown }, provider: this.id, model: null, usage: mapUsage(usage) };
+      return { value: { markdown }, provider: this.id, model: request.modelId?.trim() || null, usage: mapUsage(usage) };
     } catch (error) {
       if (error instanceof ModelProviderUnavailableError) throw error;
       if (controller.signal.aborted) throw new ModelProviderUnavailableError("已停止本次 AI 生成。", { cause: error });

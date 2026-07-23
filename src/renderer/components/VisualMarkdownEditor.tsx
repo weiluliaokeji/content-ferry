@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, serializerCtx } from "@milkdown/kit/core";
+import { redo, undo } from "@milkdown/kit/prose/history";
+import { replaceAll } from "@milkdown/kit/utils";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic.css";
 
@@ -16,6 +18,11 @@ export function VisualMarkdownEditor({
   sourceArticlePath,
   onError,
   onTextSelection,
+  onSwitchToMarkdown,
+  initialScrollOffset,
+  suggestions = [],
+  onAcceptSuggestion,
+  onRejectSuggestion,
   minHeight = 420
 }: {
   value: string;
@@ -24,12 +31,25 @@ export function VisualMarkdownEditor({
   sourceArticlePath?: string;
   onError?: (message: string) => void;
   onTextSelection?: (selection?: VisualMarkdownSelection) => void;
+  onSwitchToMarkdown?: (markdownOffset: number) => void;
+  initialScrollOffset?: number;
+  suggestions?: Array<{ id: string; original: string; replacement: string; reason: string }>;
+  onAcceptSuggestion?: (id: string) => void;
+  onRejectSuggestion?: (id: string) => void;
   minHeight?: number;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const crepeRef = useRef<Crepe | null>(null);
+  const [editorReady, setEditorReady] = useState(false);
   const onChangeRef = useRef(onChange);
+  const valueRef = useRef(value);
+  const lastEditorValueRef = useRef<string | undefined>(undefined);
+  const suggestionsRef = useRef(suggestions);
+  const suggestionCallbacksRef = useRef({ onAcceptSuggestion, onRejectSuggestion });
   onChangeRef.current = onChange;
+  valueRef.current = value;
+  suggestionsRef.current = suggestions;
+  suggestionCallbacksRef.current = { onAcceptSuggestion, onRejectSuggestion };
 
   useEffect(() => {
     if (!rootRef.current) return;
@@ -41,6 +61,21 @@ export function VisualMarkdownEditor({
       if ((event.target as Element | null)?.closest("button")) userHasEdited = true;
     };
     const markKeyboardEdit = (event: KeyboardEvent) => {
+      const modifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (modifier && (key === "z" || key === "y")) {
+        const historyCommand = key === "y" || event.shiftKey ? redo : undo;
+        const handled = crepeRef.current?.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx);
+          return historyCommand(view.state, view.dispatch, view);
+        });
+        if (handled) {
+          userHasEdited = true;
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
       // ProseMirror handles Tab and several structural shortcuts as editor
       // commands. They can change Markdown without emitting `beforeinput`.
       if (event.key === "Tab" || event.key === "Enter" || event.key === "Backspace" || event.key === "Delete") {
@@ -52,7 +87,7 @@ export function VisualMarkdownEditor({
     root.addEventListener("drop", markUserEdit);
     root.addEventListener("cut", markUserEdit);
     root.addEventListener("click", markToolbarEdit);
-    root.addEventListener("keydown", markKeyboardEdit);
+    root.addEventListener("keydown", markKeyboardEdit, true);
     const uploadImage = async (file: File): Promise<string> => {
       try {
         if (file.size > 15 * 1024 * 1024) throw new Error("图片文件不能超过 15 MB。");
@@ -76,13 +111,20 @@ export function VisualMarkdownEditor({
     };
     const crepe = new Crepe({
       root: rootRef.current,
-      defaultValue: value,
+      // Markdown treats a single line break as whitespace, while authors who
+      // edit a VitePress source file often intentionally use it as a visual
+      // line break. Preserve that intent in WYSIWYG mode by upgrading only
+      // ordinary soft breaks to Markdown hard breaks before Milkdown parses.
+      defaultValue: preserveVisualLineBreaks(value),
       features: {
         [Crepe.Feature.AI]: false,
         [Crepe.Feature.CodeMirror]: false,
         [Crepe.Feature.ImageBlock]: true,
         [Crepe.Feature.Latex]: false,
-        [Crepe.Feature.TopBar]: false
+        // Keep the compact selection toolbar, but also expose the common
+        // structural actions in a persistent bar. This makes lists and
+        // tables discoverable instead of requiring users to know `/`.
+        [Crepe.Feature.TopBar]: true
       },
       featureConfigs: {
         [Crepe.Feature.ImageBlock]: {
@@ -104,27 +146,142 @@ export function VisualMarkdownEditor({
       listener.markdownUpdated((_ctx, markdown, previousMarkdown) => {
         // Crepe may normalize Markdown while constructing the document. That is
         // not a user edit and must not make a freshly opened article look dirty.
-        if (!disposed && userHasEdited && markdown !== previousMarkdown) onChangeRef.current(markdown);
+        if (!disposed && userHasEdited && markdown !== previousMarkdown) {
+          // The parent will pass this exact value back as a prop. Remember it
+          // so that round trip is not mistaken for an external replacement,
+          // which would rebuild the document and move the caret to the end.
+          lastEditorValueRef.current = markdown;
+          onChangeRef.current(markdown);
+        }
       });
     });
     void crepe.create().then(() => {
-      if (!disposed) crepeRef.current = crepe;
+      if (!disposed) {
+        crepeRef.current = crepe;
+        setEditorReady(true);
+        const visualValue = preserveVisualLineBreaks(valueRef.current);
+        if (crepe.getMarkdown() !== visualValue) crepe.editor.action(replaceAll(visualValue));
+      }
     });
 
     return () => {
       disposed = true;
       if (crepeRef.current === crepe) crepeRef.current = null;
+      setEditorReady(false);
       root.removeEventListener("beforeinput", markUserEdit);
       root.removeEventListener("paste", markUserEdit);
       root.removeEventListener("drop", markUserEdit);
       root.removeEventListener("cut", markUserEdit);
       root.removeEventListener("click", markToolbarEdit);
-      root.removeEventListener("keydown", markKeyboardEdit);
+      root.removeEventListener("keydown", markKeyboardEdit, true);
       void crepe.destroy();
     };
   }, []);
 
-  return (
+  useEffect(() => {
+    const crepe = crepeRef.current;
+    if (value === lastEditorValueRef.current) {
+      lastEditorValueRef.current = undefined;
+      return;
+    }
+    const visualValue = preserveVisualLineBreaks(value);
+    if (!crepe || crepe.getMarkdown() === visualValue) return;
+    // Keep programmatic changes (for example an accepted AI suggestion) in
+    // the same ProseMirror history, so Ctrl+Z can undo them as well.
+    crepe.editor.action(replaceAll(visualValue));
+  }, [value]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!editorReady || !root || initialScrollOffset === undefined) return;
+    const visibleLine = markdownToVisibleText(markdownLineNearOffset(value, initialScrollOffset));
+    const editorRoot = root.querySelector<HTMLElement>(".ProseMirror");
+    if (!visibleLine || !editorRoot) return;
+    const range = findUniqueTextRange(editorRoot, [visibleLine]);
+    const block = range ? closestSuggestionBlock(range.startContainer, root) : undefined;
+    let stopped = false;
+    const alignTopVisibleContent = () => {
+      if (stopped) return;
+      const canvas = root.closest<HTMLElement>(".editor-canvas");
+      if (!canvas) return;
+      if (block) {
+        const canvasRect = canvas.getBoundingClientRect();
+        const blockRect = block.getBoundingClientRect();
+        canvas.scrollTop = Math.max(0, canvas.scrollTop + blockRect.top - canvasRect.top - 52);
+        return;
+      }
+      const available = Math.max(0, canvas.scrollHeight - canvas.clientHeight);
+      canvas.scrollTop = available * Math.max(0, Math.min(1, initialScrollOffset / Math.max(1, value.length)));
+    };
+    // Milkdown, fonts and article images can complete layout at different
+    // moments. Re-align briefly while the newly mounted view settles. Any
+    // deliberate wheel/pointer interaction cancels the remaining passes.
+    const canvas = root.closest<HTMLElement>(".editor-canvas");
+    const stopAlignment = () => { stopped = true; };
+    canvas?.addEventListener("wheel", stopAlignment, { once: true });
+    canvas?.addEventListener("pointerdown", stopAlignment, { once: true });
+    const frame = requestAnimationFrame(() => requestAnimationFrame(alignTopVisibleContent));
+    const timers = [120, 360, 800].map((delay) => window.setTimeout(alignTopVisibleContent, delay));
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      timers.forEach((timer) => clearTimeout(timer));
+      canvas?.removeEventListener("wheel", stopAlignment);
+      canvas?.removeEventListener("pointerdown", stopAlignment);
+    };
+  }, [editorReady, initialScrollOffset]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.classList.remove("has-awen-suggestions");
+    root.querySelectorAll(".awen-inline-suggestion").forEach((node) => node.remove());
+    if (suggestions.length === 0) return;
+    const editorRoot = root.querySelector<HTMLElement>(".ProseMirror");
+    if (!editorRoot) return;
+    const adjustedBlocks = new Map<HTMLElement, string>();
+    for (const suggestion of suggestions) {
+      // Suggestions are anchored in Markdown, whereas the visual editor
+      // renders headings, emphasis and links without their Markdown marks.
+      // Match either form, and support text that spans several DOM nodes.
+      const original = suggestion.original.trim();
+      const renderedOriginal = markdownToVisibleText(original);
+      const range = findUniqueTextRange(editorRoot, [original, renderedOriginal]);
+      if (!range) continue;
+      const targetBlock = closestSuggestionBlock(range.startContainer, root);
+      if (!targetBlock) continue;
+      const rect = targetBlock.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const bubble = document.createElement("div");
+      bubble.className = "awen-inline-suggestion";
+      // Unlike a comment rail, an IDE-style suggestion belongs immediately
+      // after the paragraph it changes. Reserve vertical room below that
+      // paragraph so the card never covers the following text.
+      bubble.style.top = `${Math.max(0, rect.bottom - rootRect.top + 8)}px`;
+      bubble.style.left = `${Math.max(12, rect.left - rootRect.left)}px`;
+      bubble.innerHTML = `<strong>阿文建议</strong><span>${escapeHtml(suggestion.reason)}</span><div><button type="button" data-action="accept">同意</button><button type="button" data-action="reject">拒绝</button></div>`;
+      bubble.querySelector<HTMLButtonElement>("[data-action='accept']")?.addEventListener("click", () => suggestionCallbacksRef.current.onAcceptSuggestion?.(suggestion.id));
+      bubble.querySelector<HTMLButtonElement>("[data-action='reject']")?.addEventListener("click", () => suggestionCallbacksRef.current.onRejectSuggestion?.(suggestion.id));
+      root.appendChild(bubble);
+      if (!adjustedBlocks.has(targetBlock)) adjustedBlocks.set(targetBlock, targetBlock.style.marginBottom);
+      const currentBottom = Number.parseFloat(getComputedStyle(targetBlock).marginBottom) || 0;
+      targetBlock.style.marginBottom = `${currentBottom + bubble.offsetHeight + 12}px`;
+      targetBlock.classList.add("has-awen-suggestion-target");
+    }
+    return () => {
+      root.querySelectorAll(".awen-inline-suggestion").forEach((node) => node.remove());
+      adjustedBlocks.forEach((marginBottom, block) => {
+        block.style.marginBottom = marginBottom;
+        block.classList.remove("has-awen-suggestion-target");
+      });
+    };
+  }, [suggestions, editorReady]);
+
+  return <div className="visual-editor-shell">
+    <div className="editor-inline-mode-switch editor-mode-switch" aria-label="编辑模式">
+      <button type="button" className="active">所见即所得</button>
+      <button type="button" onClick={() => onSwitchToMarkdown?.(readVisibleMarkdownOffset(rootRef.current, crepeRef.current, value))}>Markdown 原文</button>
+    </div>
     <div
       className="visual-markdown-editor"
       style={{ minHeight }}
@@ -133,7 +290,175 @@ export function VisualMarkdownEditor({
       onMouseUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
       onKeyUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
     />
+  </div>;
+}
+
+function readVisibleMarkdownOffset(root: HTMLElement | null, crepe: Crepe | null, markdown: string): number {
+  if (!root || !crepe) return 0;
+  const canvas = root.closest<HTMLElement>(".editor-canvas");
+  const proseMirror = root.querySelector<HTMLElement>(".ProseMirror");
+  if (!canvas || !proseMirror) return 0;
+  const canvasRect = canvas.getBoundingClientRect();
+  const editorRect = proseMirror.getBoundingClientRect();
+  const visibleTop = canvasRect.top + 52;
+  const blocks = [...proseMirror.children].filter((item): item is HTMLElement => item instanceof HTMLElement);
+  const visibleBlock = blocks.find((block) => block.getBoundingClientRect().bottom > visibleTop);
+  const expectedOffset = visibleBlock
+    ? Math.round(markdown.length * Math.max(0, blocks.indexOf(visibleBlock)) / Math.max(1, blocks.length - 1))
+    : Math.round(markdown.length * canvas.scrollTop / Math.max(1, canvas.scrollHeight - canvas.clientHeight));
+  const visibleText = visibleBlock?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  const matchedOffset = markdownOffsetForVisibleText(markdown, visibleText, expectedOffset);
+  if (matchedOffset !== undefined) return matchedOffset;
+
+  const point = crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    return view.posAtCoords({
+      left: Math.max(editorRect.left + 16, canvasRect.left + 16),
+      top: Math.max(editorRect.top + 8, visibleTop)
+    });
+  });
+  if (!point) {
+    const available = Math.max(1, canvas.scrollHeight - canvas.clientHeight);
+    return Math.round(markdown.length * canvas.scrollTop / available);
+  }
+  return crepe.editor.action((ctx) => {
+    const view = ctx.get(editorViewCtx);
+    const serializer = ctx.get(serializerCtx);
+    const slice = view.state.doc.slice(0, point.pos);
+    const wrapper = view.state.schema.topNodeType.createAndFill(null, slice.content);
+    return Math.min(markdown.length, wrapper ? serializer(wrapper).length : Math.round(markdown.length * point.pos / Math.max(1, view.state.doc.content.size)));
+  });
+}
+
+function markdownOffsetForVisibleText(markdown: string, visibleText: string, expectedOffset: number): number | undefined {
+  if (visibleText.length < 2) return undefined;
+  const candidates: number[] = [];
+  let offset = 0;
+  for (const line of markdown.split("\n")) {
+    const renderedLine = markdownToVisibleText(line);
+    if (renderedLine.length >= 2 && (visibleText.startsWith(renderedLine) || renderedLine.startsWith(visibleText))) candidates.push(offset);
+    offset += line.length + 1;
+  }
+  if (!candidates.length) return undefined;
+  return candidates.reduce((best, candidate) =>
+    Math.abs(candidate - expectedOffset) < Math.abs(best - expectedOffset) ? candidate : best
   );
+}
+
+function markdownLineNearOffset(markdown: string, offset: number): string {
+  const safeOffset = Math.max(0, Math.min(markdown.length, offset));
+  const before = markdown.lastIndexOf("\n", safeOffset);
+  const after = markdown.indexOf("\n", safeOffset);
+  const current = markdown.slice(before + 1, after < 0 ? markdown.length : after).trim();
+  if (markdownToVisibleText(current).length >= 4) return current;
+  const remaining = markdown.slice(after < 0 ? safeOffset : after + 1).split("\n");
+  return remaining.find((line) => markdownToVisibleText(line).length >= 4) ?? current;
+}
+
+function findUniqueTextRange(root: HTMLElement, candidates: string[]): Range | undefined {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let node: Text | null;
+  while ((node = walker.nextNode() as Text | null)) nodes.push(node);
+  const source = nodes.map((item) => item.data).join("");
+
+  for (const candidate of [...new Set(candidates.map((item) => item.trim()).filter(Boolean))]) {
+    const exactStart = uniqueTextStart(source, candidate);
+    if (exactStart >= 0) return rangeFromTextNodes(nodes, exactStart, exactStart + candidate.length);
+
+    const normalizedSource = normalizeTextWithOffsets(source);
+    const normalizedCandidate = candidate.replace(/\s+/g, " ").trim();
+    const normalizedStart = uniqueTextStart(normalizedSource.text, normalizedCandidate);
+    if (normalizedStart >= 0) {
+      const rawStart = normalizedSource.starts[normalizedStart];
+      const rawEnd = normalizedSource.ends[normalizedStart + normalizedCandidate.length - 1];
+      return rangeFromTextNodes(nodes, rawStart, rawEnd);
+    }
+  }
+  return undefined;
+}
+
+function uniqueTextStart(haystack: string, needle: string): number {
+  if (!needle) return -1;
+  const start = haystack.indexOf(needle);
+  return start >= 0 && haystack.indexOf(needle, start + needle.length) < 0 ? start : -1;
+}
+
+function rangeFromTextNodes(nodes: Text[], start: number, end: number): Range | undefined {
+  let offset = 0;
+  let startNode: Text | undefined;
+  let startOffset = 0;
+  for (const node of nodes) {
+    const nodeEnd = offset + node.data.length;
+    if (!startNode && start >= offset && start <= nodeEnd) {
+      startNode = node;
+      startOffset = start - offset;
+    }
+    if (startNode && end >= offset && end <= nodeEnd) {
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.setEnd(node, end - offset);
+      return range;
+    }
+    offset = nodeEnd;
+  }
+  return undefined;
+}
+
+function normalizeTextWithOffsets(value: string): { text: string; starts: number[]; ends: number[] } {
+  let text = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (/\s/.test(character)) {
+      if (!text || text.endsWith(" ")) {
+        if (text.endsWith(" ")) ends[ends.length - 1] = index + 1;
+        continue;
+      }
+      text += " ";
+    } else {
+      text += character;
+    }
+    starts.push(index);
+    ends.push(index + 1);
+  }
+  return { text, starts, ends };
+}
+
+function markdownToVisibleText(markdown: string): string {
+  return markdown
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*(?:[-+*]|\d+\.)\s+/gm, "")
+    .replace(/!?(?:\[([^\]]*)\]\([^)]*\))/g, "$1")
+    .replace(/(`+)(.*?)\1/g, "$2")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function closestSuggestionBlock(node: Node, root: HTMLElement): HTMLElement | undefined {
+  const element = node.nodeType === Node.ELEMENT_NODE ? node as HTMLElement : node.parentElement;
+  const block = element?.closest("p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, table");
+  return block instanceof HTMLElement && root.contains(block) ? block : undefined;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character] ?? character));
+}
+
+function preserveVisualLineBreaks(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let inFence = false;
+  return lines.map((line, index) => {
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    const next = lines[index + 1];
+    if (inFence || next === undefined || !line.trim() || !next.trim()) return line;
+    // Existing hard breaks, list items, block syntax and front matter should
+    // retain their native Markdown meaning.
+    if (/ {2,}$|\\$/.test(line) || /^\s*(?:[-+*]|\d+\.)\s|^\s*(?:>|#{1,6}\s|---$|\*\*\*$)/.test(line) || /^\s*(?:[-+*]|\d+\.)\s/.test(next)) return line;
+    return `${line}  `;
+  }).join("\n");
 }
 
 function reportSelection(root: HTMLDivElement | null, crepe: Crepe | null, callback?: (selection?: VisualMarkdownSelection) => void): void {

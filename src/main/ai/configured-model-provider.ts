@@ -34,8 +34,10 @@ export class ConfiguredModelProvider implements ModelProvider {
       ...request,
       prompt: `请遵循以下 ContentFerry 技能说明：\n\n${instructions}\n\n本次任务：\n${request.prompt}`
     };
-    if (provider === "openai_codex") return this.codexProvider.generateStructured(enrichedRequest);
-    if (provider === "openai" || provider === "openrouter") return this.generateOpenAiCompatible(provider, enrichedRequest);
+    if (provider === "openai_codex") {
+      return this.codexProvider.generateStructured({ ...enrichedRequest, modelId: this.connections.get("openai_codex").modelId });
+    }
+    if (provider === "openai" || provider === "openrouter" || provider === "nous") return this.generateOpenAiCompatible(provider, enrichedRequest);
     if (provider === "github_copilot") return this.generateWithCopilot(enrichedRequest);
     throw new ModelProviderUnavailableError(`“${skill.name}”当前选择的 ${provider} 不能用于文本生成。`);
   }
@@ -48,7 +50,7 @@ export class ConfiguredModelProvider implements ModelProvider {
     const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${instructions}\n\n本次任务：\n${request.prompt}` };
     if (skill.provider === "openai_codex" || !skill.provider) {
       if (!this.codexProvider.generateMarkdownStream) throw new ModelProviderUnavailableError("当前 Codex 连接不支持流式生成。");
-      return this.codexProvider.generateMarkdownStream(enriched);
+      return this.codexProvider.generateMarkdownStream({ ...enriched, modelId: this.connections.get("openai_codex").modelId });
     }
     // Other providers retain the existing structured path for now. The UI still
     // remains cancellable; their final Markdown is appended as one completed chunk.
@@ -65,7 +67,7 @@ export class ConfiguredModelProvider implements ModelProvider {
   }
 
   private async generateOpenAiCompatible<T>(
-    provider: "openai" | "openrouter",
+    provider: "openai" | "openrouter" | "nous",
     request: GenerateStructuredRequest<T>
   ): Promise<GenerateStructuredResult<T>> {
     const connection = this.connections.get(provider);

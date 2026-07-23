@@ -5,6 +5,7 @@ export const modelProviderIds = [
   "openai_codex",
   "openai",
   "openrouter",
+  "nous",
   "github_copilot",
   "modelscope",
   "gemini"
@@ -26,6 +27,7 @@ const defaults: Record<ModelProviderId, Omit<ModelConnection, "credentialConfigu
   openai_codex: { provider: "openai_codex", displayName: "OpenAI Codex", modelId: "", baseUrl: "", proxyUrl: "", enabled: true },
   openai: { provider: "openai", displayName: "OpenAI API", modelId: "gpt-5-mini", baseUrl: "https://api.openai.com/v1", proxyUrl: "", enabled: true },
   openrouter: { provider: "openrouter", displayName: "OpenRouter", modelId: "openai/gpt-5-mini", baseUrl: "https://openrouter.ai/api/v1", proxyUrl: "", enabled: true },
+  nous: { provider: "nous", displayName: "Nous Research Portal", modelId: "stepfun/step-3.7-flash:free", baseUrl: "https://api.portal.ai/v1", proxyUrl: "", enabled: true },
   github_copilot: { provider: "github_copilot", displayName: "GitHub Copilot", modelId: "gpt-5", baseUrl: "", proxyUrl: "", enabled: true },
   modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Qwen/Qwen-Image-2512", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true },
   gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "http://127.0.0.1:7890", enabled: true }

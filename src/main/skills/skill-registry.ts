@@ -12,6 +12,12 @@ export interface ManagedSkill {
   provider: ModelProviderId | null;
   markdown: string;
   filePath: string;
+  files: SkillFileSummary[];
+}
+
+export interface SkillFileSummary {
+  relativePath: string;
+  size: number;
 }
 
 const legacyHumanizeSelectionMarkdown = `# 选中文本去 AI 味
@@ -241,19 +247,61 @@ const humanizeSelectionReferences: Record<string, string> = {
 - 可替换：不需要清理说明文字，Markdown 有效，与前后文衔接自然。`
 };
 
-type BuiltInSkillDefinition = Omit<ManagedSkill, "enabled" | "provider" | "filePath"> & {
+const awenAssistantReferences: Record<string, string> = {
+  "memory-policy.md": `# 阿文的记忆策略
+
+阿文的记忆分为两层：
+
+1. **本篇会话**：保存这篇文章内的提问与回答，下一次打开仍可继续讨论。
+2. **本文记忆**：阿文会在每次会话结束时自动提炼可复用的写作偏好、确认事实、文章决定和未解决事项，而不是保存完整对话。
+3. **写作能力记忆**：在同一账号的多篇文章之间，仅沉淀反复验证有效的表达偏好、目标读者反馈、结构取舍和修改策略，用来让后续建议越来越贴近作者。
+
+不得把猜测、临时草稿、未核实的事实、账号密码、访问凭证或跨文章的个人信息自动写入记忆。本文记忆只对当前文章生效；写作能力记忆只记录稳定、可复用的写作规律，不记录文章事实或私人信息。
+
+当发现用户明确给出可复用偏好、确认了某项文章决定或留下待解决事项时，在回答之外产出一条简短记忆摘要。只有这些重要内容才可摘要；记忆应具体、可执行、可撤销，例如“本篇文章标题避免使用夸张反问句”。`
+};
+
+type BuiltInSkillDefinition = Omit<ManagedSkill, "enabled" | "provider" | "filePath" | "files"> & {
   defaultProvider: ModelProviderId | null;
   references?: Record<string, string>;
+  legacyMarkdown?: string[];
 };
 
 const builtIns: BuiltInSkillDefinition[] = [
+  {
+    id: "awen-assistant",
+    name: "阿文 · 文章顾问",
+    description: "以当前文章、本文会话与自动提炼的本文记忆为上下文，提供选题、结构、表达与发布准备建议。",
+    category: "创作",
+    defaultProvider: "openai_codex",
+    references: awenAssistantReferences,
+    markdown: `---
+name: awen-assistant
+description: 专业自媒体助理“阿文”。围绕当前文章提供具体、克制、可执行的建议，并使用可控的本文记忆连续协作。
+---
+
+# 阿文 · 专业自媒体助理
+
+## 角色
+
+你叫阿文，是作者的专业自媒体助理。你熟悉公众号和技术内容创作，但不替作者伪造经验、案例、数据或来源。你可以帮助判断选题角度、文章结构、论证缺口、读者理解成本、标题、摘要、段落表达和发布准备。
+
+## 回答方式
+
+1. 先直接回答作者的问题，再给最少必要的理由和可执行下一步；不要空泛鼓励或套话。
+2. 当前文章是唯一事实来源；信息不足时明确指出需要作者确认的内容，不要自行补全事实。
+3. 保持中文自然、专业，避免“赋能、闭环、抓手、值得注意的是”等模板化表达。
+4. 当作者要求改写时，说明建议改哪里、为什么；除非作者明确要求，不直接覆盖正文。
+5. 阅读 [记忆策略](./references/memory-policy.md)，严格遵守本文会话和本文记忆边界。
+`
+  },
   {
     id: "wechat-writing",
     name: "微信公众号文章撰写",
     description: "结合账号定位、创作简报和资料，生成适合微信公众号阅读的文章。",
     category: "创作",
     defaultProvider: "openai_codex",
-    markdown: `# 微信公众号文章撰写
+    legacyMarkdown: [`# 微信公众号文章撰写
 
 ## 目标
 
@@ -265,6 +313,27 @@ const builtIns: BuiltInSkillDefinition[] = [
 2. 先识别还缺少的关键资料，再形成提纲。
 3. 正文避免空泛套话，事实、数据和引用标记来源或待核查项。
 4. 保留作者个人判断与经历，不把文章写成无立场的资料汇总。
+`],
+    references: humanizeSelectionReferences,
+    markdown: `---
+name: wechat-writing
+description: 根据账号定位、创作简报、用户观点和资料撰写微信公众号文章；适用于提纲和正文生成，并在保持事实、Markdown、作者立场与移动端阅读体验的同时降低模板化和 AI 写作痕迹。
+---
+
+# 微信公众号文章撰写
+
+## 工作流
+
+1. 账号定位与主题一致时不重复追问；材料不足且会影响事实或核心观点时才补问。
+2. 先锁定用户观点、事实、来源和待核查项，再组织提纲与正文。
+3. 读取 [保护项](./references/protected-spans.md)，不得虚构经历、案例、数据或引用。
+4. 读取 [公众号与技术文章模式](./references/public-writing-patterns.md)，从初稿开始减少套话、伪洞见、流水线语气和机械结构，而不是写完后只做同义词替换。
+5. 长文读取 [长文策略](./references/long-form.md)，保留论证过程、作者节奏与必要重复。
+6. 交付前按 [回读清单](./references/quality-check.md) 做保真和自然度检查。
+
+## 输出要求
+
+文章应有明确主体、动作、条件和作者判断，适合手机阅读但不制造金句、夸张标题或强行口语。保留有效 Markdown；无法核实的重要内容标记【待核查】。只输出用户当前要求的提纲或正文，不附写作过程说明。
 `
   },
   {
@@ -273,9 +342,27 @@ const builtIns: BuiltInSkillDefinition[] = [
     description: "按目标平台的内容形态和读者习惯大幅改写渠道稿。",
     category: "改写",
     defaultProvider: "openai_codex",
-    markdown: `# 平台稿改写
+    legacyMarkdown: [`# 平台稿改写
 
 根据目标平台的用户、内容结构和分发特点重写文章。允许调整标题、结构、案例和表达顺序，但不得改变核心事实与作者原意。自有网站与微信公众号可以同稿，其他平台稿应避免机械复制。
+`],
+    references: humanizeSelectionReferences,
+    markdown: `---
+name: platform-rewrite
+description: 根据目标平台用户、内容结构和分发特点大幅改写渠道稿；适用于微信公众号、CSDN 等平台适配，同时保护事实、来源、Markdown 与作者原意并降低模板化和 AI 写作痕迹。
+---
+
+# 平台稿改写
+
+## 工作流
+
+1. 先确认目标平台、读者和内容用途，再决定标题、结构、案例顺序与表达幅度。
+2. 读取 [保护项](./references/protected-spans.md)，核心事实、数字、来源、代码、链接和作者立场不得漂移。
+3. 读取 [公众号与技术文章模式](./references/public-writing-patterns.md)，避免把原稿改成另一套 AI 模板；平台化不等于堆口头禅、热词或夸张钩子。
+4. 完整文章读取 [长文策略](./references/long-form.md)，允许大幅重组但必须保留独有信息和论证链。
+5. 按 [回读清单](./references/quality-check.md) 检查事实保真、语域一致和残留套路感。
+
+自有网站与微信公众号可以同稿；其他平台可大幅重写以适配用户和分发特点。不得凭空补案例或假装作者拥有原文没有的经历。只输出可直接使用的平台稿。
 `
   },
   {
@@ -306,7 +393,7 @@ const builtIns: BuiltInSkillDefinition[] = [
     description: "根据文章上下文，对选中文字执行改写、扩写、缩写或补充案例，结果可预览后替换。",
     category: "改写",
     defaultProvider: "openai_codex",
-    markdown: `# 选区 AI 编辑
+    legacyMarkdown: [`# 选区 AI 编辑
 
 ## 目标
 
@@ -317,7 +404,25 @@ const builtIns: BuiltInSkillDefinition[] = [
 1. 保留原文中的事实、数据、专有名词、链接、引用和 Markdown 结构，不得凭空添加信息。
 2. 与文章的目标读者、语气和上下文自然衔接，不重复前后文已经表达的内容。
 3. “改写”强调清楚、自然和准确；“扩写”补充解释与推理，不灌水；“缩写”保留核心信息；“补充案例”只能基于用户提供或上下文中已有的真实案例，信息不足时用【需要作者补充案例】标记。
-4. 只返回替换后的选区文本，不输出说明、引号或代码围栏。`
+4. 只返回替换后的选区文本，不输出说明、引号或代码围栏。`],
+    references: humanizeSelectionReferences,
+    markdown: `---
+name: selection-edit
+description: 结合文章上下文对选中文字执行改写、扩写、缩写或补充案例；输出可直接替换原选区，并保护事实、Markdown、语域和作者立场，避免产生新的 AI 套路感。
+---
+
+# 选区 AI 编辑
+
+## 工作流
+
+1. 只处理选区；标题、前文和后文只用于判断衔接，不得复述到输出。
+2. 读取 [保护项](./references/protected-spans.md)，保留事实、数字、术语、链接、引用和 Markdown。
+3. 读取 [公众号与技术文章模式](./references/public-writing-patterns.md)，任何操作都不得新增模板化开场、空总结、伪洞见或流水线自媒体语气。
+4. 多段或长选区读取 [长文策略](./references/long-form.md)，不得把“改写”或“缩写”误做成丢失独有信息的摘要。
+5. 按 [回读清单](./references/quality-check.md) 检查后只返回替换文本。
+
+“扩写”只补原文可以推出的必要解释；“补充案例”只能使用上下文已有的真实案例，材料不足时写【需要作者补充案例】。不要附说明、评分、引号或代码围栏。
+`
   },
   {
     id: "humanize-selection",
@@ -424,20 +529,39 @@ export class SkillRegistry {
       // allowed a model setting to be saved here; ignore that stale setting.
       provider: isBrowserAutomationSkill(skillId) ? null : (setting?.provider ?? definition.defaultProvider),
       markdown: fs.readFileSync(filePath, "utf8"),
-      filePath
+      filePath,
+      files: this.listFiles(skillId)
     };
+  }
+
+  readFile(skillId: string, relativePath: string): { relativePath: string; content: string; size: number } {
+    this.getDefinition(skillId);
+    const target = this.editableFilePath(skillId, relativePath);
+    const content = fs.readFileSync(target, "utf8");
+    return { relativePath: normalizeSkillRelativePath(relativePath), content, size: Buffer.byteLength(content, "utf8") };
+  }
+
+  saveFile(skillId: string, relativePath: string, content: string): { relativePath: string; content: string; size: number } {
+    this.getDefinition(skillId);
+    if (Buffer.byteLength(content, "utf8") > 200_000) throw new Error("技能文件不能超过 200 KB。");
+    const target = this.editableFilePath(skillId, relativePath);
+    const normalized = content.replace(/\r\n/g, "\n").trimEnd() + "\n";
+    const temporary = `${target}.tmp`;
+    fs.writeFileSync(temporary, normalized, "utf8");
+    fs.renameSync(temporary, target);
+    return { relativePath: normalizeSkillRelativePath(relativePath), content: normalized, size: Buffer.byteLength(normalized, "utf8") };
   }
 
   instructionsFor(skillId: string, taskPrompt: string): string {
     const skill = this.get(skillId);
-    if (skillId !== "humanize-selection" || !skill.markdown.includes("./references/")) return skill.markdown;
-
-    const referenceNames = ["protected-spans.md", "public-writing-patterns.md", "quality-check.md"];
-    if (selectedTextLength(taskPrompt) >= 1_000 || /保长度|别缩水|一句不删|尽量原样/.test(taskPrompt)) {
-      referenceNames.splice(2, 0, "long-form.md");
-    }
+    const referenceNames = [...skill.markdown.matchAll(/\.\/references\/([a-z0-9-]+\.md)/gi)].map((match) => match[1]);
+    if (referenceNames.length === 0) return skill.markdown;
+    const shouldLoadLongForm = skillId !== "humanize-selection"
+      || selectedTextLength(taskPrompt) >= 1_000
+      || /保长度|别缩水|一句不删|尽量原样/.test(taskPrompt);
+    const selectedReferences = [...new Set(referenceNames)].filter((name) => name !== "long-form.md" || shouldLoadLongForm);
     const referenceDirectory = path.join(this.rootDirectory, skillId, "references");
-    const references = referenceNames.flatMap((name) => {
+    const references = selectedReferences.flatMap((name) => {
       const target = path.join(referenceDirectory, name);
       return fs.existsSync(target)
         ? [`\n<!-- 已按当前任务加载 references/${name} -->\n${fs.readFileSync(target, "utf8").trim()}`]
@@ -480,6 +604,9 @@ export class SkillRegistry {
           fs.writeFileSync(target, definition.markdown, "utf8");
         }
       }
+      if (definition.legacyMarkdown?.some((legacy) => normalizeMarkdown(fs.readFileSync(target, "utf8")) === normalizeMarkdown(legacy))) {
+        fs.writeFileSync(target, definition.markdown, "utf8");
+      }
       if (definition.references) {
         const referenceDirectory = path.join(directory, "references");
         fs.mkdirSync(referenceDirectory, { recursive: true });
@@ -487,6 +614,11 @@ export class SkillRegistry {
           if (!/^[a-z0-9-]+\.md$/.test(name)) throw new Error("内置技能引用文件名不合法。");
           const referencePath = path.join(referenceDirectory, name);
           if (!fs.existsSync(referencePath)) fs.writeFileSync(referencePath, markdown.trimEnd() + "\n", "utf8");
+          // Upgrade only the first shipped 阿文 memory policy. Custom edits are
+          // preserved; the legacy text is recognizable by this exact phrase.
+          else if (definition.id === "awen-assistant" && name === "memory-policy.md" && (fs.readFileSync(referencePath, "utf8").includes("只保存作者明确点击“记住此建议”") || fs.readFileSync(referencePath, "utf8").includes("阿文会在每次会话结束时自动提炼"))) {
+            fs.writeFileSync(referencePath, markdown.trimEnd() + "\n", "utf8");
+          }
         }
       }
     }
@@ -495,6 +627,47 @@ export class SkillRegistry {
   private filePath(skillId: string): string {
     if (!/^[a-z0-9-]+$/.test(skillId)) throw new Error("技能 ID 不合法。");
     return path.join(this.rootDirectory, skillId, "SKILL.md");
+  }
+
+  private getDefinition(skillId: string): BuiltInSkillDefinition {
+    const definition = builtIns.find((item) => item.id === skillId);
+    if (!definition) throw new Error("找不到这个技能。");
+    return definition;
+  }
+
+  private listFiles(skillId: string): SkillFileSummary[] {
+    const root = path.join(this.rootDirectory, skillId);
+    const files: SkillFileSummary[] = [];
+    const visit = (directory: string) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue;
+        const target = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          visit(target);
+          continue;
+        }
+        if (!entry.isFile() || !isEditableSkillFile(entry.name)) continue;
+        files.push({ relativePath: path.relative(root, target).split(path.sep).join("/"), size: fs.statSync(target).size });
+        if (files.length >= 200) return;
+      }
+    };
+    visit(root);
+    return files.sort((left, right) => left.relativePath === "SKILL.md" ? -1 : right.relativePath === "SKILL.md" ? 1 : left.relativePath.localeCompare(right.relativePath));
+  }
+
+  private editableFilePath(skillId: string, relativePath: string): string {
+    const normalized = normalizeSkillRelativePath(relativePath);
+    if (!normalized || normalized.split("/").some((segment) => segment === ".." || segment === ".") || !isEditableSkillFile(normalized)) {
+      throw new Error("技能文件路径不合法或不是可编辑文本文件。");
+    }
+    const root = path.resolve(this.rootDirectory, skillId);
+    const target = path.resolve(root, ...normalized.split("/"));
+    if (!target.startsWith(`${root}${path.sep}`)) throw new Error("技能文件路径越出了技能目录。");
+    if (!fs.existsSync(target) || !fs.lstatSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new Error("找不到这个技能文件。");
+    const realRoot = fs.realpathSync(root);
+    const realTarget = fs.realpathSync(target);
+    if (!realTarget.startsWith(`${realRoot}${path.sep}`)) throw new Error("技能文件路径越出了技能目录。");
+    return target;
   }
 }
 
@@ -509,4 +682,12 @@ function normalizeMarkdown(value: string): string {
 function selectedTextLength(prompt: string): number {
   const selected = /需要处理的选区：\s*\n([\s\S]*?)\n\s*选区后文：/.exec(prompt)?.[1] ?? "";
   return Array.from(selected.trim()).length;
+}
+
+function normalizeSkillRelativePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function isEditableSkillFile(filePath: string): boolean {
+  return /(?:^|\/)(?:SKILL\.md|[^/]+\.(?:md|markdown|txt|yaml|yml|json|js|mjs|cjs|ts|py|ps1|sh))$/i.test(filePath.replace(/\\/g, "/"));
 }

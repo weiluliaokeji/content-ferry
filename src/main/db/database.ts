@@ -166,6 +166,31 @@ function initialiseDatabase(db: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS article_chat_threads (
+      context_key TEXT PRIMARY KEY,
+      memory TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS article_chat_messages (
+      id TEXT PRIMARY KEY,
+      context_key TEXT NOT NULL REFERENCES article_chat_threads(context_key) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      memory_suggestion TEXT NOT NULL DEFAULT '',
+      suggestions_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS writing_memories (
+      scope_key TEXT PRIMARY KEY,
+      memory TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_article_chat_messages_context_created
+      ON article_chat_messages(context_key, created_at ASC);
+
     CREATE TABLE IF NOT EXISTS content_reviews (
       project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -262,6 +287,11 @@ function initialiseDatabase(db: Database.Database): void {
   const articleQualityColumns = db.prepare("PRAGMA table_info(article_quality_checks)").all() as Array<{ name: string }>;
   if (!articleQualityColumns.some((column) => column.name === "ai_check_report")) {
     db.exec("ALTER TABLE article_quality_checks ADD COLUMN ai_check_report TEXT NOT NULL DEFAULT ''");
+  }
+
+  const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;
+  if (!articleChatColumns.some((column) => column.name === "suggestions_json")) {
+    db.exec("ALTER TABLE article_chat_messages ADD COLUMN suggestions_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   const publishJobColumns = db.prepare("PRAGMA table_info(wechat_publish_jobs)").all() as Array<{ name: string }>;

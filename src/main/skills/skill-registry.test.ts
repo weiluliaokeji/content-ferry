@@ -14,6 +14,29 @@ afterEach(() => {
 });
 
 describe("SkillRegistry built-in migrations", () => {
+  it("shares the human-writing safeguards with writing and rewrite skills", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-writing-skills-"));
+    temporaryDirectories.push(root);
+    const database = openInMemoryDatabase();
+    try {
+      const registry = new SkillRegistry(database.connection, root);
+      for (const skillId of ["wechat-writing", "platform-rewrite", "selection-edit"]) {
+        const skill = registry.get(skillId);
+        expect(skill.markdown).toContain("./references/protected-spans.md");
+        expect(skill.markdown).toContain("./references/public-writing-patterns.md");
+        expect(skill.files).toEqual(expect.arrayContaining([
+          expect.objectContaining({ relativePath: "references/quality-check.md" })
+        ]));
+        const instructions = registry.instructionsFor(skillId, "请处理这篇文章");
+        expect(instructions).toContain("# 保护项");
+        expect(instructions).toContain("# 公众号与技术文章模式");
+        expect(instructions).toContain("# 回读清单");
+      }
+    } finally {
+      database.close();
+    }
+  });
+
   it("upgrades the untouched legacy humanize skill", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-skill-migration-"));
     temporaryDirectories.push(root);

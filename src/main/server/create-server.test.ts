@@ -62,6 +62,25 @@ describe("local API scaffold", () => {
       expect.objectContaining({ id: "article-summary", name: "文章摘要生成" }),
       expect.objectContaining({ id: "cover-prompt-generation", name: "封面提示词生成" })
     ]));
+    const humanize = listed.json().items.find((item: { id: string }) => item.id === "humanize-selection");
+    expect(humanize.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relativePath: "SKILL.md" }),
+      expect.objectContaining({ relativePath: "references/protected-spans.md" })
+    ]));
+    const reference = await server.inject({
+      method: "GET",
+      url: "/api/skills/humanize-selection/file?path=references%2Fprotected-spans.md"
+    });
+    expect(reference.statusCode).toBe(200);
+    expect(reference.json().content).toContain("# 保护项");
+    const savedReference = await server.inject({
+      method: "PUT",
+      url: "/api/skills/humanize-selection/file",
+      payload: { path: "references/protected-spans.md", content: `${reference.json().content}\n用户补充的保护规则。` }
+    });
+    expect(savedReference.statusCode).toBe(200);
+    expect(fs.readFileSync(path.join(skillsDirectory, "humanize-selection", "references", "protected-spans.md"), "utf8"))
+      .toContain("用户补充的保护规则");
 
     const connection = await server.inject({
       method: "PUT",

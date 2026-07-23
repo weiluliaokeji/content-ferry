@@ -1,4 +1,4 @@
-import { FormEvent, lazy, StrictMode, Suspense, type ReactNode, useEffect, useRef, useState } from "react";
+import { FormEvent, lazy, StrictMode, Suspense, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import wenduLogo from "./assets/wendu-icon.png";
@@ -117,7 +117,7 @@ type ArticleSettings = {
   needOpenComment: boolean;
   onlyFansCanComment: boolean;
 };
-type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "github_copilot" | "modelscope" | "gemini";
+type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "github_copilot" | "modelscope" | "gemini";
 type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
   enabled: boolean; credentialConfigured: boolean;
@@ -125,7 +125,11 @@ type ModelConnection = {
 type ManagedSkill = {
   id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片";
   enabled: boolean; provider: ModelProviderId | null; markdown: string; filePath: string;
+  files: Array<{ relativePath: string; size: number }>;
 };
+type SkillFileContent = { relativePath: string; content: string; size: number };
+type ArticleChatSuggestion = { original: string; replacement: string; reason: string };
+type ArticleChatMessage = { id: string; role: "user" | "assistant"; content: string; memorySuggestion: string; suggestions: ArticleChatSuggestion[]; createdAt: string };
 type ZhuqueReport = {
   verdict: string;
   humanPercent: number | null;
@@ -134,6 +138,7 @@ type ZhuqueReport = {
   ratioSource: "official" | "segments";
   segments: Array<{ text: string; kind: "human" | "uncertain" | "ai" }>;
 };
+type ContentAnyReference = { label: string; score: string | null; summary: string; detail: string };
 type RuntimeLogEntry = {
   time: number | null; level: number; message: string; requestId: string; method: string; url: string;
   statusCode: number | null; responseTime: number | null; error: string;
@@ -189,6 +194,7 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
   openai_codex: "OpenAI Codex",
   openai: "OpenAI API",
   openrouter: "OpenRouter",
+  nous: "Nous Research Portal",
   github_copilot: "GitHub Copilot",
   modelscope: "ModelScope",
   gemini: "Google Gemini"
@@ -196,6 +202,19 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
 
 function markdownTitle(markdown: string): string | undefined {
   return markdown.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() || undefined;
+}
+
+function HelpCenter({ onNavigate }: { onNavigate: (view: "dashboard" | "library" | "publish" | "skills" | "accounts" | "logs" | "help") => void }) {
+  return <div className="help-center">
+    <section className="card help-hero"><div><p className="eyebrow">从零开始</p><h2>用文渡完成第一篇文章</h2><p>按下面四步完成配置、创作、检测和发布。不需要先理解工作流或技能。</p></div><button onClick={() => onNavigate("dashboard")}>开始创作</button></section>
+    <section className="help-steps">
+      <article><span>1</span><h3>连接账号与模型</h3><p>先添加微信公众号账号并填写 AppID、AppSecret；在“技能与模型”登录 Codex 或配置其他模型。所有凭证仅保存在本机。</p><button className="text-button" onClick={() => onNavigate("accounts")}>去账号设置</button></article>
+      <article><span>2</span><h3>选择文章库</h3><p>在内容库选择 VitePress 的 <code>docs</code> 目录。文渡会识别文章，草稿也会按 VitePress 格式保存，因此可以继续用 Obsidian 编辑。</p><button className="text-button" onClick={() => onNavigate("library")}>去内容库</button></article>
+      <article><span>3</span><h3>从主题开始写</h3><p>在工作台新建文章，填写主题或资料；阿文可讨论结构，选中文字可改写或去 AI 味。保存后可随时回到文章继续修改。</p><button className="text-button" onClick={() => onNavigate("dashboard")}>去工作台</button></article>
+      <article><span>4</span><h3>检测并发布</h3><p>发布前在编辑器中选段检测，或在准备发布时运行腾讯朱雀 / ContentAny。确认封面、摘要和账号后先创建微信草稿，再根据需要普通发布或群发。</p><button className="text-button" onClick={() => onNavigate("publish")}>去发布中心</button></article>
+    </section>
+    <section className="card help-faq"><h2>常见问题</h2><details><summary>什么是“技能与模型”？</summary><p>技能决定某件事如何完成，例如公众号撰写、去 AI 味和阿文的沟通规则；模型连接决定由哪个大模型执行。可在这里修改 SKILL.md、参考资料和模型选择。</p></details><details><summary>ContentAny 或朱雀需要我手动操作吗？</summary><p>通常文渡会打开可见浏览器、填入正文并自动读取结果。只有登录、验证码或网页变化时，才需要你在浏览器中接管。</p></details><details><summary>文章和会话保存在哪里？</summary><p>文章保存到你配置的 VitePress 文章库；账号设置、发布记录、聊天摘要和日志保存到文渡的数据目录。阿文的记忆按文章分开，不会自动带到其他文章。</p></details><details><summary>遇到错误怎么办？</summary><p>先到“运行日志”按日期和错误筛选，再把相关报错和操作步骤提供出来。涉及公众号发布时，也可在发布中心人工校正最终状态。</p></details></section>
+  </div>;
 }
 
 function App() {
@@ -231,7 +250,7 @@ function App() {
   const [review, setReview] = useState<ContentReview>();
   const [zhuqueReport, setZhuqueReport] = useState<ZhuqueReport>();
   const [zhuqueRunning, setZhuqueRunning] = useState(false);
-  const [activeView, setActiveView] = useState<"dashboard" | "library" | "publish" | "skills" | "accounts" | "logs">("dashboard");
+  const [activeView, setActiveView] = useState<"dashboard" | "library" | "publish" | "skills" | "accounts" | "logs" | "help">("dashboard");
   const [wechatAccount, setWechatAccount] = useState<MediaAccount>();
   const [wechatAppId, setWechatAppId] = useState("");
   const [wechatAppSecret, setWechatAppSecret] = useState("");
@@ -265,6 +284,8 @@ function App() {
   const [skills, setSkills] = useState<ManagedSkill[]>([]);
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([]);
   const [editingSkill, setEditingSkill] = useState<ManagedSkill>();
+  const [editingSkillFile, setEditingSkillFile] = useState<SkillFileContent>();
+  const [savedSkillFileContent, setSavedSkillFileContent] = useState("");
   const [editingConnection, setEditingConnection] = useState<ModelConnection>();
   const [connectionCredential, setConnectionCredential] = useState("");
   const [coverProvider, setCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
@@ -991,20 +1012,58 @@ function App() {
       setSaving(false);
     }
   };
+  const openSkillEditor = (skill: ManagedSkill) => {
+    setEditingSkill(skill);
+    setEditingSkillFile({ relativePath: "SKILL.md", content: skill.markdown, size: new Blob([skill.markdown]).size });
+    setSavedSkillFileContent(skill.markdown);
+    setError("");
+  };
+  const chooseSkillFile = async (relativePath: string) => {
+    if (!editingSkill || editingSkillFile?.relativePath === relativePath) return;
+    if (editingSkillFile && editingSkillFile.content !== savedSkillFileContent && !window.confirm("当前技能文件还有未保存修改。确定放弃并打开其他文件吗？")) return;
+    setSaving(true);
+    try {
+      const file = await request<SkillFileContent>(`/skills/${editingSkill.id}/file?path=${encodeURIComponent(relativePath)}`);
+      setEditingSkillFile(file);
+      setSavedSkillFileContent(file.content);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "技能文件读取失败。");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const closeSkillEditor = () => {
+    if (editingSkillFile && editingSkillFile.content !== savedSkillFileContent && !window.confirm("技能文件还有未保存修改。确定关闭吗？")) return;
+    setEditingSkill(undefined);
+    setEditingSkillFile(undefined);
+    setSavedSkillFileContent("");
+  };
   const saveSkill = async (event: FormEvent) => {
     event.preventDefault();
     if (!editingSkill) return;
     setSaving(true);
     try {
+      const selectedPath = editingSkillFile?.relativePath ?? "SKILL.md";
+      const selectedContent = editingSkillFile?.content ?? editingSkill.markdown;
+      if (selectedPath !== "SKILL.md") {
+        await request<SkillFileContent>(`/skills/${editingSkill.id}/file`, {
+          method: "PUT",
+          body: JSON.stringify({ path: selectedPath, content: selectedContent })
+        });
+      }
       const saved = await request<ManagedSkill>(`/skills/${editingSkill.id}`, {
         method: "PUT",
         body: JSON.stringify({
-          markdown: editingSkill.markdown,
+          markdown: selectedPath === "SKILL.md" ? selectedContent : editingSkill.markdown,
           enabled: editingSkill.enabled,
           provider: editingSkill.provider
         })
       });
       setEditingSkill(saved);
+      const refreshedFile = await request<SkillFileContent>(`/skills/${saved.id}/file?path=${encodeURIComponent(selectedPath)}`);
+      setEditingSkillFile(refreshedFile);
+      setSavedSkillFileContent(refreshedFile.content);
       setError("");
       await loadSkillsAndConnections();
     } catch (cause) {
@@ -1103,7 +1162,7 @@ function App() {
     : activeView === "library" ? "内容库"
       : activeView === "publish" ? "发布中心"
         : activeView === "skills" ? "技能与模型"
-          : activeView === "accounts" ? "账号与连接" : "运行日志";
+          : activeView === "accounts" ? "账号与连接" : activeView === "help" ? "使用帮助" : "运行日志";
   const filteredRuntimeLogs = runtimeLogs;
   const pendingWechatJobs = wechatJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
   const completedWechatJobs = wechatJobs.filter((job) => job.status === "published" || job.status === "cancelled");
@@ -1119,6 +1178,7 @@ function App() {
         <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")}>技能与模型</button>
         <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")}>账号</button>
         <button className={activeView === "logs" ? "active" : ""} onClick={() => setActiveView("logs")}>运行日志</button>
+        <button className={activeView === "help" ? "active" : ""} onClick={() => setActiveView("help")}>使用帮助</button>
         <button disabled>数据 <small>即将开放</small></button>
       </nav>
     </aside>
@@ -1127,10 +1187,12 @@ function App() {
     {error && <p className="error">{error}</p>}
     {error && <Modal title="操作未完成" eyebrow="需要你的注意" onClose={() => setError("")} disabled={false} priority><p className="error error-dialog-message">{error}</p><div className="modal-actions"><button type="button" onClick={() => setError("")}>知道了</button></div></Modal>}
 
+    {activeView === "help" && <HelpCenter onNavigate={setActiveView} />}
+
     {activeView === "skills" && <>
       <section className="card">
         <div className="section-heading"><div><h2>技能</h2><p className="hint compact-hint">每个技能都有独立的 SKILL.md，可修改执行规则、停用，或更换模型连接。</p></div><button className="text-button" onClick={() => void loadSkillsAndConnections()}>刷新</button></div>
-        <div className="skill-grid">{skills.map((skill) => <button type="button" className="skill-card" key={skill.id} onClick={() => { setEditingSkill(skill); setError(""); }}><span><em>{skill.category}</em><strong>{skill.name}</strong></span><p>{skill.description}</p><small>{skill.enabled ? `已启用 · ${providerName(skill.provider)}` : "已停用"}</small></button>)}</div>
+        <div className="skill-grid">{skills.map((skill) => <button type="button" className="skill-card" key={skill.id} onClick={() => openSkillEditor(skill)}><span><em>{skill.category}</em><strong>{skill.name}</strong></span><p>{skill.description}</p><small>{skill.enabled ? `已启用 · ${providerName(skill.provider)}` : "已停用"}</small></button>)}</div>
       </section>
       <section className="card">
         <div className="section-heading"><div><h2>模型连接</h2><p className="hint compact-hint">凭证加密保存在本机，页面只显示是否已配置，不回显明文。</p></div></div>
@@ -1195,16 +1257,19 @@ function App() {
     <section className="card"><h2>添加账号</h2><form onSubmit={addAccount} className="account-form"><label>平台<select value={platform} onChange={(event) => setPlatform(event.target.value as AccountPlatform)}><option value="wechat_official">微信公众号</option><option value="csdn">CSDN</option></select></label><label>账号名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：围炉聊科技" maxLength={100} /></label><button disabled={saving}>{saving ? "正在保存…" : "添加账号"}</button></form></section>
     </>}
 
-    {editingSkill && <Modal onClose={() => setEditingSkill(undefined)} disabled={saving} title={editingSkill.name} eyebrow="技能管理" wide>
+    {editingSkill && <Modal onClose={closeSkillEditor} disabled={saving} title={editingSkill.name} eyebrow="技能管理" wide>
       <form onSubmit={saveSkill} className="profile-form">
         <p className="hint">{editingSkill.description}</p>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={editingSkill.enabled} onChange={(event) => setEditingSkill((current) => current ? { ...current, enabled: event.target.checked } : current)} />启用此技能</label>
-          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "gemini" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
+          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "gemini" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
         </div>
-        <label>SKILL.md<textarea className="skill-markdown-editor" value={editingSkill.markdown} onChange={(event) => setEditingSkill((current) => current ? { ...current, markdown: event.target.value } : current)} spellCheck={false} /></label>
-        <small className="hint">文件位置：{editingSkill.filePath}</small>
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditingSkill(undefined)}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存技能"}</button></div>
+        <div className="skill-file-workspace">
+          <aside><strong>技能文件</strong>{editingSkill.files.map((file) => <button type="button" className={editingSkillFile?.relativePath === file.relativePath ? "active" : ""} onClick={() => void chooseSkillFile(file.relativePath)} key={file.relativePath}><span>{file.relativePath}</span><small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small></button>)}</aside>
+          <label><span>{editingSkillFile?.relativePath ?? "正在读取…"}{editingSkillFile && editingSkillFile.content !== savedSkillFileContent ? " · 未保存" : ""}</span><textarea className="skill-markdown-editor" value={editingSkillFile?.content ?? ""} onChange={(event) => setEditingSkillFile((current) => current ? { ...current, content: event.target.value, size: new Blob([event.target.value]).size } : current)} spellCheck={false} disabled={!editingSkillFile} /></label>
+        </div>
+        <small className="hint">技能目录：{editingSkill.filePath.replace(/[\\/]SKILL\.md$/i, "")}</small>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeSkillEditor}>取消</button><button disabled={saving || !editingSkillFile}>{saving ? "正在保存…" : `保存 ${editingSkillFile?.relativePath ?? "技能文件"}`}</button></div>
       </form>
     </Modal>}
     {editingConnection && <Modal onClose={() => setEditingConnection(undefined)} disabled={saving} title={`配置 ${editingConnection.displayName}`} eyebrow="模型连接">
@@ -1320,6 +1385,8 @@ function ArticleWorkspace({
 }) {
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">(initialRightPanel);
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
+  const [modeScrollOffset, setModeScrollOffset] = useState(0);
+  const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images">("body");
   const [articleSettings, setArticleSettings] = useState<ArticleSettings>({
     author: "",
@@ -1345,10 +1412,19 @@ function ArticleWorkspace({
   const [selectionAiAction, setSelectionAiAction] = useState<"rewrite" | "expand" | "shorten" | "example" | "humanize">("humanize");
   const [selectionAiBusy, setSelectionAiBusy] = useState(false);
   const [selectionAiResult, setSelectionAiResult] = useState("");
+  const [selectionAiOriginal, setSelectionAiOriginal] = useState("");
+  const [selectionComparisonOpen, setSelectionComparisonOpen] = useState(false);
   const [selectionDetectionTool, setSelectionDetectionTool] = useState<"zhuque" | "contentany">("zhuque");
   const [selectionDetectionBusy, setSelectionDetectionBusy] = useState(false);
   const [selectionDetectionResult, setSelectionDetectionResult] = useState("");
+  const [selectionContentAnyReference, setSelectionContentAnyReference] = useState<ContentAnyReference>();
   const [selectionZhuqueReport, setSelectionZhuqueReport] = useState<ZhuqueReport>();
+  const [awenOpen, setAwenOpen] = useState(false);
+  const [awenMessages, setAwenMessages] = useState<ArticleChatMessage[]>([]);
+  const [awenMemory, setAwenMemory] = useState("");
+  const [awenInput, setAwenInput] = useState("");
+  const [awenLoading, setAwenLoading] = useState(false);
+  const [awenLoaded, setAwenLoaded] = useState(false);
   const [savedMarkdown, setSavedMarkdown] = useState(markdown);
   const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
     author: "",
@@ -1359,6 +1435,57 @@ function ArticleWorkspace({
     onlyFansCanComment: false
   });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
+  const switchToMarkdown = (offset: number) => {
+    setModeScrollOffset(offset);
+    setEditorMode("markdown");
+  };
+  const switchToVisual = () => {
+    const textarea = markdownSourceRef.current;
+    setModeScrollOffset(textarea ? markdownOffsetAtTextareaTop(textarea, markdown) : modeScrollOffset);
+    setEditorMode("visual");
+  };
+  useEffect(() => {
+    if (editorMode !== "markdown") return;
+    requestAnimationFrame(() => {
+      const textarea = markdownSourceRef.current;
+      const canvas = textarea?.closest<HTMLElement>(".editor-canvas");
+      if (canvas) canvas.scrollTop = 0;
+      scrollTextareaToMarkdownOffset(textarea, markdown, modeScrollOffset);
+    });
+  }, [editorMode, modeScrollOffset]);
+  const openAwen = async () => {
+    setAwenOpen(true);
+    if (awenLoaded) return;
+    try {
+      const chat = await request<{ memory: string; messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(contextKey)}`);
+      setAwenMemory(chat.memory);
+      setAwenMessages(chat.messages);
+      setAwenLoaded(true);
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法读取阿文的本文会话。"); }
+  };
+  const sendAwenMessage = async () => {
+    const message = awenInput.trim();
+    if (!message || awenLoading) return;
+    const optimistic: ArticleChatMessage = { id: `local-${Date.now()}`, role: "user", content: message, memorySuggestion: "", suggestions: [], createdAt: new Date().toISOString() };
+    setAwenInput("");
+    setAwenMessages((current) => [...current, optimistic]);
+    setAwenLoading(true);
+    try {
+      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
+      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message.id }, result.message]);
+      setAwenMemory(result.memory);
+      setAwenLoaded(true);
+    } catch (cause) {
+      setAwenMessages((current) => current.filter((item) => item.id !== optimistic.id));
+      setWorkspaceError(cause instanceof Error ? cause.message : "阿文暂时无法回答，请稍后重试。");
+    } finally { setAwenLoading(false); }
+  };
+  const rememberAwenSuggestion = async (memory: string) => {
+    try {
+      const result = await request<{ memory: string }>("/article-chat/memory", { method: "POST", body: JSON.stringify({ contextKey, memory }) });
+      setAwenMemory(result.memory);
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存本文记忆。"); }
+  };
   useEffect(() => {
     void Promise.all([
       request<ArticleSettings>(`/article-settings?contextKey=${encodeURIComponent(contextKey)}`),
@@ -1530,6 +1657,8 @@ function ArticleWorkspace({
   };
   const captureVisualSelection = (selection?: { selectedMarkdown: string; documentMarkdown: string }) => {
     setSelectionAiResult("");
+    setSelectionAiOriginal("");
+    setSelectionComparisonOpen(false);
     if (!selection) {
       setSelectionRange(undefined);
       setSelectionDocumentMarkdown(undefined);
@@ -1567,6 +1696,7 @@ function ArticleWorkspace({
           afterText: selectionSource.slice(selectionRange.end, selectionRange.end + 3000)
         })
       });
+      setSelectionAiOriginal(selectedText);
       setSelectionAiResult(generated.replacement);
       setWorkspaceError("");
     } catch (cause) {
@@ -1575,13 +1705,16 @@ function ArticleWorkspace({
       setSelectionAiBusy(false);
     }
   };
-  const applySelectionAiResult = () => {
-    if (!selectionRange || !selectionAiResult) return;
+  const applySelectionAiResult = (replacement: string | React.MouseEvent = selectionAiResult) => {
+    const resolvedReplacement = typeof replacement === "string" ? replacement : selectionAiResult;
+    if (!selectionRange || !resolvedReplacement) return;
     const selectionSource = selectionDocumentMarkdown ?? markdown;
-    onChange(`${selectionSource.slice(0, selectionRange.start)}${selectionAiResult}${selectionSource.slice(selectionRange.end)}`);
+    onChange(`${selectionSource.slice(0, selectionRange.start)}${resolvedReplacement}${selectionSource.slice(selectionRange.end)}`);
     setSelectionRange(undefined);
     setSelectionDocumentMarkdown(undefined);
     setSelectionAiResult("");
+    setSelectionAiOriginal("");
+    setSelectionComparisonOpen(false);
   };
   const runSelectionDetection = async () => {
     if (!selectionRange || selectionRange.end <= selectionRange.start) {
@@ -1590,6 +1723,7 @@ function ArticleWorkspace({
     }
     setSelectionDetectionBusy(true);
     setSelectionDetectionResult("");
+    setSelectionContentAnyReference(undefined);
     setSelectionZhuqueReport(undefined);
     try {
       if (!window.contentFerry) throw new Error("当前桌面环境未启用 AIGC 检测能力。");
@@ -1604,6 +1738,7 @@ function ArticleWorkspace({
         const result = await desktop.runContentAnyDetection(selectedText);
         if (result.status !== "completed") throw new Error(result.message || "ContentAny 未返回可用检测结果。");
         setSelectionDetectionResult(result.result || "ContentAny 已完成检测，但没有返回可展示的文字结果。");
+        setSelectionContentAnyReference(result.reference);
       }
       setWorkspaceError("");
     } catch (cause) {
@@ -1611,6 +1746,26 @@ function ArticleWorkspace({
     } finally {
       setSelectionDetectionBusy(false);
     }
+  };
+  const awenSuggestions = awenMessages.flatMap((message) => message.role === "assistant"
+    ? message.suggestions.map((suggestion, index) => ({ ...suggestion, id: `${message.id}:${index}` }))
+    : []);
+  const dismissAwenSuggestion = (id: string) => {
+    const [messageId, rawIndex] = id.split(":");
+    const index = Number(rawIndex);
+    setAwenMessages((current) => current.map((message) => message.id === messageId ? { ...message, suggestions: message.suggestions.filter((_item, itemIndex) => itemIndex !== index) } : message));
+  };
+  const applyAwenSuggestion = (id: string) => {
+    const suggestion = awenSuggestions.find((item) => item.id === id);
+    if (!suggestion) return;
+    const first = markdown.indexOf(suggestion.original);
+    if (first < 0 || markdown.indexOf(suggestion.original, first + suggestion.original.length) >= 0) {
+      setWorkspaceError("这条阿文建议已无法准确定位到原文；可能正文已经修改。请重新向阿文提问。");
+      dismissAwenSuggestion(id);
+      return;
+    }
+    onChange(`${markdown.slice(0, first)}${suggestion.replacement}${markdown.slice(first + suggestion.original.length)}`);
+    dismissAwenSuggestion(id);
   };
   const wordCount = markdown.replace(/[#>*_`\-\[\]()]/g, "").replace(/\s/g, "").length;
   const images = extractMarkdownImages(markdown);
@@ -1635,7 +1790,7 @@ function ArticleWorkspace({
     if (hasUnsavedChanges && !window.confirm("文章还有未保存的修改。确定放弃这些修改并返回内容库吗？")) return;
     onBack();
   };
-  return <div className="editor-workspace">
+  return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`}>
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回内容库</button>
       <div className="editor-document-title"><strong>{title}</strong><small>{subtitle}</small></div>
@@ -1653,15 +1808,11 @@ function ArticleWorkspace({
         {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>) : <small>暂未识别到链接来源。</small>}</div>}
         {leftTool === "images" && <div className="tool-detail"><strong>图片素材</strong>{images.length ? images.map((image, index) => <img key={`${image.src}-${index}`} src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />) : <small>正文中还没有图片。</small>}<button disabled className="text-button">独立素材库即将开放</button></div>}
       </aside>
-      <section className="editor-canvas">
-        <div className="editor-canvas-toolbar">
-          <div className="editor-mode-switch"><button className={editorMode === "visual" ? "active" : ""} onClick={() => setEditorMode("visual")}>所见即所得</button><button className={editorMode === "markdown" ? "active" : ""} onClick={() => setEditorMode("markdown")}>Markdown 原文</button></div>
-          <small>{editorMode === "visual" ? "图片可直接拖入、粘贴，或输入 “/” 后选择图片" : "直接编辑 Markdown，切回后会重新渲染"}</small>
-        </div>
+      <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
         {editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
-          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
-        </Suspense> : <textarea className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} />}
+          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} onAcceptSuggestion={applyAwenSuggestion} onRejectSuggestion={dismissAwenSuggestion} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
+        </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" onClick={switchToVisual}>所见即所得</button><button type="button" className="active">Markdown 原文</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
       </section>
       <aside className="editor-right-panel">
         <div className="panel-tabs">
@@ -1669,8 +1820,8 @@ function ArticleWorkspace({
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
-        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><h3>AI 处理选中文字</h3>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>去 AI 味怎么用？</strong><ol><li>在中间正文里拖动选中一段文字</li><li>右侧会自动识别并默认选择“去 AI 味”</li><li>生成建议，确认后再替换原文</li></ol></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionAiResult("")}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
-        {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!selectionRange || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : "检测选中内容"}</button></div>{!selectionRange && <small>先在正文中选中一段内容，检测不会自动发送整篇文章。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionDetectionResult && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
+        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
+        {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!selectionRange || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : "检测选中内容"}</button></div>{!selectionRange && <small>先在正文中选中一段内容，检测不会自动发送整篇文章。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
         {rightPanel === "settings" && <div className="side-panel-content">
           <h3>发布设置</h3>
@@ -1742,8 +1893,129 @@ function ArticleWorkspace({
         </div>}
       </aside>
     </div>
+    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onClose={() => setAwenOpen(false)} />}
+    {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
   </div>;
+}
+
+function AwenBottomPanel({ messages, memory, value, loading, onChange, onSend, onClose }: {
+  messages: ArticleChatMessage[];
+  memory: string;
+  value: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  onClose: () => void;
+}) {
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }); }, [messages, loading]);
+  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文"><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><div className="awen-bottom-layout"><div className="awen-history">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？也可以直接说“给出 3 条可直接应用的修改建议”。</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.role === "assistant" && message.suggestions.length > 0 && <small className="awen-memory-note">已生成 {message.suggestions.length} 条可应用建议，已标记在正文对应位置。</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div></div><aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside></div></section>;
+}
+
+function AwenChatModal({ messages, memory, value, loading, onChange, onSend, onRemember, onClose }: {
+  messages: ArticleChatMessage[];
+  memory: string;
+  value: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  onRemember: (memory: string) => void;
+  onClose: () => void;
+}) {
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }); }, [messages, loading]);
+  return <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card awen-chat-modal" role="dialog" aria-modal="true" aria-label="与阿文讨论本文"><div className="section-heading"><div><p className="eyebrow">阿文 · 专业自媒体助理</p><h2>讨论当前文章</h2></div><button type="button" className="text-button" onClick={onClose}>关闭</button></div><p className="hint">阿文会携带当前文章和本篇历史会话，并自动提炼重要的偏好、决定和待解决事项；不保存完整会话作为记忆。</p>{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？标题、结构或读者视角还缺什么？</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.role === "assistant" && message.memorySuggestion && <small className="awen-memory-note">已自动提炼：{message.memorySuggestion}</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div><div className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入你想和阿文讨论的问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></div></section></div>;
+}
+
+type DiffSegment = { value: string; changed: boolean };
+
+function SelectionDiffModal({ before, after, onClose, onApply }: { before: string; after: string; onClose: () => void; onApply: (replacement?: string | React.MouseEvent) => void }) {
+  const diff = useMemo(() => compareText(before, after), [before, after]);
+  const selectable = useMemo(() => buildSelectableDiff(before, after), [before, after]);
+  const changedIndexes = selectable.map((item, index) => item.changed ? index : -1).filter((index) => index >= 0);
+  const [accepted, setAccepted] = useState<Set<number>>(() => new Set(changedIndexes));
+  const replacement = selectable.map((item, index) => item.changed && accepted.has(index) ? item.after : item.before).join("");
+  return <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card selection-diff-modal" role="dialog" aria-modal="true" aria-label="AI 修改对比"><div className="section-heading"><div><p className="eyebrow">AI 建议</p><h2>修改前后对比</h2></div><button type="button" className="text-button" onClick={onClose}>关闭</button></div><p className="hint">每一处绿色建议均可单独选用；未勾选的地方会保留原文。</p><div className="selection-diff-columns"><section><h3>修改前</h3><pre>{selectable.map((item, index) => <span className={item.changed ? "diff-removed" : ""} key={index}>{item.before}</span>)}</pre></section><section><h3>修改后</h3><pre>{selectable.map((item, index) => item.changed ? <label className="diff-choice" key={index}><input type="checkbox" checked={accepted.has(index)} onChange={(event) => setAccepted((current) => { const next = new Set(current); if (event.target.checked) next.add(index); else next.delete(index); return next; })} /><span className="diff-added">{item.after || "（删除此处）"}</span></label> : <span key={index}>{item.after}</span>)}</pre></section></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setAccepted(new Set(changedIndexes))}>全选建议</button><button type="button" className="secondary-button" onClick={onClose}>取消</button><button type="button" onClick={() => onApply(replacement)}>应用已选 {accepted.size} 处</button></div></section></div>;
+  return <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card selection-diff-modal" role="dialog" aria-modal="true" aria-label="AI 修改对比"><div className="section-heading"><div><p className="eyebrow">AI 建议</p><h2>修改前后对比</h2></div><button type="button" className="text-button" onClick={onClose}>关闭</button></div><p className="hint">红色表示将被替换的原文，绿色表示 AI 建议新增或改写的内容。未着色部分保持一致。</p><div className="selection-diff-columns"><section><h3>修改前</h3><pre>{diff.before.map((segment, index) => <span className={segment.changed ? "diff-removed" : ""} key={index}>{segment.value}</span>)}</pre></section><section><h3>修改后</h3><pre>{diff.after.map((segment, index) => <span className={segment.changed ? "diff-added" : ""} key={index}>{segment.value}</span>)}</pre></section></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>继续查看</button><button type="button" onClick={onApply}>采用右侧建议</button></div></section></div>;
+}
+
+function compareText(before: string, after: string): { before: DiffSegment[]; after: DiffSegment[] } {
+  const beforeTokens = tokenizeForDiff(before);
+  const afterTokens = tokenizeForDiff(after);
+  if (beforeTokens.length > 1_200 || afterTokens.length > 1_200) return compareTextByCommonEdges(before, after);
+  const rows = Array.from({ length: beforeTokens.length + 1 }, () => new Uint16Array(afterTokens.length + 1));
+  for (let left = beforeTokens.length - 1; left >= 0; left -= 1) {
+    for (let right = afterTokens.length - 1; right >= 0; right -= 1) {
+      rows[left][right] = beforeTokens[left] === afterTokens[right]
+        ? rows[left + 1][right + 1] + 1
+        : Math.max(rows[left + 1][right], rows[left][right + 1]);
+    }
+  }
+  const leftSegments: DiffSegment[] = [];
+  const rightSegments: DiffSegment[] = [];
+  let left = 0;
+  let right = 0;
+  while (left < beforeTokens.length || right < afterTokens.length) {
+    if (left < beforeTokens.length && right < afterTokens.length && beforeTokens[left] === afterTokens[right]) {
+      appendDiffSegment(leftSegments, beforeTokens[left], false);
+      appendDiffSegment(rightSegments, afterTokens[right], false);
+      left += 1;
+      right += 1;
+    } else if (right < afterTokens.length && (left >= beforeTokens.length || rows[left][right + 1] >= rows[left + 1][right])) {
+      appendDiffSegment(rightSegments, afterTokens[right], true);
+      right += 1;
+    } else {
+      appendDiffSegment(leftSegments, beforeTokens[left], true);
+      left += 1;
+    }
+  }
+  return { before: leftSegments, after: rightSegments };
+}
+
+function tokenizeForDiff(value: string): string[] {
+  return value.match(/\s+|[\p{Script=Han}]|[\p{L}\p{N}_]+|[^\s]/gu) ?? [];
+}
+
+function appendDiffSegment(segments: DiffSegment[], value: string, changed: boolean): void {
+  const previous = segments.at(-1);
+  if (previous?.changed === changed) previous.value += value;
+  else segments.push({ value, changed });
+}
+
+function compareTextByCommonEdges(before: string, after: string): { before: DiffSegment[]; after: DiffSegment[] } {
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+  const beforeSegments = [{ value: before.slice(0, prefix), changed: false }, { value: before.slice(prefix, before.length - suffix), changed: true }, { value: before.slice(before.length - suffix), changed: false }].filter((item) => item.value);
+  const afterSegments = [{ value: after.slice(0, prefix), changed: false }, { value: after.slice(prefix, after.length - suffix), changed: true }, { value: after.slice(after.length - suffix), changed: false }].filter((item) => item.value);
+  return { before: beforeSegments, after: afterSegments };
+}
+
+type SelectableDiffHunk = { before: string; after: string; changed: boolean };
+
+function buildSelectableDiff(before: string, after: string): SelectableDiffHunk[] {
+  const beforeTokens = tokenizeForDiff(before);
+  const afterTokens = tokenizeForDiff(after);
+  if (beforeTokens.length > 1200 || afterTokens.length > 1200) {
+    let prefix = 0;
+    while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+    let suffix = 0;
+    while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+    return [{ before: before.slice(0, prefix), after: after.slice(0, prefix), changed: false }, { before: before.slice(prefix, before.length - suffix), after: after.slice(prefix, after.length - suffix), changed: true }, { before: before.slice(before.length - suffix), after: after.slice(after.length - suffix), changed: false }].filter((item) => item.before || item.after);
+  }
+  const rows = Array.from({ length: beforeTokens.length + 1 }, () => new Uint16Array(afterTokens.length + 1));
+  for (let left = beforeTokens.length - 1; left >= 0; left -= 1) for (let right = afterTokens.length - 1; right >= 0; right -= 1) rows[left][right] = beforeTokens[left] === afterTokens[right] ? rows[left + 1][right + 1] + 1 : Math.max(rows[left + 1][right], rows[left][right + 1]);
+  const result: SelectableDiffHunk[] = [];
+  const append = (left: string, right: string, changed: boolean) => { const previous = result.at(-1); if (changed && previous?.changed) { previous.before += left; previous.after += right; } else result.push({ before: left, after: right, changed }); };
+  let left = 0; let right = 0;
+  while (left < beforeTokens.length || right < afterTokens.length) {
+    if (left < beforeTokens.length && right < afterTokens.length && beforeTokens[left] === afterTokens[right]) { append(beforeTokens[left], afterTokens[right], false); left += 1; right += 1; }
+    else if (right < afterTokens.length && (left >= beforeTokens.length || rows[left][right + 1] >= rows[left + 1][right])) { append("", afterTokens[right], true); right += 1; }
+    else { append(beforeTokens[left], "", true); left += 1; }
+  }
+  return result;
 }
 
 function CoverCropModal({ image, onCancel, onConfirm }: {
@@ -1836,6 +2108,77 @@ async function readImageUrl(url: string, fileName: string): Promise<SelectedImag
     reader.readAsDataURL(blob);
   });
   return { fileName, mimeType: blob.type || "image/png", base64 };
+}
+
+function scrollTextareaToMarkdownOffset(textarea: HTMLTextAreaElement | null, markdown: string, offset: number): void {
+  if (!textarea) return;
+  const safeOffset = Math.max(0, Math.min(markdown.length, offset));
+  const { mirror, lines } = createTextareaLineMirror(textarea, markdown);
+  const lineIndex = markdown.slice(0, safeOffset).split(/\r?\n/).length - 1;
+  const paddingTop = Number.parseFloat(getComputedStyle(textarea).paddingTop) || 0;
+  textarea.scrollTop = Math.max(0, (lines[Math.min(lineIndex, lines.length - 1)]?.offsetTop ?? 0) - paddingTop);
+  mirror.remove();
+}
+
+function markdownOffsetAtTextareaTop(textarea: HTMLTextAreaElement, markdown: string): number {
+  const { mirror, lines, offsets } = createTextareaLineMirror(textarea, markdown);
+  const paddingTop = Number.parseFloat(getComputedStyle(textarea).paddingTop) || 0;
+  const visibleTop = textarea.scrollTop + paddingTop + 1;
+  let index = lines.findIndex((line) => line.offsetTop + line.offsetHeight > visibleTop);
+  if (index < 0) index = Math.max(0, lines.length - 1);
+  const offset = offsets[index] ?? 0;
+  mirror.remove();
+  return offset;
+}
+
+function createTextareaLineMirror(textarea: HTMLTextAreaElement, markdown: string): {
+  mirror: HTMLDivElement;
+  lines: HTMLDivElement[];
+  offsets: number[];
+} {
+  const mirror = createTextareaMirror(textarea);
+  const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 24;
+  const lines: HTMLDivElement[] = [];
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const sourceLine of markdown.split(/\r?\n/)) {
+    const line = document.createElement("div");
+    line.style.minHeight = `${lineHeight}px`;
+    line.style.margin = "0";
+    line.style.padding = "0";
+    line.style.whiteSpace = "pre-wrap";
+    line.style.overflowWrap = "break-word";
+    line.textContent = sourceLine || "\u200b";
+    offsets.push(offset);
+    lines.push(line);
+    mirror.appendChild(line);
+    offset += sourceLine.length + 1;
+  }
+  return { mirror, lines, offsets };
+}
+
+function createTextareaMirror(textarea: HTMLTextAreaElement): HTMLDivElement {
+  const computed = getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  Object.assign(mirror.style, {
+    position: "fixed",
+    left: "-100000px",
+    top: "0",
+    visibility: "hidden",
+    boxSizing: computed.boxSizing,
+    width: `${textarea.getBoundingClientRect().width}px`,
+    padding: computed.padding,
+    border: computed.border,
+    font: computed.font,
+    lineHeight: computed.lineHeight,
+    letterSpacing: computed.letterSpacing,
+    tabSize: computed.tabSize,
+    whiteSpace: "pre-wrap",
+    overflowWrap: "break-word",
+    wordBreak: computed.wordBreak
+  });
+  document.body.appendChild(mirror);
+  return mirror;
 }
 
 function scrollEditorToHeading(title: string, occurrence: number, markdown: string, mode: "visual" | "markdown"): void {
@@ -1961,6 +2304,10 @@ function isHighAiDetectionResult(result: string, report?: ZhuqueReport): boolean
   if (/AI.{0,12}(?:偏高|较高|高风险|疑似)|疑似.{0,8}AI/i.test(result)) return true;
   return [...result.matchAll(/(?:AI[^\n%]{0,30}(\d{1,3}(?:\.\d+)?)\s*%|(\d{1,3}(?:\.\d+)?)\s*%[^\n]{0,30}AI)/gi)]
     .some((match) => Number(match[1] ?? match[2]) >= 50);
+}
+
+function ContentAnyReferenceView({ reference }: { reference: ContentAnyReference }) {
+  return <section className="contentany-reference" aria-label="ContentAny 参考结果"><div className="contentany-reference-header"><span>{reference.label}</span>{reference.score && <strong>{reference.score}</strong>}</div><p>{reference.summary}</p>{reference.detail !== reference.summary && <small>{reference.detail}</small>}</section>;
 }
 
 function ZhuqueReportView({ report }: { report: ZhuqueReport }) {

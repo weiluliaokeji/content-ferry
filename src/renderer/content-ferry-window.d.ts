@@ -38,6 +38,7 @@ declare global {
       runContentAnyDetection: (markdown: string) => Promise<{
         status: "completed" | "needs_user";
         result?: string;
+        reference?: { label: string; score: string | null; summary: string; detail: string };
         message?: string;
       }>;
       app: {

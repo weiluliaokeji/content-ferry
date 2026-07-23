@@ -6,8 +6,10 @@ export interface AiUsage {
 }
 
 export interface GenerateStructuredRequest<T> {
-  task: "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt";
+  task: "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt" | "assistant";
   skillId?: string;
+  /** Optional provider-specific model override selected in 模型连接. */
+  modelId?: string;
   prompt: string;
   outputSchema: object;
   timeoutMs?: number;
@@ -24,6 +26,7 @@ export interface GenerateStructuredResult<T> {
 export interface GenerateMarkdownStreamRequest {
   task: "outline" | "draft";
   skillId?: string;
+  modelId?: string;
   prompt: string;
   timeoutMs?: number;
   signal?: AbortSignal;

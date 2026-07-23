@@ -108,6 +108,7 @@ type ZhuqueDetectionResponse = {
 type ContentAnyDetectionResponse = {
   status: "completed" | "needs_user";
   result?: string;
+  reference?: { label: string; score: string | null; summary: string; detail: string };
   message?: string;
 };
 
@@ -869,17 +870,35 @@ async function runContentAnyDetection(markdown: string): Promise<ContentAnyDetec
         return rect.width > 20 && rect.height > 12 && style.display !== "none" && style.visibility !== "hidden";
       };
       const isReportText = (value) => /AI\\s*(?:指数|检测|内容|特征)|检测(?:结果|报告)|原创(?:度|指数)|疑似\\s*AI|人工(?:创作|特征)/i.test(value);
+      const pageText = (document.body?.innerText || "").replace(/\s+/g, " ");
+      // ContentAny first renders the full page shell and “检测中” placeholders.
+      // Only read results once those placeholders have disappeared.
+      if (/检测中|正在生成报告|汇总多维度分析结果|检测结果统计中/.test(pageText)) return null;
+      const referenceNodes = [...document.querySelectorAll("*")].filter((node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return false;
+        const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+        return /^参考(?:\s|$)/.test(text) && text.length < 1200 && (/%|概率|人工|AIGC|AI/.test(text));
+      }).map((node) => (node.innerText || "").replace(/\s+/g, " ").trim());
+      const referenceText = referenceNodes.sort((left, right) => left.length - right.length)[0] ?? "";
       const tables = [...document.querySelectorAll("table")].filter(visible).map((table) => (table.innerText || "").trim()).filter(isReportText);
-      const reportNodes = [...document.querySelectorAll("[class*='result' i], [class*='report' i], [class*='detect' i], [class*='score' i], [class*='index' i], [id*='result' i], [id*='report' i]")]
+      const reportNodes = [...document.querySelectorAll("[class*='result' i], [class*='report' i], [class*='detect' i], [class*='score' i], [class*='index' i], [class*='segment' i], [id*='result' i], [id*='report' i]")]
         .filter(visible)
         .map((node) => (node.innerText || "").trim())
         .filter((value) => value.length > 0 && value.length < 12000 && isReportText(value));
-      const candidates = [...tables, ...reportNodes];
+      const candidates = [...reportNodes, ...tables];
       const best = candidates.sort((left, right) => right.length - left.length)[0];
-      if (!best) return null;
-      return best.slice(0, 12000);
-    })()`, true) as string | null;
-    if (result) return { status: "completed", result };
+      // The product surface deliberately shows the detector's concise
+      // “参考” conclusion, not a copied page shell or marketing content.
+      if (!referenceText) return null;
+      const lines = referenceText.split(/\n|(?<=%)\s+/).map((line) => line.trim()).filter(Boolean);
+      const score = lines.find((line) => /^\d+(?:\.\d+)?%$/.test(line)) ?? referenceText.match(/\d+(?:\.\d+)?\s*%/)?.[0] ?? null;
+      const summary = lines.find((line) => /概率|偏人工|偏\s*AI|仅供参考/.test(line)) ?? "检测完成，可结合分段结果查看。";
+      return {
+        result: referenceText.slice(0, 12000),
+        reference: { label: "参考", score, summary, detail: referenceText }
+      };
+    })()`, true) as { result: string; reference: { label: string; score: string | null; summary: string; detail: string } | null } | null;
+    if (result) return { status: "completed", result: result.result, ...(result.reference ? { reference: result.reference } : {}) };
     await delay(1500);
   }
   window.focus();
