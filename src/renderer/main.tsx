@@ -129,8 +129,16 @@ type ManagedSkill = {
   files: Array<{ relativePath: string; size: number }>;
 };
 type SkillFileContent = { relativePath: string; content: string; size: number };
-type ArticleChatSuggestion = { original: string; replacement: string; reason: string };
-type ArticleChatMessage = { id: string; role: "user" | "assistant"; content: string; memorySuggestion: string; suggestions: ArticleChatSuggestion[]; createdAt: string };
+type ArticleChatSuggestion = { original: string; replacement: string; reason: string; status?: "pending" | "accepted" | "rejected" | "unavailable" };
+type ArticleChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  memorySuggestion: string;
+  suggestions: ArticleChatSuggestion[];
+  createdAt: string;
+  deliveryState?: "sending" | "failed";
+};
 type ZhuqueReport = {
   verdict: string;
   humanPercent: number | null;
@@ -960,6 +968,18 @@ function App() {
     if (project) await openDraft(project);
     setArticleWorkspacePanel("settings");
   };
+  const openWechatDraftBox = async () => {
+    if (!window.contentFerry) {
+      setError("微信草稿箱只能从文渡桌面应用中打开。");
+      return;
+    }
+    try {
+      await window.contentFerry.openWechatBackend();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开微信草稿箱。");
+    }
+  };
   const submitWechatJob = async (job: WechatPublishJob, mode: "publish" | "mass") => {
     const warning = mode === "mass"
       ? "群发会向全部关注者推送，并消耗公众号群发额度。请确认你已经在微信草稿箱完成手机预览。是否继续？"
@@ -970,7 +990,7 @@ function App() {
       await request<WechatPublishJob>(`/integrations/wechat/jobs/${job.id}/submit`, { method: "POST", body: JSON.stringify({ mode }) });
       setError(""); await loadWechatJobs();
       // 微信提交后仍需在公众平台处理原创、转载与赞赏等设置；打开平台作为下一步入口。
-      await window.contentFerry?.openWechatBackend();
+      await openWechatDraftBox();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "微信提交失败。"); }
     finally { setSaving(false); }
   };
@@ -1210,7 +1230,7 @@ function App() {
           <div className="section-heading"><h2>待处理</h2></div>
           <ul className="publish-job-list">{pendingWechatJobs.map((job) => {
             const account = accounts.find((item) => item.id === job.accountId);
-            return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{wechatJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{job.status === "draft_ready" && <><button className="secondary-button" onClick={() => void submitWechatJob(job, "publish")} disabled={saving}>普通发布</button><button className="danger-button" onClick={() => void submitWechatJob(job, "mass")} disabled={saving}>群发所有关注者</button><button className="text-button" onClick={() => void window.contentFerry?.openWechatBackend()}>打开微信草稿箱</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>已在微信后台处理</button></>}{job.status === "submitted" && <><span className="status-badge">等待微信回执</span><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}{job.status === "failed" && <><button className="secondary-button" onClick={() => void retryWechatJob(job)}>重新设置并同步</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}</span></li>;
+            return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{wechatJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{job.status === "draft_ready" && <><button className="secondary-button" onClick={() => void openWechatDraftBox()} disabled={saving}>微信草稿箱</button><button className="secondary-button" onClick={() => void submitWechatJob(job, "publish")} disabled={saving}>普通发布</button><button className="secondary-button" onClick={() => void submitWechatJob(job, "mass")} disabled={saving}>群发所有关注者</button><button className="secondary-button" onClick={() => openWechatStatusCorrection(job)} disabled={saving}>已在微信后台处理</button></>}{job.status === "submitted" && <><span className="status-badge">等待微信回执</span><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}{job.status === "failed" && <><button className="secondary-button" onClick={() => void retryWechatJob(job)}>重新设置并同步</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}</span></li>;
           })}</ul>
         </section>}
         {completedWechatJobs.length > 0 && <section className="card">
@@ -1398,6 +1418,7 @@ function ArticleWorkspace({
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>();
   const [selectionDocumentMarkdown, setSelectionDocumentMarkdown] = useState<string>();
   const [selectionAiAction, setSelectionAiAction] = useState<"rewrite" | "expand" | "shorten" | "example" | "humanize">("humanize");
+  const [selectionAiInstruction, setSelectionAiInstruction] = useState("");
   const [selectionAiBusy, setSelectionAiBusy] = useState(false);
   const [selectionAiResult, setSelectionAiResult] = useState("");
   const [selectionAiOriginal, setSelectionAiOriginal] = useState("");
@@ -1413,6 +1434,7 @@ function ArticleWorkspace({
   const [awenInput, setAwenInput] = useState("");
   const [awenLoading, setAwenLoading] = useState(false);
   const [awenLoaded, setAwenLoaded] = useState(false);
+  const [awenSuggestionOffsets, setAwenSuggestionOffsets] = useState<Record<string, { x: number; y: number }>>({});
   const [savedMarkdown, setSavedMarkdown] = useState(markdown);
   const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
     author: "",
@@ -1446,26 +1468,46 @@ function ArticleWorkspace({
     if (awenLoaded) return;
     try {
       const chat = await request<{ memory: string; messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(contextKey)}`);
+      const normalized = removeUnavailableAwenSuggestions(markUnansweredAwenMessages(chat.messages), markdown);
       setAwenMemory(chat.memory);
-      setAwenMessages(chat.messages);
+      setAwenMessages(normalized.messages);
       setAwenLoaded(true);
+      // Suggestions whose original text no longer exists have already been
+      // applied or superseded by a manual edit. Remove their persisted copy so
+      // they cannot resurface on the next launch either.
+      for (const stale of normalized.staleSuggestions) {
+        try {
+          await request(`/article-chat/messages/${encodeURIComponent(stale.messageId)}/suggestions/${stale.index}`, { method: "PATCH", body: JSON.stringify({ status: "unavailable" }) });
+        } catch {
+          // The current session has already hidden it. A later open can retry
+          // cleanup without interrupting the author with a non-actionable error.
+        }
+      }
     } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法读取阿文的本文会话。"); }
   };
-  const sendAwenMessage = async () => {
-    const message = awenInput.trim();
+  const sendAwenMessage = async (retryMessage?: ArticleChatMessage) => {
+    const message = retryMessage?.content ?? awenInput.trim();
     if (!message || awenLoading) return;
-    const optimistic: ArticleChatMessage = { id: `local-${Date.now()}`, role: "user", content: message, memorySuggestion: "", suggestions: [], createdAt: new Date().toISOString() };
-    setAwenInput("");
-    setAwenMessages((current) => [...current, optimistic]);
+    const optimistic: ArticleChatMessage = retryMessage
+      ? { ...retryMessage, deliveryState: "sending" }
+      : { id: crypto.randomUUID(), role: "user", content: message, memorySuggestion: "", suggestions: [], createdAt: new Date().toISOString(), deliveryState: "sending" };
+    if (retryMessage) setAwenMessages((current) => current.map((item) => item.id === retryMessage.id ? optimistic : item));
+    else {
+      setAwenInput("");
+      setAwenMessages((current) => [...current, optimistic]);
+    }
     setAwenLoading(true);
     try {
-      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
-      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message.id }, result.message]);
+      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey, clientMessageId: optimistic.id, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
+      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message.id, deliveryState: undefined }, result.message]);
       setAwenMemory(result.memory);
       setAwenLoaded(true);
     } catch (cause) {
-      setAwenMessages((current) => current.filter((item) => item.id !== optimistic.id));
-      setWorkspaceError(cause instanceof Error ? cause.message : "阿文暂时无法回答，请稍后重试。");
+      // The server stores the user message before it calls the model. Do not
+      // erase an optimistic message on an interrupted model/network request:
+      // disappearing author input is worse than a visible failure state.
+      setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "failed" } : item));
+      setWorkspaceError(cause instanceof Error ? cause.message : "阿文暂时无法回答。你的消息已保留，请稍后重新提问。");
     } finally { setAwenLoading(false); }
   };
   const rememberAwenSuggestion = async (memory: string) => {
@@ -1674,11 +1716,13 @@ function ArticleWorkspace({
     try {
       const selectionSource = selectionDocumentMarkdown ?? markdown;
       const selectedText = selectionSource.slice(selectionRange.start, selectionRange.end);
-      const generated = await request<{ replacement: string }>("/skills/selection-edit/run", {
+      const generated = await request<{ replacement: string; conversation?: { userMessage: ArticleChatMessage; assistantMessage: ArticleChatMessage } }>("/skills/selection-edit/run", {
         method: "POST",
         body: JSON.stringify({
           action: selectionAiAction,
           title,
+          contextKey,
+          instruction: selectionAiInstruction.trim(),
           selectedText,
           beforeText: selectionSource.slice(Math.max(0, selectionRange.start - 3000), selectionRange.start),
           afterText: selectionSource.slice(selectionRange.end, selectionRange.end + 3000)
@@ -1686,6 +1730,12 @@ function ArticleWorkspace({
       });
       setSelectionAiOriginal(selectedText);
       setSelectionAiResult(generated.replacement);
+      const conversation = generated.conversation;
+      if (conversation) {
+        setAwenOpen(true);
+        setAwenLoaded(true);
+        setAwenMessages((current) => [...current.filter((item) => item.id !== conversation.userMessage.id && item.id !== conversation.assistantMessage.id), conversation.userMessage, conversation.assistantMessage]);
+      }
       setWorkspaceError("");
     } catch (cause) {
       setWorkspaceError(cause instanceof Error ? cause.message : "选区 AI 处理失败。");
@@ -1736,24 +1786,46 @@ function ArticleWorkspace({
     }
   };
   const awenSuggestions = awenMessages.flatMap((message) => message.role === "assistant"
-    ? message.suggestions.map((suggestion, index) => ({ ...suggestion, id: `${message.id}:${index}` }))
+    ? message.suggestions.flatMap((suggestion, index) => !suggestion.status || suggestion.status === "pending"
+      ? [{ ...suggestion, id: `${message.id}:${index}` }]
+      : [])
     : []);
-  const dismissAwenSuggestion = (id: string) => {
+  const setAwenSuggestionStatusInView = (messageId: string, index: number, status: ArticleChatSuggestion["status"]) => {
+    setAwenSuggestionOffsets((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([id]) => !id.startsWith(`${messageId}:`)));
+      return next;
+    });
+    setAwenMessages((current) => current.map((message) => message.id === messageId ? { ...message, suggestions: message.suggestions.map((item, itemIndex) => itemIndex === index ? { ...item, status } : item) } : message));
+  };
+  const dismissAwenSuggestion = async (id: string) => {
     const [messageId, rawIndex] = id.split(":");
     const index = Number(rawIndex);
-    setAwenMessages((current) => current.map((message) => message.id === messageId ? { ...message, suggestions: message.suggestions.filter((_item, itemIndex) => itemIndex !== index) } : message));
+    if (!messageId || !Number.isInteger(index)) return;
+    try {
+      await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "rejected" }) });
+      setAwenSuggestionStatusInView(messageId, index, "rejected");
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。"); }
   };
-  const applyAwenSuggestion = (id: string) => {
+  const applyAwenSuggestion = async (id: string) => {
     const suggestion = awenSuggestions.find((item) => item.id === id);
     if (!suggestion) return;
+    const [messageId, rawIndex] = id.split(":");
+    const index = Number(rawIndex);
+    if (!messageId || !Number.isInteger(index)) return;
     const first = markdown.indexOf(suggestion.original);
     if (first < 0 || markdown.indexOf(suggestion.original, first + suggestion.original.length) >= 0) {
       setWorkspaceError("这条阿文建议已无法准确定位到原文；可能正文已经修改。请重新向阿文提问。");
-      dismissAwenSuggestion(id);
+      try {
+        await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "unavailable" }) });
+        setAwenSuggestionStatusInView(messageId, index, "unavailable");
+      } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。"); }
       return;
     }
-    onChange(`${markdown.slice(0, first)}${suggestion.replacement}${markdown.slice(first + suggestion.original.length)}`);
-    dismissAwenSuggestion(id);
+    try {
+      await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "accepted" }) });
+      onChange(`${markdown.slice(0, first)}${suggestion.replacement}${markdown.slice(first + suggestion.original.length)}`);
+      setAwenSuggestionStatusInView(messageId, index, "accepted");
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。"); }
   };
   const wordCount = markdown.replace(/[#>*_`\-\[\]()]/g, "").replace(/\s/g, "").length;
   const images = extractMarkdownImages(markdown);
@@ -1781,7 +1853,7 @@ function ArticleWorkspace({
   return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`}>
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回内容库</button>
-      <div className="editor-document-title"><strong>{title}</strong><small>{subtitle}</small></div>
+      <div className="editor-document-title"><strong>{title}</strong></div>
       <div className="editor-top-actions"><span>{generating ? "AI 正在逐步生成…" : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
     <div className="editor-columns">
@@ -1799,8 +1871,8 @@ function ArticleWorkspace({
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
         {editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
-          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} onAcceptSuggestion={applyAwenSuggestion} onRejectSuggestion={dismissAwenSuggestion} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
-        </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" onClick={switchToVisual}>所见即所得</button><button type="button" className="active">Markdown 原文</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
+          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} suggestionOffsets={awenSuggestionOffsets} onSuggestionOffsetChange={(id, offset) => setAwenSuggestionOffsets((current) => ({ ...current, [id]: offset }))} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
+        </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
       </section>
       <aside className="editor-right-panel">
         <div className="panel-tabs">
@@ -1808,7 +1880,7 @@ function ArticleWorkspace({
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
-        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
+        {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><label className="selection-instruction"><span>补充要求（可选）</span><textarea value={selectionAiInstruction} onChange={(event) => setSelectionAiInstruction(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void runSelectionAi(); } }} disabled={!selectionRange || selectionAiBusy} maxLength={1000} placeholder="例如：保留技术术语，语气更直接；不要使用营销化表达" /></label><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!selectionRange || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : "检测选中内容"}</button></div>{!selectionRange && <small>先在正文中选中一段内容，检测不会自动发送整篇文章。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
         {rightPanel === "settings" && <div className="side-panel-content">
@@ -1881,24 +1953,103 @@ function ArticleWorkspace({
         </div>}
       </aside>
     </div>
-    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onClose={() => setAwenOpen(false)} />}
+    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onClose={() => setAwenOpen(false)} />}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
   </div>;
 }
 
-function AwenBottomPanel({ messages, memory, value, loading, onChange, onSend, onClose }: {
+function removeUnavailableAwenSuggestions(messages: ArticleChatMessage[], markdown: string): {
+  messages: ArticleChatMessage[];
+  staleSuggestions: Array<{ messageId: string; index: number }>;
+} {
+  const staleSuggestions: Array<{ messageId: string; index: number }> = [];
+  const normalizedMessages = messages.map((message) => {
+    if (message.role !== "assistant" || message.suggestions.length === 0) return message;
+    const updated = message.suggestions.map((suggestion, index) => {
+      if (suggestion.status && suggestion.status !== "pending") return suggestion;
+      const first = markdown.indexOf(suggestion.original);
+      const stillAnchored = first >= 0 && markdown.indexOf(suggestion.original, first + suggestion.original.length) < 0;
+      if (!stillAnchored) staleSuggestions.push({ messageId: message.id, index });
+      return stillAnchored ? suggestion : { ...suggestion, status: "unavailable" as const };
+    });
+    return updated.some((suggestion, index) => suggestion !== message.suggestions[index]) ? { ...message, suggestions: updated } : message;
+  });
+  return { messages: normalizedMessages, staleSuggestions };
+}
+
+function markUnansweredAwenMessages(messages: ArticleChatMessage[]): ArticleChatMessage[] {
+  // Earlier versions persisted the user message before asking the model but
+  // did not persist a failure state. Recover that history: a final user turn
+  // with no later Awen turn is safe to expose as retryable.
+  let lastUserIndex = -1;
+  let hasAssistantAfterLastUser = false;
+  messages.forEach((message, index) => {
+    if (message.role === "user") {
+      lastUserIndex = index;
+      hasAssistantAfterLastUser = false;
+    } else if (lastUserIndex >= 0) hasAssistantAfterLastUser = true;
+  });
+  if (lastUserIndex < 0 || hasAssistantAfterLastUser) return messages;
+  return messages.map((message, index) => index === lastUserIndex
+    ? { ...message, deliveryState: "failed" as const }
+    : message);
+}
+
+function AwenBottomPanel({ messages, memory, value, loading, onChange, onSend, onRetry, onAcceptSuggestion, onRejectSuggestion, onClose }: {
   messages: ArticleChatMessage[];
   memory: string;
   value: string;
   loading: boolean;
   onChange: (value: string) => void;
   onSend: () => void;
+  onRetry: (message: ArticleChatMessage) => void;
+  onAcceptSuggestion: (id: string) => void;
+  onRejectSuggestion: (id: string) => void;
   onClose: () => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }); }, [messages, loading]);
-  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文"><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><div className="awen-bottom-layout"><div className="awen-history">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？也可以直接说“给出 3 条可直接应用的修改建议”。</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.role === "assistant" && message.suggestions.length > 0 && <small className="awen-memory-note">已生成 {message.suggestions.length} 条可应用建议，已标记在正文对应位置。</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div></div><aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside></div></section>;
+  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文">
+    <button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button>
+    <div className="awen-bottom-layout">
+      <div className="awen-history">
+        {memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}
+        <div className="awen-transcript" ref={transcriptRef}>
+          {messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？也可以选中正文后用快捷操作生成修改建议。</div>}
+          {messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}>
+            <strong>{message.role === "user" ? "你" : "阿文"}</strong>
+            <div>{message.content}</div>
+            {message.deliveryState === "sending" && <small className="awen-message-state">正在发送…</small>}
+            {message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading}>↻ 重新发送</button></small>}
+            {message.role === "assistant" && message.suggestions.map((suggestion, index) => <details className="awen-conversation-suggestion" key={`${message.id}:${index}`} open>
+              <summary>建议 {index + 1}：{suggestion.reason}</summary>
+              <small className="awen-suggestion-original">原文：{suggestion.original}</small>
+              <pre>{suggestion.replacement}</pre>
+              <div>{(!suggestion.status || suggestion.status === "pending") ? <><button type="button" onClick={() => onAcceptSuggestion(`${message.id}:${index}`)}>接受改写</button><button type="button" className="secondary-button" onClick={() => onRejectSuggestion(`${message.id}:${index}`)}>拒绝</button></> : <small className={`awen-suggestion-status ${suggestion.status}`}>{suggestion.status === "accepted" ? "已接受并应用" : suggestion.status === "rejected" ? "已拒绝，正文未修改" : "正文已变化，无法定位"}</small>}</div>
+            </details>)}
+          </article>)}
+          {loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}
+        </div>
+      </div>
+      <aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside>
+    </div>
+  </section>;
+}
+
+function LegacyAwenBottomPanel({ messages, memory, value, loading, onChange, onSend, onRetry, onClose }: {
+  messages: ArticleChatMessage[];
+  memory: string;
+  value: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  onRetry: (message: ArticleChatMessage) => void;
+  onClose: () => void;
+}) {
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight }); }, [messages, loading]);
+  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文"><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><div className="awen-bottom-layout"><div className="awen-history">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？也可以直接说“给出 3 条可直接应用的修改建议”。</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.deliveryState === "sending" && <small className="awen-message-state">正在发送…</small>}{message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading} title="重新发送">↻ 重新发送</button></small>}{message.role === "assistant" && message.suggestions.length > 0 && <small className="awen-memory-note">已生成 {message.suggestions.length} 条可应用建议，已标记在正文对应位置。</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div></div><aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside></div></section>;
 }
 
 function AwenChatModal({ messages, memory, value, loading, onChange, onSend, onRemember, onClose }: {

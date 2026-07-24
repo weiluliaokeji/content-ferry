@@ -81,8 +81,16 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <p>技能决定任务规则，例如公众号撰写、去 AI 味和封面提示词；模型连接决定由哪个服务执行。腾讯朱雀和 ContentAny 使用浏览器自动化，不需要大模型。</p>
         </details>
         <details>
+          <summary>怎样让 AI 按我的要求改写一段文字？</summary>
+          <p>先在正文中选中文字，选择“改写”“去 AI 味”等动作，再在“补充要求（可选）”中填写语气、保留项或避免项；留空则使用该技能的默认规则。按 Ctrl+Enter 可直接生成建议。结果会保存到与阿文的对话，可在对话中接受或拒绝。</p>
+        </details>
+        <details>
           <summary>文章、会话和阿文记忆保存在哪里？</summary>
           <p>文章保存在 VitePress 文章库；账号设置、发布记录、会话、记忆摘要和日志保存在文渡数据目录。长期记忆只保存提炼后的稳定写作偏好，不把完整会话直接当作写作规则。</p>
+        </details>
+        <details>
+          <summary>阿文已经处理过的建议为什么不会再出现？</summary>
+          <p>同意、拒绝或手动改掉建议对应原文后，文渡会保存该处理结果。正文中只显示仍待处理且能唯一定位的建议卡；阿文对话会保留原建议、改写文本和“已接受”“已拒绝”或“无法定位”的记录。建议卡可拖动，切换所见即所得和 Markdown 原文后会重新锚定到对应段落。</p>
         </details>
         <details>
           <summary>遇到错误怎么办？</summary>

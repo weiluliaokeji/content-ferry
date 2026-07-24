@@ -110,6 +110,67 @@ describe("local API scaffold", () => {
       .toContain("用户自定义要求");
   });
 
+  it("persists the handled status of an Awen suggestion", async () => {
+    server = createTestServer();
+    const contextKey = "source:posts/example/index.md";
+    const messageId = "11111111-1111-4111-8111-111111111111";
+    const now = new Date().toISOString();
+    database!.connection.prepare("INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)")
+      .run(contextKey, now);
+    database!.connection.prepare(`INSERT INTO article_chat_messages
+      (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+      VALUES (?, ?, 'assistant', ?, '', ?, ?)`)
+      .run(
+        messageId,
+        contextKey,
+        "A suggestion that has already been handled.",
+        JSON.stringify([{ original: "unique original paragraph", replacement: "updated paragraph", reason: "Clearer wording" }]),
+        now
+      );
+
+    const before = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(contextKey)}` });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().messages[0].suggestions).toHaveLength(1);
+
+    const handled = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { status: "rejected" } });
+    expect(handled.statusCode).toBe(200);
+    expect(handled.json().suggestions).toEqual([expect.objectContaining({ status: "rejected" })]);
+
+    const after = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(contextKey)}` });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().messages[0].suggestions).toEqual([expect.objectContaining({ status: "rejected" })]);
+  });
+
+  it("reuses a client Awen message id when a failed message is sent again", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return {
+          value: request.parse({ reply: "已收到。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [] }),
+          provider: "test-awen-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const payload = {
+      contextKey: "source:posts/retry/index.md",
+      clientMessageId: "22222222-2222-4222-8222-222222222222",
+      title: "Retry test",
+      markdown: "A unique article paragraph for the retry test.",
+      message: "Please improve this paragraph."
+    };
+    expect((await server.inject({ method: "POST", url: "/api/article-chat/messages", payload })).statusCode).toBe(200);
+    expect((await server.inject({ method: "POST", url: "/api/article-chat/messages", payload })).statusCode).toBe(200);
+    const userMessageCount = database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE id = ?")
+      .get(payload.clientMessageId) as { count: number };
+    expect(userMessageCount.count).toBe(1);
+  });
+
   it("generates a platform-aware article summary through the managed summary skill", async () => {
     database = openInMemoryDatabase();
     const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-summary-skills-"));
@@ -180,15 +241,19 @@ describe("local API scaffold", () => {
       url: "/api/skills/selection-edit/run",
       payload: {
         action: "rewrite",
+        contextKey: "source:posts/selection/index.md",
         selectedText: "需要改写的文字",
         beforeText: "前文",
         afterText: "后文",
-        title: "测试文章"
+        title: "测试文章",
+        instruction: "Keep technical terms and use a direct tone."
       }
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ replacement: "改写后的自然表达", provider: "test-selection-ai" });
+    expect(response.json()).toMatchObject({ replacement: "改写后的自然表达", provider: "test-selection-ai", conversation: { assistantMessage: { suggestions: [expect.objectContaining({ replacement: "改写后的自然表达" })] } } });
     expect(requests[0]).toMatchObject({ task: "selection", skillId: "selection-edit" });
+    expect(requests[0].prompt).toContain("Keep technical terms and use a direct tone.");
+    expect(database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE context_key = ?").get("source:posts/selection/index.md")).toMatchObject({ count: 2 });
   });
 
   it("generates an editable cover prompt from the article", async () => {

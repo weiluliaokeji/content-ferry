@@ -21,6 +21,8 @@ export function VisualMarkdownEditor({
   onSwitchToMarkdown,
   initialScrollOffset,
   suggestions = [],
+  suggestionOffsets = {},
+  onSuggestionOffsetChange,
   onAcceptSuggestion,
   onRejectSuggestion,
   minHeight = 420
@@ -34,6 +36,8 @@ export function VisualMarkdownEditor({
   onSwitchToMarkdown?: (markdownOffset: number) => void;
   initialScrollOffset?: number;
   suggestions?: Array<{ id: string; original: string; replacement: string; reason: string }>;
+  suggestionOffsets?: Record<string, { x: number; y: number }>;
+  onSuggestionOffsetChange?: (id: string, offset: { x: number; y: number }) => void;
   onAcceptSuggestion?: (id: string) => void;
   onRejectSuggestion?: (id: string) => void;
   minHeight?: number;
@@ -46,10 +50,14 @@ export function VisualMarkdownEditor({
   const lastEditorValueRef = useRef<string | undefined>(undefined);
   const suggestionsRef = useRef(suggestions);
   const suggestionCallbacksRef = useRef({ onAcceptSuggestion, onRejectSuggestion });
+  const suggestionOffsetsRef = useRef(suggestionOffsets);
+  const onSuggestionOffsetChangeRef = useRef(onSuggestionOffsetChange);
   onChangeRef.current = onChange;
   valueRef.current = value;
   suggestionsRef.current = suggestions;
   suggestionCallbacksRef.current = { onAcceptSuggestion, onRejectSuggestion };
+  suggestionOffsetsRef.current = suggestionOffsets;
+  onSuggestionOffsetChangeRef.current = onSuggestionOffsetChange;
 
   useEffect(() => {
     if (!rootRef.current) return;
@@ -241,16 +249,18 @@ export function VisualMarkdownEditor({
     const editorRoot = root.querySelector<HTMLElement>(".ProseMirror");
     if (!editorRoot) return;
     const adjustedBlocks = new Map<HTMLElement, string>();
+    const originalMargins = new Map<HTMLElement, number>();
+    const reservedBelowBlock = new Map<HTMLElement, number>();
     for (const suggestion of suggestions) {
       // Suggestions are anchored in Markdown, whereas the visual editor
       // renders headings, emphasis and links without their Markdown marks.
       // Match either form, and support text that spans several DOM nodes.
       const original = suggestion.original.trim();
-      const renderedOriginal = markdownToVisibleText(original);
-      const range = findUniqueTextRange(editorRoot, [original, renderedOriginal]);
+      const range = findUniqueTextRange(editorRoot, suggestionAnchorCandidates(original));
       if (!range) continue;
       const targetBlock = closestSuggestionBlock(range.startContainer, root);
       if (!targetBlock) continue;
+      const reservedBefore = reservedBelowBlock.get(targetBlock) ?? 0;
       const rect = targetBlock.getBoundingClientRect();
       const rootRect = root.getBoundingClientRect();
       const bubble = document.createElement("div");
@@ -258,16 +268,67 @@ export function VisualMarkdownEditor({
       // Unlike a comment rail, an IDE-style suggestion belongs immediately
       // after the paragraph it changes. Reserve vertical room below that
       // paragraph so the card never covers the following text.
-      bubble.style.top = `${Math.max(0, rect.bottom - rootRect.top + 8)}px`;
+      bubble.style.top = `${Math.max(0, rect.bottom - rootRect.top + 8 + reservedBefore)}px`;
       bubble.style.left = `${Math.max(12, rect.left - rootRect.left)}px`;
       bubble.innerHTML = `<strong>阿文建议</strong><span>${escapeHtml(suggestion.reason)}</span><div><button type="button" data-action="accept">同意</button><button type="button" data-action="reject">拒绝</button></div>`;
       bubble.querySelector<HTMLButtonElement>("[data-action='accept']")?.addEventListener("click", () => suggestionCallbacksRef.current.onAcceptSuggestion?.(suggestion.id));
       bubble.querySelector<HTMLButtonElement>("[data-action='reject']")?.addEventListener("click", () => suggestionCallbacksRef.current.onRejectSuggestion?.(suggestion.id));
       root.appendChild(bubble);
-      if (!adjustedBlocks.has(targetBlock)) adjustedBlocks.set(targetBlock, targetBlock.style.marginBottom);
-      const currentBottom = Number.parseFloat(getComputedStyle(targetBlock).marginBottom) || 0;
-      targetBlock.style.marginBottom = `${currentBottom + bubble.offsetHeight + 12}px`;
+      if (!adjustedBlocks.has(targetBlock)) {
+        adjustedBlocks.set(targetBlock, targetBlock.style.marginBottom);
+        originalMargins.set(targetBlock, Number.parseFloat(getComputedStyle(targetBlock).marginBottom) || 0);
+      }
+      const baseMargin = originalMargins.get(targetBlock) ?? 0;
       targetBlock.classList.add("has-awen-suggestion-target");
+      // The root is the positioning context, so this anchor remains stable
+      // when the editor is unmounted and rebuilt after switching modes. The
+      // persisted offset is intentionally relative to the matched paragraph,
+      // not to the page scroll position.
+      const baseTop = Number.parseFloat(bubble.style.top) || 0;
+      const baseLeft = Number.parseFloat(bubble.style.left) || 12;
+      let activeOffset = suggestionOffsetsRef.current[suggestion.id] ?? { x: 0, y: 0 };
+      const applySuggestionPosition = (offset: { x: number; y: number }) => {
+        const safeY = Math.max(0, offset.y);
+        const maxLeft = Math.max(12, root.clientWidth - bubble.offsetWidth - 12);
+        bubble.style.left = `${Math.min(maxLeft, Math.max(12, baseLeft + offset.x))}px`;
+        bubble.style.top = `${Math.max(0, baseTop + safeY)}px`;
+        // Reserve exactly the room occupied below the anchor. This prevents a
+        // dragged card from covering the next paragraph.
+        targetBlock.style.marginBottom = `${baseMargin + reservedBefore + bubble.offsetHeight + safeY + 12}px`;
+      };
+      applySuggestionPosition(activeOffset);
+      reservedBelowBlock.set(targetBlock, reservedBefore + bubble.offsetHeight + Math.max(0, activeOffset.y) + 12);
+      const actions = bubble.querySelector<HTMLDivElement>("div");
+      const dragHandle = document.createElement("button");
+      dragHandle.type = "button";
+      dragHandle.className = "awen-suggestion-drag-handle";
+      dragHandle.textContent = "↕";
+      dragHandle.title = "拖动建议位置";
+      dragHandle.setAttribute("aria-label", "拖动建议位置");
+      actions?.prepend(dragHandle);
+      dragHandle.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const offsetAtStart = activeOffset;
+        dragHandle.setPointerCapture(event.pointerId);
+        const move = (moveEvent: PointerEvent) => {
+          activeOffset = {
+            x: offsetAtStart.x + moveEvent.clientX - startX,
+            y: Math.max(0, offsetAtStart.y + moveEvent.clientY - startY)
+          };
+          applySuggestionPosition(activeOffset);
+        };
+        const finish = () => {
+          dragHandle.removeEventListener("pointermove", move);
+          dragHandle.removeEventListener("pointerup", finish);
+          dragHandle.removeEventListener("pointercancel", finish);
+          onSuggestionOffsetChangeRef.current?.(suggestion.id, activeOffset);
+        };
+        dragHandle.addEventListener("pointermove", move);
+        dragHandle.addEventListener("pointerup", finish);
+        dragHandle.addEventListener("pointercancel", finish);
+      });
     }
     return () => {
       root.querySelectorAll(".awen-inline-suggestion").forEach((node) => node.remove());
@@ -280,8 +341,8 @@ export function VisualMarkdownEditor({
 
   return <div className="visual-editor-shell">
     <div className="editor-inline-mode-switch editor-mode-switch" aria-label="编辑模式">
-      <button type="button" className="active">所见即所得</button>
-      <button type="button" onClick={() => onSwitchToMarkdown?.(readVisibleMarkdownOffset(rootRef.current, crepeRef.current, value))}>Markdown 原文</button>
+      <button type="button" className="active editor-mode-icon" title="当前：所见即所得编辑" aria-label="当前：所见即所得编辑">✎</button>
+      <button type="button" className="editor-mode-icon" title="切换到 Markdown 原文" aria-label="切换到 Markdown 原文" onClick={() => onSwitchToMarkdown?.(readVisibleMarkdownOffset(rootRef.current, crepeRef.current, value))}>{"</>"}</button>
     </div>
     <div
       className="visual-markdown-editor"
@@ -436,6 +497,20 @@ function markdownToVisibleText(markdown: string): string {
     .replace(/[*_~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function suggestionAnchorCandidates(original: string): string[] {
+  const rendered = markdownToVisibleText(original);
+  // A model can legitimately return a Markdown fragment spanning several
+  // list rows, table cells or inline marks. The complete source is unique in
+  // Markdown but may not be one continuous browser text node after rendering.
+  // Fall back only to substantial, still-unique pieces so a card remains
+  // attached to the relevant paragraph rather than disappearing.
+  const fragments = original
+    .split(/\r?\n|[|。！？!?；;]/)
+    .map((item) => markdownToVisibleText(item))
+    .filter((item) => item.length >= 8);
+  return [original, rendered, ...fragments];
 }
 
 function closestSuggestionBlock(node: Node, root: HTMLElement): HTMLElement | undefined {

@@ -791,27 +791,56 @@ async function driveWechatBackendToDrafts(window: BrowserWindow): Promise<void> 
       const style = getComputedStyle(element);
       return rect.width > 4 && rect.height > 4 && style.display !== "none" && style.visibility !== "hidden";
     };
+    const normalizedText = (element) => (element.textContent || "").replace(/\\s+/g, "").trim();
+    const clickableNodes = () => [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span")].filter(visible);
+    const findText = (patterns) => clickableNodes().find((item) => patterns.some((pattern) => pattern.test(normalizedText(item))));
     const clickText = (patterns) => {
-      const nodes = [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span")].filter(visible);
-      const node = nodes.find((item) => patterns.some((pattern) => pattern.test((item.textContent || "").replace(/\\s+/g, "").trim())));
+      const node = findText(patterns);
       if (!node) return false;
-      const target = node.closest("a, button, [role='button'], [role='link'], li") || node;
-      target.click();
+      // 微信后台的侧栏在不同版本中可能把可点击行为绑定在 span、div、a 或 li 上。
+      // 优先选择真实可交互祖先；没有时直接触发当前文字节点，避免只点到无行为的容器。
+      const target = node.closest("a, button, [role='button'], [role='link']") || node;
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
       return true;
     };
-    let loginClicked = false;
-    const tick = () => {
-      const text = (document.body?.innerText || "").replace(/\\s+/g, "");
-      // 登录界面交给用户：一旦出现扫码、二维码或账号密码选项，不再自动点击任何“登录”元素。
-      if (/(?:\u626b\u7801|\u4e8c\u7ef4\u7801|\u8d26\u53f7\u5bc6\u7801)/.test(text)) return;
-      if (/草稿箱/.test(text) && /内容管理|草稿/.test(location.href + text)) return;
-      if (clickText([/^草稿箱$/, /草稿箱/])) return;
-      if (clickText([/^内容管理$/, /内容管理/])) return;
-      if (!loginClicked && /登录/.test(text)) loginClicked = clickText([/^登录$/, /登录/]);
+    let contentManagementOpened = false;
+    const isDraftsPage = () => /\\/cgi-bin\\/appmsg|action=(?:list|list_ex).*appmsg/i.test(location.href);
+    const isExpanded = (node) => {
+      const target = node.closest("a, button, [role='button'], [role='link'], li") || node;
+      const classes = String(target.className || "") + " " + String(target.parentElement?.className || "");
+      return target.getAttribute("aria-expanded") === "true" || /active|selected|current|open|expanded/i.test(classes);
     };
-    // 微信登录组件完成初始化后再触发一次，避免二维码容器尚未准备好时被过早点击。
+    const openDrafts = () => {
+      // 已展开的微信菜单通常带有草稿箱的真实链接。直接使用该链接能避开不同
+      // 后台版本对二级菜单 click 事件和数量徽标的差异。
+      const directLink = [...document.querySelectorAll("a[href]")].find((item) => {
+        const href = item.getAttribute("href") || "";
+        return /草稿箱/.test(normalizedText(item)) && href && !/^javascript:/i.test(href);
+      });
+      if (directLink) {
+        location.assign(directLink.href);
+        return true;
+      }
+      return clickText([/^草稿箱.*$/, /^草稿.*$/]);
+    };
+    const tick = () => {
+      if (isDraftsPage()) return;
+      const contentManagement = findText([/^内容管理$/, /^内容管理(?:[▶▾▼])?$/]);
+      if (!contentManagement) return;
+      if (!contentManagementOpened && contentManagement && !isExpanded(contentManagement)) {
+        contentManagementOpened = clickText([/^内容管理$/, /^内容管理(?:[▶▾▼])?$/]);
+        window.setTimeout(tick, 500);
+        return;
+      }
+      contentManagementOpened = true;
+      if (openDrafts()) return;
+    };
+    // 微信登录成功后可能不触发完整页面刷新，因此同时监听 DOM 变化。
     window.setTimeout(tick, 1200);
     window.setInterval(tick, 1200);
+    new MutationObserver(() => window.setTimeout(tick, 80)).observe(document.documentElement, { childList: true, subtree: true });
   })()`, true);
 }
 

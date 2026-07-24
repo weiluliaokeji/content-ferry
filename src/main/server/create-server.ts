@@ -120,10 +120,12 @@ const articleSummaryInput = z.object({
 const articleSummaryOutput = z.object({ summary: z.string().trim().min(1).max(500) });
 const selectionEditInput = z.object({
   action: z.enum(["rewrite", "expand", "shorten", "example", "humanize"]),
+  contextKey: z.string().trim().min(1).max(1200).optional(),
   selectedText: z.string().min(1).max(20000),
   beforeText: z.string().max(6000).default(""),
   afterText: z.string().max(6000).default(""),
-  title: z.string().max(500).default("")
+  title: z.string().max(500).default(""),
+  instruction: z.string().trim().max(1000).default("")
 });
 const selectionEditOutput = z.object({ replacement: z.string().min(1).max(50000) });
 const coverPromptInput = z.object({
@@ -134,14 +136,25 @@ const coverPromptOutput = z.object({ prompt: z.string().trim().min(1).max(2000) 
 const articleChatQuery = z.object({ contextKey: z.string().trim().min(1).max(1200) });
 const articleChatInput = z.object({
   contextKey: z.string().trim().min(1).max(1200),
+  clientMessageId: z.string().uuid().optional(),
   accountId: z.string().uuid().optional(),
   title: z.string().trim().max(500).default(""),
   markdown: z.string().max(500000),
   message: z.string().trim().min(1).max(12000)
 });
-const articleChatSuggestion = z.object({ original: z.string().trim().min(6).max(2000), replacement: z.string().trim().min(1).max(3000), reason: z.string().trim().min(1).max(500) });
+const articleChatSuggestion = z.object({
+  original: z.string().trim().min(6).max(2000),
+  replacement: z.string().trim().min(1).max(3000),
+  reason: z.string().trim().min(1).max(500),
+  status: z.enum(["pending", "accepted", "rejected", "unavailable"]).default("pending")
+});
 const articleChatOutput = z.object({ reply: z.string().trim().min(1).max(20000), memorySuggestion: z.string().trim().max(1000).default(""), writingMemorySuggestion: z.string().trim().max(1000).default(""), suggestions: z.array(articleChatSuggestion).max(5).default([]) });
 const articleChatMemoryInput = z.object({ contextKey: z.string().trim().min(1).max(1200), memory: z.string().trim().min(1).max(1000) });
+const articleChatSuggestionParams = z.object({
+  messageId: z.string().uuid(),
+  suggestionIndex: z.coerce.number().int().min(0).max(4)
+});
+const articleChatSuggestionStatusInput = z.object({ status: z.enum(["accepted", "rejected", "unavailable"]) });
 
 export function buildServer(
   startedAt: string,
@@ -830,6 +843,22 @@ export function buildServer(
     return { memory: thread?.memory ?? "", updatedAt: thread?.updated_at ?? null, messages };
   });
 
+  // A suggestion remains part of the conversation after a decision. Only its
+  // status changes, allowing the author to review what Awen proposed later.
+  server.patch("/api/article-chat/messages/:messageId/suggestions/:suggestionIndex", async (request, reply) => {
+    const { messageId, suggestionIndex } = articleChatSuggestionParams.parse(request.params);
+    const { status } = articleChatSuggestionStatusInput.parse(request.body);
+    const row = database.connection.prepare("SELECT suggestions_json AS suggestionsJson FROM article_chat_messages WHERE id = ? AND role = 'assistant'")
+      .get(messageId) as { suggestionsJson: string } | undefined;
+    if (!row) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
+    const suggestions = parseChatSuggestions(row.suggestionsJson);
+    if (!suggestions[suggestionIndex]) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
+    suggestions[suggestionIndex] = { ...suggestions[suggestionIndex], status };
+    database.connection.prepare("UPDATE article_chat_messages SET suggestions_json = ? WHERE id = ?")
+      .run(JSON.stringify(suggestions), messageId);
+    return { messageId, suggestions };
+  });
+
   server.post("/api/article-chat/messages", async (request, reply) => {
     if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });
     const skill = skills.get("awen-assistant");
@@ -838,9 +867,13 @@ export function buildServer(
     const now = new Date().toISOString();
     database.connection.prepare(`INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)
       ON CONFLICT(context_key) DO UPDATE SET updated_at = excluded.updated_at`).run(input.contextKey, now);
-    const userMessage = { id: randomUUID(), role: "user" as const, content: input.message, memorySuggestion: "", createdAt: now };
-    database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, created_at)
-      VALUES (?, ?, ?, ?, '', ?)`).run(userMessage.id, input.contextKey, userMessage.role, userMessage.content, now);
+    const userMessage = { id: input.clientMessageId ?? randomUUID(), role: "user" as const, content: input.message, memorySuggestion: "", createdAt: now };
+    const existingUserMessage = database.connection.prepare("SELECT id FROM article_chat_messages WHERE id = ? AND context_key = ? AND role = 'user'")
+      .get(userMessage.id, input.contextKey) as { id: string } | undefined;
+    if (!existingUserMessage) {
+      database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, created_at)
+        VALUES (?, ?, ?, ?, '', ?)`).run(userMessage.id, input.contextKey, userMessage.role, userMessage.content, now);
+    }
     const thread = database.connection.prepare("SELECT memory FROM article_chat_threads WHERE context_key = ?").get(input.contextKey) as { memory: string };
     const writingMemoryScope = input.accountId ? `account:${input.accountId}` : "workspace:default";
     const writingMemory = database.connection.prepare("SELECT memory FROM writing_memories WHERE scope_key = ?").get(writingMemoryScope) as { memory: string } | undefined;
@@ -924,13 +957,16 @@ ${input.markdown}`,
     const skillId = input.action === "humanize" ? "humanize-selection" : "selection-edit";
     const skill = skills.get(skillId);
     if (!skill.enabled) return reply.code(409).send({ error: `“${skill.name}”技能已停用。` });
-    const actionName = {
+    let actionName = {
       rewrite: "改写得更清楚自然",
       expand: "扩写并补足必要解释",
       shorten: "缩写并保留核心信息",
       example: "补充真实、具体且与上下文一致的案例",
       humanize: "降低套路感和 AI 写作痕迹"
     }[input.action];
+    if (input.instruction) {
+      actionName = `${actionName}；补充要求：${input.instruction}。补充要求不得突破技能中的事实、引用、Markdown 与不编造规则。`;
+    }
     const generated = await effectiveModelProvider.generateStructured({
       task: "selection",
       skillId,
@@ -960,7 +996,8 @@ ${input.afterText || "无"}
       replacement: generated.value.replacement,
       provider: generated.provider,
       model: generated.model,
-      usage: generated.usage
+      usage: generated.usage,
+      conversation: input.contextKey ? persistSelectionEditConversation(database, input.contextKey, input, generated.value.replacement) : undefined
     };
   });
 
@@ -1145,9 +1182,58 @@ function isUniqueArticleSuggestion(markdown: string, original: string): boolean 
   return first >= 0 && markdown.indexOf(original, first + original.length) < 0;
 }
 
-function parseChatSuggestions(value: string): Array<{ original: string; replacement: string; reason: string }> {
+function parseChatSuggestions(value: string): Array<{ original: string; replacement: string; reason: string; status: "pending" | "accepted" | "rejected" | "unavailable" }> {
   try { return z.array(articleChatSuggestion).parse(JSON.parse(value)); }
   catch { return []; }
+}
+
+function persistSelectionEditConversation(
+  database: AppDatabase,
+  contextKey: string,
+  input: z.infer<typeof selectionEditInput>,
+  replacement: string
+): {
+  userMessage: { id: string; role: "user"; content: string; memorySuggestion: string; suggestions: []; createdAt: string };
+  assistantMessage: { id: string; role: "assistant"; content: string; memorySuggestion: string; suggestions: Array<{ original: string; replacement: string; reason: string }>; createdAt: string };
+} {
+  const now = new Date().toISOString();
+  database.connection.prepare(`INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)
+    ON CONFLICT(context_key) DO UPDATE SET updated_at = excluded.updated_at`).run(contextKey, now);
+  const userMessage = {
+    id: randomUUID(),
+    role: "user" as const,
+    content: `[选区 AI 编辑 · ${selectionActionLabel(input.action)}]${input.instruction ? `\n要求：${input.instruction}` : ""}\n\n${input.selectedText}`,
+    memorySuggestion: "",
+    suggestions: [] as [],
+    createdAt: now
+  };
+  database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, created_at)
+    VALUES (?, ?, ?, ?, '', ?)`).run(userMessage.id, contextKey, userMessage.role, userMessage.content, now);
+  const suggestions = input.selectedText.trim().length >= 6
+    ? [{ original: input.selectedText, replacement, reason: `按“${selectionActionLabel(input.action)}”生成的替换建议${input.instruction ? `；已考虑你的补充要求` : ""}`, status: "pending" as const }]
+    : [];
+  const assistantMessage = {
+    id: randomUUID(),
+    role: "assistant" as const,
+    content: suggestions.length > 0 ? "已生成一条可应用的选区修改建议。你可以在正文旁或本对话中接受、拒绝，或先查看对比。" : "已生成选区修改结果；选区过短，无法作为可定位的正文建议保存。",
+    memorySuggestion: "",
+    suggestions,
+    createdAt: now
+  };
+  database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+    VALUES (?, ?, ?, ?, '', ?, ?)`)
+    .run(assistantMessage.id, contextKey, assistantMessage.role, assistantMessage.content, JSON.stringify(suggestions), now);
+  return { userMessage, assistantMessage };
+}
+
+function selectionActionLabel(action: z.infer<typeof selectionEditInput>["action"]): string {
+  return {
+    rewrite: "改写",
+    expand: "扩写",
+    shorten: "缩写",
+    example: "补充案例",
+    humanize: "去 AI 味"
+  }[action];
 }
 
 async function streamMarkdownGeneration(
