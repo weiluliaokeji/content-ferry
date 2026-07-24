@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld("contentFerry", {
   openZhuque: (): Promise<void> => ipcRenderer.invoke("contentferry:open-zhuque") as Promise<void>,
   openWechatBackend: (): Promise<void> => ipcRenderer.invoke("contentferry:open-wechat-backend") as Promise<void>,
   openContentAny: (): Promise<void> => ipcRenderer.invoke("contentferry:open-contentany") as Promise<void>,
+  openUserGuide: (): Promise<void> => ipcRenderer.invoke("contentferry:open-user-guide") as Promise<void>,
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>
     ipcRenderer.invoke("contentferry:run-zhuque", markdown) as Promise<ZhuqueDetectionResponse>,

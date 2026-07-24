@@ -15,7 +15,7 @@
 4. **生产构建** — `tsc -p tsconfig.main.json` + `vite build`。
 5. **原生模块重建** — `electron-rebuild -f -w better-sqlite3`。
 6. **打包** — `electron-builder`，按 `package.json#build` 配置产出 NSIS 安装包 + Portable EXE。
-7. **后置校验** — `scripts/verify-installer.mjs` 检查 `app.asar` 完整性、`better_sqlite3.node` 和 `codex.exe` 是否正确放置在 ASAR 之外。
+7. **后置校验** — `scripts/verify-installer.mjs` 检查 `app.asar` 完整性、`better_sqlite3.node`、`codex.exe`、内置技能目录和独立用户手册是否正确进入安装资源。
 
 > `npm run typecheck`、`npm test`、`npm run rebuild:native` 三个命令在开发模式下也使用；流水线里复用它们，避免维护两份等价逻辑。
 
@@ -70,6 +70,7 @@ npm run verify:installer
 7. 模拟"断网"：拔网线后启动应用，登录页和主界面应正常加载，仅 AI 任务失败并显示可读错误。
 8. 模拟"升级"：覆盖安装一次 0.1.0 到 0.1.0（或任意两个相邻版本），确认数据目录、app-settings、数据库不丢失；新版本可继续使用。
 9. 模拟"回退"：覆盖安装回旧版本，确认旧版本仍能打开新版本的数据目录（如不兼容则有保护性提示）。
+10. 打开“帮助”，确认“打开完整说明”能够打开安装包中的`docs/USER-GUIDE.md`；进入“技能与模型”，确认清单中的技能均已从`resources/assets/skills/`初始化。
 
 ## 5. 升级策略
 
@@ -119,6 +120,8 @@ npm run verify:installer
 | `rebuild:native` 卡在下载 prebuilt binaries                 | 离线环境；设置`npm config set @electron/rebuild_rebuild_prebuilt false` 或允许访问 `electronjs.org`。                                     |
 | 安装包能装但启动后白屏                                        | 检查`app.asar` 内 `dist/main/main/index.js` 是否在；`verify:installer` 报告若不通过说明构建没把 `dist/` 收进去。                      |
 | 启动时`codex.exe not found` 警告                            | `asarUnpack` 没把 `@openai/codex-win32-x64` 列上；检查 `package.json#build.asarUnpack` 是否包含 `**/node_modules/@openai/codex*/**`。 |
+| 启动时报“找不到内置技能资源”                                  | 检查`resources/assets/skills/manifest.json`与每个技能的`SKILL.md`是否存在；运行`npm run verify:installer`。                         |
+| “打开完整说明”提示安装包缺少文件                              | 检查`resources/docs/USER-GUIDE.md`；确认`package.json#build.extraResources`仍包含`docs`规则。                                       |
 | 卸载时数据被删                                                | `nsis.deleteAppDataOnUninstall` 被改成 `true`；保持 `false` 即可。                                                                      |
 | 第一次启动无限弹向导                                          | `app-settings.json` 写入失败；查看 `%APPDATA%\contentferry\logs\` 下的运行日志。                                                          |
 | `ERROR: Cannot create symbolic link` 报在 `…\winCodeSign\<hash>\darwin\…\libcrypto.dylib` | `winCodeSign-2.6.0.7z` 内的 `darwin/` 目录含 macOS 符号链接，7-Zip 21.07 在 Windows 上无法重建。流水线已自动用 `-snld -xr!darwin` 预先解压跳过该子目录，正常情况下看不到这个错误。**仅当 cache 目录被手动弄坏** 时才会出现，删 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\` 后重跑 `npm run dist:win` 即可。 |

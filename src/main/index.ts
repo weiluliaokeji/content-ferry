@@ -343,6 +343,14 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     window.show();
     window.focus();
   });
+  ipcMain.handle("contentferry:open-user-guide", async () => {
+    const userGuidePath = app.isPackaged
+      ? path.join(process.resourcesPath, "docs", "USER-GUIDE.md")
+      : path.join(app.getAppPath(), "docs", "USER-GUIDE.md");
+    if (!fs.existsSync(userGuidePath)) throw new Error("安装包中缺少完整使用说明。");
+    const error = await shell.openPath(userGuidePath);
+    if (error) throw new Error(`无法打开完整使用说明：${error}`);
+  });
   ipcMain.handle("contentferry:show-log-file", async (_event, requestedDate: unknown) => {
     const date = typeof requestedDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate) ? new Date(`${requestedDate}T12:00:00`) : new Date();
     const selectedLogFilePath = dailyLogFilePath(logDirectory, date);

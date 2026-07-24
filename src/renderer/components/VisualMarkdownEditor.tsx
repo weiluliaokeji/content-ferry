@@ -150,8 +150,9 @@ export function VisualMarkdownEditor({
           // The parent will pass this exact value back as a prop. Remember it
           // so that round trip is not mistaken for an external replacement,
           // which would rebuild the document and move the caret to the end.
-          lastEditorValueRef.current = markdown;
-          onChangeRef.current(markdown);
+          const normalizedMarkdown = normalizeSerializedLineBreaks(markdown);
+          lastEditorValueRef.current = normalizedMarkdown;
+          onChangeRef.current(normalizedMarkdown);
         }
       });
     });
@@ -458,6 +459,15 @@ function preserveVisualLineBreaks(markdown: string): string {
     // retain their native Markdown meaning.
     if (/ {2,}$|\\$/.test(line) || /^\s*(?:[-+*]|\d+\.)\s|^\s*(?:>|#{1,6}\s|---$|\*\*\*$)/.test(line) || /^\s*(?:[-+*]|\d+\.)\s/.test(next)) return line;
     return `${line}  `;
+  }).join("\n");
+}
+
+function normalizeSerializedLineBreaks(markdown: string): string {
+  let inFence = false;
+  return markdown.replace(/\r?\n/g, "\n").split("\n").map((line) => {
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    if (!inFence) return line.replace(/\\[ \t]*$/, "  ");
+    return line;
   }).join("\n");
 }
 

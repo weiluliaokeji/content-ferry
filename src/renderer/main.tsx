@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import wenduLogo from "./assets/wendu-icon.png";
 import { locateMarkdownSelection } from "./markdown-selection";
+import { HelpCenter } from "./components/HelpCenter";
 
 const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
@@ -202,19 +203,6 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
 
 function markdownTitle(markdown: string): string | undefined {
   return markdown.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() || undefined;
-}
-
-function HelpCenter({ onNavigate }: { onNavigate: (view: "dashboard" | "library" | "publish" | "skills" | "accounts" | "logs" | "help") => void }) {
-  return <div className="help-center">
-    <section className="card help-hero"><div><p className="eyebrow">从零开始</p><h2>用文渡完成第一篇文章</h2><p>按下面四步完成配置、创作、检测和发布。不需要先理解工作流或技能。</p></div><button onClick={() => onNavigate("dashboard")}>开始创作</button></section>
-    <section className="help-steps">
-      <article><span>1</span><h3>连接账号与模型</h3><p>先添加微信公众号账号并填写 AppID、AppSecret；在“技能与模型”登录 Codex 或配置其他模型。所有凭证仅保存在本机。</p><button className="text-button" onClick={() => onNavigate("accounts")}>去账号设置</button></article>
-      <article><span>2</span><h3>选择文章库</h3><p>在内容库选择 VitePress 的 <code>docs</code> 目录。文渡会识别文章，草稿也会按 VitePress 格式保存，因此可以继续用 Obsidian 编辑。</p><button className="text-button" onClick={() => onNavigate("library")}>去内容库</button></article>
-      <article><span>3</span><h3>从主题开始写</h3><p>在工作台新建文章，填写主题或资料；阿文可讨论结构，选中文字可改写或去 AI 味。保存后可随时回到文章继续修改。</p><button className="text-button" onClick={() => onNavigate("dashboard")}>去工作台</button></article>
-      <article><span>4</span><h3>检测并发布</h3><p>发布前在编辑器中选段检测，或在准备发布时运行腾讯朱雀 / ContentAny。确认封面、摘要和账号后先创建微信草稿，再根据需要普通发布或群发。</p><button className="text-button" onClick={() => onNavigate("publish")}>去发布中心</button></article>
-    </section>
-    <section className="card help-faq"><h2>常见问题</h2><details><summary>什么是“技能与模型”？</summary><p>技能决定某件事如何完成，例如公众号撰写、去 AI 味和阿文的沟通规则；模型连接决定由哪个大模型执行。可在这里修改 SKILL.md、参考资料和模型选择。</p></details><details><summary>ContentAny 或朱雀需要我手动操作吗？</summary><p>通常文渡会打开可见浏览器、填入正文并自动读取结果。只有登录、验证码或网页变化时，才需要你在浏览器中接管。</p></details><details><summary>文章和会话保存在哪里？</summary><p>文章保存到你配置的 VitePress 文章库；账号设置、发布记录、聊天摘要和日志保存到文渡的数据目录。阿文的记忆按文章分开，不会自动带到其他文章。</p></details><details><summary>遇到错误怎么办？</summary><p>先到“运行日志”按日期和错误筛选，再把相关报错和操作步骤提供出来。涉及公众号发布时，也可在发布中心人工校正最终状态。</p></details></section>
-  </div>;
 }
 
 function App() {

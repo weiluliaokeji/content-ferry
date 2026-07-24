@@ -21,6 +21,7 @@ declare global {
       openZhuque: () => Promise<void>;
       openWechatBackend: () => Promise<void>;
       openContentAny: () => Promise<void>;
+      openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;
       runZhuqueDetection: (markdown: string) => Promise<{
         status: "completed" | "needs_user";

@@ -115,7 +115,7 @@ export class ContentSourceService {
     const rootPath = this.getSource(workspaceId)!;
     const source = fs.readFileSync(filePath, "utf8");
     const parts = splitFrontMatter(source);
-    const normalizedBody = markdown.replace(/^\s+/, "").replace(/\s+$/, "");
+    const normalizedBody = normalizeSavedMarkdown(markdown).replace(/^\s+/, "").replace(/\s+$/, "");
     const currentTitle = parseFrontMatter(source).title;
     const nextTitle = extractLeadingArticleTitle(normalizedBody) ?? currentTitle;
     const nextFrontMatter = nextTitle && parts.frontMatter
@@ -266,6 +266,15 @@ export class ContentSourceService {
     try { return fs.statSync(directory); }
     catch { throw new ContentSourceError("找不到文章库路径，或当前用户没有读取权限。"); }
   }
+}
+
+function normalizeSavedMarkdown(markdown: string): string {
+  let inFence = false;
+  return markdown.replace(/\r?\n/g, "\n").split("\n").map((line) => {
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    if (!inFence) return line.replace(/\\[ \t]*$/, "  ");
+    return line;
+  }).join("\n");
 }
 
 export function stageDirectoryDeletion(

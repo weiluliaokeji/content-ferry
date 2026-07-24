@@ -87,6 +87,14 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "docs",
+        "to": "docs",
+        "filter": [
+          "USER-GUIDE.md",
+          "images/**/*"
+        ]
       }
     ],
     "win": {

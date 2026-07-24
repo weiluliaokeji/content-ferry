@@ -96,6 +96,32 @@ async function main() {
     const resourcesDir = path.join(unpacked, "resources");
     const asarPath = path.join(resourcesDir, "app.asar");
     const asarUnpackedDir = path.join(resourcesDir, "app.asar.unpacked");
+    const skillManifestPath = path.join(resourcesDir, "assets", "skills", "manifest.json");
+    const userGuidePath = path.join(resourcesDir, "docs", "USER-GUIDE.md");
+
+    if (existsSync(skillManifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(skillManifestPath, "utf8"));
+        const missingSkills = (manifest.skills ?? []).filter((skill) =>
+          !existsSync(path.join(resourcesDir, "assets", "skills", skill.id, "SKILL.md"))
+        );
+        if (manifest.schemaVersion === 1 && manifest.skills?.length > 0 && missingSkills.length === 0) {
+          pass("built-in skill resources bundled", `${manifest.skills.length} skills`);
+        } else {
+          failCheck("built-in skill resources bundled", `invalid manifest or ${missingSkills.length} missing SKILL.md files`);
+        }
+      } catch (error) {
+        failCheck("built-in skill resources bundled", String(error));
+      }
+    } else {
+      failCheck("built-in skill resources bundled", `missing at ${skillManifestPath}`);
+    }
+
+    if (existsSync(userGuidePath) && statSync(userGuidePath).size > 0) {
+      pass("standalone user guide bundled", userGuidePath);
+    } else {
+      failCheck("standalone user guide bundled", `missing or empty at ${userGuidePath}`);
+    }
 
     if (!existsSync(asarPath)) {
       failCheck("app.asar exists", `missing at ${asarPath}`);

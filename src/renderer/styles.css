@@ -85,6 +85,13 @@ textarea { box-sizing: border-box; width: 100%; min-height: 72px; padding: .65re
 .visual-markdown-editor .ProseMirror h1 { margin: .3rem 0 1rem; font-size: 1.75rem; }
 .visual-markdown-editor .ProseMirror h2 { margin: 1.5rem 0 .75rem; font-size: 1.3rem; }
 .visual-markdown-editor .ProseMirror blockquote { margin: 1rem 0; padding: .2rem 1rem; border-left: 4px solid #9aace6; color: #516078; }
+.visual-markdown-editor .milkdown-table-block { box-sizing: border-box; max-width: 100%; padding-bottom: .35rem; overflow-x: auto; overflow-y: visible; scrollbar-gutter: stable; overscroll-behavior-inline: contain; }
+.visual-markdown-editor .milkdown-table-block table { width: max-content !important; min-width: 100% !important; table-layout: auto !important; }
+.visual-markdown-editor .milkdown-table-block th,
+.visual-markdown-editor .milkdown-table-block td { box-sizing: border-box; min-width: 120px; max-width: 240px; white-space: normal; word-break: break-word; overflow-wrap: anywhere; vertical-align: top; }
+.visual-markdown-editor .milkdown-table-block::-webkit-scrollbar { height: 10px; }
+.visual-markdown-editor .milkdown-table-block::-webkit-scrollbar-thumb { border: 2px solid #fff; border-radius: 999px; background: #aab4c5; }
+.visual-markdown-editor .milkdown-table-block::-webkit-scrollbar-track { background: #eef1f6; }
 .visual-markdown-editor .milkdown button { width: auto; color: inherit; }
 .visual-markdown-editor .milkdown input { width: auto; }
 button { padding: .7rem 1rem; border: 0; border-radius: 8px; background: #315bd8; color: #fff; cursor: pointer; font: inherit; }
@@ -224,6 +231,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .contentany-reference small { display: block; margin: 0 .75rem .75rem; color: #6a7a6e; line-height: 1.5; white-space: pre-wrap; }
 .help-center { display: grid; gap: 1rem; }
 .help-hero { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; padding: 1.5rem; background: linear-gradient(135deg, #f5f8ff, #fff); }
+.help-hero > span { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; flex-wrap: wrap; }
 .help-hero h2 { margin: .2rem 0 .45rem; }
 .help-hero p { margin: 0; color: #60708a; }
 .help-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .85rem; }

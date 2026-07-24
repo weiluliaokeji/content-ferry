@@ -57,8 +57,9 @@ describe("local API scaffold", () => {
 
     const listed = await server.inject({ method: "GET", url: "/api/skills" });
     expect(listed.statusCode).toBe(200);
-    expect(listed.json().items).toHaveLength(9);
+    expect(listed.json().items).toHaveLength(10);
     expect(listed.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "awen-assistant", name: "阿文 · 文章顾问" }),
       expect.objectContaining({ id: "article-summary", name: "文章摘要生成" }),
       expect.objectContaining({ id: "cover-prompt-generation", name: "封面提示词生成" })
     ]));

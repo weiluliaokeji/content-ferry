@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "id": "awen-assistant",
+      "name": "阿文 · 文章顾问",
+      "description": "以当前文章、本文会话与自动提炼的本文记忆为上下文，提供选题、结构、表达与发布准备建议。",
+      "category": "创作",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": []
+    },
+    {
+      "id": "wechat-writing",
+      "name": "微信公众号文章撰写",
+      "description": "结合账号定位、创作简报和资料，生成适合微信公众号阅读的文章。",
+      "category": "创作",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": [
+        "legacy/v1.md"
+      ]
+    },
+    {
+      "id": "platform-rewrite",
+      "name": "平台稿改写",
+      "description": "按目标平台的内容形态和读者习惯大幅改写渠道稿。",
+      "category": "改写",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": [
+        "legacy/v1.md"
+      ]
+    },
+    {
+      "id": "article-summary",
+      "name": "文章摘要生成",
+      "description": "根据文章原文和目标平台的长度限制，生成可直接使用、可继续编辑的文章摘要。",
+      "category": "创作",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": []
+    },
+    {
+      "id": "selection-edit",
+      "name": "选区 AI 编辑",
+      "description": "根据文章上下文，对选中文字执行改写、扩写、缩写或补充案例，结果可预览后替换。",
+      "category": "改写",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": [
+        "legacy/v1.md"
+      ]
+    },
+    {
+      "id": "humanize-selection",
+      "name": "文章选区去 AI 味",
+      "description": "按公众号与技术文章语境改写选中文字，减少模板感并严格保护事实、Markdown、术语和作者立场。",
+      "category": "改写",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": [
+        "legacy/v1.md",
+        "legacy/v2.md"
+      ]
+    },
+    {
+      "id": "zhuque-detection",
+      "name": "腾讯朱雀 AI 检测",
+      "description": "自动打开可见浏览器、填写正文、执行检测并回填结果，异常时交给用户接管。",
+      "category": "检测",
+      "defaultProvider": null,
+      "legacyFiles": []
+    },
+    {
+      "id": "contentany-detection",
+      "name": "ContentAny AI 检测",
+      "description": "自动打开 ContentAny 检测页面、填入正文、读取 AI 指数与质量报告，异常时交给用户接管。",
+      "category": "检测",
+      "defaultProvider": null,
+      "legacyFiles": []
+    },
+    {
+      "id": "cover-prompt-generation",
+      "name": "封面提示词生成",
+      "description": "根据文章主题和正文提炼视觉主体、构图、风格与限制，生成可编辑的封面生图提示词。",
+      "category": "创作",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": []
+    },
+    {
+      "id": "cover-generation",
+      "name": "文章封面生成",
+      "description": "将用户确认的提示词原样交给图片模型，并把生成结果保存到文章素材目录。",
+      "category": "图片",
+      "defaultProvider": "modelscope",
+      "legacyFiles": []
+    }
+  ]
+}
