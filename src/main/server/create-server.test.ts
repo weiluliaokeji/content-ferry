@@ -312,6 +312,12 @@ describe("local API scaffold", () => {
 
   it("persists article settings and returns recently used authors", async () => {
     server = createTestServer();
+    const account = await server.inject({
+      method: "POST",
+      url: "/api/media-accounts",
+      payload: { platform: "wechat_official", displayName: "合集测试号" }
+    });
+    const accountId = account.json().id as string;
     const saved = await server.inject({
       method: "PUT",
       url: "/api/article-settings",
@@ -320,8 +326,12 @@ describe("local API scaffold", () => {
         author: "围炉作者",
         digest: "这是一段公众号摘要。",
         coverSource: "contentferry-asset://project/cover.jpg",
+        accountId,
         needOpenComment: true,
-        onlyFansCanComment: true
+        onlyFansCanComment: true,
+        declareOriginal: true,
+        enableReward: true,
+        collectionName: "测试合集"
       }
     });
     expect(saved.statusCode).toBe(200);
@@ -334,11 +344,26 @@ describe("local API scaffold", () => {
       author: "围炉作者",
       digest: "这是一段公众号摘要。",
       needOpenComment: true,
-      onlyFansCanComment: true
+      onlyFansCanComment: true,
+      declareOriginal: true,
+      enableReward: true,
+      collectionName: "测试合集"
     });
 
     const authors = await server.inject({ method: "GET", url: "/api/article-settings/authors" });
     expect(authors.json().items).toContain("围炉作者");
+
+    database?.connection.prepare(`INSERT INTO wechat_collections
+      (account_id, name, wechat_collection_id, observed_at) VALUES (?, ?, ?, ?)`)
+      .run(accountId, "微信同步合集", "collection-1", "2026-07-26T00:00:00.000Z");
+    const collections = await server.inject({
+      method: "GET",
+      url: `/api/article-settings/collections?accountId=${accountId}`
+    });
+    expect(collections.json()).toMatchObject({
+      items: expect.arrayContaining(["测试合集", "微信同步合集"]),
+      syncedAt: "2026-07-26T00:00:00.000Z"
+    });
   });
 
   it("accepts editor images larger than Fastify's default one megabyte limit", async () => {

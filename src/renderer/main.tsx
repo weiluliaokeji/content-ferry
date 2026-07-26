@@ -104,8 +104,9 @@ type ContentReview = { projectId: string; status: "pending" | "needs_revision" |
 type WechatPublishJob = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string | null; mode: "draft" | "publish" | "mass"; title: string;
   draftMediaId: string | null; publishId: string | null; messageId: string | null;
-  status: "draft_ready" | "submitted" | "published" | "failed" | "cancelled"; errorMessage: string | null;
-  statusSource: "system" | "wechat" | "manual"; statusNote: string | null; updatedAt: string;
+  status: "draft_ready" | "browser_editing" | "submitted" | "published" | "failed" | "cancelled"; errorMessage: string | null;
+  statusSource: "system" | "wechat" | "browser" | "manual"; statusNote: string | null;
+  declareOriginal: boolean; enableReward: boolean; collectionName: string; updatedAt: string;
 };
 type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string };
 type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
@@ -117,6 +118,9 @@ type ArticleSettings = {
   accountId: string;
   needOpenComment: boolean;
   onlyFansCanComment: boolean;
+  declareOriginal: boolean;
+  enableReward: boolean;
+  collectionName: string;
 };
 type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "github_copilot" | "modelscope" | "gemini";
 type ModelConnection = {
@@ -270,6 +274,9 @@ function App() {
   const [publishDigest, setPublishDigest] = useState("");
   const [publishNeedOpenComment, setPublishNeedOpenComment] = useState(true);
   const [publishOnlyFansCanComment, setPublishOnlyFansCanComment] = useState(false);
+  const [publishDeclareOriginal, setPublishDeclareOriginal] = useState(false);
+  const [publishEnableReward, setPublishEnableReward] = useState(false);
+  const [publishCollectionName, setPublishCollectionName] = useState("");
   const [publishThumbMediaId, setPublishThumbMediaId] = useState("");
   const [publishCoverSource, setPublishCoverSource] = useState("");
   const [publishCoverPreview, setPublishCoverPreview] = useState("");
@@ -724,6 +731,7 @@ function App() {
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || preferred?.id || "");
         setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
+        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishCollectionName(settings.collectionName);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -762,6 +770,7 @@ function App() {
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || "");
         setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
+        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishCollectionName(settings.collectionName);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -947,7 +956,10 @@ function App() {
           thumbMediaId: publishThumbMediaId,
           coverSource: publishCoverSource,
           needOpenComment: publishNeedOpenComment,
-          onlyFansCanComment: publishNeedOpenComment && publishOnlyFansCanComment
+          onlyFansCanComment: publishNeedOpenComment && publishOnlyFansCanComment,
+          declareOriginal: publishDeclareOriginal,
+          enableReward: publishEnableReward,
+          collectionName: publishCollectionName
         })
       });
       setPublishProject(undefined); setPublishSource(undefined); setActiveView("publish"); setError("");
@@ -978,6 +990,26 @@ function App() {
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法打开微信草稿箱。");
+    }
+  };
+  const startWechatBrowserAssist = async (job: WechatPublishJob) => {
+    setSaving(true);
+    try {
+      const assistedJob = await request<WechatPublishJob>(`/integrations/wechat/jobs/${job.id}/browser-assist`, { method: "POST" });
+      if (!window.contentFerry) throw new Error("微信后台完善只能从文渡桌面应用中打开。");
+      await window.contentFerry.openWechatBackend({
+        accountId: assistedJob.accountId,
+        title: assistedJob.title,
+        declareOriginal: assistedJob.declareOriginal,
+        enableReward: assistedJob.enableReward,
+        collectionName: assistedJob.collectionName
+      });
+      await Promise.all([loadWechatJobs(), loadProjects()]);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法启动微信后台完善流程。");
+    } finally {
+      setSaving(false);
     }
   };
   const submitWechatJob = async (job: WechatPublishJob, mode: "publish" | "mass") => {
@@ -1230,7 +1262,7 @@ function App() {
           <div className="section-heading"><h2>待处理</h2></div>
           <ul className="publish-job-list">{pendingWechatJobs.map((job) => {
             const account = accounts.find((item) => item.id === job.accountId);
-            return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{wechatJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{job.status === "draft_ready" && <><button className="secondary-button" onClick={() => void openWechatDraftBox()} disabled={saving}>微信草稿箱</button><button className="secondary-button" onClick={() => void submitWechatJob(job, "publish")} disabled={saving}>普通发布</button><button className="secondary-button" onClick={() => void submitWechatJob(job, "mass")} disabled={saving}>群发所有关注者</button><button className="secondary-button" onClick={() => openWechatStatusCorrection(job)} disabled={saving}>已在微信后台处理</button></>}{job.status === "submitted" && <><span className="status-badge">等待微信回执</span><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}{job.status === "failed" && <><button className="secondary-button" onClick={() => void retryWechatJob(job)}>重新设置并同步</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}</span></li>;
+            return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{wechatJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{job.status === "draft_ready" && <><button onClick={() => void startWechatBrowserAssist(job)} disabled={saving}>在微信后台完善并发布</button><button className="secondary-button" onClick={() => void openWechatDraftBox()} disabled={saving}>微信草稿箱</button><details className="publish-more-actions"><summary>更多操作</summary><button className="text-button" onClick={() => void submitWechatJob(job, "publish")} disabled={saving}>接口普通发布</button><button className="text-button" onClick={() => void submitWechatJob(job, "mass")} disabled={saving}>接口群发所有关注者</button></details></>}{job.status === "browser_editing" && <><span className="status-badge">等待你在微信后台确认</span><button onClick={() => void startWechatBrowserAssist(job)} disabled={saving}>重新打开微信后台</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>确认结果</button></>}{job.status === "submitted" && <><span className="status-badge">等待微信回执</span><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}{job.status === "failed" && <><button className="secondary-button" onClick={() => void retryWechatJob(job)}>重新设置并同步</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}</span></li>;
           })}</ul>
         </section>}
         {completedWechatJobs.length > 0 && <section className="card">
@@ -1317,6 +1349,7 @@ function App() {
           <p className="ready"><strong>作者</strong><span>{publishAuthor || "未填写（允许）"}</span></p>
           <p className="ready"><strong>摘要</strong><span>{publishDigest ? `${publishDigest.length}/120 字` : "未填写（允许）"}</span></p>
           <p className="ready"><strong>微信留言</strong><span>{publishNeedOpenComment ? publishOnlyFansCanComment ? "已开启 · 仅关注者可留言" : "已开启 · 所有人可留言" : "已关闭"}</span></p>
+          <p className="ready"><strong>微信后台选项</strong><span>{[publishDeclareOriginal ? "申请原创" : "", publishEnableReward ? "开启赞赏" : "", publishCollectionName ? `加入合集：${publishCollectionName}` : ""].filter(Boolean).join(" · ") || "未设置（创建草稿后仍可在微信后台调整）"}</span></p>
         </div>
         <section className="publish-ai-check">
           <div className="detector-switch"><label>检测工具<select value={publishDetector} onChange={(event) => setPublishDetector(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select></label><button type="button" className="secondary-button" onClick={() => void (publishDetector === "zhuque" ? runPublishZhuque() : runPublishContentAny())} disabled={publishAiCheckRunning || saving}>{publishAiCheckRunning ? "正在自动检测…" : publishDetector === "zhuque" ? "开始腾讯朱雀检测" : "开始 ContentAny 检测"}</button></div>
@@ -1402,9 +1435,14 @@ function ArticleWorkspace({
     coverSource: "",
     accountId: "",
     needOpenComment: true,
-    onlyFansCanComment: false
+    onlyFansCanComment: false,
+    declareOriginal: false,
+    enableReward: false,
+    collectionName: ""
   });
   const [authorHistory, setAuthorHistory] = useState<string[]>([]);
+  const [collectionHistory, setCollectionHistory] = useState<string[]>([]);
+  const [collectionsSyncedAt, setCollectionsSyncedAt] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [coverCropImage, setCoverCropImage] = useState<SelectedImage>();
@@ -1442,7 +1480,10 @@ function ArticleWorkspace({
     coverSource: "",
     accountId: "",
     needOpenComment: true,
-    onlyFansCanComment: false
+    onlyFansCanComment: false,
+    declareOriginal: false,
+    enableReward: false,
+    collectionName: ""
   });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
   const switchToMarkdown = (offset: number) => {
@@ -1526,6 +1567,18 @@ function ArticleWorkspace({
       setAuthorHistory(authors.items);
     }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"));
   }, [contextKey]);
+  useEffect(() => {
+    const accountQuery = articleSettings.accountId ? `?accountId=${encodeURIComponent(articleSettings.accountId)}` : "";
+    const loadCollections = () => request<{ items: string[]; syncedAt: string | null }>(`/article-settings/collections${accountQuery}`)
+      .then((result) => { setCollectionHistory(result.items); setCollectionsSyncedAt(result.syncedAt); })
+      .catch(() => { setCollectionHistory([]); setCollectionsSyncedAt(null); });
+    void loadCollections();
+    // A visible WeChat editor runs in a separate Electron window. Refresh the
+    // cached suggestions when the author returns to 文渡 after that picker has
+    // reported the real options back to the local service.
+    window.addEventListener("focus", loadCollections);
+    return () => window.removeEventListener("focus", loadCollections);
+  }, [articleSettings.accountId]);
 
   const hasUnsavedChanges = markdown !== savedMarkdown || JSON.stringify(articleSettings) !== JSON.stringify(savedSettings);
   useEffect(() => {
@@ -1925,6 +1978,26 @@ function ArticleWorkspace({
                 <option value="fans">仅关注者</option>
               </select>
               <small>{articleSettings.needOpenComment ? "该设置由微信草稿接口支持。" : "开启留言后可设置留言范围。"}</small>
+            </label>
+          </fieldset>}
+          {selectedSettingsAccount?.platform === "wechat_official" && <fieldset className="wechat-comment-settings">
+            <legend>微信发布选项</legend>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={articleSettings.declareOriginal} onChange={(event) => setArticleSettings((current) => ({ ...current, declareOriginal: event.target.checked }))} />
+              <span><strong>申请原创声明</strong><small>创建草稿后，文渡会在微信后台尝试打开并开启该选项；平台审核结果以微信为准。</small></span>
+            </label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={articleSettings.enableReward} onChange={(event) => setArticleSettings((current) => ({ ...current, enableReward: event.target.checked }))} />
+              <span><strong>开启赞赏</strong><small>创建草稿后由可见浏览器尝试设置；无法可靠确认时会保留在对应页面供你确认。</small></span>
+            </label>
+            <label>加入合集
+              <input list="wechat-collection-options" value={articleSettings.collectionName} maxLength={80} onChange={(event) => setArticleSettings((current) => ({ ...current, collectionName: event.target.value }))} placeholder="输入或选择微信公众号已有合集的完整名称（可留空）" />
+              <datalist id="wechat-collection-options">{collectionHistory.map((name) => <option key={name} value={name} />)}</datalist>
+              <small>{collectionsSyncedAt
+                ? `已从微信后台同步可见合集：${new Date(collectionsSyncedAt).toLocaleString()}；也可手工输入。发布时只选择微信后台完整匹配项。`
+                : collectionHistory.length > 0
+                  ? "可从文渡已知的合集名称中选择，也可手工输入；首次在微信后台打开“选择合集”后会同步可见选项。"
+                  : "可手工输入合集名称；首次在微信后台打开“选择合集”后，文渡会同步可见的现有合集供下次选择。"}</small>
             </label>
           </fieldset>}
           <div className="settings-cover-section">
@@ -2562,6 +2635,7 @@ function runtimeLogLevel(level: number): string {
 
 function wechatJobLabel(job: WechatPublishJob): string {
   if (job.status === "draft_ready") return "微信草稿已创建，等待人工预览";
+  if (job.status === "browser_editing") return "等待你在微信后台核对设置并发布";
   if (job.status === "failed") return "提交失败，可查看原因后重试";
   if (job.status === "published") return "微信已确认发布完成";
   if (job.status === "cancelled") return "已人工标记为取消发布";

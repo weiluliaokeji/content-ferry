@@ -74,6 +74,10 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <summary>为什么还要配置回调？</summary>
           <p>微信接口返回提交成功不代表最终发布成功。公众号需要通过公网 HTTPS 地址把最终事件转发到文渡的 <code>/wechat/callback/&lt;账号 ID&gt;</code>。</p>
         </details>
+        <details>
+          <summary>原创、赞赏和合集怎么设置？</summary>
+          <p>在文章编辑页的“文章设置”中勾选申请原创声明、开启赞赏，或填写合集名称。草稿创建后，在发布中心点击“在微信后台完善并发布”；文渡会先读取微信“选择合集”窗口中可见的名称，按公众号缓存后再匹配文章设置。下次可直接从同一公众号的下拉建议中选择；微信后台仍是最终来源。你仍要核对最终效果，并在微信后台点击发布。</p>
+        </details>
 
         <h2>常见问题</h2>
         <details>

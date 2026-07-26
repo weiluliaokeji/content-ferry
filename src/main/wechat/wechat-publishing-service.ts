@@ -58,6 +58,9 @@ export class WechatPublishingService {
     coverSource?: string;
     needOpenComment?: boolean;
     onlyFansCanComment?: boolean;
+    declareOriginal?: boolean;
+    enableReward?: boolean;
+    collectionName?: string;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
     if (account.platform !== "wechat_official") throw new WechatApiError("所选账号不是微信公众号。");
@@ -103,9 +106,10 @@ export class WechatPublishingService {
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?)`)
-      .run(id, account.workspaceId, account.id, input.projectId, input.projectId, row.topic, result.media_id, now, now);
+      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, collection_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?)`)
+      .run(id, account.workspaceId, account.id, input.projectId, input.projectId, row.topic, result.media_id,
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
     return this.requireJob(id);
   }
 
@@ -118,6 +122,9 @@ export class WechatPublishingService {
     coverSource?: string;
     needOpenComment?: boolean;
     onlyFansCanComment?: boolean;
+    declareOriginal?: boolean;
+    enableReward?: boolean;
+    collectionName?: string;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
     if (account.platform !== "wechat_official") throw new WechatApiError("所选账号不是微信公众号。");
@@ -149,9 +156,10 @@ export class WechatPublishingService {
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?)`)
-      .run(id, account.workspaceId, account.id, article.relativePath, title, result.media_id, now, now);
+      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, collection_name, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?)`)
+      .run(id, account.workspaceId, account.id, article.relativePath, title, result.media_id,
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
     return this.requireJob(id);
   }
 
@@ -196,9 +204,36 @@ export class WechatPublishingService {
     })();
   }
 
+  startBrowserAssistedPublishing(jobId: string): WechatPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "draft_ready" && job.status !== "browser_editing") {
+      throw new WechatApiError("只有已同步的微信草稿可以进入微信后台完善流程。");
+    }
+    const now = new Date().toISOString();
+    const requestedSettings = [
+      job.declareOriginal ? "申请原创" : "",
+      job.enableReward ? "开启赞赏" : "",
+      job.collectionName ? `加入合集「${job.collectionName}」` : ""
+    ].filter(Boolean);
+    const statusNote = requestedSettings.length > 0
+      ? `已打开微信后台，将尝试${requestedSettings.join("、")}；请最后预览并点击发布。`
+      : "已打开微信后台并定位草稿；请最后预览并点击发布。";
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE wechat_publish_jobs
+        SET status = 'browser_editing', error_message = NULL, status_source = 'browser',
+          status_note = ?, updated_at = ?
+        WHERE id = ?`).run(statusNote, now, jobId);
+      this.db.prepare(`INSERT INTO wechat_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, ?, 'browser_editing', 'browser', ?, ?)`)
+        .run(randomUUID(), jobId, job.status, "启动可见浏览器后台完善流程", now);
+    })();
+    return this.requireJob(jobId);
+  }
+
   correctStatus(jobId: string, status: "published" | "failed" | "cancelled", reason: string): WechatPublishJob {
     const job = this.requireJob(jobId);
-    if (job.status !== "draft_ready" && job.status !== "submitted" && job.status !== "failed") {
+    if (job.status !== "draft_ready" && job.status !== "browser_editing" && job.status !== "submitted" && job.status !== "failed") {
       throw new WechatApiError("只有微信草稿、等待微信回执或失败的任务可以人工校正状态。");
     }
     const normalizedReason = reason.trim();
@@ -378,10 +413,13 @@ export interface WechatPublishJob {
   draftMediaId: string | null;
   publishId: string | null;
   messageId: string | null;
-  status: "draft_ready" | "submitted" | "published" | "failed" | "cancelled";
+  status: "draft_ready" | "browser_editing" | "submitted" | "published" | "failed" | "cancelled";
   errorMessage: string | null;
-  statusSource: "system" | "wechat" | "manual";
+  statusSource: "system" | "wechat" | "browser" | "manual";
   statusNote: string | null;
+  declareOriginal: boolean;
+  enableReward: boolean;
+  collectionName: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -395,6 +433,9 @@ function mapJob(row: Record<string, string | null>): WechatPublishJob {
     errorMessage: row.error_message,
     statusSource: (row.status_source ?? "system") as WechatPublishJob["statusSource"],
     statusNote: row.status_note,
+    declareOriginal: Number(row.declare_original ?? 0) === 1,
+    enableReward: Number(row.enable_reward ?? 0) === 1,
+    collectionName: row.collection_name ?? "",
     createdAt: row.created_at!, updatedAt: row.updated_at!
   };
 }

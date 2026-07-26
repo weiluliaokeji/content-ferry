@@ -19,7 +19,7 @@ declare global {
       selectDirectory: () => Promise<string | undefined>;
       selectImage: () => Promise<{ fileName: string; mimeType: string; base64: string } | undefined>;
       openZhuque: () => Promise<void>;
-      openWechatBackend: () => Promise<void>;
+      openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }) => Promise<void>;
       openContentAny: () => Promise<void>;
       openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;

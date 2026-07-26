@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld("contentFerry", {
   selectImage: (): Promise<{ fileName: string; mimeType: string; base64: string } | undefined> =>
     ipcRenderer.invoke("contentferry:select-image") as Promise<{ fileName: string; mimeType: string; base64: string } | undefined>,
   openZhuque: (): Promise<void> => ipcRenderer.invoke("contentferry:open-zhuque") as Promise<void>,
-  openWechatBackend: (): Promise<void> => ipcRenderer.invoke("contentferry:open-wechat-backend") as Promise<void>,
+  openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }): Promise<void> => ipcRenderer.invoke("contentferry:open-wechat-backend", target) as Promise<void>,
   openContentAny: (): Promise<void> => ipcRenderer.invoke("contentferry:open-contentany") as Promise<void>,
   openUserGuide: (): Promise<void> => ipcRenderer.invoke("contentferry:open-user-guide") as Promise<void>,
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,

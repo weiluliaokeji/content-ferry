@@ -155,6 +155,9 @@ function initialiseDatabase(db: Database.Database): void {
       account_id TEXT,
       need_open_comment INTEGER NOT NULL DEFAULT 1,
       only_fans_can_comment INTEGER NOT NULL DEFAULT 0,
+      declare_original INTEGER NOT NULL DEFAULT 0,
+      enable_reward INTEGER NOT NULL DEFAULT 0,
+      collection_name TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
 
@@ -242,6 +245,9 @@ function initialiseDatabase(db: Database.Database): void {
       error_message TEXT,
       status_source TEXT NOT NULL DEFAULT 'system',
       status_note TEXT,
+      declare_original INTEGER NOT NULL DEFAULT 0,
+      enable_reward INTEGER NOT NULL DEFAULT 0,
+      collection_name TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -261,6 +267,20 @@ function initialiseDatabase(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_wechat_publish_job_events_job_created
       ON wechat_publish_job_events(job_id, created_at DESC);
+
+    -- The public-account web UI is the source of truth. This table is only a
+    -- per-account cache of collection names observed by the visible browser,
+    -- so the editor can offer real previously-synchronised choices offline.
+    CREATE TABLE IF NOT EXISTS wechat_collections (
+      account_id TEXT NOT NULL REFERENCES media_accounts(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      wechat_collection_id TEXT,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_wechat_collections_account_observed
+      ON wechat_collections(account_id, observed_at DESC);
   `);
 
   const accountColumns = db.prepare("PRAGMA table_info(media_accounts)").all() as Array<{ name: string }>;
@@ -283,6 +303,15 @@ function initialiseDatabase(db: Database.Database): void {
   if (!articleSettingColumns.some((column) => column.name === "only_fans_can_comment")) {
     db.exec("ALTER TABLE article_settings ADD COLUMN only_fans_can_comment INTEGER NOT NULL DEFAULT 0");
   }
+  if (!articleSettingColumns.some((column) => column.name === "declare_original")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN declare_original INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!articleSettingColumns.some((column) => column.name === "enable_reward")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN enable_reward INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!articleSettingColumns.some((column) => column.name === "collection_name")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");
+  }
 
   const articleQualityColumns = db.prepare("PRAGMA table_info(article_quality_checks)").all() as Array<{ name: string }>;
   if (!articleQualityColumns.some((column) => column.name === "ai_check_report")) {
@@ -303,6 +332,15 @@ function initialiseDatabase(db: Database.Database): void {
   }
   if (!publishJobColumns.some((column) => column.name === "status_note")) {
     db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN status_note TEXT");
+  }
+  if (!publishJobColumns.some((column) => column.name === "declare_original")) {
+    db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN declare_original INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!publishJobColumns.some((column) => column.name === "enable_reward")) {
+    db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN enable_reward INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!publishJobColumns.some((column) => column.name === "collection_name")) {
+    db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");
   }
 
 }

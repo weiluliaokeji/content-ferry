@@ -83,7 +83,10 @@ const wechatDraftInput = z.object({
   thumbMediaId: z.string().max(256).optional(),
   coverSource: z.string().max(2000).optional(),
   needOpenComment: z.boolean().default(true),
-  onlyFansCanComment: z.boolean().default(false)
+  onlyFansCanComment: z.boolean().default(false),
+  declareOriginal: z.boolean().default(false),
+  enableReward: z.boolean().default(false),
+  collectionName: z.string().trim().max(80).default("")
 });
 const wechatSourceDraftInput = z.object({
   accountId: z.string().uuid(),
@@ -93,7 +96,10 @@ const wechatSourceDraftInput = z.object({
   thumbMediaId: z.string().max(256).optional(),
   coverSource: z.string().max(2000).optional(),
   needOpenComment: z.boolean().default(true),
-  onlyFansCanComment: z.boolean().default(false)
+  onlyFansCanComment: z.boolean().default(false),
+  declareOriginal: z.boolean().default(false),
+  enableReward: z.boolean().default(false),
+  collectionName: z.string().trim().max(80).default("")
 });
 const wechatSubmitInput = z.object({ mode: z.enum(["publish", "mass"]) });
 const modelProviderSchema = z.enum(modelProviderIds);
@@ -412,8 +418,8 @@ export function buildServer(
 
   server.get("/api/article-settings", async (request) => {
     const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
-    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment FROM article_settings WHERE context_key = ?")
-      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number } | undefined;
+    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name FROM article_settings WHERE context_key = ?")
+      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number; declare_original: number; enable_reward: number; collection_name: string } | undefined;
     const projectId = query.contextKey.startsWith("project:") ? query.contextKey.slice("project:".length) : "";
     const sourcePath = query.contextKey.startsWith("source:") ? query.contextKey.slice("source:".length) : "";
     const project = projectId
@@ -427,7 +433,10 @@ export function buildServer(
       coverSource: row?.cover_source ?? "",
       accountId: project?.target_account_id ?? row?.account_id ?? "",
       needOpenComment: row ? row.need_open_comment === 1 : true,
-      onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false
+      onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false,
+      declareOriginal: row ? row.declare_original === 1 : false,
+      enableReward: row ? row.enable_reward === 1 : false,
+      collectionName: row?.collection_name ?? ""
     };
   });
 
@@ -439,17 +448,22 @@ export function buildServer(
       coverSource: z.string().max(2000),
       accountId: z.string().uuid().or(z.literal("")).default(""),
       needOpenComment: z.boolean().default(true),
-      onlyFansCanComment: z.boolean().default(false)
+      onlyFansCanComment: z.boolean().default(false),
+      declareOriginal: z.boolean().default(false),
+      enableReward: z.boolean().default(false),
+      collectionName: z.string().trim().max(80).default("")
     }).parse(request.body);
     const now = new Date().toISOString();
     database.connection.prepare(`INSERT INTO article_settings
-      (context_key, author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (context_key, author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(context_key) DO UPDATE SET author = excluded.author, digest = excluded.digest,
         cover_source = excluded.cover_source, account_id = excluded.account_id,
         need_open_comment = excluded.need_open_comment, only_fans_can_comment = excluded.only_fans_can_comment,
+        declare_original = excluded.declare_original, enable_reward = excluded.enable_reward, collection_name = excluded.collection_name,
         updated_at = excluded.updated_at`)
       .run(input.contextKey, input.author, input.digest, input.coverSource, input.accountId || null,
-        input.needOpenComment ? 1 : 0, input.needOpenComment && input.onlyFansCanComment ? 1 : 0, now);
+        input.needOpenComment ? 1 : 0, input.needOpenComment && input.onlyFansCanComment ? 1 : 0,
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName, now);
     if (input.contextKey.startsWith("project:")) {
       database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE id = ?")
         .run(input.accountId || null, now, input.contextKey.slice("project:".length));
@@ -463,7 +477,10 @@ export function buildServer(
       coverSource: input.coverSource,
       accountId: input.accountId,
       needOpenComment: input.needOpenComment,
-      onlyFansCanComment: input.needOpenComment && input.onlyFansCanComment
+      onlyFansCanComment: input.needOpenComment && input.onlyFansCanComment,
+      declareOriginal: input.declareOriginal,
+      enableReward: input.enableReward,
+      collectionName: input.collectionName
     };
   });
 
@@ -472,6 +489,31 @@ export function buildServer(
       FROM article_settings WHERE author <> '' GROUP BY author ORDER BY last_used DESC LIMIT 20`).all() as Array<{ author: string }>)
       .map((row) => row.author)
   }));
+
+  server.get("/api/article-settings/collections", async (request) => {
+    const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
+    const accountId = query.accountId ?? "";
+    const rows = database.connection.prepare(`
+      SELECT name, MAX(last_used) AS last_used FROM (
+        SELECT name, observed_at AS last_used
+        FROM wechat_collections
+        WHERE ? <> '' AND account_id = ?
+        UNION ALL
+        SELECT collection_name AS name, updated_at AS last_used
+        FROM article_settings
+        WHERE collection_name <> '' AND (? = '' OR account_id = ?)
+        UNION ALL
+        SELECT collection_name AS name, updated_at AS last_used
+        FROM wechat_publish_jobs
+        WHERE collection_name <> '' AND (? = '' OR account_id = ?)
+      ) GROUP BY name ORDER BY last_used DESC LIMIT 50
+    `).all(accountId, accountId, accountId, accountId, accountId, accountId) as Array<{ name: string }>;
+    const syncedAtRow = accountId
+      ? database.connection.prepare("SELECT MAX(observed_at) AS observed_at FROM wechat_collections WHERE account_id = ?")
+        .get(accountId) as { observed_at: string | null }
+      : undefined;
+    return { items: rows.map((row) => row.name), syncedAt: syncedAtRow?.observed_at ?? null };
+  });
 
   server.get("/api/article-quality-check", async (request) => {
     const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
@@ -1092,10 +1134,15 @@ ${input.markdown}`,
     return reply.code(201).send(await wechat.createSourceDraft(wechatSourceDraftInput.parse(request.body)));
   });
 
-  server.post("/api/integrations/wechat/jobs/:jobId/submit", async (request) => {
-    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
-    return wechat.submit(params.jobId, wechatSubmitInput.parse(request.body).mode);
-  });
+    server.post("/api/integrations/wechat/jobs/:jobId/submit", async (request) => {
+      const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+      return wechat.submit(params.jobId, wechatSubmitInput.parse(request.body).mode);
+    });
+
+    server.post("/api/integrations/wechat/jobs/:jobId/browser-assist", async (request) => {
+      const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+      return wechat.startBrowserAssistedPublishing(params.jobId);
+    });
 
   server.patch("/api/integrations/wechat/jobs/:jobId/status", async (request) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
