@@ -11,6 +11,27 @@ export type VisualMarkdownSelection = {
   documentMarkdown: string;
 };
 
+function remoteImageFromClipboard(clipboard: DataTransfer | null): { url: string; alt: string } | undefined {
+  if (!clipboard) return undefined;
+  const text = clipboard.getData("text/plain").trim();
+  const markdown = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\)$/i.exec(text);
+  if (markdown) return { url: markdown[2], alt: markdown[1] || remoteImageName(markdown[2]) };
+  const html = clipboard.getData("text/html");
+  if (!html) return undefined;
+  const image = new DOMParser().parseFromString(html, "text/html").querySelector<HTMLImageElement>("img[src]");
+  if (!image || !/^https?:\/\//i.test(image.src)) return undefined;
+  return { url: image.src, alt: image.alt || remoteImageName(image.src) };
+}
+
+function remoteImageName(url: string): string {
+  try {
+    const lastSegment = new URL(url).pathname.split("/").filter(Boolean).at(-1);
+    return lastSegment || "远程图片";
+  } catch {
+    return "远程图片";
+  }
+}
+
 export function VisualMarkdownEditor({
   value,
   onChange,
@@ -90,12 +111,24 @@ export function VisualMarkdownEditor({
         userHasEdited = true;
       }
     };
+    const copySelection = (event: ClipboardEvent) => {
+      const copied = crepeRef.current?.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const { from, to } = view.state.selection;
+        if (from === to) return "";
+        return view.state.doc.textBetween(from, to, "\n");
+      });
+      if (!copied || !event.clipboardData) return;
+      event.clipboardData.setData("text/plain", copied);
+      event.preventDefault();
+    };
     root.addEventListener("beforeinput", markUserEdit);
     root.addEventListener("paste", markUserEdit);
     root.addEventListener("drop", markUserEdit);
     root.addEventListener("cut", markUserEdit);
     root.addEventListener("click", markToolbarEdit);
     root.addEventListener("keydown", markKeyboardEdit, true);
+    root.addEventListener("copy", copySelection);
     const uploadImage = async (file: File): Promise<string> => {
       try {
         if (file.size > 15 * 1024 * 1024) throw new Error("图片文件不能超过 15 MB。");
@@ -117,6 +150,51 @@ export function VisualMarkdownEditor({
         throw error;
       }
     };
+    const importRemoteImage = async (url: string): Promise<string> => {
+      try {
+        const response = await fetch(`http://127.0.0.1:4317/api/${sourceArticlePath ? "content-source/article-asset/import-remote" : "content-assets/import-remote"}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(sourceArticlePath ? { path: sourceArticlePath, url } : { contextId: assetContextId, url })
+        });
+        const payload = await response.json() as { assetUrl?: string; error?: string };
+        if (!response.ok || !payload.assetUrl) throw new Error(payload.error ?? "远程图片下载失败。");
+        return payload.assetUrl;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "远程图片下载失败。";
+        onError?.(message);
+        throw error;
+      }
+    };
+    const insertImportedImage = (source: string, alt: string) => {
+      const inserted = crepeRef.current?.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const imageType = view.state.schema.nodes.image;
+        if (!imageType) return false;
+        view.dispatch(view.state.tr.replaceSelectionWith(imageType.create({ src: source, alt })).scrollIntoView());
+        view.focus();
+        return true;
+      });
+      if (!inserted) onError?.("图片已保存，但无法插入到当前位置。");
+    };
+    const importPastedImage = (event: ClipboardEvent) => {
+      const clipboardImage = Array.from(event.clipboardData?.items ?? [])
+        .find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+      if (clipboardImage) {
+        event.preventDefault();
+        event.stopPropagation();
+        userHasEdited = true;
+        void uploadImage(clipboardImage).then((source) => insertImportedImage(source, clipboardImage.name || "粘贴图片")).catch(() => undefined);
+        return;
+      }
+      const candidate = remoteImageFromClipboard(event.clipboardData);
+      if (!candidate) return;
+      event.preventDefault();
+      event.stopPropagation();
+      userHasEdited = true;
+      void importRemoteImage(candidate.url).then((source) => insertImportedImage(source, candidate.alt)).catch(() => undefined);
+    };
+    root.addEventListener("paste", importPastedImage, true);
     const crepe = new Crepe({
       root: rootRef.current,
       // Markdown treats a single line break as whitespace, while authors who
@@ -183,6 +261,8 @@ export function VisualMarkdownEditor({
       root.removeEventListener("cut", markUserEdit);
       root.removeEventListener("click", markToolbarEdit);
       root.removeEventListener("keydown", markKeyboardEdit, true);
+      root.removeEventListener("copy", copySelection);
+      root.removeEventListener("paste", importPastedImage, true);
       void crepe.destroy();
     };
   }, []);

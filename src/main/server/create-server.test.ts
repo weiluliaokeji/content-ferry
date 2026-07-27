@@ -57,11 +57,22 @@ describe("local API scaffold", () => {
 
     const listed = await server.inject({ method: "GET", url: "/api/skills" });
     expect(listed.statusCode).toBe(200);
-    expect(listed.json().items).toHaveLength(10);
+    expect(listed.json().items).toHaveLength(11);
     expect(listed.json().items).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "awen-assistant", name: "阿文 · 文章顾问" }),
       expect.objectContaining({ id: "article-summary", name: "文章摘要生成" }),
+      expect.objectContaining({ id: "web-research", name: "联网资料补研" }),
       expect.objectContaining({ id: "cover-prompt-generation", name: "封面提示词生成" })
+    ]));
+    const connections = await server.inject({ method: "GET", url: "/api/model-connections" });
+    expect(connections.statusCode).toBe(200);
+    expect(connections.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: "nvidia_build",
+        displayName: "NVIDIA Build",
+        modelId: "z-ai/glm-5.2",
+        baseUrl: "https://integrate.api.nvidia.com/v1"
+      })
     ]));
     const humanize = listed.json().items.find((item: { id: string }) => item.id === "humanize-selection");
     expect(humanize.files).toEqual(expect.arrayContaining([
@@ -538,6 +549,17 @@ describe("local API scaffold", () => {
     expect((await server.inject({ method: "GET", url: "/api/content-projects" })).json().items).toHaveLength(0);
   });
 
+  it("uses the optional article title as the project title", async () => {
+    server = createTestServer();
+    const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
+      topic: "整理个人开发者可用免费模型的使用边界", title: "零成本基建系列——长期免费的 AI 模型 API"
+    } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ topic: "零成本基建系列——长期免费的 AI 模型 API" });
+    const relativePath = created.json().sourceRelativePath as string;
+    expect(relativePath).toContain("零成本基建系列——长期免费的 AI 模型 API");
+  });
+
   it("falls back to copy-and-remove when Windows blocks an article directory rename", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-busy-delete-"));
     temporaryDirectories.push(root);
@@ -611,8 +633,19 @@ describe("local API scaffold", () => {
       id: "test-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         prompts.push(request.prompt);
+        if (request.task === "research") {
+          return {
+            value: request.parse({
+              planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。",
+              sources: [{
+                title: "示例官方文档", url: "https://example.com/docs", excerpt: "用于验证资料卡持久化。",
+                keyClaims: ["提供了可核对的接入说明"], sourceType: "official"
+              }]
+            }), provider: "test-ai", model: null, usage: null
+          };
+        }
         const markdown = request.task === "outline"
-          ? "# AI 提纲\n\n## 真实问题\n\n- 【待核查：行业数据】"
+          ? "# AI 提纲\n\n## 真实问题\n\n- 读者在采用 AI 工具时最容易忽略的边界"
           : "# AI 正文\n\n这是一份由测试模型生成的正文。";
         return {
           value: request.parse({ markdown }),
@@ -637,17 +670,77 @@ describe("local API scaffold", () => {
       objective: "帮助读者判断如何采用", audience: "个人开发者", angle: "从真实工作流出发", sourceNotes: "用户自己的实践笔记"
     } });
 
+    const research = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/generate` });
+    expect(research.statusCode).toBe(200);
+    expect(research.json()).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: true }] });
+    const researchSourceId = research.json().sources[0].id as string;
+    const deselected = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { selected: false } });
+    expect(deselected.statusCode).toBe(200);
+    expect(deselected.json().sources[0]).toMatchObject({ id: researchSourceId, selected: false });
+
     const outline = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/outline/generate`, payload: {} });
     expect(outline.statusCode).toBe(200);
-    expect(outline.json()).toMatchObject({ provider: "test-ai", generatedFromBrief: true, markdown: "# AI 提纲\n\n## 真实问题\n\n- 【待核查：行业数据】" });
+    expect(outline.json()).toMatchObject({ provider: "test-ai", generatedFromBrief: true, markdown: "# AI Agent 如何改变开发流程\n\n## 真实问题\n\n- 读者在采用 AI 工具时最容易忽略的边界" });
     const projectsBeforeSave = await server.inject({ method: "GET", url: "/api/content-projects" });
     expect(projectsBeforeSave.json().items[0].outlineReady).toBe(false);
 
     await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: outline.json().markdown } });
     const draft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
-    expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI 正文\n\n这是一份由测试模型生成的正文。" });
+    expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI Agent 如何改变开发流程\n\n这是一份由测试模型生成的正文。" });
     expect(prompts[0]).toContain("账号定位：帮助技术从业者理解 AI 工具");
-    expect(prompts[1]).toContain("已确认提纲");
+    expect(prompts[1]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
+    expect(prompts[2]).toContain("已确认提纲");
+  });
+
+  it("appends follow-up research and records it in the article's Awen conversation", async () => {
+    const fakeProvider: ModelProvider = {
+      id: "test-research-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const isFollowUp = request.prompt.includes("第二轮增量联网补研");
+        return {
+          value: request.parse({
+            planMarkdown: isFollowUp ? "## 本轮补研结论\n\n- 已补充调用限额。" : "## 本次补研结论\n\n- 已确认基础接入方式。",
+            sources: [{
+              title: isFollowUp ? "调用限额官方说明" : "接入官方说明",
+              url: isFollowUp ? "https://example.com/limits" : "https://example.com/getting-started",
+              excerpt: "用于验证增量资料卡不会覆盖原有资料。",
+              keyClaims: ["该页面说明了当前适用的限制。"],
+              sourceType: "official"
+            }]
+          }),
+          provider: "test-research-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    server = createTestServer(fakeProvider);
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "测试增量补研" } });
+    const projectId = project.json().id as string;
+    const sourceRelativePath = project.json().sourceRelativePath as string;
+    expect((await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/research/generate` })).statusCode).toBe(200);
+
+    const followUp = await server.inject({
+      method: "POST",
+      url: `/api/content-projects/${projectId}/research/follow-up`,
+      payload: { message: "请继续核查调用限额，只使用官方文档。" }
+    });
+    expect(followUp.statusCode).toBe(200);
+    expect(followUp.json()).toMatchObject({
+      sources: expect.arrayContaining([
+        expect.objectContaining({ url: "https://example.com/getting-started" }),
+        expect.objectContaining({ url: "https://example.com/limits" })
+      ])
+    });
+    expect(followUp.json().planMarkdown).toContain("本次补研结论");
+    expect(followUp.json().planMarkdown).toContain("本轮补研结论");
+
+    const conversation = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(`source:${sourceRelativePath}`)}` });
+    expect(conversation.statusCode).toBe(200);
+    expect(conversation.json().messages).toEqual([
+      expect.objectContaining({ role: "user", content: expect.stringContaining("继续核查调用限额") }),
+      expect.objectContaining({ role: "assistant", content: expect.stringContaining("本轮补研结论") })
+    ]);
   });
 
   it("accepts the development UI's local cross-origin request", async () => {

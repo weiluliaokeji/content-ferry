@@ -96,8 +96,11 @@ type AccountProfile = { positioning: string; targetAudience: string; prohibitedT
 type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; credentialsConfigured: boolean; profile: AccountProfile };
 type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null }>; truncated: boolean; warnings: string[] };
 type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
-type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; briefReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
+type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; briefReady: boolean; researchReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
 type ContentBrief = { projectId: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
+type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; retrievedAt: string; selected: boolean };
+type ContentResearch = { projectId: string; planMarkdown: string; sources: ResearchSource[]; updatedAt: string | null; provider?: string; model?: string | null };
+type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
 type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
 type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };
 type ContentReview = { projectId: string; status: "pending" | "needs_revision" | "approved"; factChecked: boolean; accountFitChecked: boolean; aiCheckResult: string; notes: string };
@@ -122,7 +125,7 @@ type ArticleSettings = {
   enableReward: boolean;
   collectionName: string;
 };
-type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "github_copilot" | "modelscope" | "gemini";
+type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "nvidia_build" | "github_copilot" | "modelscope" | "gemini";
 type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
   enabled: boolean; credentialConfigured: boolean;
@@ -176,30 +179,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function streamGeneration<T>(path: string, signal: AbortSignal, onEvent: (event: string, data: Record<string, unknown>) => void): Promise<T> {
-  const response = await fetch(`${apiBase}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal });
-  if (!response.ok || !response.body) throw new Error(`本地服务暂不可用（${response.status}）。`);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let completed: T | undefined;
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const event = /^event:\s*(.+)$/m.exec(frame)?.[1] ?? "message";
-      const raw = /^data:\s*(.+)$/m.exec(frame)?.[1];
-      if (!raw) continue;
-      const data = JSON.parse(raw) as Record<string, unknown>;
-      onEvent(event, data);
-      if (event === "error") throw new Error(String(data.error ?? "AI 生成失败。"));
-      if (event === "complete") completed = data as T;
+  try {
+    const response = await fetch(`${apiBase}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal });
+    if (!response.ok || !response.body) throw new Error(`本地服务暂不可用（${response.status}）。`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completed: T | undefined;
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const event = /^event:\s*(.+)$/m.exec(frame)?.[1] ?? "message";
+        const raw = /^data:\s*(.+)$/m.exec(frame)?.[1];
+        if (!raw) continue;
+        const data = JSON.parse(raw) as Record<string, unknown>;
+        onEvent(event, data);
+        if (event === "error") throw new Error(String(data.error ?? "AI 生成失败。"));
+        if (event === "complete") completed = data as T;
+      }
+      if (done) break;
     }
-    if (done) break;
+    if (!completed) throw new Error("AI 生成未返回完成结果。");
+    return completed;
+  } catch (cause) {
+    if (signal.aborted) throw new Error("已停止本次 AI 生成。");
+    const message = cause instanceof Error ? cause.message : "";
+    if (/BodyStreamBuffer was aborted|stream.*aborted|networkerror/i.test(message)) {
+      throw new Error("生成过程中的本地连接被中断，可能是文渡正在重启。请等待窗口稳定后重试。");
+    }
+    throw cause;
   }
-  if (!completed) throw new Error("AI 生成未返回完成结果。");
-  return completed;
 }
 
 const platformName = (platform: AccountPlatform) => platform === "wechat_official" ? "微信公众号" : "CSDN";
@@ -208,6 +220,7 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
   openai: "OpenAI API",
   openrouter: "OpenRouter",
   nous: "Nous Research Portal",
+  nvidia_build: "NVIDIA Build",
   github_copilot: "GitHub Copilot",
   modelscope: "ModelScope",
   gemini: "Google Gemini"
@@ -235,16 +248,34 @@ function App() {
   const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "preview" | "settings">("assistant");
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [projectTopic, setProjectTopic] = useState("");
+  const [projectTitle, setProjectTitle] = useState("");
   const [projectAccountId, setProjectAccountId] = useState("");
+  const [projectObjective, setProjectObjective] = useState("");
+  const [projectAudience, setProjectAudience] = useState("");
+  const [projectAngle, setProjectAngle] = useState("");
+  const [projectSourceNotes, setProjectSourceNotes] = useState("");
   const [briefProject, setBriefProject] = useState<ContentProject>();
   const [brief, setBrief] = useState<ContentBrief>();
+  const briefRequestVersionRef = useRef(0);
+  const titleSuggestionAbortRef = useRef<AbortController | undefined>(undefined);
+  const [briefTitle, setBriefTitle] = useState("");
+  const [titleSuggestions, setTitleSuggestions] = useState<string[]>([]);
+  const [historicalSeries, setHistoricalSeries] = useState<TitleSuggestion["historicalSeries"]>([]);
+  const [titleSuggesting, setTitleSuggesting] = useState(false);
   const [outlineProject, setOutlineProject] = useState<ContentProject>();
   const [outline, setOutline] = useState<ContentOutline>();
   const [outlineGenerating, setOutlineGenerating] = useState(false);
+  const [outlineGenerationStatus, setOutlineGenerationStatus] = useState("");
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
+  const [researchProject, setResearchProject] = useState<ContentProject>();
+  const [research, setResearch] = useState<ContentResearch>();
+  const [researchGenerating, setResearchGenerating] = useState(false);
+  const [researchFollowUp, setResearchFollowUp] = useState("");
+  const [researchFollowingUp, setResearchFollowingUp] = useState(false);
   const [draftProject, setDraftProject] = useState<ContentProject>();
   const [draft, setDraft] = useState<ContentDraft>();
   const [draftGenerating, setDraftGenerating] = useState(false);
+  const [draftGenerationStatus, setDraftGenerationStatus] = useState("");
   const draftAbortRef = useRef<AbortController | undefined>(undefined);
   const [reviewProject, setReviewProject] = useState<ContentProject>();
   const [review, setReview] = useState<ContentReview>();
@@ -317,6 +348,12 @@ function App() {
   const loadProjects = async () => {
     try { setProjects((await request<{ items: ContentProject[] }>("/content-projects")).items); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取内容项目。"); }
+  };
+  const refreshSourcePreview = async () => {
+    const source = await request<{ rootPath: string | null }>("/content-source");
+    if (!source.rootPath) { setSourcePreview(undefined); return; }
+    setSourcePath(source.rootPath);
+    setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
   };
   const loadWechatJobs = async () => {
     try { setWechatJobs((await request<{ items: WechatPublishJob[] }>("/integrations/wechat/jobs")).items); }
@@ -405,7 +442,10 @@ function App() {
       }
     })();
   }, []);
-  useEffect(() => { if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs(); }, [activeView]);
+  useEffect(() => {
+    if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
+    if (activeView === "library") void refreshSourcePreview().catch(() => undefined);
+  }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => { if (activeView === "logs") void loadRuntimeLogs(); }, [activeView, logDate, runtimeLogFilter]);
 
@@ -460,6 +500,20 @@ function App() {
     if (selected) setSourcePath(selected);
   };
 
+  const openProjectCreator = () => {
+    setProjectAccountId(accounts.length === 1 ? accounts[0].id : "");
+    setProjectModalOpen(true);
+  };
+
+  const closeBrief = () => {
+    briefRequestVersionRef.current += 1;
+    titleSuggestionAbortRef.current?.abort();
+    titleSuggestionAbortRef.current = undefined;
+    setTitleSuggesting(false);
+    setBriefProject(undefined);
+    setBrief(undefined);
+  };
+
   const openSourceArticle = async (relativePath: string, panel: "assistant" | "preview" | "settings" = "assistant", showError = true): Promise<boolean> => {
     setSaving(true);
     try {
@@ -492,11 +546,29 @@ function App() {
 
   const createProject = async (event: FormEvent) => {
     event.preventDefault();
-    if (!projectTopic.trim()) { setError("请先填写文章主题或想法。"); return; }
+    const topic = projectTopic.trim();
+    const title = projectTitle.trim();
+    const targetAccountId = projectAccountId.trim();
+    const objective = projectObjective.trim();
+    if (!topic) { setError("请先填写文章主题或想法。"); return; }
+    if (topic.length > 12000) { setError("文章主题或想法不能超过 12000 个字符，请拆分资料后再创建。"); return; }
+    if (title.length > 120) { setError("文章标题不能超过 120 个字符，请精简后再创建。"); return; }
+    if (targetAccountId && !accounts.some((account) => account.id === targetAccountId)) {
+      setError("所选发布账号已不存在或刚被修改，请关闭后重新打开“新建文章”再选择。");
+      return;
+    }
     setSaving(true);
     try {
-      await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic: projectTopic.trim(), ...(projectAccountId ? { targetAccountId: projectAccountId } : {}) }) });
-      setProjectTopic(""); setProjectAccountId(""); setProjectModalOpen(false); await loadProjects();
+      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
+      await request<ContentBrief>(`/content-projects/${project.id}/brief`, {
+        method: "PUT",
+        body: JSON.stringify({ objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim() })
+      });
+      setProjectTopic(""); setProjectTitle(""); setProjectAccountId("");
+      setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes("");
+      setProjectModalOpen(false);
+      await loadProjects();
+      await openResearch(project, true);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "内容项目创建失败。"); }
     finally { setSaving(false); }
   };
@@ -521,39 +593,144 @@ function App() {
   };
 
   const openBrief = async (project: ContentProject) => {
+    const requestVersion = ++briefRequestVersionRef.current;
+    titleSuggestionAbortRef.current?.abort();
+    setTitleSuggesting(false);
     setBriefProject(project);
     setBrief(undefined);
-    try { setBrief(await request<ContentBrief>(`/content-projects/${project.id}/brief`)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取创作简报。"); setBriefProject(undefined); }
+    setBriefTitle(project.topic);
+    setTitleSuggestions([]);
+    setHistoricalSeries([]);
+    try {
+      const [loadedBrief, article] = await Promise.all([
+        request<ContentBrief>(`/content-projects/${project.id}/brief`),
+        project.sourceRelativePath
+          ? request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(project.sourceRelativePath)}`)
+          : Promise.resolve(undefined)
+      ]);
+      if (briefRequestVersionRef.current !== requestVersion) return;
+      setBrief(loadedBrief);
+      setBriefTitle(article?.title ?? project.topic);
+    }
+    catch (cause) {
+      if (briefRequestVersionRef.current !== requestVersion) return;
+      setError(cause instanceof Error ? cause.message : "无法读取创作简报。");
+      closeBrief();
+    }
   };
 
   const saveBrief = async (event: FormEvent) => {
     event.preventDefault();
     if (!briefProject || !brief) return;
     setSaving(true);
-    try { await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes }) }); setBriefProject(undefined); setBrief(undefined); await loadProjects(); }
+    try {
+      await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes }) });
+      if (briefTitle.trim() && briefTitle.trim() !== briefProject.topic) {
+        await request<ContentProject>(`/content-projects/${briefProject.id}/title`, { method: "PUT", body: JSON.stringify({ title: briefTitle.trim() }) });
+      }
+      closeBrief();
+      await Promise.all([loadProjects(), refreshSourcePreview()]);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "创作简报保存失败。"); }
     finally { setSaving(false); }
   };
-  const changeBrief = (field: keyof Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">, value: string) => setBrief((current) => current ? { ...current, [field]: value } : current);
-  const openOutline = async (project: ContentProject) => {
-    setOutlineProject(project); setOutline(undefined); setSaving(false);
+  const suggestBriefTitles = async () => {
+    if (!briefProject) return;
+    titleSuggestionAbortRef.current?.abort();
+    const controller = new AbortController();
+    titleSuggestionAbortRef.current = controller;
+    setTitleSuggestions([]);
+    setHistoricalSeries([]);
+    setTitleSuggesting(true);
     try {
-      if (project.outlineReady) {
-        setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`));
-        return;
+      const suggested = await request<TitleSuggestion>(`/content-projects/${briefProject.id}/title/suggest`, {
+        method: "POST",
+        body: JSON.stringify({ objective: brief?.objective ?? "", audience: brief?.audience ?? "", angle: brief?.angle ?? "", sourceNotes: brief?.sourceNotes ?? "" }),
+        signal: controller.signal
+      });
+      setTitleSuggestions(suggested.titles);
+      setHistoricalSeries(suggested.historicalSeries);
+    } catch (cause) {
+      if (controller.signal.aborted) return;
+      setError(cause instanceof Error ? cause.message : "无法推荐文章标题。");
+    } finally {
+      if (titleSuggestionAbortRef.current === controller) {
+        titleSuggestionAbortRef.current = undefined;
+        setTitleSuggesting(false);
       }
+    }
+  };
+  const changeBrief = (field: keyof Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">, value: string) => setBrief((current) => current ? { ...current, [field]: value } : current);
+  const openResearch = async (project: ContentProject, generate = false) => {
+    setResearchProject(project);
+    setResearch(undefined);
+    setResearchFollowUp("");
+    try {
+      if (generate) {
+        setResearchGenerating(true);
+        setResearch(await request<ContentResearch>(`/content-projects/${project.id}/research/generate`, { method: "POST" }));
+        await loadProjects();
+      } else {
+        setResearch(await request<ContentResearch>(`/content-projects/${project.id}/research`));
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "联网补研失败。");
+      setResearchProject(undefined);
+    } finally {
+      setResearchGenerating(false);
+    }
+  };
+  const toggleResearchSource = async (source: ResearchSource) => {
+    if (!researchProject) return;
+    try {
+      const next = await request<ContentResearch>(`/content-projects/${researchProject.id}/research/sources/${source.id}`, {
+        method: "PATCH", body: JSON.stringify({ selected: !source.selected })
+      });
+      setResearch(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "资料卡更新失败。");
+    }
+  };
+  const continueResearch = async () => {
+    if (!researchProject || !researchFollowUp.trim() || researchFollowingUp) return;
+    setResearchFollowingUp(true);
+    try {
+      const next = await request<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, {
+        method: "POST", body: JSON.stringify({ message: researchFollowUp.trim() })
+      });
+      setResearch(next);
+      setResearchFollowUp("");
+      await loadProjects();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "补充资料失败。请检查模型连接后重试。");
+    } finally {
+      setResearchFollowingUp(false);
+    }
+  };
+  const generateOutline = async (project: ContentProject) => {
+    setOutlineProject(project); setOutline(undefined); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…");
+    try {
       const controller = new AbortController();
       outlineAbortRef.current = controller;
       setOutlineGenerating(true);
       setOutline({ projectId: project.id, markdown: "", generatedFromBrief: true });
       const generated = await streamGeneration<ContentOutline>(`/content-projects/${project.id}/outline/generate/stream`, controller.signal, (event, data) => {
         if (event === "delta") setOutline((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+        if (event === "status") setOutlineGenerationStatus(String(data.message ?? "AI 正在生成…"));
       });
       setOutline(generated);
     }
     catch (cause) { if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) setError(cause instanceof Error ? cause.message : "无法生成提纲。"); setOutlineProject(undefined); }
     finally { setOutlineGenerating(false); outlineAbortRef.current = undefined; }
+  };
+  const openOutline = async (project: ContentProject) => {
+    if (project.outlineReady) {
+      setOutlineProject(project); setOutline(undefined); setSaving(false);
+      try { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); }
+      return;
+    }
+    await generateOutline(project);
   };
   const saveOutline = async (event: FormEvent) => {
     event.preventDefault(); if (!outlineProject || !outline) return;
@@ -563,7 +740,7 @@ function App() {
     finally { setSaving(false); }
   };
   const openDraft = async (project: ContentProject) => {
-    setDraftProject(project); setDraft(undefined); setSaving(false);
+    setDraftProject(project); setDraft(undefined); setSaving(false); setDraftGenerationStatus("");
     setArticleWorkspacePanel("assistant");
     try {
       let opened: ContentDraft;
@@ -572,9 +749,11 @@ function App() {
         const controller = new AbortController();
         draftAbortRef.current = controller;
         setDraftGenerating(true);
+        setDraftGenerationStatus("正在准备正文生成任务…");
         setDraft({ projectId: project.id, markdown: "", generatedFromOutline: true, sourceRelativePath: project.sourceRelativePath });
         opened = await streamGeneration<ContentDraft>(`/content-projects/${project.id}/draft/generate/stream`, controller.signal, (event, data) => {
           if (event === "delta") setDraft((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+          if (event === "status") setDraftGenerationStatus(String(data.message ?? "AI 正在起草正文…"));
         });
       }
       setDraft(opened);
@@ -1187,9 +1366,10 @@ function App() {
       initialRightPanel={articleWorkspacePanel}
       saving={saving}
       generating={draftGenerating}
+      generationStatus={draftGenerationStatus}
       onStopGeneration={() => draftAbortRef.current?.abort()}
       onChange={(markdown) => setDraft((current) => current ? { ...current, markdown } : current)}
-      onBack={() => { draftAbortRef.current?.abort(); setDraftProject(undefined); setDraft(undefined); }}
+      onBack={() => { draftAbortRef.current?.abort(); setDraftProject(undefined); setDraft(undefined); setDraftGenerationStatus(""); }}
       onSave={saveDraft}
       onPublish={() => void prepareProjectPublish(draftProject, draft)}
     />;
@@ -1223,7 +1403,7 @@ function App() {
       </nav>
     </aside>
     <main className="app-main">
-    <div className="page-heading"><h1>{pageTitle}</h1>{((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={() => setProjectModalOpen(true)}>＋ 新建文章</button>}</div>
+    <div className="page-heading"><h1>{pageTitle}</h1>{((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={openProjectCreator}>＋ 新建文章</button>}</div>
     {error && <p className="error">{error}</p>}
     {error && <Modal title="操作未完成" eyebrow="需要你的注意" onClose={() => setError("")} disabled={false} priority><p className="error error-dialog-message">{error}</p><div className="modal-actions"><button type="button" onClick={() => setError("")}>知道了</button></div></Modal>}
 
@@ -1277,7 +1457,35 @@ function App() {
 
     {activeView === "dashboard" && <>
     <section className={`card${projects.length === 0 ? " dashboard-empty-card" : ""}`}>
-      {projects.length === 0 ? <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p><button onClick={() => setProjectModalOpen(true)}>＋ 新建文章</button></div> : <ul className="project-list">{projects.map((project) => { const job = wechatJobs.find((item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic); const nextText = job?.status === "published" ? "微信公众号已确认发布完成" : job?.status === "cancelled" ? "发布任务已人工取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，正在等待最终回执" : job?.status === "draft_ready" ? "已同步微信草稿箱，等待预览和发布" : project.draftReady ? "正文已保存，可继续编辑或准备发布" : project.outlineReady ? "提纲已确认，下一步生成正文" : project.briefReady ? "创作方向已整理，下一步生成提纲" : "下一步整理创作方向和资料"; const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.briefReady ? () => void openOutline(project) : () => void openBrief(project); const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.briefReady ? "生成提纲" : "整理创作方向"; const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined; const canPrepare = !job || job.status === "failed" || job.status === "cancelled"; return <li key={project.id}><span>{project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span><span className="account-actions"><span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>{!project.draftReady && <button onClick={action}>{label}</button>}{project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}{job?.status === "draft_ready" && <span className="status-badge">草稿已同步</span>}{job?.status === "submitted" && <span className="status-badge">微信处理中</span>}{job?.status === "published" && <span className="status-badge success">已发布</span>}{job?.status === "cancelled" && <span className="status-badge warning">已取消发布</span>}<button className="text-button danger-text" onClick={() => void deleteProjectDraft(project)} disabled={saving}>{job ? "删除本地文章" : "删除草稿"}</button></span></li>; })}</ul>}
+      {projects.length === 0 ? (
+        <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p><button onClick={openProjectCreator}>＋ 新建文章</button></div>
+      ) : (
+        <ul className="project-list">{projects.map((project) => {
+          const job = wechatJobs.find((item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
+          const nextText = job?.status === "published" ? "微信公众号已确认发布完成" : job?.status === "cancelled" ? "发布任务已人工取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，正在等待最终回执" : job?.status === "draft_ready" ? "已同步微信草稿箱，等待预览和发布" : project.draftReady ? "正文已保存，可继续编辑或准备发布" : project.outlineReady ? "提纲已确认，下一步生成正文" : project.researchReady ? "资料已补充，下一步生成提纲" : project.briefReady ? "创作方向已整理，下一步联网补研" : "下一步整理创作方向和资料";
+          const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.researchReady ? () => void openOutline(project) : project.briefReady ? () => void openResearch(project, true) : () => void openBrief(project);
+          const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.researchReady ? "生成提纲" : project.briefReady ? "联网补研" : "整理创作方向";
+          const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined;
+          const canPrepare = !job || job.status === "failed" || job.status === "cancelled";
+          const canEditBrief = project.briefReady && !project.outlineReady && !project.draftReady;
+          return <li key={project.id}>
+            <span>{project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span>
+              <span className="account-actions">
+              <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
+              {canEditBrief && <button className="secondary-button" onClick={() => void openBrief(project)}>编辑创作方向</button>}
+              {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
+              {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>编辑提纲</button>}
+              {!project.draftReady && <button onClick={action}>{label}</button>}
+              {project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}
+              {job?.status === "draft_ready" && <span className="status-badge">草稿已同步</span>}
+              {job?.status === "submitted" && <span className="status-badge">微信处理中</span>}
+              {job?.status === "published" && <span className="status-badge success">已发布</span>}
+              {job?.status === "cancelled" && <span className="status-badge warning">已取消发布</span>}
+              <button className="text-button danger-text" onClick={() => void deleteProjectDraft(project)} disabled={saving}>{job ? "删除本地文章" : "删除草稿"}</button>
+            </span>
+          </li>;
+        })}</ul>
+      )}
     </section>
     </>}
 
@@ -1302,7 +1510,7 @@ function App() {
         <p className="hint">{editingSkill.description}</p>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={editingSkill.enabled} onChange={(event) => setEditingSkill((current) => current ? { ...current, enabled: event.target.checked } : current)} />启用此技能</label>
-          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "gemini" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
+          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "gemini" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "nvidia_build" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
         </div>
         <div className="skill-file-workspace">
           <aside><strong>技能文件</strong>{editingSkill.files.map((file) => <button type="button" className={editingSkillFile?.relativePath === file.relativePath ? "active" : ""} onClick={() => void chooseSkillFile(file.relativePath)} key={file.relativePath}><span>{file.relativePath}</span><small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small></button>)}</aside>
@@ -1379,11 +1587,12 @@ function App() {
     </Modal>}
     {publishCropImage && <CoverCropModal image={publishCropImage} onCancel={() => setPublishCropImage(undefined)} onConfirm={(cropped) => void saveCroppedPublishCover(cropped)} />}
 
-    {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} title="配置文章库" eyebrow="只读导入预览" wide><p className="hint">选择 VitePress 仓库中的 `docs` 文件夹。只会识别 `posts/文章标题/index.md` 为文章；首页、列表页和排序配置页会自动排除。</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); setProjectModalOpen(true); }}>下一步：新建文章</button></div></div>}</Modal>}
+    {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} title="配置文章库" eyebrow="只读导入预览" wide><p className="hint">选择 VitePress 仓库中的 `docs` 文件夹。只会识别 `posts/文章标题/index.md` 为文章；首页、列表页和排序配置页会自动排除。</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); openProjectCreator(); }}>下一步：新建文章</button></div></div>}</Modal>}
 
-    {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法开始"><p className="hint">写下一句主题、观点或想解决的问题即可。后续 AI 会结合账号定位和你的资料，补充研究并生成创作简报。</p><form onSubmit={createProject} className="profile-form"><label>文章主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并进入创作"}</button></div></form></Modal>}
-    {briefProject && <Modal onClose={() => { setBriefProject(undefined); setBrief(undefined); }} disabled={saving} title={`创作简报：${briefProject.topic}`} eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，AI 会结合这份简报和账号定位生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>写作目标<textarea autoFocus value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setBriefProject(undefined); setBrief(undefined); }} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
-    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第三步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineGenerating ? "AI 正在逐步生成提纲；可继续等待，或停止后保留当前内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已有资料生成的提纲。请审核论证方向和待核查项。" : "你可以继续编辑已保存的提纲。"}</p><form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label><Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense><div className="modal-actions">{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating}>{saving ? "正在保存…" : "确认并保存提纲"}</button></div></form></>}</Modal>}
+    {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
+    {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，阿文会默认联网补充资料，再生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>写作目标<textarea autoFocus value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>{historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
+    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>阿文正在检索官方与公开网页，并整理可追溯资料卡…</span></div> : <><p className="hint">阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={() => void toggleResearchSource(source)} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section><section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的“与阿文对话”最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></div></>}</Modal>}
+    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></div></form></>}</Modal>}
   </main></div>;
 }
 
@@ -1402,6 +1611,7 @@ function ArticleWorkspace({
   initialRightPanel,
   saving,
   generating = false,
+  generationStatus = "",
   onStopGeneration,
   onChange,
   onBack,
@@ -1418,6 +1628,7 @@ function ArticleWorkspace({
   initialRightPanel: "assistant" | "preview" | "settings";
   saving: boolean;
   generating?: boolean;
+  generationStatus?: string;
   onStopGeneration?: () => void;
   onChange: (markdown: string) => void;
   onBack: () => void;
@@ -1807,9 +2018,48 @@ function ArticleWorkspace({
     setSelectionAiOriginal("");
     setSelectionComparisonOpen(false);
   };
+  const persistEditorAigcDetection = async (aiCheckResult: string, aiCheckReport: string) => {
+    const existing = await request<{ overrideReason: string }>(`/article-quality-check?contextKey=${encodeURIComponent(contextKey)}`);
+    await request("/article-quality-check", {
+      method: "PUT",
+      body: JSON.stringify({
+        contextKey,
+        aiCheckResult,
+        aiCheckReport,
+        overrideReason: existing.overrideReason
+      })
+    });
+  };
+  const importPastedRemoteMarkdownImage = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData("text/plain").trim();
+    const image = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+["'][^"']*["'])?\)$/i.exec(text);
+    if (!image) return;
+    event.preventDefault();
+    const textarea = event.currentTarget;
+    const before = markdown;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    setWorkspaceError("正在下载远程图片并保存到本地素材目录…");
+    try {
+      const endpoint = sourceArticlePath ? "/content-source/article-asset/import-remote" : "/content-assets/import-remote";
+      const saved = await request<{ assetUrl: string }>(endpoint, {
+        method: "POST",
+        body: JSON.stringify(sourceArticlePath ? { path: sourceArticlePath, url: image[2] } : { contextId: assetContextId, url: image[2] })
+      });
+      onChange(`${before.slice(0, start)}![${image[1] || "图片"}](${saved.assetUrl})${before.slice(end)}`);
+      setWorkspaceError("");
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "远程图片下载失败。");
+    }
+  };
   const runSelectionDetection = async () => {
-    if (!selectionRange || selectionRange.end <= selectionRange.start) {
-      setWorkspaceError("请先在正文中选中要检测的段落。");
+    const hasSelection = Boolean(selectionRange && selectionRange.end > selectionRange.start);
+    const selectionSource = selectionDocumentMarkdown ?? markdown;
+    const textToDetect = hasSelection && selectionRange
+      ? selectionSource.slice(selectionRange.start, selectionRange.end)
+      : markdown;
+    if (!textToDetect.trim()) {
+      setWorkspaceError("正文为空，暂时没有可检测的内容。");
       return;
     }
     setSelectionDetectionBusy(true);
@@ -1819,17 +2069,18 @@ function ArticleWorkspace({
     try {
       if (!window.contentFerry) throw new Error("当前桌面环境未启用 AIGC 检测能力。");
       const desktop = window.contentFerry;
-      const selectionSource = selectionDocumentMarkdown ?? markdown;
-      const selectedText = selectionSource.slice(selectionRange.start, selectionRange.end);
       if (selectionDetectionTool === "zhuque") {
-        const result = await desktop.runZhuqueDetection(selectedText);
+        const result = await desktop.runZhuqueDetection(textToDetect);
         if (result.status !== "completed" || !result.report) throw new Error(result.message || "腾讯朱雀未返回可用检测结果。");
         setSelectionZhuqueReport(result.report);
+        if (!hasSelection) await persistEditorAigcDetection(result.result || "腾讯朱雀检测已完成。", JSON.stringify(result.report));
       } else {
-        const result = await desktop.runContentAnyDetection(selectedText);
+        const result = await desktop.runContentAnyDetection(textToDetect);
         if (result.status !== "completed") throw new Error(result.message || "ContentAny 未返回可用检测结果。");
-        setSelectionDetectionResult(result.result || "ContentAny 已完成检测，但没有返回可展示的文字结果。");
+        const value = `ContentAny 检测：\n${result.result || "已完成检测，未返回可展示的文字结果。"}`;
+        setSelectionDetectionResult(value);
         setSelectionContentAnyReference(result.reference);
+        if (!hasSelection) await persistEditorAigcDetection(value, "");
       }
       setWorkspaceError("");
     } catch (cause) {
@@ -1907,7 +2158,7 @@ function ArticleWorkspace({
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回内容库</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
-      <div className="editor-top-actions"><span>{generating ? "AI 正在逐步生成…" : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
+      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
     <div className="editor-columns">
       <aside className="editor-left-panel">
@@ -1923,9 +2174,9 @@ function ArticleWorkspace({
       </aside>
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
-        {editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
+        {generating && !markdown.trim() ? <div className="generation-placeholder editor-generation-placeholder" role="status"><span className="loading-dot" aria-hidden="true" /><span>{generationStatus || "正在等待 AI 的第一段正文内容…"}</span><small>收到内容后会直接显示在编辑器中；你可以随时停止并保留已生成的部分。</small></div> : editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
           <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} suggestionOffsets={awenSuggestionOffsets} onSuggestionOffsetChange={(id, offset) => setAwenSuggestionOffsets((current) => ({ ...current, [id]: offset }))} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
-        </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
+        </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onPaste={(event) => void importPastedRemoteMarkdownImage(event)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
       </section>
       <aside className="editor-right-panel">
         <div className="panel-tabs">
@@ -1934,7 +2185,7 @@ function ArticleWorkspace({
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
         {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><label className="selection-instruction"><span>补充要求（可选）</span><textarea value={selectionAiInstruction} onChange={(event) => setSelectionAiInstruction(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void runSelectionAi(); } }} disabled={!selectionRange || selectionAiBusy} maxLength={1000} placeholder="例如：保留技术术语，语气更直接；不要使用营销化表达" /></label><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
-        {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!selectionRange || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : "检测选中内容"}</button></div>{!selectionRange && <small>先在正文中选中一段内容，检测不会自动发送整篇文章。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
+        {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>{selectionRange ? "针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。" : "未选中段落时会检测当前文章全文；朱雀或 ContentAny 任一结果都可作为优化参考。"}</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!markdown.trim() || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : selectionRange ? "检测选中内容" : "检测全文内容"}</button></div>{!selectionRange && <small>你也可以先选中一段文字，只检测这一段。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
         {rightPanel === "settings" && <div className="side-panel-content">
           <h3>发布设置</h3>

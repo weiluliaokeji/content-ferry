@@ -11,8 +11,10 @@ import { ContentProjectRepository } from "../content/content-project-repository"
 import { ContentBriefRepository } from "../content/content-brief-repository";
 import { ContentOutlineRepository } from "../content/content-outline-repository";
 import { ContentDraftRepository } from "../content/content-draft-repository";
+import { ContentResearchRepository } from "../content/content-research-repository";
 import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
+import { RemoteImageImportService } from "../content/remote-image-import-service";
 import { AiContentService } from "../ai/ai-content-service";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
@@ -64,15 +66,32 @@ const contentSourceAssetInput = z.object({
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
   base64: z.string().min(1).max(21_000_000)
 });
-const contentProjectInput = z.object({ topic: z.string().trim().min(1).max(500), targetAccountId: z.string().uuid().optional() });
+const contentProjectInput = z.object({
+  topic: z.string().trim().min(1).max(12000),
+  title: z.string().trim().min(1).max(120).optional(),
+  targetAccountId: z.string().uuid().optional()
+});
+const contentProjectTitleInput = z.object({ title: z.string().trim().min(1).max(120) });
 const contentBriefInput = z.object({ objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
+const titleSuggestionInput = contentBriefInput;
 const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
 const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
+const researchSelectionInput = z.object({ selected: z.boolean() });
+const researchFollowUpInput = z.object({ message: z.string().trim().min(1).max(4000) });
 const contentRevisionInput = z.object({ aiCheckResult: z.string().max(4000), guidance: z.string().max(8000) });
 const contentAssetInput = z.object({
   contextId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
   base64: z.string().min(1).max(21_000_000)
+});
+const remoteImageImportInput = z.object({
+  url: z.string().url().max(4000),
+  contextId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
+  path: z.string().trim().min(1).max(1000).optional()
+}).superRefine((value, context) => {
+  if (Boolean(value.contextId) === Boolean(value.path)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "必须提供文章路径或素材上下文。" });
+  }
 });
 const contentReviewInput = z.object({ status: z.enum(["pending", "needs_revision", "approved"]), factChecked: z.boolean(), accountFitChecked: z.boolean(), aiCheckResult: z.string().max(4000), notes: z.string().max(8000) });
 const wechatDraftInput = z.object({
@@ -182,7 +201,9 @@ export function buildServer(
   const contentBriefs = new ContentBriefRepository(database.connection);
   const contentOutlines = new ContentOutlineRepository(database.connection);
   const contentDrafts = new ContentDraftRepository(database.connection);
+  const contentResearch = new ContentResearchRepository(database.connection);
   const contentReviews = new ContentReviewRepository(database.connection);
+  const remoteImages = new RemoteImageImportService(assetStore, contentSources);
   const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
   const wechatCallbacks = new WechatCallbackService(database.connection, accounts, vault);
   const appCredentials = new AppCredentialRepository(database.connection, vault);
@@ -220,7 +241,9 @@ export function buildServer(
       return reply.code(400).send({ error: error.message, errcode: error.errcode });
     }
     if (error instanceof z.ZodError) {
-      return reply.code(400).send({ error: "提交的信息不符合要求。" });
+      const fields = [...new Set(error.issues.map((issue) => issue.path.join(".") || "请求内容"))];
+      request.log.warn({ fields, codes: error.issues.map((issue) => issue.code) }, "Local API input validation failed");
+      return reply.code(400).send({ error: `提交的信息不符合要求：${describeValidationIssue(error.issues[0])}` });
     }
     if ((error as { statusCode?: number }).statusCode === 413) {
       return reply.code(413).send({ error: "图片文件过大，请选择 15 MB 以内的图片。" });
@@ -554,6 +577,12 @@ export function buildServer(
     return reply.code(201).send(assetStore.save(input.contextId, input.mimeType, input.base64));
   });
 
+  server.post("/api/content-assets/import-remote", async (request, reply) => {
+    const input = remoteImageImportInput.parse(request.body);
+    if (!input.contextId) return reply.code(400).send({ error: "缺少素材上下文。" });
+    return reply.code(201).send(await remoteImages.importForProject(input.contextId, input.url));
+  });
+
   server.get("/api/content-assets/:contextId/:fileName", async (request, reply) => {
     if (!assetStore) return reply.code(404).send();
     const params = z.object({
@@ -596,6 +625,13 @@ export function buildServer(
     return reply.code(201).send(contentSources.saveArticleAsset(workspace.id, input.path, input.mimeType, input.base64));
   });
 
+  server.post("/api/content-source/article-asset/import-remote", async (request, reply) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const input = remoteImageImportInput.parse(request.body);
+    if (!input.path) return reply.code(400).send({ error: "缺少文章路径。" });
+    return reply.code(201).send(await remoteImages.importForArticle(workspace.id, input.path, input.url));
+  });
+
   server.get("/api/content-source/article-asset", async (request, reply) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({
@@ -632,10 +668,15 @@ export function buildServer(
   server.post("/api/content-projects", async (request, reply) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentProjectInput.parse(request.body);
-    const article = contentSources.createArticle(workspace.id, input.topic);
+    const articleTitle = initialArticleTitle(input.topic, input.title);
+    const article = contentSources.createArticle(workspace.id, articleTitle);
     return reply.code(201).send(contentProjects.create({
       workspaceId: workspace.id,
-      ...input,
+      // The project title is the canonical article title used by the dashboard,
+      // outline and VitePress front matter. The longer initial idea is stored in
+      // the creation brief rather than competing with the displayed title.
+      topic: articleTitle,
+      targetAccountId: input.targetAccountId,
       sourceRelativePath: article.relativePath
     }));
   });
@@ -670,6 +711,57 @@ export function buildServer(
     return contentBriefs.save(params.projectId, contentBriefInput.parse(request.body));
   });
 
+  server.get("/api/content-projects/:projectId/research", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    return contentResearch.get(params.projectId);
+  });
+
+  server.post("/api/content-projects/:projectId/research/generate", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const generated = await aiContent.generateResearch(params.projectId);
+    const research = contentResearch.save(params.projectId, generated.value);
+    return { ...research, provider: generated.provider, model: generated.model, usage: generated.usage };
+  });
+
+  server.post("/api/content-projects/:projectId/research/follow-up", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = researchFollowUpInput.parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    const generated = await aiContent.generateResearchFollowUp(params.projectId, input.message);
+    const research = contentResearch.append(params.projectId, generated.value);
+    persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, generated.value.planMarkdown, generated.value.sources);
+    return { ...research, provider: generated.provider, model: generated.model, usage: generated.usage };
+  });
+
+  server.patch("/api/content-projects/:projectId/research/sources/:sourceId", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), sourceId: z.string().uuid() }).parse(request.params);
+    const input = researchSelectionInput.parse(request.body);
+    return contentResearch.updateSelection(params.projectId, params.sourceId, input.selected);
+  });
+
+  server.post("/api/content-projects/:projectId/title/suggest", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const brief = titleSuggestionInput.parse(request.body);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const historicalSeries = extractHistoricalSeries(contentSources.preview(workspace.id).items.map((item) => item.title));
+    const generated = await aiContent.suggestTitles(params.projectId, historicalSeries, brief);
+    return { projectId: params.projectId, titles: generated.value.titles, historicalSeries, provider: generated.provider, usage: generated.usage };
+  });
+
+  server.put("/api/content-projects/:projectId/title", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const { title } = contentProjectTitleInput.parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    const article = contentSources.getArticle(project.workspaceId, project.sourceRelativePath!);
+    const markdown = /^#\s+.+$/m.test(article.markdown)
+      ? article.markdown.replace(/^#\s+.+$/m, `# ${title}`)
+      : `# ${title}\n\n${article.markdown}`;
+    const saved = contentSources.saveArticle(project.workspaceId, project.sourceRelativePath!, markdown);
+    contentProjects.updateTopic(project.id, title);
+    return { ...contentProjects.require(project.id), sourceRelativePath: saved.relativePath };
+  });
+
   server.get("/api/content-projects/:projectId/outline", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     return contentOutlines.get(params.projectId);
@@ -689,7 +781,7 @@ export function buildServer(
 
   server.post("/api/content-projects/:projectId/outline/generate/stream", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    return streamMarkdownGeneration(request, reply, (onDelta, signal) => aiContent.generateOutlineStream(params.projectId, onDelta, signal), params.projectId);
+    return streamMarkdownGeneration(request, reply, (onDelta, onStatus, signal) => aiContent.generateOutlineStream(params.projectId, onDelta, onStatus, signal), params.projectId);
   });
 
   server.put("/api/content-projects/:projectId/outline", async (request) => {
@@ -725,7 +817,7 @@ export function buildServer(
   server.post("/api/content-projects/:projectId/draft/generate/stream", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const project = ensureProjectArticle(params.projectId);
-    return streamMarkdownGeneration(request, reply, (onDelta, signal) => aiContent.generateDraftStream(params.projectId, onDelta, signal), params.projectId, project.sourceRelativePath);
+    return streamMarkdownGeneration(request, reply, (onDelta, onStatus, signal) => aiContent.generateDraftStream(params.projectId, onDelta, onStatus, signal), params.projectId, project.sourceRelativePath);
   });
 
   server.put("/api/content-projects/:projectId/draft", async (request) => {
@@ -1211,6 +1303,31 @@ function mergeArticleMemory(database: AppDatabase, contextKey: string, candidate
   return memory;
 }
 
+function persistResearchConversation(
+  database: AppDatabase,
+  contextKey: string,
+  instruction: string,
+  planMarkdown: string,
+  sources: Array<{ title: string; url: string }>
+): void {
+  const userCreatedAt = new Date().toISOString();
+  const assistantCreatedAt = new Date(Date.now() + 1).toISOString();
+  const sourceSummary = sources.length > 0
+    ? `\n\n本轮新增资料：\n${sources.map((source) => `- ${source.title}\n  ${source.url}`).join("\n")}`
+    : "\n\n本轮未找到可确认的新增资料。";
+  const save = database.connection.transaction(() => {
+    database.connection.prepare(`INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)
+      ON CONFLICT(context_key) DO UPDATE SET updated_at = excluded.updated_at`).run(contextKey, assistantCreatedAt);
+    database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+      VALUES (?, ?, 'user', ?, '', '[]', ?)`)
+      .run(randomUUID(), contextKey, `【补充资料】\n${instruction}`, userCreatedAt);
+    database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+      VALUES (?, ?, 'assistant', ?, '', '[]', ?)`)
+      .run(randomUUID(), contextKey, `【补研结果】\n${planMarkdown.trim()}${sourceSummary}`, assistantCreatedAt);
+  });
+  save();
+}
+
 function mergeWritingMemory(database: AppDatabase, scopeKey: string, candidate: string): string {
   const normalized = candidate.replace(/\s+/g, " ").trim();
   const row = database.connection.prepare("SELECT memory FROM writing_memories WHERE scope_key = ?").get(scopeKey) as { memory: string } | undefined;
@@ -1286,29 +1403,61 @@ function selectionActionLabel(action: z.infer<typeof selectionEditInput>["action
 async function streamMarkdownGeneration(
   request: FastifyRequest,
   reply: FastifyReply,
-  generate: (onDelta: (markdown: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown }>,
+  generate: (onDelta: (markdown: string) => void, onStatus: (message: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown }>,
   projectId: string,
   sourceRelativePath?: string | null
 ) {
   const controller = new AbortController();
-  const abort = () => controller.abort();
+  const abort = () => {
+    if (!controller.signal.aborted) request.log.warn({ projectId }, "AI generation stream was aborted by the client connection");
+    controller.abort();
+  };
   request.raw.once("aborted", abort);
   reply.hijack();
+  // `reply.hijack()` bypasses Fastify's normal reply lifecycle. That is
+  // required for SSE, but also means @fastify/cors does not serialize its
+  // headers into `reply.raw`. Without this explicit header Chromium accepts
+  // the preflight but rejects the actual stream as a CORS failure, which the
+  // renderer can only surface as "Failed to fetch".
+  const requestOrigin = request.headers.origin;
+  const corsOrigin = requestOrigin === "http://127.0.0.1:5175"
+    ? requestOrigin
+    : undefined;
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
-    connection: "keep-alive"
+    connection: "keep-alive",
+    ...(corsOrigin ? { "access-control-allow-origin": corsOrigin, vary: "Origin" } : {})
   });
+  reply.raw.flushHeaders();
   const send = (event: string, data: unknown) => {
     if (!reply.raw.writableEnded) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  send("status", { message: "正在连接 AI，生成过程中可随时停止。" });
+  const startedAt = Date.now();
+  send("status", { phase: "connecting", elapsedSeconds: 0, message: "正在连接 AI…" });
+  // Codex can spend a while reasoning before its first Markdown item is
+  // emitted. Keep the SSE connection visibly alive during that period so the
+  // renderer can distinguish "still working" from a frozen dialog.
+  let latestPhase = "正在连接 AI…";
+  const reportStatus = (message: string) => {
+    latestPhase = message;
+    send("status", { phase: "generating", elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message });
+  };
+  const progressTimer = setInterval(() => {
+    const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+    send("status", {
+      phase: "generating",
+      elapsedSeconds,
+      message: `${latestPhase}（已等待 ${elapsedSeconds} 秒）`
+    });
+  }, 2_000);
   try {
-    const generated = await generate((markdown) => send("delta", { markdown }), controller.signal);
+    const generated = await generate((markdown) => send("delta", { markdown }), reportStatus, controller.signal);
     send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage });
   } catch (error) {
     send("error", { error: error instanceof Error ? error.message : "AI 生成失败。", cancelled: controller.signal.aborted });
   } finally {
+    clearInterval(progressTimer);
     request.raw.off("aborted", abort);
     reply.raw.end();
   }
@@ -1318,4 +1467,39 @@ function redactLogValue(value: string): string {
   return value
     .replace(/([?&]access_token=)[^&\s]+/gi, "$1***")
     .replace(/((?:api[_-]?key|appsecret|authorization|token)[\"'=:\s]+)[^,\s\"&]+/gi, "$1***");
+}
+
+function describeValidationIssue(issue: z.core.$ZodIssue | undefined): string {
+  if (!issue) return "请检查填写内容后重试。";
+  const field = ({ topic: "文章主题或想法", title: "文章标题", targetAccountId: "发布账号" } as Record<string, string>)[issue.path.join(".")] ?? "填写内容";
+  if (issue.code === "too_big") return `${field}过长。`;
+  if (issue.code === "too_small") return `${field}不能为空。`;
+  if (issue.code === "invalid_format") return `${field}格式不正确。`;
+  return `${field}无效，请检查后重试。`;
+}
+
+function initialArticleTitle(topic: string, title?: string): string {
+  if (title) return title;
+  const normalizedTopic = topic.replace(/\s+/g, " ").trim();
+  if (normalizedTopic.length <= 120) return normalizedTopic;
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13);
+  return `创作草稿-${timestamp}`;
+}
+
+function extractHistoricalSeries(titles: Array<string | null>): Array<{ name: string; count: number; examples: string[] }> {
+  const groups = new Map<string, string[]>();
+  for (const title of titles) {
+    if (!title) continue;
+    const match = /^\s*(.{2,40}?系列)\s*(?:——|—|：|:|-)/.exec(title);
+    if (!match) continue;
+    const name = match[1].replace(/\s+/g, " ").trim();
+    if (!name) continue;
+    const entries = groups.get(name) ?? [];
+    entries.push(title.trim());
+    groups.set(name, entries);
+  }
+  return [...groups.entries()]
+    .map(([name, examples]) => ({ name, count: examples.length, examples: examples.slice(0, 3) }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name, "zh-CN"))
+    .slice(0, 12);
 }

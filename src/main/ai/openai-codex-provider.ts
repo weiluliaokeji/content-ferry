@@ -38,8 +38,10 @@ export class OpenAICodexProvider implements ModelProvider {
         skipGitRepoCheck: true,
         sandboxMode: "read-only",
         approvalPolicy: "never",
-        networkAccessEnabled: false,
-        webSearchMode: "disabled",
+        // Writing stays offline by default. Research is a separate, auditable
+        // task that may use Codex's built-in live web search.
+        networkAccessEnabled: request.task === "research",
+        webSearchMode: request.task === "research" ? "live" : "disabled",
         ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
@@ -78,6 +80,7 @@ export class OpenAICodexProvider implements ModelProvider {
     request.signal?.addEventListener("abort", cancel, { once: true });
     const timeout = setTimeout(cancel, request.timeoutMs ?? 240_000);
     try {
+      request.onStatus?.("正在启动 Codex 会话…");
       const { Codex } = await importEsm("@openai/codex-sdk");
       const codex = new Codex({ config: { mcp_servers: {} } });
       const thread = codex.startThread({
@@ -94,6 +97,11 @@ export class OpenAICodexProvider implements ModelProvider {
       let markdown = "";
       let usage: Usage | null = null;
       for await (const event of streamed.events) {
+        if (event.type === "thread.started") request.onStatus?.("Codex 会话已建立，正在读取创作要求…");
+        if (event.type === "turn.started") request.onStatus?.("正在分析账号定位、创作简报与资料…");
+        if (event.type === "item.started" && event.item.type === "reasoning") request.onStatus?.("正在规划文章结构…");
+        if (event.type === "item.completed" && event.item.type === "reasoning") request.onStatus?.("结构规划完成，正在撰写提纲…");
+        if (event.type === "item.started" && event.item.type === "agent_message") request.onStatus?.("正在整理 Markdown 内容…");
         if ((event.type === "item.updated" || event.type === "item.completed") && event.item.type === "agent_message") {
           const next = event.item.text ?? "";
           if (next.length >= markdown.length) {
@@ -102,6 +110,8 @@ export class OpenAICodexProvider implements ModelProvider {
           }
         }
         if (event.type === "turn.completed") usage = event.usage;
+        if (event.type === "turn.failed") throw new ModelProviderUnavailableError(event.error.message);
+        if (event.type === "error") throw new ModelProviderUnavailableError(event.message);
       }
       if (!markdown.trim()) throw new ModelProviderUnavailableError("AI 没有返回可用的 Markdown 内容，请重新生成。");
       return { value: { markdown }, provider: this.id, model: request.modelId?.trim() || null, usage: mapUsage(usage) };

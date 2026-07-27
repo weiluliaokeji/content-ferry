@@ -41,6 +41,15 @@ describe("Wechat article typography", () => {
   });
 });
 
+describe("Wechat code-block rendering", () => {
+  it("keeps source line breaks explicit after WeChat rewrites the draft HTML", () => {
+    const html = markdownToWechatHtml("```ts\nconst first = 1;\nconst second = 2;\n```");
+    expect(html).toContain("white-space:pre-wrap");
+    expect(html).toContain("const first = 1;<br/>const second = 2;");
+    expect(html).toContain("<code style=\"white-space:inherit;\">");
+  });
+});
+
 describe("Wechat ordered-list rendering", () => {
   it("keeps source numbers visible without relying on WeChat ol styling", () => {
     const html = markdownToWechatHtml("1. 注册免费域名\n   访问服务并完成注册\n2. 注册 Cloudflare 账户\n3. 域名迁移到 Cloudflare");

@@ -55,7 +55,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         <article>
           <span>4</span>
           <h3>创作并发布</h3>
-          <p>从主题和资料生成提纲、正文，完成封面与 AIGC 特征检测，先同步微信草稿并人工预览，再决定普通发布或群发。</p>
+          <p>从主题开始，阿文先联网补充可追溯资料；资料不足时可在资料窗口继续指示补研。再生成提纲与正文；完成封面与 AIGC 特征检测后，先同步微信草稿并人工预览，再决定普通发布或群发。</p>
           <button className="text-button" onClick={() => onNavigate("dashboard")}>新建文章</button>
         </article>
       </section>
@@ -87,6 +87,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         <details>
           <summary>怎样让 AI 按我的要求改写一段文字？</summary>
           <p>先在正文中选中文字，选择“改写”“去 AI 味”等动作，再在“补充要求（可选）”中填写语气、保留项或避免项；留空则使用该技能的默认规则。按 Ctrl+Enter 可直接生成建议。结果会保存到与阿文的对话，可在对话中接受或拒绝。</p>
+          <p>在所见即所得编辑区选中文字后，可用 Ctrl+C 复制；Ctrl+Z 和 Ctrl+Y 分别撤销和重做。</p>
         </details>
         <details>
           <summary>文章、会话和阿文记忆保存在哪里？</summary>

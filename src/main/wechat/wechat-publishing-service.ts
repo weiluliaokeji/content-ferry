@@ -461,7 +461,7 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
     const line = rawLine.trim();
     if (/^```/.test(line)) {
       if (codeLines) {
-        html.push(`<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        html.push(renderWechatCodeBlock(codeLines));
         codeLines = null;
       } else {
         codeLines = [];
@@ -527,8 +527,18 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
       html.push(`<p style="margin:.8em 0;font-size:17px;line-height:1.9;">${inlineMarkdown(line, uploadedImages)}</p>`);
     }
   }
-  if (codeLines) html.push(`<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+  if (codeLines) html.push(renderWechatCodeBlock(codeLines));
   return html.join("\n");
+}
+
+function renderWechatCodeBlock(lines: string[]): string {
+  // The WeChat draft editor may normalize text-node newlines while saving a
+  // draft. Keep the semantic pre/code container, but emit explicit <br/> tags
+  // as a second preservation mechanism so a later editor rewrite cannot merge
+  // all source lines into one visual line. `pre-wrap` retains indentation and
+  // still permits narrow mobile screens to wrap long unbroken lines.
+  const content = escapeHtml(lines.join("\n")).replace(/\n/g, "<br/>");
+  return `<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;white-space:pre-wrap;word-break:break-word;"><code style="white-space:inherit;">${content}</code></pre>`;
 }
 
 export function removeDuplicateLeadingTitle(markdown: string, title: string): string {

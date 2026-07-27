@@ -20,6 +20,14 @@
       ]
     },
     {
+      "id": "web-research",
+      "name": "联网资料补研",
+      "description": "默认联网检索官方与公开资料，形成可追溯、可筛选的文章资料卡；不把研究待办混入文章提纲。",
+      "category": "研究",
+      "defaultProvider": "openai_codex",
+      "legacyFiles": []
+    },
+    {
       "id": "platform-rewrite",
       "name": "平台稿改写",
       "description": "按目标平台的内容形态和读者习惯大幅改写渠道稿。",

@@ -61,7 +61,7 @@ function loadBuiltInSkills(directory: string): BuiltInSkillDefinition[] {
   return manifest.skills.map((entry) => {
     if (!/^[a-z0-9-]+$/.test(entry.id) || ids.has(entry.id)) throw new Error("内置技能 ID 不合法或重复。");
     ids.add(entry.id);
-    if (!["创作", "改写", "检测", "图片"].includes(entry.category)) throw new Error(`内置技能分类不合法：${entry.id}`);
+    if (!["研究", "创作", "改写", "检测", "图片"].includes(entry.category)) throw new Error(`内置技能分类不合法：${entry.id}`);
     const skillDirectory = path.join(directory, entry.id);
     const markdown = fs.readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8");
     const referenceDirectory = path.join(skillDirectory, "references");

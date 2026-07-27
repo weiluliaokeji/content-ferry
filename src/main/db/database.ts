@@ -147,6 +147,27 @@ function initialiseDatabase(db: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS content_research_plans (
+      project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
+      plan_markdown TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS content_research_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      excerpt TEXT NOT NULL DEFAULT '',
+      claims_json TEXT NOT NULL DEFAULT '[]',
+      source_type TEXT NOT NULL CHECK(source_type IN ('official', 'public')),
+      retrieved_at TEXT NOT NULL,
+      selected INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_content_research_sources_project
+      ON content_research_sources(project_id, retrieved_at DESC);
+
     CREATE TABLE IF NOT EXISTS article_settings (
       context_key TEXT PRIMARY KEY,
       author TEXT NOT NULL DEFAULT '',

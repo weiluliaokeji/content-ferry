@@ -29,6 +29,9 @@ export class ConfiguredModelProvider implements ModelProvider {
     const skill = this.skills.get(skillId);
     if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
     const provider = skill.provider ?? "openai_codex";
+    if (request.task === "research" && provider !== "openai_codex") {
+      throw new ModelProviderUnavailableError("当前“联网资料补研”使用 Codex 的实时网页检索；请在技能与模型中选择 OpenAI Codex。 ");
+    }
     const instructions = this.skills.instructionsFor(skillId, request.prompt);
     const enrichedRequest = {
       ...request,
@@ -37,7 +40,7 @@ export class ConfiguredModelProvider implements ModelProvider {
     if (provider === "openai_codex") {
       return this.codexProvider.generateStructured({ ...enrichedRequest, modelId: this.connections.get("openai_codex").modelId });
     }
-    if (provider === "openai" || provider === "openrouter" || provider === "nous") return this.generateOpenAiCompatible(provider, enrichedRequest);
+    if (provider === "openai" || provider === "openrouter" || provider === "nous" || provider === "nvidia_build") return this.generateOpenAiCompatible(provider, enrichedRequest);
     if (provider === "github_copilot") return this.generateWithCopilot(enrichedRequest);
     throw new ModelProviderUnavailableError(`“${skill.name}”当前选择的 ${provider} 不能用于文本生成。`);
   }
@@ -67,7 +70,7 @@ export class ConfiguredModelProvider implements ModelProvider {
   }
 
   private async generateOpenAiCompatible<T>(
-    provider: "openai" | "openrouter" | "nous",
+    provider: "openai" | "openrouter" | "nous" | "nvidia_build",
     request: GenerateStructuredRequest<T>
   ): Promise<GenerateStructuredResult<T>> {
     const connection = this.connections.get(provider);
@@ -96,10 +99,12 @@ export class ConfiguredModelProvider implements ModelProvider {
             content: `${request.prompt}\n\n返回值必须符合此 JSON Schema：\n${JSON.stringify(request.outputSchema)}`
           }
         ],
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: `contentferry_${request.task}`, strict: true, schema: request.outputSchema }
-        }
+        ...(provider === "nvidia_build" ? {} : {
+          response_format: {
+            type: "json_schema",
+            json_schema: { name: `contentferry_${request.task}`, strict: true, schema: request.outputSchema }
+          }
+        })
       }),
       signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
     });

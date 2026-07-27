@@ -6,7 +6,7 @@ export interface AiUsage {
 }
 
 export interface GenerateStructuredRequest<T> {
-  task: "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt" | "assistant";
+  task: "research" | "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt" | "assistant";
   skillId?: string;
   /** Optional provider-specific model override selected in 模型连接. */
   modelId?: string;
@@ -31,6 +31,8 @@ export interface GenerateMarkdownStreamRequest {
   timeoutMs?: number;
   signal?: AbortSignal;
   onDelta: (markdown: string) => void;
+  /** Provider lifecycle feedback. Text deltas are not available from every provider at every stage. */
+  onStatus?: (message: string) => void;
 }
 
 export interface ModelProvider {
