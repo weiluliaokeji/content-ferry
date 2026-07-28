@@ -44,6 +44,17 @@ flowchart LR
 - 所有外部写操作通过持久化任务队列执行；UI 只能请求创建任务，不能直接调用公众号接口或浏览器自动化。
 - 时间统一以 UTC 持久化、以工作空间时区显示；一期默认 `Asia/Shanghai`。
 
+### 2.2 运行时目录与数据目录分层（已实现）
+
+ContentFerry 同时存在两层由 Electron 管理的目录，二者独立、互不影响，不能混为一谈：
+
+1. **运行时目录（`userData` 根）**：由 Electron 应用名（`contentferry`）决定，Windows 上默认位于 `C:\Users\<用户名>\AppData\Roaming\contentferry`。它包含两类内容：
+   - **启动定位配置 `app-settings.json`**：记录用户选择的数据目录位置、首次启动标记与 AI 初始化状态。该文件必须独立于“数据目录”存在，因为数据目录本身正是首次启动向导要用户选择的目标，且需跨卸载/跨数据目录删除保留（见 `spec/04` §2）。
+   - **Electron 框架运行时文件**：`Preferences`、会话存储、`Local Storage`、`Cache`、`GPUCache`、`blob_storage` 等，由 Electron/BrowserWindow 自动在 `userData` 维护，与主进程业务代码无关，**不受数据目录配置影响**。
+2. **数据目录（`dataDir`）**：真正的业务数据根。默认值为 `userData/data`，可通过首次启动向导或 `CONTENTFERRY_DATA_DIR` 环境变量覆盖为任意位置（如其他磁盘）。其中包含 SQLite 数据库、技能副本（`skills/`）、内部素材、AI 沙箱、诊断日志等。
+
+落在 `userData` 根目录的文件（配置 + 框架运行时）与落在 `dataDir` 的业务数据应当分开理解：迁移数据目录只移动后者，前者始终留在 `userData` 并随应用重新生成或重新写入。
+
 ## 3. 进程与模块边界
 
 | 模块         | 职责                                                   | 不负责                     |
@@ -138,7 +149,7 @@ publish: false
 
 ### 5.3 隐藏运行数据
 
-渠道稿、研究资料、审核意见、浏览器截图和运行日志不写入 Obsidian 可见目录，保存在应用数据目录或数据库中。数据库备份与 Markdown/Git 备份一起纳入恢复清单。
+渠道稿、研究资料、审核意见、浏览器截图和运行日志不写入 Obsidian 可见目录，保存在数据目录（dataDir）或数据库中。数据库备份与 Markdown/Git 备份一起纳入恢复清单。
 
 ### 5.4 外部编辑、冲突与 Git
 
@@ -380,9 +391,10 @@ AI 特征偏高默认给出低创作度/限流风险提示或要求二审；用�
 
 技能与模型连接必须分离：
 
-- 技能定义“做什么”和执行约束，每个技能使用独立的`SKILL.md`。仓库默认技能位于`assets/skills/<skill-id>/`，随安装包作为只读初始资源分发；首次运行复制到应用数据目录的`skills/<skill-id>/`，之后可在界面中编辑、停用和选择模型连接。
+- 技能定义“做什么”和执行约束，每个技能使用独立的`SKILL.md`。仓库默认技能位于`assets/skills/<skill-id>/`，随安装包作为只读初始资源分发；首次运行复制到数据目录（dataDir）的`skills/<skill-id>/`，之后可在界面中编辑、停用和选择模型连接。
+- 内置 references 的未编辑副本会在内置源变化时自动升级；识别“旧版内置而非用户编辑”依赖 `skill-registry` 的 `KNOWN_LEGACY_BUILT_IN_HASHES` 历史哈希清单。每次修改内置 reference 内容时，必须把被替换的旧哈希加入该清单，否则已安装用户会停留在旧版本（缺少该清单时，首次建立 seed 状态会误把当前内置哈希记为基线，导致旧文件永不更新）。
 - `assets/skills/manifest.json`只保存注册元数据；当前指令放在`SKILL.md`，按需材料放在该技能的`references/`，兼容旧默认版本的内容放在`legacy/`。TypeScript 注册器不得再次内嵌完整提示词。
-- 升级时只能替换可确认仍为旧版默认值的技能。用户修改过的`SKILL.md`和参考文件不得被新版本静默覆盖。
+- 升级时只能替换可确认仍为旧版默认值的技能。用户修改过的`SKILL.md`和参考文件不得被新版本静默覆盖。`SKILL.md`的升级判据是：数据目录副本逐字等于`manifest.json`中该技能`legacyFiles`列出的某一旧版内置（精确匹配，不做启发式猜测）。因此每次修改内置`SKILL.md`措辞后，必须把被替换的上一代内置版加入对应技能的`legacyFiles`，否则已安装用户的数据目录`SKILL.md`会停留在旧版本、且不随内置更新。
 - 模型连接定义“由谁执行”，保存提供商、模型名、服务地址、代理地址和加密凭证。第一批连接包括 OpenAI Codex、OpenAI API、OpenRouter、Nous Research Portal、NVIDIA Build、GitHub Copilot、ModelScope 和 Gemini。NVIDIA Build 走 OpenAI 兼容的 `/chat/completions`，默认地址为 `https://integrate.api.nvidia.com/v1`、默认模型为 `z-ai/glm-5.2`；为兼容未声明支持 JSON Schema 的模型，结构化结果通过提示词约束与本地 schema 校验，不强制发送 `response_format.json_schema`。
 - 文本技能只能选择文本模型连接；图片技能只能选择图片模型连接；腾讯朱雀检测使用可见浏览器自动化，不要求大模型。
 - `SKILL.md`必须进入实际执行上下文，不能只作为说明文件展示。

@@ -7,7 +7,10 @@
       "description": "以当前文章、本文会话与自动提炼的本文记忆为上下文，提供选题、结构、表达与发布准备建议。",
       "category": "创作",
       "defaultProvider": "openai_codex",
-      "legacyFiles": []
+      "legacyFiles": [
+        "legacy/v1.md",
+        "legacy/v2.md"
+      ]
     },
     {
       "id": "wechat-writing",
@@ -16,7 +19,9 @@
       "category": "创作",
       "defaultProvider": "openai_codex",
       "legacyFiles": [
-        "legacy/v1.md"
+        "legacy/v1.md",
+        "legacy/v2.md",
+        "legacy/v3.md"
       ]
     },
     {

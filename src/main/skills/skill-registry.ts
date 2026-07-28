@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ModelProviderId } from "../ai/model-connection-repository";
 
@@ -38,6 +39,52 @@ type BuiltInSkillManifest = {
   }>;
 };
 
+const SHARED_REFERENCE_CONSUMERS = new Set(["wechat-writing", "humanize-selection"]);
+
+// Historical built-in reference content hashes. If a reference file in the
+// user's data directory matches one of these, it is an untouched older built-in
+// release rather than a user edit, so it is safe to upgrade to the current
+// built-in. This list is what lets existing users (whose `.skill-reference-seed.json`
+// was only written on first run *after* a built-in change) receive built-in
+// updates: without it the seed logic cannot tell a stale built-in from a user edit.
+// Add the previous hash here every time you change a built-in reference's content.
+const KNOWN_LEGACY_BUILT_IN_HASHES = new Set([
+  "314cc1ba252f191f3e317a92f1c538b5f480d3d90e60489968674ff677e34837", // long-form.md (pre 共享 references 重构)
+  "7dc54dcc668a737cdfa585249ec0d75ff1b45e65e154e6fe5d3b9ee83eb0e4f4", // protected-spans.md
+  "dea93921ac95a8d3e0b4ad19428b3a63de1274a08ff188a9e1c83ea6b96c90e7", // public-writing-patterns.md (pre shuorenhua 融合 / 7-22 打包版内置)
+  "e8309267fb63fe44cd32da42a18c15fc68dda9abbcd6e77e4753954454a43ad3", // public-writing-patterns.md (改写前仓库 HEAD 版本)
+  "b422b0d06ac203feab78b5988e79111f62746b8c3d338f5f36b673036bcd0ffa"  // quality-check.md
+]);
+
+export function shouldUpgradeReference(currentHash: string | undefined, builtInHash: string, seedHash: string | undefined): boolean {
+  return (
+    currentHash === undefined ||
+    currentHash === builtInHash ||
+    KNOWN_LEGACY_BUILT_IN_HASHES.has(currentHash) ||
+    (seedHash !== undefined && currentHash === seedHash)
+  );
+}
+
+function readReferencesFrom(skillDirectory: string): Record<string, string> | undefined {
+  const referenceDirectory = path.join(skillDirectory, "references");
+  if (!fs.existsSync(referenceDirectory)) return undefined;
+  return Object.fromEntries(
+    fs.readdirSync(referenceDirectory)
+      .filter((name) => /^[a-z0-9-]+\.md$/.test(name))
+      .map((name) => [name, fs.readFileSync(path.join(referenceDirectory, name), "utf8")])
+  );
+}
+
+function readSharedReferences(directory: string): Record<string, string> | undefined {
+  const sharedDirectory = path.join(directory, "_shared", "references");
+  if (!fs.existsSync(sharedDirectory)) return undefined;
+  return Object.fromEntries(
+    fs.readdirSync(sharedDirectory)
+      .filter((name) => /^[a-z0-9-]+\.md$/.test(name))
+      .map((name) => [name, fs.readFileSync(path.join(sharedDirectory, name), "utf8")])
+  );
+}
+
 const builtIns = loadBuiltInSkills(resolveBuiltInSkillsDirectory());
 
 function resolveBuiltInSkillsDirectory(): string {
@@ -64,12 +111,9 @@ function loadBuiltInSkills(directory: string): BuiltInSkillDefinition[] {
     if (!["研究", "创作", "改写", "检测", "图片"].includes(entry.category)) throw new Error(`内置技能分类不合法：${entry.id}`);
     const skillDirectory = path.join(directory, entry.id);
     const markdown = fs.readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8");
-    const referenceDirectory = path.join(skillDirectory, "references");
-    const references = fs.existsSync(referenceDirectory)
-      ? Object.fromEntries(fs.readdirSync(referenceDirectory)
-        .filter((name) => /^[a-z0-9-]+\.md$/.test(name))
-        .map((name) => [name, fs.readFileSync(path.join(referenceDirectory, name), "utf8")]))
-      : undefined;
+    const ownReferences = readReferencesFrom(skillDirectory);
+    const sharedReferences = SHARED_REFERENCE_CONSUMERS.has(entry.id) ? readSharedReferences(directory) : undefined;
+    const references = sharedReferences ? { ...ownReferences, ...sharedReferences } : ownReferences;
     const legacyMarkdown = (entry.legacyFiles ?? []).map((relativePath) => {
       if (!/^legacy\/[a-z0-9-]+\.md$/.test(relativePath)) throw new Error(`内置技能兼容文件路径不合法：${entry.id}`);
       return fs.readFileSync(path.join(skillDirectory, ...relativePath.split("/")), "utf8");
@@ -161,6 +205,7 @@ export class SkillRegistry {
   }
 
   private seed(): void {
+    const seedState = this.readReferenceSeedState();
     for (const definition of builtIns) {
       const directory = path.join(this.rootDirectory, definition.id);
       fs.mkdirSync(directory, { recursive: true });
@@ -176,13 +221,43 @@ export class SkillRegistry {
       if (definition.references) {
         const referenceDirectory = path.join(directory, "references");
         fs.mkdirSync(referenceDirectory, { recursive: true });
-        for (const [name, markdown] of Object.entries(definition.references)) {
+        const skillSeed = seedState[definition.id] ?? {};
+        for (const [name, builtInContent] of Object.entries(definition.references)) {
           if (!/^[a-z0-9-]+\.md$/.test(name)) throw new Error("内置技能引用文件名不合法。");
+          const normalizedBuiltIn = builtInContent.trimEnd() + "\n";
           const referencePath = path.join(referenceDirectory, name);
-          if (!fs.existsSync(referencePath)) fs.writeFileSync(referencePath, markdown.trimEnd() + "\n", "utf8");
+          const builtInHash = hashContent(normalizedBuiltIn);
+          const currentHash = fs.existsSync(referencePath)
+            ? hashContent(fs.readFileSync(referencePath, "utf8"))
+            : undefined;
+          // First seed, or the file still matches what we last seeded: keep it
+          // in sync with the built-in. If the user edited it (hash differs),
+          // preserve their copy instead of overwriting it.
+          if (shouldUpgradeReference(currentHash, builtInHash, skillSeed[name])) {
+            fs.writeFileSync(referencePath, normalizedBuiltIn, "utf8");
+          }
+          skillSeed[name] = builtInHash;
         }
+        seedState[definition.id] = skillSeed;
       }
     }
+    this.writeReferenceSeedState(seedState);
+  }
+
+  private readReferenceSeedState(): Record<string, Record<string, string>> {
+    const seedFile = path.join(this.rootDirectory, ".skill-reference-seed.json");
+    if (!fs.existsSync(seedFile)) return {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(seedFile, "utf8"));
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, Record<string, string>>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writeReferenceSeedState(state: Record<string, Record<string, string>>): void {
+    const seedFile = path.join(this.rootDirectory, ".skill-reference-seed.json");
+    fs.writeFileSync(seedFile, JSON.stringify(state), "utf8");
   }
 
   private filePath(skillId: string): string {
@@ -238,6 +313,10 @@ function isBrowserAutomationSkill(skillId: string): boolean {
 
 function normalizeMarkdown(value: string): string {
   return value.replace(/\r\n/g, "\n").trim();
+}
+
+function hashContent(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 function selectedTextLength(prompt: string): number {

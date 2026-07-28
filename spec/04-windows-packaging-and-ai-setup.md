@@ -25,7 +25,7 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 
 ## 2. 数据与升级边界
 
-- 当前开发版默认把内部数据保存在 Electron `userData/data` 目录；在本机对应 `C:\Users\adams\AppData\Roaming\contentferry\data`。其中包括 SQLite 数据库、ContentFerry 内部素材、AI 沙箱和诊断日志。用户单独配置的 VitePress 文章库仍保存在用户选择的原目录，不会复制进系统盘。
+- 当前开发版默认把内部数据保存在 Electron `userData/data` 目录；在本机对应 `C:\Users\adams\AppData\Roaming\contentferry\data`。其中包括 SQLite 数据库、ContentFerry 内部素材、AI 沙箱和诊断日志。用户单独配置的 VitePress 文章库仍保存在用户选择的原目录，不会复制进系统盘。除 `userData/data` 业务数据外，Electron 的 `userData` 根目录还保存启动定位配置 `app-settings.json`（记录数据目录位置、首次启动标记与 AI 初始化状态）与框架自动维护的运行时文件（`Preferences`、会话存储、缓存、`GPUCache` 等）；这些位于 `userData` 根、不随数据目录迁移，重装或换盘时由本地应用重新生成或重新写入。
 - 当前开发版可通过 `CONTENTFERRY_DATA_DIR` 环境变量覆盖内部数据目录，但这不是面向普通用户的最终交互。
 - 正式安装版首次启动时提供“使用推荐位置”和“选择其他位置”两个选项。选择其他位置后，数据库、内部素材、日志、缓存和备份都写入该目录；系统盘只保留很小的启动定位配置和 Windows 必需的应用配置。
 - 设置页后续允许迁移数据目录。迁移必须在暂停写入后执行“复制到临时目录 → 校验数据库和文件数量 → 原子切换位置 → 保留旧目录供回退”，不得直接移动后立即删除原数据。
