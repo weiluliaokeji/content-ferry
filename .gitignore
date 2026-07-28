@@ -22,5 +22,5 @@ data/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
-.workbuddy-ai/
+.workbuddy/
 build/

@@ -316,6 +316,14 @@ function App() {
   const [modelScopePrompt, setModelScopePrompt] = useState("");
   const [coverGenerating, setCoverGenerating] = useState(false);
   const [skills, setSkills] = useState<ManagedSkill[]>([]);
+  const [batchModelByGroup, setBatchModelByGroup] = useState<Record<string, ModelProviderId | null>>({});
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<Record<string, boolean>>({});
+  const skillModelGroups = [
+    { key: "text", title: "文本类技能", description: "依赖文本大模型（OpenAI 系列）", match: (c: ManagedSkill["category"]) => c === "创作" || c === "改写", providers: ["openai_codex", "openai", "openrouter", "nous", "nvidia_build", "github_copilot"] as ModelProviderId[] },
+    { key: "image", title: "图像类技能", description: "依赖图像大模型（ModelScope / Gemini）", match: (c: ManagedSkill["category"]) => c === "图片", providers: ["modelscope", "gemini"] as ModelProviderId[] },
+    { key: "none", title: "无模型技能", description: "走浏览器自动化，不需要大模型连接", match: (c: ManagedSkill["category"]) => c === "检测" }
+  ];
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([]);
   const [editingSkill, setEditingSkill] = useState<ManagedSkill>();
   const [editingSkillFile, setEditingSkillFile] = useState<SkillFileContent>();
@@ -329,6 +337,7 @@ function App() {
   const [publishZhuqueReport, setPublishZhuqueReport] = useState<ZhuqueReport>();
   const [publishAiCheckTool, setPublishAiCheckTool] = useState<"zhuque" | "contentany">();
   const [publishAiOverrideReason, setPublishAiOverrideReason] = useState("");
+  const publishAiOverrideReasonDirtyRef = useRef(false);
   const [publishAiCheckRunning, setPublishAiCheckRunning] = useState(false);
   const [publishDetector, setPublishDetector] = useState<"zhuque" | "contentany">("zhuque");
   const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLogEntry[]>([]);
@@ -902,6 +911,7 @@ function App() {
     setPublishAiCheckResult("");
     setPublishZhuqueReport(undefined); setPublishAiCheckTool(undefined);
     setPublishAiOverrideReason("");
+    publishAiOverrideReasonDirtyRef.current = false;
     resetPublishCover();
     setError("");
     void loadSkillsAndConnections();
@@ -925,8 +935,8 @@ function App() {
       setPublishAiCheckResult(quality.aiCheckResult);
       setPublishZhuqueReport(parseZhuqueReport(quality.aiCheckReport));
       setPublishAiCheckTool(quality.aiCheckResult.startsWith("ContentAny") ? "contentany" : quality.aiCheckResult ? "zhuque" : undefined);
-      setPublishAiOverrideReason(quality.overrideReason);
-    }).catch(() => undefined);
+        if (!publishAiOverrideReasonDirtyRef.current) setPublishAiOverrideReason(quality.overrideReason);
+      }).catch(() => undefined);
   };
   const openSourcePublishPreparation = (article: ContentSourceArticle) => {
     const preferred = accounts.find((account) => account.platform === "wechat_official");
@@ -942,6 +952,7 @@ function App() {
     setPublishAiCheckResult("");
     setPublishZhuqueReport(undefined); setPublishAiCheckTool(undefined);
     setPublishAiOverrideReason("");
+    publishAiOverrideReasonDirtyRef.current = false;
     resetPublishCover();
     setError("");
     void loadSkillsAndConnections();
@@ -961,7 +972,7 @@ function App() {
         setPublishAiCheckResult(quality.aiCheckResult);
         setPublishZhuqueReport(parseZhuqueReport(quality.aiCheckReport));
         setPublishAiCheckTool(quality.aiCheckResult.startsWith("ContentAny") ? "contentany" : quality.aiCheckResult ? "zhuque" : undefined);
-        setPublishAiOverrideReason(quality.overrideReason);
+        if (!publishAiOverrideReasonDirtyRef.current) setPublishAiOverrideReason(quality.overrideReason);
       }).catch(() => undefined);
   };
   const runPublishZhuque = async () => {
@@ -1291,6 +1302,32 @@ function App() {
       setSaving(false);
     }
   };
+  const applyBatchModel = async (groupKey: string) => {
+    const group = skillModelGroups.find((item) => item.key === groupKey);
+    const target = batchModelByGroup[groupKey];
+    if (!group || !target) return;
+    const groupSkills = skills.filter((skill) => group.match(skill.category));
+    const selectedIds = new Set(Object.keys(selectedSkillIds).filter((id) => selectedSkillIds[id]));
+    const targetSkills = groupSkills.filter((skill) => selectedIds.has(skill.id));
+    if (targetSkills.length === 0) return;
+    setBatchSaving(true);
+    try {
+      for (const skill of targetSkills) {
+        await request<ManagedSkill>(`/skills/${skill.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ markdown: skill.markdown, enabled: skill.enabled, provider: target })
+        });
+      }
+      setSelectedSkillIds({});
+      setBatchModelByGroup((current) => ({ ...current, [groupKey]: null }));
+      await loadSkillsAndConnections();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "批量设置模型失败。");
+    } finally {
+      setBatchSaving(false);
+    }
+  };
   const saveModelConnection = async (event: FormEvent) => {
     event.preventDefault();
     if (!editingConnection) return;
@@ -1386,6 +1423,8 @@ function App() {
   const filteredRuntimeLogs = runtimeLogs;
   const pendingWechatJobs = wechatJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
   const completedWechatJobs = wechatJobs.filter((job) => job.status === "published" || job.status === "cancelled");
+  const researchReadOnly = researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false;
+  const outlineReadOnly = outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false;
 
   return <div className="app-shell">
     <aside className="app-sidebar">
@@ -1412,7 +1451,38 @@ function App() {
     {activeView === "skills" && <>
       <section className="card">
         <div className="section-heading"><div><h2>技能</h2><p className="hint compact-hint">每个技能都有独立的 SKILL.md，可修改执行规则、停用，或更换模型连接。</p></div><button className="text-button" onClick={() => void loadSkillsAndConnections()}>刷新</button></div>
-        <div className="skill-grid">{skills.map((skill) => <button type="button" className="skill-card" key={skill.id} onClick={() => openSkillEditor(skill)}><span><em>{skill.category}</em><strong>{skill.name}</strong></span><p>{skill.description}</p><small>{skill.enabled ? `已启用 · ${providerName(skill.provider)}` : "已停用"}</small></button>)}</div>
+        {skillModelGroups.map((group) => {
+          const groupSkills = skills.filter((skill) => group.match(skill.category));
+          if (groupSkills.length === 0) return null;
+          const selected = batchModelByGroup[group.key];
+          const selectedInGroup = groupSkills.filter((skill) => selectedSkillIds[skill.id]);
+          return (
+            <div className="skill-group" key={group.key}>
+              <div className="section-heading group-heading">
+                <div><h3>{group.title}</h3><p className="hint compact-hint">{group.description}</p></div>
+                {group.providers && <div className="group-batch-model">
+                  <select value={selected ?? ""} onChange={(event) => setBatchModelByGroup((current) => ({ ...current, [group.key]: (event.target.value || null) as ModelProviderId | null }))} aria-label={`${group.title}批量模型`}>
+                    <option value="">选择目标模型…</option>
+                    {modelConnections.filter((connection) => group.providers!.includes(connection.provider)).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}
+                  </select>
+                  <button type="button" className="secondary-button" disabled={!selected || batchSaving || selectedInGroup.length === 0} onClick={() => void applyBatchModel(group.key)}>{batchSaving ? "正在应用…" : selectedInGroup.length > 0 ? `应用到选中的 ${selectedInGroup.length} 个技能` : "请先勾选技能"}</button>
+                </div>}
+              </div>
+              <div className="skill-grid">{groupSkills.map((skill) => (
+                <div className="skill-card" key={skill.id}>
+                  <label className="skill-select" onClick={(event) => event.stopPropagation()} title="勾选后用于批量设置模型">
+                    <input type="checkbox" checked={!!selectedSkillIds[skill.id]} onChange={(event) => setSelectedSkillIds((current) => ({ ...current, [skill.id]: event.target.checked }))} aria-label={`选择 ${skill.name} 批量设置模型`} />
+                  </label>
+                  <button type="button" className="skill-card-body" onClick={() => openSkillEditor(skill)}>
+                    <span><em>{skill.category}</em><strong>{skill.name}</strong></span>
+                    <p>{skill.description}</p>
+                    <small>{skill.enabled ? `已启用 · ${providerName(skill.provider)}` : "已停用"}</small>
+                  </button>
+                </div>
+              ))}</div>
+            </div>
+          );
+        })}
       </section>
       <section className="card">
         <div className="section-heading"><div><h2>模型连接</h2><p className="hint compact-hint">凭证加密保存在本机，页面只显示是否已配置，不回显明文。</p></div></div>
@@ -1432,7 +1502,7 @@ function App() {
     </>}
 
     {activeView === "library" && <>
-    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以直接发布到微信公众号。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章。</p><ul className="content-library-list">{sourcePreview.items.map((item) => { const job = wechatJobs.find((entry) => entry.sourceRelativePath === item.relativePath || entry.title === item.title); return <li key={item.relativePath}><span><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>{job && <small>{wechatJobLabel(job)}</small>}</span><span className="account-actions">{job?.status === "draft_ready" ? <button className="secondary-button" onClick={() => setActiveView("publish")}>继续发布</button> : job?.status === "submitted" ? <span className="status-badge">微信处理中</span> : job?.status === "published" ? <span className="status-badge success">已发布</span> : job?.status === "cancelled" ? <span className="status-badge warning">已取消发布</span> : <button className="secondary-button" onClick={() => void openSourceArticle(item.relativePath, "settings")}>设置并发布</button>}</span></li>; })}</ul></>}</section>
+    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以直接发布到微信公众号。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章。</p><ul className="content-library-list">{sourcePreview.items.map((item) => { const job = bestWechatJob(wechatJobs, (entry) => entry.sourceRelativePath === item.relativePath || entry.title === item.title); return <li key={item.relativePath}><span><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>{job && <small>{wechatJobLabel(job)}</small>}</span><span className="account-actions">{job?.status === "draft_ready" ? <button className="secondary-button" onClick={() => setActiveView("publish")}>继续发布</button> : job?.status === "submitted" ? <span className="status-badge">微信处理中</span> : job?.status === "published" ? <span className="status-badge success">已发布</span> : job?.status === "cancelled" ? <span className="status-badge warning">已取消发布</span> : <button className="secondary-button" onClick={() => void openSourceArticle(item.relativePath, "settings")}>设置并发布</button>}</span></li>; })}</ul></>}</section>
     </>}
 
     {activeView === "publish" && <>
@@ -1461,7 +1531,7 @@ function App() {
         <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p><button onClick={openProjectCreator}>＋ 新建文章</button></div>
       ) : (
         <ul className="project-list">{projects.map((project) => {
-          const job = wechatJobs.find((item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
+          const job = bestWechatJob(wechatJobs, (item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
           const nextText = job?.status === "published" ? "微信公众号已确认发布完成" : job?.status === "cancelled" ? "发布任务已人工取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，正在等待最终回执" : job?.status === "draft_ready" ? "已同步微信草稿箱，等待预览和发布" : project.draftReady ? "正文已保存，可继续编辑或准备发布" : project.outlineReady ? "提纲已确认，下一步生成正文" : project.researchReady ? "资料已补充，下一步生成提纲" : project.briefReady ? "创作方向已整理，下一步联网补研" : "下一步整理创作方向和资料";
           const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.researchReady ? () => void openOutline(project) : project.briefReady ? () => void openResearch(project, true) : () => void openBrief(project);
           const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.researchReady ? "生成提纲" : project.briefReady ? "联网补研" : "整理创作方向";
@@ -1474,7 +1544,7 @@ function App() {
               <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
               {canEditBrief && <button className="secondary-button" onClick={() => void openBrief(project)}>编辑创作方向</button>}
               {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
-              {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>编辑提纲</button>}
+              {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}
               {!project.draftReady && <button onClick={action}>{label}</button>}
               {project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}
               {job?.status === "draft_ready" && <span className="status-badge">草稿已同步</span>}
@@ -1564,7 +1634,7 @@ function App() {
           <div><strong>发布前 AIGC 特征检测</strong><small>腾讯朱雀或 ContentAny 任一项完成即可。文渡会自动填入正文、触发检测并读取结果；仅在登录、验证码或页面变化时人工接管。</small></div>
           {publishZhuqueReport ? <ZhuqueReportView report={publishZhuqueReport} /> : publishAiCheckResult && <pre>{publishAiCheckResult}</pre>}
           {publishAiCheckResult && publishAiCheckTool === "zhuque" && <button type="button" className="text-button zhuque-original-button" onClick={() => void openZhuque()}>查看朱雀原始结果窗口</button>}
-          {(!publishAiCheckResult || isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport)) && <label>例外发布理由<textarea value={publishAiOverrideReason} maxLength={1000} onChange={(event) => setPublishAiOverrideReason(event.target.value)} placeholder={publishAiCheckResult ? "检测结果 AI 特征偏高，但仍决定发布的原因" : "仅在任一检测暂时无法完成时填写"} /><small>{publishAiOverrideReason.length}/1000，至少填写 5 个字</small></label>}
+          {(!publishAiCheckResult || isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport)) && <label>例外发布理由<textarea value={publishAiOverrideReason} maxLength={1000} onChange={(event) => { publishAiOverrideReasonDirtyRef.current = true; setPublishAiOverrideReason(event.target.value); }} placeholder={publishAiCheckResult ? "检测结果 AI 特征偏高，但仍决定发布的原因" : "仅在任一检测暂时无法完成时填写"} /><small>{publishAiOverrideReason.length}/1000，至少填写 5 个字</small></label>}
         </section>
         {(!publishAccountReady || (!publishCoverSource && !publishThumbMediaId)) && <p className="error">发布信息不完整。请返回文章编辑页，在右侧“发布设置”中补充标红项目并保存。</p>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => void returnToPublishSettings()}>返回发布设置</button><button disabled={saving || publishAiCheckRunning || !publishAccountReady || (!publishCoverSource && !publishThumbMediaId) || (!publishAiCheckResult && publishAiOverrideReason.trim().length < 5) || (isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport) && publishAiOverrideReason.trim().length < 5)}>{saving ? "正在上传素材并创建草稿…" : "确认并创建微信草稿"}</button></div>
@@ -1591,8 +1661,8 @@ function App() {
 
     {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
     {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，阿文会默认联网补充资料，再生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>写作目标<textarea autoFocus value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>{historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
-    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>阿文正在检索官方与公开网页，并整理可追溯资料卡…</span></div> : <><p className="hint">阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={() => void toggleResearchSource(source)} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section><section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的“与阿文对话”最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></div></>}</Modal>}
-    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></div></form></>}</Modal>}
+    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>阿文正在检索官方与公开网页，并整理可追溯资料卡…</span></div> : <><p className="hint">{researchReadOnly ? "这篇文章已发布，以下资料仅供查看，不可修改。" : "阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。"}</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={researchReadOnly ? undefined : () => void toggleResearchSource(source)} disabled={researchReadOnly} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section>{!researchReadOnly && <section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的"与阿文对话"最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section>}<div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div></>}</Modal>}
+    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></>}</div></form></>}</Modal>}
   </main></div>;
 }
 
@@ -2882,6 +2952,23 @@ function runtimeLogLevel(level: number): string {
   if (level >= 40) return "警告";
   if (level >= 30) return "信息";
   return "调试";
+}
+
+const WECHAT_JOB_STATUS_PRIORITY: Record<WechatPublishJob["status"], number> = {
+  published: 5,
+  submitted: 4,
+  draft_ready: 3,
+  browser_editing: 2,
+  cancelled: 1,
+  failed: 0,
+};
+
+function bestWechatJob(jobs: WechatPublishJob[], predicate: (job: WechatPublishJob) => boolean): WechatPublishJob | undefined {
+  const matches = jobs.filter(predicate);
+  if (matches.length === 0) return undefined;
+  return matches.reduce((best, current) =>
+    WECHAT_JOB_STATUS_PRIORITY[current.status] > WECHAT_JOB_STATUS_PRIORITY[best.status] ? current : best
+  );
 }
 
 function wechatJobLabel(job: WechatPublishJob): string {

@@ -46,7 +46,8 @@ export function VisualMarkdownEditor({
   onSuggestionOffsetChange,
   onAcceptSuggestion,
   onRejectSuggestion,
-  minHeight = 420
+  minHeight = 420,
+  readOnly = false
 }: {
   value: string;
   onChange: (markdown: string) => void;
@@ -62,6 +63,7 @@ export function VisualMarkdownEditor({
   onAcceptSuggestion?: (id: string) => void;
   onRejectSuggestion?: (id: string) => void;
   minHeight?: number;
+  readOnly?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const crepeRef = useRef<Crepe | null>(null);
@@ -73,12 +75,14 @@ export function VisualMarkdownEditor({
   const suggestionCallbacksRef = useRef({ onAcceptSuggestion, onRejectSuggestion });
   const suggestionOffsetsRef = useRef(suggestionOffsets);
   const onSuggestionOffsetChangeRef = useRef(onSuggestionOffsetChange);
+  const readOnlyRef = useRef(readOnly);
   onChangeRef.current = onChange;
   valueRef.current = value;
   suggestionsRef.current = suggestions;
   suggestionCallbacksRef.current = { onAcceptSuggestion, onRejectSuggestion };
   suggestionOffsetsRef.current = suggestionOffsets;
   onSuggestionOffsetChangeRef.current = onSuggestionOffsetChange;
+  readOnlyRef.current = readOnly;
 
   useEffect(() => {
     if (!rootRef.current) return;
@@ -248,6 +252,12 @@ export function VisualMarkdownEditor({
         setEditorReady(true);
         const visualValue = preserveVisualLineBreaks(valueRef.current);
         if (crepe.getMarkdown() !== visualValue) crepe.editor.action(replaceAll(visualValue));
+        if (readOnlyRef.current) {
+          crepe.editor.action((ctx) => {
+            const view = ctx.get(editorViewCtx);
+            view.setProps({ editable: () => false });
+          });
+        }
       }
     });
 
@@ -419,16 +429,16 @@ export function VisualMarkdownEditor({
     };
   }, [suggestions, editorReady]);
 
-  return <div className="visual-editor-shell">
-    <div className="editor-inline-mode-switch editor-mode-switch" aria-label="编辑模式">
+  return <div className={`visual-editor-shell${readOnly ? " read-only" : ""}`}>
+    {!readOnly && <div className="editor-inline-mode-switch editor-mode-switch" aria-label="编辑模式">
       <button type="button" className="active editor-mode-icon" title="当前：所见即所得编辑" aria-label="当前：所见即所得编辑">✎</button>
       <button type="button" className="editor-mode-icon" title="切换到 Markdown 原文" aria-label="切换到 Markdown 原文" onClick={() => onSwitchToMarkdown?.(readVisibleMarkdownOffset(rootRef.current, crepeRef.current, value))}>{"</>"}</button>
-    </div>
+    </div>}
     <div
       className="visual-markdown-editor"
       style={{ minHeight }}
       ref={rootRef}
-      aria-label="可视化文章编辑器"
+      aria-label={readOnly ? "提纲预览（只读）" : "可视化文章编辑器"}
       onMouseUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
       onKeyUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
     />

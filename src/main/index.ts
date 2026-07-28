@@ -1098,8 +1098,24 @@ async function driveWechatEditorSettings(window: BrowserWindow, target?: WechatB
         if (!panel) {
           panel = document.createElement("div");
           panel.id = "contentferry-wechat-assist-status";
-          panel.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:#172033;color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;white-space:pre-line;";
+          panel.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:rgba(23,32,51,.82);color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;white-space:pre-line;cursor:move;user-select:none;";
           document.body.appendChild(panel);
+          let dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+          panel.addEventListener("mousedown", (e) => {
+            dragging = true;
+            const r = panel.getBoundingClientRect();
+            sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
+            panel.style.left = sl + "px"; panel.style.top = st + "px";
+            panel.style.right = "auto"; panel.style.bottom = "auto";
+            e.preventDefault();
+          });
+          document.addEventListener("mousemove", (e) => {
+            if (!dragging) return;
+            const nl = Math.max(0, Math.min(sl + e.clientX - sx, window.innerWidth - panel.offsetWidth));
+            const nt = Math.max(0, Math.min(st + e.clientY - sy, window.innerHeight - panel.offsetHeight));
+            panel.style.left = nl + "px"; panel.style.top = nt + "px";
+          });
+          document.addEventListener("mouseup", () => { dragging = false; });
         }
         panel.textContent = lines.join("\\n");
       };
@@ -1475,8 +1491,24 @@ async function driveWechatBackendToDrafts(window: BrowserWindow, target?: Wechat
       if (!panel) {
         panel = document.createElement("div");
         panel.id = "contentferry-wechat-assist-status";
-        panel.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:#172033;color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;";
+        panel.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:rgba(23,32,51,.82);color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;cursor:move;user-select:none;";
         document.body.appendChild(panel);
+        let dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+        panel.addEventListener("mousedown", (e) => {
+          dragging = true;
+          const r = panel.getBoundingClientRect();
+          sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
+          panel.style.left = sl + "px"; panel.style.top = st + "px";
+          panel.style.right = "auto"; panel.style.bottom = "auto";
+          e.preventDefault();
+        });
+        document.addEventListener("mousemove", (e) => {
+          if (!dragging) return;
+          const nl = Math.max(0, Math.min(sl + e.clientX - sx, window.innerWidth - panel.offsetWidth));
+          const nt = Math.max(0, Math.min(st + e.clientY - sy, window.innerHeight - panel.offsetHeight));
+          panel.style.left = nl + "px"; panel.style.top = nt + "px";
+        });
+        document.addEventListener("mouseup", () => { dragging = false; });
       }
       panel.textContent = lines.join("\\n");
     };
