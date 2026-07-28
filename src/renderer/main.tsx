@@ -242,6 +242,14 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
   gemini: "Google Gemini"
 } as Record<ModelProviderId, string>)[provider];
 
+/** Returns the model status label shown on a skill card. Detection skills genuinely
+ *  need no model; every other category requires one, so null means "not selected". */
+const skillModelStatus = (skill: ManagedSkill) => {
+  if (skill.category === "检测") return providerName(null);
+  if (skill.provider === null) return "未选择模型";
+  return providerName(skill.provider);
+};
+
 function markdownTitle(markdown: string): string | undefined {
   return markdown.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() || undefined;
 }
@@ -1532,7 +1540,7 @@ function App() {
                   <button type="button" className="skill-card-body" onClick={() => openSkillEditor(skill)}>
                     <span><em>{skill.category}</em><strong>{skill.name}</strong></span>
                     <p>{skill.description}</p>
-                    <small>{skill.enabled ? `已启用 · ${providerName(skill.provider)}` : "已停用"}</small>
+                    <small>{skill.enabled ? `已启用 · ${skillModelStatus(skill)}` : "已停用"}</small>
                   </button>
                 </div>
               ))}</div>
