@@ -8,7 +8,7 @@ export interface ManagedSkill {
   id: string;
   name: string;
   description: string;
-  category: "创作" | "改写" | "检测" | "图片";
+  category: "创作" | "改写" | "检测" | "图片" | "研究";
   enabled: boolean;
   provider: ModelProviderId | null;
   markdown: string;

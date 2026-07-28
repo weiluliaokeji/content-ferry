@@ -97,7 +97,12 @@ export class ConfiguredModelProvider implements ModelProvider {
       if (!this.webSearch) throw new ModelProviderUnavailableError("联网检索服务未初始化。");
       const skill = this.skills.get(skillId);
       if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
-      const provider = skill.provider ?? "openai_codex";
+      // After the web-research decoupling, synthesis can run on ANY configured
+      // text model — there is no reason to silently fall back to Codex. Require
+      // an explicit per-skill provider so the model used always matches what the
+      // user picked in 技能与模型.
+      if (!skill.provider) throw new ModelProviderUnavailableError(`“${skill.name}”尚未指定模型。请在“技能与模型”中为该技能选择一个模型连接后再试。`);
+      const provider = skill.provider;
       meta.provider = provider;
       meta.model = this.modelIdFor(provider);
       const instructions = this.skills.instructionsFor(skillId, "");

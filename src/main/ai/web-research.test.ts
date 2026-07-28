@@ -202,4 +202,18 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(call.ok).toBe(false);
     expect(call.error).toMatch(/未获取到任何可用资料/);
   });
+
+  it("throws a clear, actionable error when the web-research skill has no provider assigned", async () => {
+    const { auditLog, record } = fakeAuditLog();
+    const noProviderSkills = {
+      get: () => ({ enabled: true, name: "联网资料补研", provider: null }),
+      instructionsFor: () => "RULES"
+    } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
+    const provider = new ConfiguredModelProvider(stubConnections(), noProviderSkills, codexPlannerThenSynthesis(), auditLog, fakeWebSearch());
+
+    await expect(provider.webResearch(context, () => {})).rejects.toThrow(/尚未指定模型|技能与模型/);
+    const call = record.mock.calls[0][0];
+    expect(call.ok).toBe(false);
+    expect(call.error).toMatch(/尚未指定模型/);
+  });
 });

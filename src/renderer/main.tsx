@@ -147,7 +147,7 @@ type ModelConnection = {
   enabled: boolean; credentialConfigured: boolean;
 };
 type ManagedSkill = {
-  id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片";
+  id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片" | "研究";
   enabled: boolean; provider: ModelProviderId | null; markdown: string; filePath: string;
   files: Array<{ relativePath: string; size: number }>;
 };
@@ -345,7 +345,7 @@ function App() {
   const [batchSaving, setBatchSaving] = useState(false);
   const [selectedSkillIds, setSelectedSkillIds] = useState<Record<string, boolean>>({});
   const skillModelGroups = [
-    { key: "text", title: "文本类技能", description: "依赖文本大模型（OpenAI 系列）", match: (c: ManagedSkill["category"]) => c === "创作" || c === "改写", providers: ["openai_codex", "openai", "openrouter", "nous", "nvidia_build", "github_copilot"] as ModelProviderId[] },
+    { key: "text", title: "文本类技能", description: "依赖文本大模型（OpenAI 系列）", match: (c: ManagedSkill["category"]) => c === "创作" || c === "改写" || c === "研究", providers: ["openai_codex", "openai", "openrouter", "nous", "nvidia_build", "github_copilot"] as ModelProviderId[] },
     { key: "image", title: "图像类技能", description: "依赖图像大模型（ModelScope / Gemini）", match: (c: ManagedSkill["category"]) => c === "图片", providers: ["modelscope", "gemini"] as ModelProviderId[] },
     { key: "none", title: "无模型技能", description: "走浏览器自动化，不需要大模型连接", match: (c: ManagedSkill["category"]) => c === "检测" }
   ];

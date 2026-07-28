@@ -211,12 +211,15 @@ ${outlineContextBlock(context)}
 ${formatResearchSources(context.researchSources)}`;
 }
 
-/** Rewords Codex's generic lifecycle messages into research-specific Chinese so
- *  the 联网补研 dialog shows meaningful, task-relevant progress. Live web-search
- *  queries ("正在检索网页：…") are passed through unchanged. */
+/** Rewords the synthesis provider's generic lifecycle messages into
+ *  research-specific Chinese so the 联网补研 dialog shows meaningful,
+ *  task-relevant progress. Live web-search queries ("正在检索网页：…") are
+ *  passed through unchanged. The text is intentionally model-agnostic: since
+ *  the decoupling, synthesis can run on any configured text model, so we must
+ *  not hard-code "Codex" here. */
 function translateResearchStatus(message: string): string {
   if (message.startsWith("正在检索网页：")) return message;
-  if (message.includes("开始处理任务") || message.includes("已连接模型")) return "已连接 Codex，开始联网补研…";
+  if (message.includes("开始处理任务") || message.includes("已连接模型")) return "已连接模型，开始联网补研…";
   if (message.includes("理解任务要求")) return "正在分析补研主题与已有资料…";
   if (message.includes("分析并规划")) return "正在分析检索到的资料…";
   if (message.includes("分析完成")) return "资料分析完成，正在生成资料卡…";

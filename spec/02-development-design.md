@@ -96,6 +96,7 @@ OpenAI API Key provider 与其他模型后续复用同一接口；切换 provide
 - 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
 - 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
 - 装配：`create-server.ts` 通过 `createWebSearchClient({ tavilyApiKey: process.env.TAVILY_API_KEY })` 注入检索层；`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`），不再承担检索。
+- **补研技能必须显式指定模型，不再默认 Codex**：`web-research` 技能的 `defaultProvider` 已改为 `null`，`ConfiguredModelProvider.webResearch` 在技能未指派 provider 时直接抛出明确提示（“请在技能与模型中为该技能选择一个模型连接”），不再静默回退到 `openai_codex`。UI 上“研究”类技能（分类 `研究`）已纳入“文本类技能”可切换模型分组（此前因分类不在任何分组中而不显示，导致用户无法改派、一直卡在默认 Codex）。补研实际使用的模型完全由用户在“技能与模型”里为该技能指派，与其直觉一致。
 
 本方案借鉴了 Hermes Agent 的“provider 注册表 + 能力标志 + 统一响应信封 + 回退链”思路，但检索工具为应用自有、网络访问不与任何模型绑定。
 
