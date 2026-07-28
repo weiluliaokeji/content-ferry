@@ -1,4 +1,4 @@
-import type { ModelConnectionRepository, ModelProviderId } from "./model-connection-repository";
+import type { ModelConnection, ModelConnectionRepository, ModelProviderId } from "./model-connection-repository";
 import {
   ModelProviderUnavailableError,
   type GenerateStructuredRequest,
@@ -27,6 +27,8 @@ import {
 type CopilotSdk = typeof import("@github/copilot-sdk");
 const importEsm = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<CopilotSdk>;
 
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+
 const MAX_RESEARCH_ROUNDS = 5;
 
 export class ConfiguredModelProvider implements ModelProvider {
@@ -39,6 +41,27 @@ export class ConfiguredModelProvider implements ModelProvider {
     private readonly auditLog?: AiAuditLog,
     private readonly webSearch?: WebSearchClient
   ) {}
+
+  /** Calls the OpenAI-compatible /chat/completions endpoint. Honors the connection's
+   *  proxyUrl (via undici ProxyAgent) and surfaces the underlying network error cause
+   *  (DNS/TLS/connection) instead of the opaque "fetch failed". */
+  private async callChatCompletions(connection: ModelConnection, init: RequestInit): Promise<Response> {
+    const baseUrl = connection.baseUrl.replace(/\/+$/, "");
+    const proxyUrl = connection.proxyUrl.trim();
+    const url = `${baseUrl}/chat/completions`;
+    const perform = proxyUrl
+      ? () => undiciFetch(url, { ...init, dispatcher: new ProxyAgent(proxyUrl) } as Parameters<typeof undiciFetch>[1])
+      : () => fetch(url, init);
+    try {
+      return await perform();
+    } catch (error) {
+      const base = `${connection.displayName} 无法连接到模型服务（${url}）`;
+      const cause = error instanceof Error && (error as { cause?: unknown }).cause instanceof Error
+        ? (error as { cause: Error }).cause.message
+        : error instanceof Error ? error.message : String(error);
+      throw new ModelProviderUnavailableError(`${base}：${cause}`);
+    }
+  }
 
   async generateStructured<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
     const skillId = request.skillId ?? (request.task === "revision"
@@ -245,14 +268,13 @@ export class ConfiguredModelProvider implements ModelProvider {
     const connection = this.connections.get(provider as ModelProviderId);
     if (!connection.enabled) throw new WebSearchError(`${connection.displayName} 连接已停用。`);
     const apiKey = this.connections.getCredential(provider as ModelProviderId);
-    const baseUrl = connection.baseUrl.replace(/\/+$/, "");
     const messages: Array<Record<string, unknown>> = [
       { role: "system", content: params.system },
       { role: "user", content: params.user }
     ];
     const maxRounds = params.maxRounds ?? MAX_RESEARCH_ROUNDS;
     for (let i = 0; i < maxRounds; i++) {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
+      const res = await this.callChatCompletions(connection, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -350,7 +372,9 @@ export class ConfiguredModelProvider implements ModelProvider {
         durationMs: Date.now() - start,
         ok: false,
         response: null,
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error
+          ? error.message + ((error as { cause?: unknown }).cause instanceof Error ? ` · ${(error as { cause: Error }).cause.message}` : "")
+          : String(error),
         retrieval: meta.retrieval ?? null
       });
       throw error;
@@ -377,7 +401,6 @@ export class ConfiguredModelProvider implements ModelProvider {
     const connection = this.connections.get(provider);
     if (!connection.enabled) throw new ModelProviderUnavailableError(`${connection.displayName} 连接已停用。`);
     const apiKey = this.connections.getCredential(provider);
-    const baseUrl = connection.baseUrl.replace(/\/+$/, "");
     const messages = [
       {
         role: "system" as const,
@@ -399,7 +422,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       } : {})
     });
     const post = async (withSchema: boolean): Promise<{ response: Response; text: string }> => {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await this.callChatCompletions(connection, {
         method: "POST",
         headers: {
           authorization: `Bearer ${apiKey}`,
