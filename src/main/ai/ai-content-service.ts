@@ -1,22 +1,10 @@
 import { z } from "zod";
 import type Database from "better-sqlite3";
 import type { GenerateStructuredResult, ModelProvider } from "./model-provider";
+import { pushField, formatResearchSources, type WebResearchContext, type ResearchCard } from "./research-prompts";
 
 const markdownOutput = z.object({ markdown: z.string().trim().min(1) });
 const titleSuggestionsOutput = z.object({ titles: z.array(z.string().trim().min(4).max(80)).min(1).max(3) });
-const researchOutput = z.object({
-  planMarkdown: z.string().trim().min(1).max(12000),
-  sources: z.array(z.object({
-    title: z.string().trim().min(1).max(300),
-    url: z.string().url().max(2000),
-    excerpt: z.string().trim().min(1).max(2000),
-    keyClaims: z.array(z.string().trim().min(1).max(500)).min(1).max(5),
-    sourceType: z.enum(["official", "public"])
-  })).min(1).max(10)
-});
-const researchFollowUpOutput = researchOutput.extend({
-  sources: researchOutput.shape.sources.min(0)
-});
 const markdownOutputSchema = {
   type: "object",
   properties: {
@@ -58,79 +46,33 @@ export class AiContentService {
     return normalizeOutlineTitle(generated, context.topic);
   }
 
-  async generateResearch(projectId: string, onStatus?: (message: string) => void) {
+  async generateResearch(projectId: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
-    onStatus?.("阿文正在检索官方与公开网页，并整理可追溯资料卡…");
-    const generated = await this.provider.generateStructured({
-      task: "research",
-      skillId: "web-research",
-      prompt: buildResearchPrompt(context),
-      outputSchema: {
-        type: "object",
-        properties: {
-          planMarkdown: { type: "string" },
-          sources: {
-            type: "array",
-            minItems: 1,
-            maxItems: 10,
-            items: {
-              type: "object",
-              properties: {
-                title: { type: "string" }, url: { type: "string" }, excerpt: { type: "string" },
-                keyClaims: { type: "array", minItems: 1, maxItems: 5, items: { type: "string" } },
-                sourceType: { type: "string", enum: ["official", "public"] }
-              },
-              required: ["title", "url", "excerpt", "keyClaims", "sourceType"],
-              additionalProperties: false
-            }
-          }
-        },
-        required: ["planMarkdown", "sources"],
-        additionalProperties: false
-      },
-      timeoutMs: 240_000,
-      parse: (value) => researchOutput.parse(value),
-      onStatus: (message) => onStatus?.(translateResearchStatus(message))
-    });
-    onStatus?.("资料卡已整理完成，正在写入项目…");
-    return generated;
+    const researchContext: WebResearchContext = {
+      topic: context.topic,
+      objective: context.objective,
+      audience: context.audience,
+      angle: context.angle,
+      positioning: context.positioning,
+      sourceNotes: context.sourceNotes
+    };
+    onStatus?.("阿文正在规划检索方向并联网补研…");
+    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)));
   }
 
-  async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void) {
+  async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
+    const researchContext: WebResearchContext = {
+      topic: context.topic,
+      objective: context.objective,
+      audience: context.audience,
+      angle: context.angle,
+      positioning: context.positioning,
+      sourceNotes: context.sourceNotes,
+      existingSources: context.researchSources
+    };
     onStatus?.("阿文正在针对你的补充继续联网补研…");
-    const generated = await this.provider.generateStructured({
-      task: "research",
-      skillId: "web-research",
-      prompt: buildResearchFollowUpPrompt(context, instruction),
-      outputSchema: {
-        type: "object",
-        properties: {
-          planMarkdown: { type: "string" },
-          sources: {
-            type: "array",
-            maxItems: 10,
-            items: {
-              type: "object",
-              properties: {
-                title: { type: "string" }, url: { type: "string" }, excerpt: { type: "string" },
-                keyClaims: { type: "array", minItems: 1, maxItems: 5, items: { type: "string" } },
-                sourceType: { type: "string", enum: ["official", "public"] }
-              },
-              required: ["title", "url", "excerpt", "keyClaims", "sourceType"],
-              additionalProperties: false
-            }
-          }
-        },
-        required: ["planMarkdown", "sources"],
-        additionalProperties: false
-      },
-      timeoutMs: 240_000,
-      parse: (value) => researchFollowUpOutput.parse(value),
-      onStatus: (message) => onStatus?.(translateResearchStatus(message))
-    });
-    onStatus?.("补充资料卡已整理完成，正在写入项目…");
-    return generated;
+    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)), { instruction });
   }
 
   async suggestTitles(
@@ -283,12 +225,6 @@ function translateResearchStatus(message: string): string {
   return message;
 }
 
-/** Appends `label：value` only when the field is actually filled. Omitting
- *  empty optional fields keeps the prompt free of filler like “未单独填写”. */
-function pushField(lines: string[], label: string, value: string | undefined | null): void {
-  if (value && value.trim()) lines.push(`${label}：${value.trim()}`);
-}
-
 /** Optional context lines for the outline prompt — topic is always shown by the
  *  caller, so this only contains the fields the user actually filled in. */
 function outlineContextBlock(context: CreationContext): string {
@@ -302,55 +238,6 @@ function outlineContextBlock(context: CreationContext): string {
   pushField(lines, "禁用话题或表达", context.prohibitedTopics);
   pushField(lines, "用户提供的想法与资料", context.sourceNotes);
   return lines.join("\n");
-}
-
-export function buildResearchPrompt(context: CreationContext): string {
-  const contextLines: string[] = [];
-  pushField(contextLines, "文章主题", context.topic);
-  pushField(contextLines, "写作目标", context.objective);
-  pushField(contextLines, "目标读者", context.audience);
-  pushField(contextLines, "核心角度", context.angle);
-  pushField(contextLines, "账号定位", context.positioning);
-  pushField(contextLines, "用户已有资料", context.sourceNotes);
-  const contextBlock = contextLines.join("\n");
-  return `你是阿文，负责为一篇即将发布的中文自媒体文章进行联网补研。现在已默认允许联网检索；请主动使用网页搜索，优先官方原始资料，再用高质量公开资料补充。
-
-目标：找出能够支持文章判断的最新事实、限制、使用方式和反例，并形成可追溯资料卡。不要写正文、提纲或写作任务书。
-
-要求：
-- 先检索再作答；每一张资料卡的 URL 必须是你实际查到的直接页面，不能编造、不能给搜索页、不能使用无法核对的链接。
-- 优先 2 至 6 个官方来源；仅在官方资料不足时补充公开来源。资料卡最多 10 张。
-- excerpt 是不超过 200 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 5 条具体主张，标明适用条件与时间敏感性。
-- planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，简洁、可审核；不要混入文章章节或给作者的逐步指令。
-- 不确定、互相矛盾或需要登录才能确认的内容必须明确说明，不能根据模型记忆补全。
-
-${contextBlock}`;
-}
-
-export function buildResearchFollowUpPrompt(context: CreationContext, instruction: string): string {
-  const contextLines: string[] = [];
-  pushField(contextLines, "文章主题", context.topic);
-  pushField(contextLines, "写作目标", context.objective);
-  pushField(contextLines, "目标读者", context.audience);
-  pushField(contextLines, "核心角度", context.angle);
-  const contextBlock = contextLines.join("\n");
-  return `你是阿文，正在为一篇中文自媒体文章做第二轮增量联网补研。请先阅读已有资料，再只针对用户新提出的缺口进行网页检索。优先官方原始资料；网页检索已获默认授权。
-
-用户的补研要求：
-${instruction}
-
-${contextBlock}
-
-已有、已选资料卡：
-${formatResearchSources(context.researchSources)}
-
-输出要求：
-- 只补充本轮要求涉及的事实、限制、反例或使用路径；不要重新写文章、提纲或写作任务书。
-- 每张新资料卡必须是实际检索到的直接页面 URL，不能编造、不能给搜索结果页；不要重复已有 URL。
-- 找不到可靠新增资料时，sources 可以为空，并在 planMarkdown 中明确说明未能确认的原因与建议的人工核查路径。
-- planMarkdown 仅包含“本轮补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三个简短小节。
-- excerpt 是不超过 200 字的中文事实摘要；keyClaims 是该来源支持的 1 至 5 条具体主张，必须说明适用条件或时效性。
-- 不确定、互相矛盾或需要登录才能确认的内容必须明确标记，不能凭模型记忆补全。`;
 }
 
 export function buildDraftPrompt(context: CreationContext): string {
@@ -394,11 +281,6 @@ function revisionContextBlock(context: CreationContext): string {
   pushField(lines, "写作风格", context.writingStyle);
   pushField(lines, "禁用话题或表达", context.prohibitedTopics);
   return lines.join("\n");
-}
-
-function formatResearchSources(sources: CreationContext["researchSources"]): string {
-  if (sources.length === 0) return "暂无已确认资料卡；不得虚构外部事实。";
-  return sources.map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}`).join("\n\n");
 }
 
 function parseResearchClaims(value: string): string[] {

@@ -34,6 +34,8 @@ export interface AiAuditCall {
   prompt: string;
   response: string | null;
   error: string | null;
+  /** Summary of app-owned web retrieval, when the call was a 联网补研. */
+  retrieval?: { rounds: number; sources: number; provider: string | null } | null;
 }
 
 export interface AiAuditEntry extends AiAuditCall {

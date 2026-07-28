@@ -5,8 +5,10 @@ import {
   type GenerateStructuredRequest,
   type GenerateStructuredResult,
   type GenerateMarkdownStreamRequest,
-  type ModelProvider
+  type ModelProvider,
+  type WebResearchOptions
 } from "./model-provider";
+import type { WebResearchContext, ResearchCard } from "./research-prompts";
 
 type CodexSdkModule = typeof import("@openai/codex-sdk");
 
@@ -34,10 +36,11 @@ export class OpenAICodexProvider implements ModelProvider {
         skipGitRepoCheck: true,
         sandboxMode: "read-only",
         approvalPolicy: "never",
-        // Writing stays offline by default. Research is a separate, auditable
-        // task that may use Codex's built-in live web search.
-        networkAccessEnabled: request.task === "research",
-        webSearchMode: request.task === "research" ? "live" : "disabled",
+        // Writing stays offline by default. Web research retrieval is now owned
+        // by the app (WebSearchClient), so the synthesis call must NOT search on
+        // its own — the model works only from sources we already gathered.
+        networkAccessEnabled: false,
+        webSearchMode: "disabled",
         ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
@@ -138,6 +141,13 @@ export class OpenAICodexProvider implements ModelProvider {
       clearTimeout(timeout);
       request.signal?.removeEventListener("abort", cancel);
     }
+  }
+
+  /** Research orchestration (retrieval + multi-round loop) lives in
+   *  ConfiguredModelProvider; Codex is only ever used here as a *synthesis*
+   *  model via generateStructured. Calling this directly is unsupported. */
+  async webResearch(_context: WebResearchContext, _onStatus?: (message: string) => void, _options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+    throw new ModelProviderUnavailableError("联网补研由 ConfiguredModelProvider 统一编排，请通过其 webResearch 方法调用。");
   }
 }
 

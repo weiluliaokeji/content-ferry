@@ -1,3 +1,5 @@
+import type { ResearchCard, WebResearchContext } from "./research-prompts";
+
 export interface AiUsage {
   inputTokens: number;
   cachedInputTokens: number;
@@ -14,6 +16,9 @@ export interface GenerateStructuredRequest<T> {
   outputSchema: object;
   timeoutMs?: number;
   parse(value: unknown): T;
+  /** When false, the provider must NOT prepend skill instructions (the caller
+   *  already embedded them — used by web-research sub-calls). Defaults to true. */
+  prependInstructions?: boolean;
   /** Provider lifecycle feedback. Only some providers emit this during structured calls. */
   onStatus?: (message: string) => void;
 }
@@ -37,10 +42,17 @@ export interface GenerateMarkdownStreamRequest {
   onStatus?: (message: string) => void;
 }
 
+export interface WebResearchOptions {
+  /** Incremental follow-up instruction (第二轮增量补研). */
+  instruction?: string;
+}
+
 export interface ModelProvider {
   readonly id: string;
   generateStructured<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>>;
   generateMarkdownStream?(request: GenerateMarkdownStreamRequest): Promise<GenerateStructuredResult<{ markdown: string }>>;
+  /** Model-agnostic web research: app-owned retrieval + LLM synthesis. */
+  webResearch(context: WebResearchContext, onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>>;
 }
 
 export class ModelProviderUnavailableError extends Error {
@@ -54,6 +66,10 @@ export class UnavailableModelProvider implements ModelProvider {
   readonly id = "unavailable";
 
   async generateStructured<T>(_request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
+    throw new ModelProviderUnavailableError("AI 模型尚未在当前运行环境中启用。");
+  }
+
+  async webResearch(_context: WebResearchContext, _onStatus?: (message: string) => void, _options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
     throw new ModelProviderUnavailableError("AI 模型尚未在当前运行环境中启用。");
   }
 }

@@ -62,7 +62,7 @@ ContentFerry 同时存在两层由 Electron 管理的目录，二者独立、互
 | 桌面/UI 层   | 内容编辑、审核、账号管理、任务进度、人工接管           | 保存业务状态、直接存储密钥 |
 | 本地应用服务 | 领域规则、工作流、版本、审核、任务调度、审计           | 直接依赖某个前端页面状态   |
 | 文件同步模块 | 扫描`docs`、原子写入、标题目录重命名、VitePress 兼容 | 工作流与平台发布状态       |
-| 模型适配器   | 自行接入 Codex，提供研究、提纲、写作、修订和流式生成       | 决定最终发布或覆盖人工版本 |
+| 模型适配器   | 自行接入 Codex 等模型，提供研究、提纲、写作、修订和流式生成（联网检索由应用自有 WebSearchClient 承担，不绑定单一模型） | 决定最终发布或覆盖人工版本 |
 | 微信连接器   | Token、草稿、永久链接发布、群发、回调映射、结果查询    | 文章主稿、审核规则的事实源 |
 | 浏览器执行器 | 朱雀网页检测、无接口平台辅助、人工接管                 | 绕过验证码或平台安全限制   |
 | 回调接收端   | 微信签名校验、事件持久化、可靠转发                     | 长期保存正文或明文凭据     |
@@ -82,6 +82,22 @@ ContentFerry 不安装、不启动、不调用 Hermes Agent。Hermes Agent 只�
 5. 适配器不得依赖 Hermes 的进程、配置目录、认证文件、插件、技能或会话数据库，也不得把未公开承诺稳定的 ChatGPT 内部接口固化为不可替换的产品契约。
 
 OpenAI API Key provider 与其他模型后续复用同一接口；切换 provider 不改变文章、资料、审核和发布领域模型。
+
+### 3.2 联网补研与模型解耦
+
+早期实现把“联网补研”硬绑定到 OpenAI Codex：实时网页检索依赖 Codex SDK 内置的 `webSearchMode: "live"`，其它 provider（`chat/completions`、Copilot）没有联网能力，`configured-model-provider.ts` 因此在调用前以护栏 fail-fast，要求补研必须用 Codex。这带来两个后果：补研无法跨模型通用，且审计看不到具体来源 URL（Codex 的检索发生在 SDK 进程内，应用只收到查询词）。
+
+解耦方案：把“搜索 + 抓取网页”这一步改为由应用自主承担，再把检索结果喂给任意模型做综合。
+
+- 应用自有检索层 `WebSearchClient`（`src/main/ai/web-search.ts`）：provider 注册表 + 能力标志（`supportsSearch` / `supportsExtract`）+ 回退链。Tavily（配置 `TAVILY_API_KEY` 时启用）优先，DuckDuckGo 作为零密钥兜底始终可用。检索与任何具体模型解耦。
+- 多轮主动探索在两个方案中都保留，由 `ConfiguredModelProvider.webResearch` 统一编排：
+  - 方案 B（通用，任何不支持工具调用的模型都可用）：由应用驱动循环；每轮让模型按 JSON 协议 `{action:"search"|"done", query?}` 规划下一步检索方向，应用执行 `WebSearchClient.search` 并累积来源，直到模型返回 `done` 或达到最大轮数（默认 5）。
+  - 方案 A（模型支持工具调用时优先：openai / openrouter / nous / nvidia_build）：把 `web_search` 作为函数工具暴露给模型，由主进程执行工具循环（模型发工具调用 → 应用检索 → 回填结果 → 重复直至模型停止）。若方案 A 失败或无工具调用，自动降级到方案 B。
+- 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
+- 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
+- 装配：`create-server.ts` 通过 `createWebSearchClient({ tavilyApiKey: process.env.TAVILY_API_KEY })` 注入检索层；`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`），不再承担检索。
+
+本方案借鉴了 Hermes Agent 的“provider 注册表 + 能力标志 + 统一响应信封 + 回退链”思路，但检索工具为应用自有、网络访问不与任何模型绑定。
 
 ## 4. 核心数据模型
 
@@ -188,7 +204,7 @@ flowchart LR
 规则：
 
 - AI 补研必须记录来源、获取时间、建议用途和与主题的相关性。
-- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现通过独立 `research` 模型任务启用 Codex `web_search=live`，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间与用户选择状态。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。必须登录、验证码和交互页面的可见浏览器补研仍未实现。
+- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现把检索交给应用自有 `WebSearchClient`（Tavily / DuckDuckGo 回退链），再由 `ConfiguredModelProvider.webResearch` 在任意已配置模型上完成多轮检索规划与综合，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间与用户选择状态。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。必须登录、验证码和交互页面的可见浏览器补研仍未实现。
 - 对 AI 提交物，审核者可以直接修改后批准，或要求 AI 在当前审核页修订；只有实质性返工才退回研究或提纲节点。
 
 ### 6.1 Agent 与技能执行契约

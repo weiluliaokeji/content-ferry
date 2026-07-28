@@ -16,6 +16,7 @@ import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
 import { AiContentService } from "../ai/ai-content-service";
+import { createWebSearchClient } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
@@ -215,7 +216,8 @@ export function buildServer(
       modelConnections,
       skills,
       modelProvider,
-      new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls)
+      new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls),
+      createWebSearchClient({ tavilyApiKey: process.env.TAVILY_API_KEY })
     )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
