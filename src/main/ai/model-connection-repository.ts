@@ -94,6 +94,17 @@ export class ModelConnectionRepository {
     return this.credentials.get(this.credentialKind(provider), `${this.get(provider).displayName} 尚未配置访问凭证。`);
   }
 
+  /** Returns a proxy URL to use for app-owned external requests (web search + fetch),
+   *  so the检索层 honors the same network proxy the user set on a model connection.
+   *  Prefers the first connection that has one configured. */
+  getSearchProxyUrl(): string | undefined {
+    for (const connection of this.list()) {
+      const proxy = connection.proxyUrl?.trim();
+      if (proxy) return proxy;
+    }
+    return undefined;
+  }
+
   private credentialKind(provider: ModelProviderId): string {
     // Keep the old key so existing ModelScope installations migrate without asking users to enter it again.
     return provider === "modelscope" ? "modelscope_api_key" : `model_provider:${provider}:credential`;

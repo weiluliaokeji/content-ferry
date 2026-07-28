@@ -217,7 +217,10 @@ export function buildServer(
       skills,
       modelProvider,
       new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls),
-      createWebSearchClient({ tavilyApiKey: process.env.TAVILY_API_KEY })
+      createWebSearchClient({
+        tavilyApiKey: process.env.TAVILY_API_KEY,
+        getProxyUrl: () => modelConnections.getSearchProxyUrl()
+      })
     )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);

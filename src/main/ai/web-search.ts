@@ -10,6 +10,8 @@
  * Tavily (when an API key is present) → DuckDuckGo (zero-key, always available).
  */
 
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+
 export interface SearchResultItem {
   title: string;
   url: string;
@@ -48,7 +50,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 function safeFetch(fetchImpl: FetchImpl, url: string, init?: RequestInit): Promise<Response> {
   return fetchImpl(url, {
     ...init,
-    signal: AbortSignal.timeout(init?.signal ? DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS),
+    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     headers: {
       "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       "accept-language": "zh-CN,zh;q=0.9",
@@ -131,12 +133,25 @@ export class DuckDuckGoProvider implements WebSearchProvider {
   }
 
   async search(query: string, limit = 8): Promise<SearchResultItem[]> {
-    const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=cn-zh`;
-    const res = await safeFetch(this.fetchImpl, url);
+    // Use the POST endpoint at html.duckduckgo.com — the GET form on duckduckgo.com
+    // now returns a 202 anti-bot "anomaly" challenge page instead of results.
+    const body = new URLSearchParams({ q: query, kl: "cn-zh" }).toString();
+    const res = await safeFetch(this.fetchImpl, "https://html.duckduckgo.com/html/", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body
+    });
     if (!res.ok) throw new WebSearchError(`DuckDuckGo 检索失败（HTTP ${res.status}）。`);
     const html = await res.text();
+    if (/anomaly/i.test(html) || res.status === 202) {
+      throw new WebSearchError(
+        "DuckDuckGo 返回了反爬虫验证页，无法自动检索。请配置 Tavily 搜索服务（设置 TAVILY_API_KEY 环境变量），或在「技能与模型」里为模型连接配置网络代理后重试。"
+      );
+    }
     const items = parseDuckDuckGoResults(html, limit);
-    if (items.length === 0) throw new WebSearchError("DuckDuckGo 未返回可用结果，请换个检索词或配置搜索服务。");
+    if (items.length === 0) {
+      throw new WebSearchError("DuckDuckGo 未返回可用结果，请换个检索词，或配置 Tavily 搜索服务（设置 TAVILY_API_KEY 环境变量）。");
+    }
     return items;
   }
 
@@ -206,13 +221,26 @@ export class TavilyProvider implements WebSearchProvider {
 export interface CreateWebSearchClientOptions {
   tavilyApiKey?: string;
   fetchImpl?: FetchImpl;
+  /** Static proxy URL (e.g. http://127.0.0.1:7890). Used for all outbound requests. */
+  proxyUrl?: string;
+  /** Resolver returning the current proxy URL; consulted on every request so changes
+   *  take effect without restarting the process. Takes precedence over `proxyUrl`. */
+  getProxyUrl?: () => string | undefined;
 }
 
 export function createWebSearchClient(options: CreateWebSearchClientOptions = {}): WebSearchClient {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fallbackFetch = options.fetchImpl ?? fetch;
+  const resolveProxy = options.getProxyUrl ?? (() => options.proxyUrl ?? undefined);
+  // Route every provider request through a proxy-aware fetcher so the search layer
+  // honors the same network proxy the user configured for model connections.
+  const fetchWithProxy: FetchImpl = (url, init) => {
+    const proxy = resolveProxy()?.trim();
+    if (proxy) return undiciFetch(url as string | URL, { ...init, dispatcher: new ProxyAgent(proxy) } as Parameters<typeof undiciFetch>[1]);
+    return fallbackFetch(url, init);
+  };
   const providers: WebSearchProvider[] = [];
-  if (options.tavilyApiKey) providers.push(new TavilyProvider(options.tavilyApiKey, fetchImpl));
-  providers.push(new DuckDuckGoProvider(fetchImpl));
+  if (options.tavilyApiKey) providers.push(new TavilyProvider(options.tavilyApiKey, fetchWithProxy));
+  providers.push(new DuckDuckGoProvider(fetchWithProxy));
 
   const pick = (capability: "supportsSearch" | "supportsExtract"): WebSearchProvider | null => {
     for (const provider of providers) {

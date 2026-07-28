@@ -46,6 +46,11 @@ describe("DuckDuckGoProvider", () => {
     await expect(provider.search("测试")).rejects.toThrow(/未返回可用结果/);
   });
 
+  it("throws a clear error on DuckDuckGo's anti-bot anomaly page", async () => {
+    const provider = new DuckDuckGoProvider(htmlFetch("<html><body>anomaly detection triggered</body></html>"));
+    await expect(provider.search("测试")).rejects.toThrow(/反爬虫验证页|TAVILY_API_KEY/);
+  });
+
   it("is always available and supports both capabilities", () => {
     const provider = new DuckDuckGoProvider();
     expect(provider.isAvailable()).toBe(true);
