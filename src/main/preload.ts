@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
       ipcRenderer.invoke("app:open-codex-login") as Promise<{ ok: boolean; message?: string }>,
     completeFirstRun: (dataDir: string): Promise<AppSettingsContract> =>
       ipcRenderer.invoke("app:complete-first-run", dataDir) as Promise<AppSettingsContract>,
+    updateSettings: (patch: Partial<AppSettingsContract>): Promise<AppSettingsContract> =>
+      ipcRenderer.invoke("app:update-settings", patch) as Promise<AppSettingsContract>,
     relaunch: (): Promise<void> => ipcRenderer.invoke("app:relaunch") as Promise<void>
   }
 });

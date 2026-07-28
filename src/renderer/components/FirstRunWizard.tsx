@@ -6,6 +6,7 @@ type AppSettings = {
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
+  auditAiCalls: boolean;
   createdAt: string;
   updatedAt: string;
 };

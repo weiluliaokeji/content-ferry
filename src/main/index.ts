@@ -214,6 +214,12 @@ function createWenduWindowIcon() {
 
 async function registerAppSettingsIpcHandlers(): Promise<void> {
   ipcMain.handle("app:get-settings", async () => loadAppSettings());
+  ipcMain.handle("app:update-settings", async (_event, patch: unknown) => {
+    if (typeof patch !== "object" || patch === null) {
+      throw new Error("设置更新参数无效。");
+    }
+    return saveAppSettings(patch as Partial<AppSettingsContract>);
+  });
   ipcMain.handle("app:choose-data-dir", async () => {
     const result = mainWindow
       ? await dialog.showOpenDialog(mainWindow, {

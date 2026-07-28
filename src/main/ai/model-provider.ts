@@ -14,6 +14,8 @@ export interface GenerateStructuredRequest<T> {
   outputSchema: object;
   timeoutMs?: number;
   parse(value: unknown): T;
+  /** Provider lifecycle feedback. Only some providers emit this during structured calls. */
+  onStatus?: (message: string) => void;
 }
 
 export interface GenerateStructuredResult<T> {

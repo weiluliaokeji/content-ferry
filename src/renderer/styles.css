@@ -120,6 +120,8 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .group-heading h3 { margin: 0; font-size: 1rem; color: #172033; }
 .group-batch-model { display: flex; align-items: center; gap: .55rem; }
 .group-batch-model select { max-width: 230px; }
+.group-select-all { display: flex; align-items: center; gap: .35rem; padding-right: .55rem; border-right: 1px solid #eef1f6; }
+.group-select-all .text-button { font-size: .82rem; white-space: nowrap; }
 .skill-settings-row { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(240px, 1.3fr); gap: 1rem; align-items: end; }
 .toggle-label { display: flex !important; flex-direction: row !important; align-items: center; gap: .6rem; min-height: 44px; }
 .toggle-label input { width: 18px; height: 18px; }

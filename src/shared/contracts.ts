@@ -40,6 +40,8 @@ export interface AppSettings {
   firstRunCompleted: boolean;
   aiInitStatus: CodexAiInitStatus;
   codexBinaryPath: string | null;
+  /** 是否开启 AI 调用审计。开启后会在数据目录下的 logs/ai-audit 写入每次模型调用的完整请求与响应，默认关闭。 */
+  auditAiCalls: boolean;
   createdAt: string;
   updatedAt: string;
 }

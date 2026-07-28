@@ -37,6 +37,7 @@ function defaultSettings(): AppSettings {
     firstRunCompleted: false,
     aiInitStatus: "not_initialized",
     codexBinaryPath: null,
+    auditAiCalls: false,
     createdAt: now,
     updatedAt: now
   };

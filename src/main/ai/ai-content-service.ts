@@ -26,7 +26,7 @@ const markdownOutputSchema = {
   additionalProperties: false
 } as const;
 
-interface CreationContext {
+export interface CreationContext {
   topic: string;
   objective: string;
   audience: string;
@@ -58,9 +58,10 @@ export class AiContentService {
     return normalizeOutlineTitle(generated, context.topic);
   }
 
-  async generateResearch(projectId: string) {
+  async generateResearch(projectId: string, onStatus?: (message: string) => void) {
     const context = this.getContext(projectId);
-    return this.provider.generateStructured({
+    onStatus?.("阿文正在检索官方与公开网页，并整理可追溯资料卡…");
+    const generated = await this.provider.generateStructured({
       task: "research",
       skillId: "web-research",
       prompt: buildResearchPrompt(context),
@@ -88,13 +89,17 @@ export class AiContentService {
         additionalProperties: false
       },
       timeoutMs: 240_000,
-      parse: (value) => researchOutput.parse(value)
+      parse: (value) => researchOutput.parse(value),
+      onStatus: (message) => onStatus?.(translateResearchStatus(message))
     });
+    onStatus?.("资料卡已整理完成，正在写入项目…");
+    return generated;
   }
 
-  async generateResearchFollowUp(projectId: string, instruction: string) {
+  async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void) {
     const context = this.getContext(projectId);
-    return this.provider.generateStructured({
+    onStatus?.("阿文正在针对你的补充继续联网补研…");
+    const generated = await this.provider.generateStructured({
       task: "research",
       skillId: "web-research",
       prompt: buildResearchFollowUpPrompt(context, instruction),
@@ -121,8 +126,11 @@ export class AiContentService {
         additionalProperties: false
       },
       timeoutMs: 240_000,
-      parse: (value) => researchFollowUpOutput.parse(value)
+      parse: (value) => researchFollowUpOutput.parse(value),
+      onStatus: (message) => onStatus?.(translateResearchStatus(message))
     });
+    onStatus?.("补充资料卡已整理完成，正在写入项目…");
+    return generated;
   }
 
   async suggestTitles(
@@ -241,7 +249,7 @@ export class AiContentService {
   }
 }
 
-function buildOutlinePrompt(context: CreationContext): string {
+export function buildOutlinePrompt(context: CreationContext): string {
   return `你是微信公众号内容策划编辑。请根据以下已确认信息生成一份可直接交给作者审核的中文文章提纲。
 
 要求：
@@ -255,21 +263,56 @@ function buildOutlinePrompt(context: CreationContext): string {
 - 输出标准 Markdown，从一级标题开始；不要解释生成过程。
 
 文章主题：${context.topic}
-写作目标：${context.objective || "未单独填写，请围绕文章主题明确读者收获"}
-目标读者：${context.audience || "未单独填写，请结合账号定位判断"}
-核心角度：${context.angle || "由你根据主题和账号定位提出合适角度"}
-账号定位：${context.positioning || "未设置"}
-写作风格：${context.writingStyle || "清晰、自然、具体"}
-常用栏目：${context.regularColumns || "未设置"}
-禁用话题或表达：${context.prohibitedTopics || "未设置"}
-用户提供的想法与资料：
-${context.sourceNotes || "暂无；因此不得编造事实性材料"}
+${outlineContextBlock(context)}
 
 已确认研究资料卡：
 ${formatResearchSources(context.researchSources)}`;
 }
 
-function buildResearchPrompt(context: CreationContext): string {
+/** Rewords Codex's generic lifecycle messages into research-specific Chinese so
+ *  the 联网补研 dialog shows meaningful, task-relevant progress. Live web-search
+ *  queries ("正在检索网页：…") are passed through unchanged. */
+function translateResearchStatus(message: string): string {
+  if (message.startsWith("正在检索网页：")) return message;
+  if (message.includes("开始处理任务") || message.includes("已连接模型")) return "已连接 Codex，开始联网补研…";
+  if (message.includes("理解任务要求")) return "正在分析补研主题与已有资料…";
+  if (message.includes("分析并规划")) return "正在分析检索到的资料…";
+  if (message.includes("分析完成")) return "资料分析完成，正在生成资料卡…";
+  if (message.includes("整理内容") || message.includes("整理可追溯")) return "正在整理可追溯资料卡…";
+  if (message.includes("本地会话")) return "已建立联网检索会话";
+  return message;
+}
+
+/** Appends `label：value` only when the field is actually filled. Omitting
+ *  empty optional fields keeps the prompt free of filler like “未单独填写”. */
+function pushField(lines: string[], label: string, value: string | undefined | null): void {
+  if (value && value.trim()) lines.push(`${label}：${value.trim()}`);
+}
+
+/** Optional context lines for the outline prompt — topic is always shown by the
+ *  caller, so this only contains the fields the user actually filled in. */
+function outlineContextBlock(context: CreationContext): string {
+  const lines: string[] = [];
+  pushField(lines, "写作目标", context.objective);
+  pushField(lines, "目标读者", context.audience);
+  pushField(lines, "核心角度", context.angle);
+  pushField(lines, "账号定位", context.positioning);
+  pushField(lines, "写作风格", context.writingStyle);
+  pushField(lines, "常用栏目", context.regularColumns);
+  pushField(lines, "禁用话题或表达", context.prohibitedTopics);
+  pushField(lines, "用户提供的想法与资料", context.sourceNotes);
+  return lines.join("\n");
+}
+
+export function buildResearchPrompt(context: CreationContext): string {
+  const contextLines: string[] = [];
+  pushField(contextLines, "文章主题", context.topic);
+  pushField(contextLines, "写作目标", context.objective);
+  pushField(contextLines, "目标读者", context.audience);
+  pushField(contextLines, "核心角度", context.angle);
+  pushField(contextLines, "账号定位", context.positioning);
+  pushField(contextLines, "用户已有资料", context.sourceNotes);
+  const contextBlock = contextLines.join("\n");
   return `你是阿文，负责为一篇即将发布的中文自媒体文章进行联网补研。现在已默认允许联网检索；请主动使用网页搜索，优先官方原始资料，再用高质量公开资料补充。
 
 目标：找出能够支持文章判断的最新事实、限制、使用方式和反例，并形成可追溯资料卡。不要写正文、提纲或写作任务书。
@@ -281,24 +324,22 @@ function buildResearchPrompt(context: CreationContext): string {
 - planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，简洁、可审核；不要混入文章章节或给作者的逐步指令。
 - 不确定、互相矛盾或需要登录才能确认的内容必须明确说明，不能根据模型记忆补全。
 
-文章主题：${context.topic}
-写作目标：${context.objective || "未单独填写，请围绕文章主题补研"}
-目标读者：${context.audience || "未单独填写"}
-核心角度：${context.angle || "未单独填写"}
-账号定位：${context.positioning || "未设置"}
-用户已有资料：${context.sourceNotes || "暂无"}`;
+${contextBlock}`;
 }
 
-function buildResearchFollowUpPrompt(context: CreationContext, instruction: string): string {
+export function buildResearchFollowUpPrompt(context: CreationContext, instruction: string): string {
+  const contextLines: string[] = [];
+  pushField(contextLines, "文章主题", context.topic);
+  pushField(contextLines, "写作目标", context.objective);
+  pushField(contextLines, "目标读者", context.audience);
+  pushField(contextLines, "核心角度", context.angle);
+  const contextBlock = contextLines.join("\n");
   return `你是阿文，正在为一篇中文自媒体文章做第二轮增量联网补研。请先阅读已有资料，再只针对用户新提出的缺口进行网页检索。优先官方原始资料；网页检索已获默认授权。
 
 用户的补研要求：
 ${instruction}
 
-文章主题：${context.topic}
-写作目标：${context.objective || "未单独填写"}
-目标读者：${context.audience || "未单独填写"}
-核心角度：${context.angle || "未单独填写"}
+${contextBlock}
 
 已有、已选资料卡：
 ${formatResearchSources(context.researchSources)}
@@ -312,7 +353,15 @@ ${formatResearchSources(context.researchSources)}
 - 不确定、互相矛盾或需要登录才能确认的内容必须明确标记，不能凭模型记忆补全。`;
 }
 
-function buildDraftPrompt(context: CreationContext): string {
+export function buildDraftPrompt(context: CreationContext): string {
+  const contextLines: string[] = [];
+  pushField(contextLines, "写作目标", context.objective);
+  pushField(contextLines, "目标读者", context.audience);
+  pushField(contextLines, "核心角度", context.angle);
+  pushField(contextLines, "账号定位", context.positioning);
+  pushField(contextLines, "写作风格", context.writingStyle);
+  pushField(contextLines, "禁用话题或表达", context.prohibitedTopics);
+  const contextBlock = contextLines.join("\n");
   return `你是微信公众号资深作者。请严格依据已确认提纲和用户资料起草一篇中文文章。
 
 要求：
@@ -325,12 +374,7 @@ function buildDraftPrompt(context: CreationContext): string {
 - 输出标准 Markdown 正文，从一级标题开始，不要输出创作说明或代码围栏。
 
 文章主题：${context.topic}
-写作目标：${context.objective || "未单独填写，请围绕文章主题完成写作"}
-目标读者：${context.audience || "未单独填写，请结合账号定位判断"}
-核心角度：${context.angle || "未单独填写"}
-账号定位：${context.positioning || "未设置"}
-写作风格：${context.writingStyle || "清晰、自然、具体"}
-禁用话题或表达：${context.prohibitedTopics || "未设置"}
+${contextBlock}
 
 已确认提纲：
 ${context.outlineMarkdown}
@@ -340,6 +384,16 @@ ${context.sourceNotes || "暂无；不得因此虚构事实性材料"}
 
 已确认研究资料卡：
 ${formatResearchSources(context.researchSources)}`;
+}
+
+/** Optional context lines for the revision prompt. */
+function revisionContextBlock(context: CreationContext): string {
+  const lines: string[] = [];
+  pushField(lines, "账号定位", context.positioning);
+  pushField(lines, "目标读者", context.audience);
+  pushField(lines, "写作风格", context.writingStyle);
+  pushField(lines, "禁用话题或表达", context.prohibitedTopics);
+  return lines.join("\n");
 }
 
 function formatResearchSources(sources: CreationContext["researchSources"]): string {
@@ -376,7 +430,7 @@ function replaceLeadingDraftTitle(markdown: string, confirmedTitle: string, inse
   return insertIfMissing && markdown.trim() ? `# ${confirmedTitle}\n\n${markdown.trimStart()}` : markdown;
 }
 
-function buildRevisionPrompt(context: CreationContext, currentDraft: string, aiCheckResult: string, guidance: string): string {
+export function buildRevisionPrompt(context: CreationContext, currentDraft: string, aiCheckResult: string, guidance: string): string {
   return `你是微信公众号资深编辑。请根据腾讯朱雀检测结果和作者的修改方向，优化下面的现有正文。
 
 目标：
@@ -389,10 +443,7 @@ function buildRevisionPrompt(context: CreationContext, currentDraft: string, aiC
 - 输出优化后的完整 Markdown 正文，不要输出修改说明或代码围栏。
 
 文章主题：${context.topic}
-账号定位：${context.positioning || "未设置"}
-目标读者：${context.audience || "未单独填写"}
-写作风格：${context.writingStyle || "清晰、自然、具体"}
-禁用话题或表达：${context.prohibitedTopics || "未设置"}
+${revisionContextBlock(context)}
 朱雀检测结果：${aiCheckResult || "未填写具体结果，请按一般的自然表达原则优化"}
 作者希望重点修改：${guidance || "减少套路化表达，增强自然衔接与具体判断"}
 

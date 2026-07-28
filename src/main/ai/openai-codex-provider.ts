@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { Usage } from "@openai/codex-sdk";
+import type { Usage, ThreadEvent } from "@openai/codex-sdk";
 import {
   ModelProviderUnavailableError,
   type GenerateStructuredRequest,
@@ -28,11 +28,7 @@ export class OpenAICodexProvider implements ModelProvider {
 
     try {
       const { Codex } = await importEsm("@openai/codex-sdk");
-      const codex = new Codex({
-        config: {
-          mcp_servers: {}
-        }
-      });
+      const codex = new Codex({ config: { mcp_servers: {} } });
       const thread = codex.startThread({
         workingDirectory: this.sandboxDirectory,
         skipGitRepoCheck: true,
@@ -45,6 +41,25 @@ export class OpenAICodexProvider implements ModelProvider {
         ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
+
+      // When the caller wants progress feedback, stream the turn so we can emit
+      // lifecycle + live web-search status. Otherwise fall back to the simpler
+      // one-shot call to keep non-research tasks exactly as before.
+      if (request.onStatus) {
+        request.onStatus("已连接模型，开始处理任务…");
+        const streamed = await thread.runStreamed(request.prompt, {
+          outputSchema: request.outputSchema,
+          signal: controller.signal
+        });
+        const { value, usage } = await consumeStructuredStream(streamed.events, request.onStatus);
+        return {
+          value: request.parse(value),
+          provider: this.id,
+          model: request.modelId?.trim() || null,
+          usage: mapUsage(usage)
+        };
+      }
+
       const turn = await thread.run(request.prompt, {
         outputSchema: request.outputSchema,
         signal: controller.signal
@@ -134,6 +149,61 @@ function mapUsage(usage: Usage | null): GenerateStructuredResult<never>["usage"]
     outputTokens: usage.output_tokens,
     reasoningOutputTokens: usage.reasoning_output_tokens
   };
+}
+
+/** Maps a Codex thread event to a short Chinese status line, or null if the
+ *  event carries no user-visible progress. Web-search events surface the live
+ *  query, which is the most useful signal during 联网补研. */
+export function mapCodexEventToStatus(event: ThreadEvent): string | null {
+  switch (event.type) {
+    case "thread.started":
+      return "已建立本地会话";
+    case "turn.started":
+      return "正在理解任务要求…";
+    case "item.started":
+      if (event.item.type === "web_search") return `正在检索网页：${event.item.query}`;
+      if (event.item.type === "reasoning") return "正在分析并规划内容…";
+      if (event.item.type === "agent_message") return "正在整理内容…";
+      return null;
+    case "item.completed":
+      if (event.item.type === "reasoning") return "分析完成，正在生成内容…";
+      if (event.item.type === "agent_message") return "正在整理可追溯内容…";
+      return null;
+    default:
+      return null;
+  }
+}
+
+/** Drains a Codex structured-stream, emitting status along the way and returning
+ *  the parsed JSON value plus usage. Extracts the JSON from the final
+ *  agent_message text (the streaming equivalent of `turn.finalResponse`). */
+export async function consumeStructuredStream(
+  events: AsyncGenerator<ThreadEvent>,
+  onStatus?: (message: string) => void
+): Promise<{ value: unknown; usage: Usage | null }> {
+  let value: unknown;
+  let usage: Usage | null = null;
+  let lastAgentText = "";
+  for await (const event of events) {
+    const status = mapCodexEventToStatus(event);
+    if (status) onStatus?.(status);
+    if (event.type === "turn.completed") {
+      usage = event.usage;
+    } else if (event.type === "turn.failed") {
+      throw new ModelProviderUnavailableError(event.error.message);
+    } else if (event.type === "error") {
+      throw new ModelProviderUnavailableError(event.message);
+    } else if ((event.type === "item.completed" || event.type === "item.updated") && event.item.type === "agent_message") {
+      if (event.item.text) lastAgentText = event.item.text;
+    }
+  }
+  if (!lastAgentText.trim()) throw new ModelProviderUnavailableError("AI 没有返回可用内容，请重新生成。");
+  try {
+    value = JSON.parse(lastAgentText);
+  } catch (error) {
+    throw new ModelProviderUnavailableError("AI 返回的内容格式不完整，请重新生成。", { cause: error });
+  }
+  return { value, usage };
 }
 
 function normalizeCodexError(error: unknown): string {

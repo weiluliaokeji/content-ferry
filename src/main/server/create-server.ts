@@ -27,6 +27,7 @@ import { CoverGenerationService } from "../content/modelscope-cover-service";
 import { ModelConnectionRepository, modelProviderIds } from "../ai/model-connection-repository";
 import { SkillRegistry } from "../skills/skill-registry";
 import { ConfiguredModelProvider } from "../ai/configured-model-provider";
+import { AiAuditLog, auditLogDirectory } from "../ai/ai-audit-log";
 import {
   detectCodexBinary,
   loadAppSettings,
@@ -210,7 +211,12 @@ export function buildServer(
   const modelConnections = new ModelConnectionRepository(database.connection, appCredentials);
   const skills = options?.skillsDirectory ? new SkillRegistry(database.connection, options.skillsDirectory) : undefined;
   const effectiveModelProvider = skills
-    ? new ConfiguredModelProvider(modelConnections, skills, modelProvider)
+    ? new ConfiguredModelProvider(
+      modelConnections,
+      skills,
+      modelProvider,
+      new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls)
+    )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources);
@@ -272,6 +278,7 @@ export function buildServer(
         .enum(["not_initialized", "ready", "login_required", "binary_missing"])
         .optional(),
       codexBinaryPath: z.string().trim().max(2000).nullable().optional(),
+      auditAiCalls: z.boolean().optional(),
       firstRunCompleted: z.boolean().optional()
     })
     .strict();
@@ -292,6 +299,17 @@ export function buildServer(
       return saveAppSettings(patch);
     }
   );
+
+  server.post<{ Reply: { directory: string } }>("/api/app/audit-log/clear", async () => {
+    const auditLog = new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls);
+    auditLog.clear();
+    return { directory: auditLogDirectory(loadAppSettings().dataDir) };
+  });
+
+  server.get<{ Reply: { directory: string; enabled: boolean } }>("/api/app/audit-log", async () => {
+    const settings = loadAppSettings();
+    return { directory: auditLogDirectory(settings.dataDir), enabled: settings.auditAiCalls };
+  });
 
   server.post<{ Reply: AppSettingsContract }>("/api/app/settings/complete-first-run", async (request, reply) => {
     const body = z
@@ -717,21 +735,26 @@ export function buildServer(
     return contentResearch.get(params.projectId);
   });
 
-  server.post("/api/content-projects/:projectId/research/generate", async (request) => {
+  server.post("/api/content-projects/:projectId/research/generate", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    const generated = await aiContent.generateResearch(params.projectId);
-    const research = contentResearch.save(params.projectId, generated.value);
-    return { ...research, provider: generated.provider, model: generated.model, usage: generated.usage };
+    return streamResearchGeneration(request, reply, params.projectId,
+      (onStatus) => aiContent.generateResearch(params.projectId, onStatus),
+      (value) => contentResearch.save(params.projectId, value as never)
+    );
   });
 
-  server.post("/api/content-projects/:projectId/research/follow-up", async (request) => {
+  server.post("/api/content-projects/:projectId/research/follow-up", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const input = researchFollowUpInput.parse(request.body);
     const project = contentProjects.require(params.projectId);
-    const generated = await aiContent.generateResearchFollowUp(params.projectId, input.message);
-    const research = contentResearch.append(params.projectId, generated.value);
-    persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, generated.value.planMarkdown, generated.value.sources);
-    return { ...research, provider: generated.provider, model: generated.model, usage: generated.usage };
+    return streamResearchGeneration(request, reply, params.projectId,
+      (onStatus) => aiContent.generateResearchFollowUp(params.projectId, input.message, onStatus),
+      (value) => {
+        const research = contentResearch.append(params.projectId, value as never);
+        persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, (value as { planMarkdown: string }).planMarkdown, (value as { sources: Array<{ title: string; url: string }> }).sources);
+        return research;
+      }
+    );
   });
 
   server.patch("/api/content-projects/:projectId/research/sources/:sourceId", async (request) => {
@@ -1456,6 +1479,55 @@ async function streamMarkdownGeneration(
     send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage });
   } catch (error) {
     send("error", { error: error instanceof Error ? error.message : "AI 生成失败。", cancelled: controller.signal.aborted });
+  } finally {
+    clearInterval(progressTimer);
+    request.raw.off("aborted", abort);
+    reply.raw.end();
+  }
+}
+
+async function streamResearchGeneration(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  projectId: string,
+  generate: (onStatus: (message: string) => void) => Promise<{ value: unknown; provider: string; model: string | null; usage: unknown }>,
+  save: (value: unknown) => unknown
+) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) request.log.warn({ projectId }, "research stream aborted by client connection");
+    controller.abort();
+  };
+  request.raw.once("aborted", abort);
+  reply.hijack();
+  const requestOrigin = request.headers.origin;
+  const corsOrigin = requestOrigin === "http://127.0.0.1:5175" ? requestOrigin : undefined;
+  reply.raw.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    ...(corsOrigin ? { "access-control-allow-origin": corsOrigin, vary: "Origin" } : {})
+  });
+  reply.raw.flushHeaders();
+  const send = (event: string, data: unknown) => {
+    if (!reply.raw.writableEnded) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  const startedAt = Date.now();
+  let latestPhase = "正在处理…";
+  const reportStatus = (message: string) => {
+    latestPhase = message;
+    send("status", { phase: "researching", elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message });
+  };
+  const progressTimer = setInterval(() => {
+    const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+    send("status", { phase: "researching", elapsedSeconds, message: `${latestPhase}（已等待 ${elapsedSeconds} 秒）` });
+  }, 2_000);
+  try {
+    const generated = await generate(reportStatus);
+    const research = save(generated.value) as Record<string, unknown>;
+    send("complete", { ...research, provider: generated.provider, model: generated.model, usage: generated.usage });
+  } catch (error) {
+    send("error", { error: error instanceof Error ? error.message : "资料补研失败。", cancelled: controller.signal.aborted });
   } finally {
     clearInterval(progressTimer);
     request.raw.off("aborted", abort);

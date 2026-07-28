@@ -6,6 +6,7 @@ type AppSettings = {
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
+  auditAiCalls: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -49,6 +50,7 @@ declare global {
         detectCodex: () => Promise<CodexStatus>;
         openCodexLogin: () => Promise<{ ok: boolean; message?: string }>;
         completeFirstRun: (dataDir: string) => Promise<AppSettings>;
+        updateSettings: (patch: Partial<AppSettings>) => Promise<AppSettings>;
         relaunch: () => Promise<void>;
       };
     };
