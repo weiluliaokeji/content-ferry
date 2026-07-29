@@ -244,4 +244,114 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
       globalThis.fetch = original;
     }
   });
+
+  it("uses the portable JSON path and an explicit output limit for Nous", async () => {
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? "");
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: "ok" }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const skills = {
+        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
+      const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());
+      await provider.generateStructured({
+        task: "research",
+        skillId: "web-research",
+        prompt: "主题",
+        outputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] },
+        parse: (value) => value as { title: string },
+        timeoutMs: 1000
+      });
+      const body = JSON.parse(bodies[0]) as { response_format?: unknown; max_tokens?: number; reasoning_effort?: string };
+      expect(body.response_format).toBeUndefined();
+      expect(body.max_tokens).toBe(8192);
+      expect(body.reasoning_effort).toBe("low");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("reads content parts returned by an OpenAI-compatible gateway", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({
+        choices: [{ message: { content: [{ type: "text", text: '{"title":"分段响应"}' }] } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const skills = {
+        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
+      const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());
+      const result = await provider.generateStructured({
+        task: "research",
+        skillId: "web-research",
+        prompt: "主题",
+        outputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] },
+        parse: (value) => value as { title: string },
+        timeoutMs: 1000
+      });
+      expect(result.value.title).toBe("分段响应");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("retries a truncated Nous JSON response with a compact contract", async () => {
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? "");
+      const content = bodies.length === 1 ? '{"title":"未完成' : '{"title":"恢复成功"}';
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const skills = {
+        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
+      const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());
+      const result = await provider.generateStructured({
+        task: "research",
+        skillId: "web-research",
+        prompt: "主题",
+        outputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"] },
+        parse: (value) => value as { title: string },
+        timeoutMs: 1000
+      });
+      expect(result.value.title).toBe("恢复成功");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(bodies[1]).toContain("资料卡最多 4 条");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

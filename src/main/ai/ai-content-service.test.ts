@@ -7,7 +7,8 @@ import {
 } from "./ai-content-service";
 import {
   buildResearchSynthesisPrompt,
-  buildResearchFollowUpSynthesisPrompt
+  buildResearchFollowUpSynthesisPrompt,
+  researchOutput
 } from "./research-prompts";
 
 function baseContext(overrides: Partial<CreationContext> = {}): CreationContext {
@@ -28,6 +29,10 @@ function baseContext(overrides: Partial<CreationContext> = {}): CreationContext 
 }
 
 describe("prompt builders omit empty optional fields", () => {
+  it("accepts a research conclusion with no reliable source cards", () => {
+    expect(researchOutput.parse({ planMarkdown: "## 本次补研结论\n暂无可核验资料。", sources: [] }).sources).toEqual([]);
+  });
+
   it("research synthesis prompt drops 写作目标/目标读者/核心角度 when not filled", () => {
     const prompt = buildResearchSynthesisPrompt(baseContext(), [], "RULES");
     expect(prompt).toContain("文章主题：AI 写作工具横评");

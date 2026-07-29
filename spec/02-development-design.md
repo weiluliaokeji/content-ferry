@@ -89,13 +89,14 @@ OpenAI API Key provider 与其他模型后续复用同一接口；切换 provide
 
 解耦方案：把“搜索 + 抓取网页”这一步改为由应用自主承担，再把检索结果喂给任意模型做综合。
 
-- 应用自有检索层 `WebSearchClient`（`src/main/ai/web-search.ts`）：provider 注册表 + 能力标志（`supportsSearch` / `supportsExtract`）+ 回退链。Tavily（配置 `TAVILY_API_KEY` 时启用）优先，DuckDuckGo 作为零密钥兜底始终可用。检索与任何具体模型解耦。
+- 应用自有检索层 `WebSearchClient`（`src/main/ai/web-search.ts`）：provider 注册表 + 能力标志（`supportsSearch` / `supportsExtract`）+ 回退链。Tavily（配置 `TAVILY_API_KEY` 时启用）优先，Bing RSS 与 DuckDuckGo 构成零密钥双重兜底；任一公开搜索页出现反爬虫验证或临时失败时，自动尝试下一个搜索源。检索与任何具体模型解耦。
+- 当 API/RSS 与 HTTP 检索均失败时，桌面版可追加“可见浏览器检索”后备：使用 Electron 的持久会话分区打开目标搜索页、读取已呈现的结果；如页面要求登录或人机验证，保留窗口与会话并返回 `BrowserVerificationRequiredError`，由用户完成操作后主动重试。可见浏览器检索会注入与真实 Chrome 一致的指纹（参考 gstack `browse/src/stealth.ts` 的一致性优先反检测，落地于 `src/main/research-stealth-preload.ts`：遮 `navigator.webdriver`、还原 `window.chrome.*`、对齐 `Notification.permission` 与 `hardwareConcurrency`/`deviceMemory`、清理 `__webdriver*`/`cdc_*` 等自动化全局），以降低反爬系统的误判封锁；刻意不伪造 WebGL/插件等扩展项。该伪装仅在被站点实际挑战（captcha/人机验证）时才移交人工，不得自动点击 CAPTCHA，也不得绕过任何站点访问控制。
 - 多轮主动探索在两个方案中都保留，由 `ConfiguredModelProvider.webResearch` 统一编排：
   - 方案 B（通用，任何不支持工具调用的模型都可用）：由应用驱动循环；每轮让模型按 JSON 协议 `{action:"search"|"done", query?}` 规划下一步检索方向，应用执行 `WebSearchClient.search` 并累积来源，直到模型返回 `done` 或达到最大轮数（默认 5）。
   - 方案 A（模型支持工具调用时优先：openai / openrouter / nous / nvidia_build）：把 `web_search` 作为函数工具暴露给模型，由主进程执行工具循环（模型发工具调用 → 应用检索 → 回填结果 → 重复直至模型停止）。若方案 A 失败或无工具调用，自动降级到方案 B。
 - 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
 - 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
-- 装配：`create-server.ts` 通过 `createWebSearchClient({ tavilyApiKey: process.env.TAVILY_API_KEY })` 注入检索层；`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`），不再承担检索。
+- 装配：`create-server.ts` 通过 `createWebSearchClient({ getTavilyApiKey })` 注入检索层；Tavily API Key 可在“技能与模型 → 联网检索服务”中配置，使用 `AppCredentialRepository` 加密保存，并在每次检索时动态读取，因此保存后无需重启本地服务。开发环境中的 `TAVILY_API_KEY` 仅作兼容兜底；本机保存的 Key 优先。`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`），不再承担检索。
 - **补研技能必须显式指定模型，不再默认 Codex**：`web-research` 技能的 `defaultProvider` 已改为 `null`，`ConfiguredModelProvider.webResearch` 在技能未指派 provider 时直接抛出明确提示（“请在技能与模型中为该技能选择一个模型连接”），不再静默回退到 `openai_codex`。UI 上“研究”类技能（分类 `研究`）已纳入“文本类技能”可切换模型分组（此前因分类不在任何分组中而不显示，导致用户无法改派、一直卡在默认 Codex）。补研实际使用的模型完全由用户在“技能与模型”里为该技能指派，与其直觉一致。
 
 本方案借鉴了 Hermes Agent 的“provider 注册表 + 能力标志 + 统一响应信封 + 回退链”思路，但检索工具为应用自有、网络访问不与任何模型绑定。
@@ -205,7 +206,7 @@ flowchart LR
 规则：
 
 - AI 补研必须记录来源、获取时间、建议用途和与主题的相关性。
-- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现把检索交给应用自有 `WebSearchClient`（Tavily / DuckDuckGo 回退链），再由 `ConfiguredModelProvider.webResearch` 在任意已配置模型上完成多轮检索规划与综合，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间与用户选择状态。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。必须登录、验证码和交互页面的可见浏览器补研仍未实现。
+- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现把检索交给应用自有 `WebSearchClient`（Tavily / Bing RSS / DuckDuckGo 回退链），再由 `ConfiguredModelProvider.webResearch` 在任意已配置模型上完成多轮检索规划与综合，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间与用户选择状态。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。必须登录、验证码和交互页面的可见浏览器补研仍未实现。
 - 对 AI 提交物，审核者可以直接修改后批准，或要求 AI 在当前审核页修订；只有实质性返工才退回研究或提纲节点。
 
 ### 6.1 Agent 与技能执行契约
@@ -420,8 +421,16 @@ AI 特征偏高默认给出低创作度/限流风险提示或要求二审；用�
 - 内置 references 的未编辑副本会在内置源变化时自动升级；识别“旧版内置而非用户编辑”依赖 `skill-registry` 的 `KNOWN_LEGACY_BUILT_IN_HASHES` 历史哈希清单。每次修改内置 reference 内容时，必须把被替换的旧哈希加入该清单，否则已安装用户会停留在旧版本（缺少该清单时，首次建立 seed 状态会误把当前内置哈希记为基线，导致旧文件永不更新）。
 - `assets/skills/manifest.json`只保存注册元数据；当前指令放在`SKILL.md`，按需材料放在该技能的`references/`，兼容旧默认版本的内容放在`legacy/`。TypeScript 注册器不得再次内嵌完整提示词。
 - 升级时只能替换可确认仍为旧版默认值的技能。用户修改过的`SKILL.md`和参考文件不得被新版本静默覆盖。`SKILL.md`的升级判据是：数据目录副本逐字等于`manifest.json`中该技能`legacyFiles`列出的某一旧版内置（精确匹配，不做启发式猜测）。因此每次修改内置`SKILL.md`措辞后，必须把被替换的上一代内置版加入对应技能的`legacyFiles`，否则已安装用户的数据目录`SKILL.md`会停留在旧版本、且不随内置更新。
-- 模型连接定义“由谁执行”，保存提供商、模型名、服务地址、代理地址和加密凭证。第一批连接包括 OpenAI Codex、OpenAI API、OpenRouter、Nous Research Portal、NVIDIA Build、GitHub Copilot、ModelScope 和 Gemini。NVIDIA Build 走 OpenAI 兼容的 `/chat/completions`，默认地址为 `https://integrate.api.nvidia.com/v1`、默认模型为 `z-ai/glm-5.2`；为兼容未声明支持 JSON Schema 的模型，结构化结果通过提示词约束与本地 schema 校验，不强制发送 `response_format.json_schema`。
+- 模型连接定义“由谁执行”，保存提供商、模型名、服务地址、代理地址和加密凭证。第一批连接包括 OpenAI Codex、OpenAI API、OpenRouter、Nous Research Portal、NVIDIA Build、GitHub Copilot、ModelScope 和 Gemini。代理仅作用于其所属的模型连接；联网检索默认直连，绝不能从其他模型连接推断、继承或静默复用代理。如需让检索流量走代理，可在“联网检索服务”中单独设置“检索代理”（`AppSettings.researchProxyUrl`，经 `GET/PUT/DELETE /api/web-search/proxy` 读写，zod 校验 `http/https/socks5`），由 `web-search.ts` 的 `makeProxyAwareFetch` 用 undici `ProxyAgent` 注入；该代理只作用于检索请求，与模型连接代理完全独立，无效地址自动忽略并回退直连。NVIDIA Build 走 OpenAI 兼容的 `/chat/completions`，默认地址为 `https://integrate.api.nvidia.com/v1`、默认模型为 `z-ai/glm-5.2`；为兼容未声明支持 JSON Schema 的模型，结构化结果通过提示词约束与本地 schema 校验，不强制发送 `response_format.json_schema`。
 - 文本技能只能选择文本模型连接；图片技能只能选择图片模型连接；腾讯朱雀检测使用可见浏览器自动化，不要求大模型。
+
+### 17.1 OpenAI 兼容模型的请求兼容性
+
+- 结构化任务由本地 schema 校验最终结果；并非所有 OpenAI 兼容端点都稳定支持 `response_format: json_schema`。Nous Research Portal 的免费模型默认走“提示词要求 JSON + 本地校验”的兼容路径，不发送原生 JSON Schema。
+- 每次调用显式传递与任务相称的 `max_tokens`，避免依赖服务端默认输出额度；调研需要 8192 token 的输出预算。Step 3.7 Flash 在 Nous 连接上额外请求低推理强度，避免把预算消耗在内部推理而未输出资料卡。调研链路同时限制单次送入模型的检索条目数和每条摘要长度。完整研究资料仍由应用保存，截断只作用于单次模型上下文。
+- OpenAI 兼容响应可采用普通字符串、内容分段数组或 delta 字段；统一归并为最终文本后再本地解析。若服务只返回推理字段、工具调用或因 `finish_reason=length` 未产生正文，错误信息必须标明该结构性原因，不记录或展示原始模型正文。
+- 资料综合结果允许 `sources` 为空：这表示模型认为当前检索结果不足以形成可引用资料卡，应用保留 `planMarkdown`，并在界面提示用户补研、人工补充资料或暂不采用该结论；不得因空数组把整次调研报为“结构不完整”。
+- 遇到连接被远端关闭、超时或限流时，界面应保留项目和已取得资料，并显示可重试的具体模型/端点错误；不得把该错误误报为“文章内容有问题”。
 - `SKILL.md`必须进入实际执行上下文，不能只作为说明文件展示。
 - 文章摘要生成是独立文本技能。执行时必须传入目标平台和平台长度上限；微信公众号最多 120 字，CSDN 当前采用最多 200 字的产品约束。生成结果回填文章设置并允许作者继续修改。
 - 文章封面生成是独立技能。ModelScope 是默认图片连接，Gemini 是可替换连接；两者共用“文章内容 → 生成 → 本地保存 → 用户确认”的流程。

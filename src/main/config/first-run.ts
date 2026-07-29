@@ -38,6 +38,7 @@ function defaultSettings(): AppSettings {
     aiInitStatus: "not_initialized",
     codexBinaryPath: null,
     auditAiCalls: false,
+    researchProxyUrl: "",
     createdAt: now,
     updatedAt: now
   };

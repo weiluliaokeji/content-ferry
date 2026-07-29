@@ -146,6 +146,11 @@ type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
   enabled: boolean; credentialConfigured: boolean;
 };
+type WebSearchSettings = {
+  tavilyConfigured: boolean;
+  tavilyCredentialSource: "local" | "environment" | "none";
+  researchProxyUrl: string;
+};
 type ManagedSkill = {
   id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片" | "研究";
   enabled: boolean; provider: ModelProviderId | null; markdown: string; filePath: string;
@@ -301,6 +306,7 @@ function App() {
   const [researchFollowUp, setResearchFollowUp] = useState("");
   const [researchFollowingUp, setResearchFollowingUp] = useState(false);
   const [researchStatus, setResearchStatus] = useState("");
+  const [researchError, setResearchError] = useState("");
   const [draftProject, setDraftProject] = useState<ContentProject>();
   const [draft, setDraft] = useState<ContentDraft>();
   const [draftGenerating, setDraftGenerating] = useState(false);
@@ -358,11 +364,23 @@ function App() {
     { key: "none", title: "无模型技能", description: "走浏览器自动化，不需要大模型连接", match: (c: ManagedSkill["category"]) => c === "检测" }
   ];
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([]);
+  const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>({ tavilyConfigured: false, tavilyCredentialSource: "none", researchProxyUrl: "" });
   const [editingSkill, setEditingSkill] = useState<ManagedSkill>();
   const [editingSkillFile, setEditingSkillFile] = useState<SkillFileContent>();
   const [savedSkillFileContent, setSavedSkillFileContent] = useState("");
   const [editingConnection, setEditingConnection] = useState<ModelConnection>();
   const [connectionCredential, setConnectionCredential] = useState("");
+  const [tavilyModalOpen, setTavilyModalOpen] = useState(false);
+  const [tavilyApiKey, setTavilyApiKey] = useState("");
+  const [tavilySaving, setTavilySaving] = useState(false);
+  const [tavilyTesting, setTavilyTesting] = useState(false);
+  const [tavilyError, setTavilyError] = useState("");
+  const [tavilyTestResult, setTavilyTestResult] = useState("");
+  const [researchProxyUrl, setResearchProxyUrl] = useState("");
+  const [researchProxyInput, setResearchProxyInput] = useState("");
+  const [researchProxySaving, setResearchProxySaving] = useState(false);
+  const [researchProxyError, setResearchProxyError] = useState("");
+  const [researchProxyModalOpen, setResearchProxyModalOpen] = useState(false);
   const [coverProvider, setCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
   const [publishCropImage, setPublishCropImage] = useState<SelectedImage>();
   const [publishCheckMarkdown, setPublishCheckMarkdown] = useState("");
@@ -456,12 +474,15 @@ function App() {
   };
   const loadSkillsAndConnections = async () => {
     try {
-      const [skillResult, connectionResult] = await Promise.all([
+      const [skillResult, connectionResult, searchSettingsResult] = await Promise.all([
         request<{ items: ManagedSkill[] }>("/skills"),
-        request<{ items: ModelConnection[] }>("/model-connections")
+        request<{ items: ModelConnection[] }>("/model-connections"),
+        request<WebSearchSettings>("/web-search/settings")
       ]);
       setSkills(skillResult.items);
       setModelConnections(connectionResult.items);
+      setWebSearchSettings(searchSettingsResult);
+      setResearchProxyUrl(searchSettingsResult.researchProxyUrl ?? "");
       const coverSkill = skillResult.items.find((skill) => skill.id === "cover-generation");
       if (coverSkill?.provider === "modelscope" || coverSkill?.provider === "gemini") setCoverProvider(coverSkill.provider);
     } catch (cause) {
@@ -713,6 +734,7 @@ function App() {
     setResearchProject(project);
     setResearch(undefined);
     setResearchFollowUp("");
+    setResearchError("");
     try {
       if (generate) {
         setResearchGenerating(true);
@@ -728,8 +750,7 @@ function App() {
         setResearch(await request<ContentResearch>(`/content-projects/${project.id}/research`));
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "联网补研失败。");
-      setResearchProject(undefined);
+      setResearchError(cause instanceof Error ? cause.message : "联网补研失败。");
     } finally {
       setResearchGenerating(false);
       setResearchStatus("");
@@ -749,6 +770,7 @@ function App() {
   const continueResearch = async () => {
     if (!researchProject || !researchFollowUp.trim() || researchFollowingUp) return;
     setResearchFollowingUp(true);
+    setResearchError("");
     setResearchStatus("阿文正在针对你的补充继续联网补研…");
     try {
       const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, new AbortController().signal, (event, data) => {
@@ -760,7 +782,7 @@ function App() {
       setResearchStatus("");
       await loadProjects();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "补充资料失败。请检查模型连接后重试。");
+      setResearchError(cause instanceof Error ? cause.message : "补充资料失败。请检查模型连接后重试。");
     } finally {
       setResearchFollowingUp(false);
       setResearchStatus("");
@@ -1415,6 +1437,103 @@ function App() {
     }
   };
 
+  const openTavilySettings = () => {
+    setTavilyApiKey("");
+    setTavilyError("");
+    setTavilyTestResult("");
+    setTavilyModalOpen(true);
+  };
+  const testTavilyConnection = async () => {
+    setTavilyTesting(true);
+    setTavilyError("");
+    setTavilyTestResult("");
+    try {
+      const result = await request<{ ok: boolean; resultCount: number }>("/web-search/tavily/test", {
+        method: "POST",
+        body: JSON.stringify(tavilyApiKey.trim() ? { apiKey: tavilyApiKey.trim() } : {})
+      });
+      setTavilyTestResult(`连接成功：Tavily 已返回 ${result.resultCount} 条测试结果。${tavilyApiKey.trim() ? "请点击“保存”后用于正式补研。" : "当前保存的 Key 可用于正式补研。"}`);
+    } catch (cause) {
+      setTavilyError(cause instanceof Error ? cause.message : "Tavily 连接测试失败。");
+    } finally {
+      setTavilyTesting(false);
+    }
+  };
+  const saveTavilySettings = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!tavilyApiKey.trim()) {
+      setTavilyError("请输入 Tavily API Key；如只想测试已有凭证，可直接点击“测试连接”。");
+      return;
+    }
+    setTavilySaving(true);
+    setTavilyError("");
+    setTavilyTestResult("");
+    try {
+      const saved = await request<WebSearchSettings>("/web-search/tavily", {
+        method: "PUT",
+        body: JSON.stringify({ apiKey: tavilyApiKey.trim() })
+      });
+      setWebSearchSettings(saved);
+      setTavilyApiKey("");
+      setTavilyModalOpen(false);
+    } catch (cause) {
+      setTavilyError(cause instanceof Error ? cause.message : "Tavily 配置保存失败。");
+    } finally {
+      setTavilySaving(false);
+    }
+  };
+  const clearTavilySettings = async () => {
+    if (!window.confirm("确定移除本机保存的 Tavily API Key 吗？不会影响系统环境变量中的开发配置。")) return;
+    setTavilySaving(true);
+    setTavilyError("");
+    setTavilyTestResult("");
+    try {
+      const saved = await request<WebSearchSettings>("/web-search/tavily", { method: "DELETE" });
+      setWebSearchSettings(saved);
+      setTavilyApiKey("");
+    } catch (cause) {
+      setTavilyError(cause instanceof Error ? cause.message : "Tavily 凭证移除失败。");
+    } finally {
+      setTavilySaving(false);
+    }
+  };
+  const openResearchProxySettings = () => {
+    setResearchProxyInput(researchProxyUrl);
+    setResearchProxyError("");
+    setResearchProxyModalOpen(true);
+  };
+  const saveResearchProxySettings = async (event: FormEvent) => {
+    event.preventDefault();
+    setResearchProxySaving(true);
+    setResearchProxyError("");
+    try {
+      const saved = await request<WebSearchSettings>("/web-search/proxy", {
+        method: "PUT",
+        body: JSON.stringify({ proxyUrl: researchProxyInput.trim() })
+      });
+      setResearchProxyUrl(saved.researchProxyUrl ?? "");
+      setResearchProxyModalOpen(false);
+    } catch (cause) {
+      setResearchProxyError(cause instanceof Error ? cause.message : "检索代理保存失败。");
+    } finally {
+      setResearchProxySaving(false);
+    }
+  };
+  const clearResearchProxySettings = async () => {
+    setResearchProxySaving(true);
+    setResearchProxyError("");
+    try {
+      const saved = await request<WebSearchSettings>("/web-search/proxy", { method: "DELETE" });
+      setResearchProxyUrl(saved.researchProxyUrl ?? "");
+      setResearchProxyInput("");
+      setResearchProxyModalOpen(false);
+    } catch (cause) {
+      setResearchProxyError(cause instanceof Error ? cause.message : "检索代理移除失败。");
+    } finally {
+      setResearchProxySaving(false);
+    }
+  };
+
   if (reviewProject) {
     return <QualityWorkspace
       title={reviewProject.topic}
@@ -1553,6 +1672,13 @@ function App() {
         <ul className="account-list">{modelConnections.map((connection) => <li key={connection.provider}><span><strong>{connection.displayName}</strong><small>{connection.modelId || "使用服务默认模型"}{connection.proxyUrl ? ` · 代理 ${connection.proxyUrl}` : ""}</small></span><span className="account-actions"><em>{connection.provider === "openai_codex" ? "使用 ChatGPT 登录" : connection.credentialConfigured ? "凭证已配置" : "待配置凭证"}</em><button className="text-button" onClick={() => { setEditingConnection(connection); setConnectionCredential(""); setError(""); }}>配置</button></span></li>)}</ul>
       </section>
       <section className="card">
+        <div className="section-heading"><div><h2>联网检索服务</h2><p className="hint compact-hint">用于阿文补充公开资料，不属于任何一个模型连接。默认使用免配置搜索源；Tavily 可提升稳定性。</p></div></div>
+        <ul className="account-list">
+          <li><span><strong>Tavily</strong><small>{webSearchSettings.tavilyCredentialSource === "environment" ? "开发环境变量配置" : "用于稳定的联网资料检索"}</small></span><span className="account-actions"><em>{webSearchSettings.tavilyConfigured ? "已配置" : "可选"}</em><button className="text-button" onClick={openTavilySettings}>配置</button></span></li>
+          <li><span><strong>检索代理</strong><small>{researchProxyUrl ? `已配置：${researchProxyUrl}` : "留空直连；防火墙后访问检索源时填写"}</small></span><span className="account-actions"><em>{researchProxyUrl ? "已配置" : "直连"}</em><button className="text-button" onClick={openResearchProxySettings}>配置</button></span></li>
+        </ul>
+      </section>
+      <section className="card">
         <div className="section-heading"><div><h2>AI 调用审计</h2><p className="hint compact-hint">开启后，每次模型调用都会把完整请求与响应写入数据目录下的日志，用于排查生成质量与失败；默认关闭。</p></div></div>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={settings?.auditAiCalls ?? false} onChange={async (event) => {
@@ -1682,6 +1808,32 @@ function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditingConnection(undefined)}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存连接"}</button></div>
       </form>
     </Modal>}
+    {tavilyModalOpen && <Modal onClose={() => setTavilyModalOpen(false)} disabled={tavilySaving || tavilyTesting} title="配置 Tavily" eyebrow="联网检索服务">
+      <form onSubmit={saveTavilySettings} className="profile-form">
+        <p className="hint">Tavily 用于提升阿文联网补研的稳定性。API Key 会加密保存在本机，不会显示、写入日志或发送给模型服务。</p>
+        <label>Tavily API Key<input type="password" value={tavilyApiKey} onChange={(event) => setTavilyApiKey(event.target.value)} autoComplete="new-password" placeholder={webSearchSettings.tavilyConfigured ? "已配置；填写新 Key 可替换" : "请输入 Tavily API Key"} /></label>
+        {tavilyTestResult && <p className="success-message" role="status">{tavilyTestResult}</p>}
+        {tavilyError && <p className="error" role="alert">连接测试失败：{tavilyError}</p>}
+        <div className="modal-actions">
+          {webSearchSettings.tavilyCredentialSource === "local" && <button type="button" className="danger-button" onClick={() => void clearTavilySettings()} disabled={tavilySaving || tavilyTesting}>移除本机 Key</button>}
+          <button type="button" className="secondary-button" onClick={() => void testTavilyConnection()} disabled={tavilySaving || tavilyTesting}>{tavilyTesting ? "正在测试…" : "测试连接"}</button>
+          <button type="button" className="secondary-button" onClick={() => setTavilyModalOpen(false)} disabled={tavilySaving || tavilyTesting}>取消</button>
+          <button disabled={tavilySaving || tavilyTesting}>{tavilySaving ? "正在保存…" : "保存"}</button>
+        </div>
+      </form>
+    </Modal>}
+    {researchProxyModalOpen && <Modal onClose={() => setResearchProxyModalOpen(false)} disabled={researchProxySaving} title="配置检索代理" eyebrow="联网检索服务">
+      <form onSubmit={saveResearchProxySettings} className="profile-form">
+        <p className="hint">全局检索代理仅作用于联网补研流量（Tavily / Bing / DuckDuckGo 以及可见浏览器检索），与“模型连接级代理”相互独立。留空表示直连。</p>
+        <label>检索代理地址<input value={researchProxyInput} onChange={(event) => setResearchProxyInput(event.target.value)} placeholder="例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" /><small>支持 http://、https:// 或 socks5:// 开头的完整地址。地址无效时检索会自动回退为直连，不会卡死。</small></label>
+        {researchProxyError && <p className="error" role="alert">保存失败：{researchProxyError}</p>}
+        <div className="modal-actions">
+          {researchProxyUrl && <button type="button" className="danger-button" onClick={() => void clearResearchProxySettings()} disabled={researchProxySaving}>移除代理</button>}
+          <button type="button" className="secondary-button" onClick={() => setResearchProxyModalOpen(false)} disabled={researchProxySaving}>取消</button>
+          <button disabled={researchProxySaving}>{researchProxySaving ? "正在保存…" : "保存"}</button>
+        </div>
+      </form>
+    </Modal>}
 
     {editing && <Modal onClose={() => setEditing(undefined)} disabled={saving} title={`编辑定位：${editing.displayName}`} eyebrow="账号创作上下文"><p className="hint">这些内容会在后续创作时自动作为默认上下文；不确定的项目可以先留空。</p><form onSubmit={saveProfile} className="profile-form"><label>账号名称<input value={editingDisplayName} maxLength={100} onChange={(event) => setEditingDisplayName(event.target.value)} /></label><ProfileFields profile={profile} onChange={changeProfile} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(undefined)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存定位"}</button></div></form></Modal>}
     {wechatAccount && <Modal onClose={() => setWechatAccount(undefined)} disabled={saving} title={`连接微信：${wechatAccount.displayName}`} eyebrow="微信公众号开发者接口">
@@ -1741,7 +1893,7 @@ function App() {
 
     {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
     {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，阿文会默认联网补充资料，再生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>写作目标<textarea autoFocus value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>{historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
-    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || researchFollowingUp || !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>{researchStatus || "阿文正在检索官方与公开网页，并整理可追溯资料卡…"}</span></div> : <><p className="hint">{researchReadOnly ? "这篇文章已发布，以下资料仅供查看，不可修改。" : "阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。"}</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={researchReadOnly ? undefined : () => void toggleResearchSource(source)} disabled={researchReadOnly} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section>{!researchReadOnly && <section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的"与阿文对话"最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section>}<div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div></>}</Modal>}
+    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); setResearchError(""); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || researchFollowingUp ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>{researchStatus || "阿文正在检索官方与公开网页，并整理可追溯资料卡…"}</span></div> : researchError ? <section className="research-follow-up"><h3>联网检索需要处理</h3><p className="error" role="alert">{researchError}</p><p className="hint">若已打开“文渡 · 联网检索协助”窗口，请在该窗口中完成网站要求的验证或登录，再回到这里重试。浏览器会保留该站点会话。</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); setResearchError(""); }}>稍后继续</button><button type="button" onClick={() => void openResearch(researchProject, true)}>完成验证后重试</button></div></section> : !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>正在准备资料窗口…</span></div> : <><p className="hint">{researchReadOnly ? "这篇文章已发布，以下资料仅供查看，不可修改。" : "阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。"}</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={researchReadOnly ? undefined : () => void toggleResearchSource(source)} disabled={researchReadOnly} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section>{!researchReadOnly && <section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的"与阿文对话"最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section>}<div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div></>}</Modal>}
     {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></>}</div></form></>}</Modal>}
   </main></div>;
 }

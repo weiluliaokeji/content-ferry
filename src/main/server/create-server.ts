@@ -16,7 +16,7 @@ import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
 import { AiContentService } from "../ai/ai-content-service";
-import { createWebSearchClient } from "../ai/web-search";
+import { createWebSearchClient, TavilyProvider, type VisibleBrowserSearch } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
@@ -132,6 +132,8 @@ const modelConnectionInput = z.object({
   enabled: z.boolean().default(true),
   credential: z.string().max(10000).optional()
 });
+const tavilySettingsInput = z.object({ apiKey: z.string().trim().min(1).max(10000) });
+const tavilyTestInput = z.object({ apiKey: z.string().trim().min(1).max(10000).optional() });
 const skillInput = z.object({
   markdown: z.string().min(1).max(100000),
   enabled: z.boolean(),
@@ -189,7 +191,7 @@ export function buildServer(
   vault: CredentialVault,
   modelProvider: ModelProvider = new UnavailableModelProvider(),
   assetStore?: LocalAssetStore,
-  options?: { logFilePath?: string; skillsDirectory?: string }
+  options?: { logFilePath?: string; skillsDirectory?: string; visibleBrowserSearch?: VisibleBrowserSearch }
 ) {
   const server = Fastify({
     bodyLimit: 22 * 1024 * 1024,
@@ -209,6 +211,13 @@ export function buildServer(
   const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
   const wechatCallbacks = new WechatCallbackService(database.connection, accounts, vault);
   const appCredentials = new AppCredentialRepository(database.connection, vault);
+  const getTavilyApiKey = (): string | undefined => {
+    if (appCredentials.configured("web_search:tavily_api_key")) {
+      return appCredentials.get("web_search:tavily_api_key");
+    }
+    return process.env.TAVILY_API_KEY?.trim() || undefined;
+  };
+  const getResearchProxyUrl = (): string => loadAppSettings().researchProxyUrl?.trim() ?? "";
   const modelConnections = new ModelConnectionRepository(database.connection, appCredentials);
   const skills = options?.skillsDirectory ? new SkillRegistry(database.connection, options.skillsDirectory) : undefined;
   const effectiveModelProvider = skills
@@ -218,8 +227,9 @@ export function buildServer(
       modelProvider,
       new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls),
       createWebSearchClient({
-        tavilyApiKey: process.env.TAVILY_API_KEY,
-        getProxyUrl: () => modelConnections.getSearchProxyUrl()
+        getTavilyApiKey,
+        getResearchProxyUrl,
+        visibleBrowserSearch: options?.visibleBrowserSearch
       })
     )
     : modelProvider;
@@ -964,6 +974,65 @@ export function buildServer(
 
   server.get("/api/model-connections", async () => ({ items: modelConnections.list() }));
 
+  server.get("/api/web-search/settings", async () => ({
+    tavilyConfigured: appCredentials.configured("web_search:tavily_api_key") || Boolean(process.env.TAVILY_API_KEY?.trim()),
+    tavilyCredentialSource: appCredentials.configured("web_search:tavily_api_key")
+      ? "local"
+      : process.env.TAVILY_API_KEY?.trim() ? "environment" : "none",
+    researchProxyUrl: loadAppSettings().researchProxyUrl?.trim() ?? ""
+  }));
+
+  server.put("/api/web-search/tavily", async (request) => {
+    const { apiKey } = tavilySettingsInput.parse(request.body);
+    appCredentials.save("web_search:tavily_api_key", apiKey);
+    return { tavilyConfigured: true, tavilyCredentialSource: "local" };
+  });
+
+  server.delete("/api/web-search/tavily", async () => {
+    appCredentials.remove("web_search:tavily_api_key");
+    return {
+      tavilyConfigured: Boolean(process.env.TAVILY_API_KEY?.trim()),
+      tavilyCredentialSource: process.env.TAVILY_API_KEY?.trim() ? "environment" : "none"
+    };
+  });
+
+  const researchProxyInput = z.object({
+    proxyUrl: z
+      .string()
+      .trim()
+      .max(1000)
+      .refine((value) => {
+        if (value === "") return true;
+        try {
+          const parsed = new URL(value);
+          return parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "socks5:";
+        } catch {
+          return false;
+        }
+      }, "代理地址格式无效，应为 http://、https:// 或 socks5:// 开头的完整地址。")
+  });
+  server.put("/api/web-search/proxy", async (request) => {
+    const { proxyUrl } = researchProxyInput.parse(request.body);
+    saveAppSettings({ researchProxyUrl: proxyUrl });
+    return { researchProxyUrl: loadAppSettings().researchProxyUrl?.trim() ?? "" };
+  });
+  server.delete("/api/web-search/proxy", async () => {
+    saveAppSettings({ researchProxyUrl: "" });
+    return { researchProxyUrl: "" };
+  });
+
+  server.post("/api/web-search/tavily/test", async (request, reply) => {
+    try {
+      const { apiKey } = tavilyTestInput.parse(request.body);
+      const key = apiKey ?? getTavilyApiKey();
+      if (!key) return reply.code(400).send({ error: "请先填写 Tavily API Key。" });
+      const results = await new TavilyProvider(key).search("ContentFerry 文渡", 1);
+      return { ok: true, resultCount: results.length };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "Tavily 连接测试失败。" });
+    }
+  });
+
   server.put("/api/model-connections/:provider", async (request) => {
     const params = z.object({ provider: modelProviderSchema }).parse(request.params);
     const input = modelConnectionInput.parse(request.body);
@@ -1311,9 +1380,10 @@ export async function createServer(
   modelProvider?: ModelProvider,
   assetStore?: LocalAssetStore,
   logFilePath?: string,
-  skillsDirectory?: string
+  skillsDirectory?: string,
+  visibleBrowserSearch?: VisibleBrowserSearch
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

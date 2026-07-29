@@ -51,9 +51,17 @@
 
 ### 其他模型
 
-文渡还可配置 OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等连接。不同提供商可能需要 API Key、模型名称或服务地址。NVIDIA Build 默认使用 `https://integrate.api.nvidia.com/v1` 和 `z-ai/glm-5.2`，将 NVIDIA API Key 填入“访问凭证”即可；凭据只保存在本机。
+文渡还可配置 OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等连接。不同提供商可能需要 API Key、模型名称或服务地址。NVIDIA Build 默认使用 `https://integrate.api.nvidia.com/v1` 和 `z-ai/glm-5.2`，将 NVIDIA API Key 填入“访问凭证”即可；凭据只保存在本机。每个连接的“代理地址”只影响该连接本身；留空就是直连，文章联网调研也不会借用其他模型连接的代理。
 
 图片模型与文本模型分开配置。封面提示词技能负责分析文章并生成提示词，图片模型只接收用户最终确认的提示词；除非提示词明确要求，否则不应生成标题文字。
+
+### 联网检索（可选）
+
+在“技能与模型”页面的“联网检索服务”中可配置 Tavily。它不是大模型，也不需要分配给某一项技能；阿文在补充公开资料时会优先使用它。点击“配置”后填写 Tavily API Key，可先“测试连接”再保存。Key 加密保存在本机、不会回显或写入运行日志；移除后会恢复使用 Bing RSS 和 DuckDuckGo 等免配置搜索源。
+
+当公开搜索页要求登录或人机验证时，文渡会打开“联网检索协助”窗口并保留该站点会话。请在窗口中自行完成网站要求的操作，再回到资料窗口点击“完成验证后重试”。文渡不会代替用户解验证码或绕过网站验证。
+
+若你的网络需要通过代理才能访问 DuckDuckGo、Bing 等公开搜索源，可在“联网检索服务”中设置“检索代理”（例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`）。该代理**只用于联网检索**，与“其他模型”里各连接的代理相互独立、互不影响；留空则检索直连。地址须以 `http://`、`https://` 或 `socks5://` 开头，填写无效时会自动忽略并回退直连，不会因此报错中断检索。
 
 ## 4. 配置 VitePress 文章库
 

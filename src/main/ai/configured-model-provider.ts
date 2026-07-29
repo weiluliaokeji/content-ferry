@@ -411,9 +411,23 @@ export class ConfiguredModelProvider implements ModelProvider {
         content: `${request.prompt}\n\n返回值必须符合此 JSON Schema：\n${JSON.stringify(request.outputSchema)}`
       }
     ];
-    const buildBody = (withSchema: boolean): string => JSON.stringify({
+    const buildBody = (withSchema: boolean, compactRetry = false): string => JSON.stringify({
       model: connection.modelId,
-      messages,
+      messages: compactRetry
+        ? [...messages, {
+          role: "user",
+          content: "上一次输出不是完整 JSON。请从头重新输出一个完整、紧凑的 JSON 对象；不要解释、不要 Markdown、不要展开推理。资料卡最多 4 条，每条摘要不超过 120 个汉字，每条最多 2 个 keyClaims。"
+        }]
+        : messages,
+      // Do not leave the provider's output budget implicit. In particular,
+      // free OpenAI-compatible endpoints can close a long structured request
+      // instead of returning a useful 4xx response when their default output
+      // budget is exceeded.
+      max_tokens: maxTokensForTask(request.task),
+      // Step 3.7 Flash may spend the completion budget on reasoning before it
+      // emits the requested JSON. Research needs concise extraction rather
+      // than deep chain-of-thought, so request its lowest supported effort.
+      ...(provider === "nous" ? { reasoning_effort: "low" } : {}),
       ...(withSchema && provider !== "nvidia_build" ? {
         response_format: {
           type: "json_schema",
@@ -421,7 +435,7 @@ export class ConfiguredModelProvider implements ModelProvider {
         }
       } : {})
     });
-    const post = async (withSchema: boolean): Promise<{ response: Response; text: string }> => {
+    const post = async (withSchema: boolean, compactRetry = false): Promise<{ response: Response; text: string }> => {
       const response = await this.callChatCompletions(connection, {
         method: "POST",
         headers: {
@@ -432,17 +446,21 @@ export class ConfiguredModelProvider implements ModelProvider {
             "X-Title": "ContentFerry"
           } : {})
         },
-        body: buildBody(withSchema),
+        body: buildBody(withSchema, compactRetry),
         signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
       });
       return { response, text: await response.text() };
     };
 
-    let { response, text } = await post(true);
+    // Nous accepts the OpenAI message format, but its free endpoint does not
+    // reliably keep a connection open for native `json_schema` requests. The
+    // prompt already asks for JSON and the response is validated locally.
+    const useNativeSchema = provider !== "nvidia_build" && provider !== "nous";
+    let { response, text } = await post(useNativeSchema);
     // Some OpenAI-compatible models (e.g. open-weights behind OpenRouter/Nous)
     // do not support structured outputs. When the API says so, retry once
     // without response_format — the JSON instruction is already in the prompt.
-    if (!response.ok && provider !== "nvidia_build" && isStructuredOutputUnsupported(response.status, text)) {
+    if (!response.ok && useNativeSchema && isStructuredOutputUnsupported(response.status, text)) {
       const retried = await post(false);
       response = retried.response;
       text = retried.text;
@@ -450,21 +468,30 @@ export class ConfiguredModelProvider implements ModelProvider {
     if (!response.ok) {
       throw new ModelProviderUnavailableError(`${connection.displayName} 请求失败（HTTP ${response.status}）：${text.slice(0, 300)}`);
     }
-    const payload = JSON.parse(text) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    };
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new ModelProviderUnavailableError(`${connection.displayName} 没有返回可用内容。`);
-    const value = parseStructured(content, request.parse);
+    let completion = readChatCompletion(text, connection.displayName);
+    let value: T;
+    try {
+      value = parseStructured(completion.content, request.parse);
+    } catch (error) {
+      // A reasoning model occasionally reaches its output boundary after it has
+      // started a JSON string. Retry once with a deliberately smaller contract
+      // rather than making the user repeat the full research workflow.
+      if (provider !== "nous" || !isIncompleteJson(error)) throw error;
+      const retried = await post(false, true);
+      if (!retried.response.ok) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 紧凑重试失败（HTTP ${retried.response.status}）：${retried.text.slice(0, 300)}`);
+      }
+      completion = readChatCompletion(retried.text, connection.displayName);
+      value = parseStructured(completion.content, request.parse);
+    }
     return {
       value,
       provider,
       model: connection.modelId || null,
-      usage: payload.usage ? {
-        inputTokens: payload.usage.prompt_tokens ?? 0,
+      usage: completion.usage ? {
+        inputTokens: completion.usage?.prompt_tokens ?? 0,
         cachedInputTokens: 0,
-        outputTokens: payload.usage.completion_tokens ?? 0,
+        outputTokens: completion.usage?.completion_tokens ?? 0,
         reasoningOutputTokens: 0
       } : null
     };
@@ -512,6 +539,82 @@ export class ConfiguredModelProvider implements ModelProvider {
       await client.stop().catch(() => []);
     }
   }
+}
+
+function maxTokensForTask(task: GenerateStructuredRequest<unknown>["task"]): number {
+  switch (task) {
+    case "draft":
+      return 6_000;
+    case "research":
+      return 8_192;
+    case "outline":
+      return 2_000;
+    default:
+      return 1_600;
+  }
+}
+
+/** Reads both classic OpenAI string content and the content-part arrays used by
+ * several OpenAI-compatible gateways. Reasoning-only fields are deliberately
+ * not treated as a final answer. */
+function extractChatText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (!Array.isArray(value)) return null;
+  const parts = value.flatMap((part) => {
+    if (typeof part === "string") return [part];
+    if (!part || typeof part !== "object") return [];
+    const candidate = part as { text?: unknown; content?: unknown };
+    if (typeof candidate.text === "string") return [candidate.text];
+    if (typeof candidate.content === "string") return [candidate.content];
+    return [];
+  }).join("").trim();
+  return parts || null;
+}
+
+function describeEmptyChatChoice(choice: {
+  message?: { content?: unknown; text?: unknown; reasoning_content?: unknown; tool_calls?: unknown };
+  finish_reason?: string | null;
+} | undefined): string {
+  if (!choice) return " 服务未返回 choices。";
+  const details: string[] = [];
+  if (choice.finish_reason) details.push(`finish_reason=${choice.finish_reason}`);
+  if (choice.message?.reasoning_content) details.push("仅返回了 reasoning_content");
+  if (choice.message?.tool_calls) details.push("返回了 tool_calls 而非正文");
+  return details.length > 0 ? `（${details.join("；")}）` : " 返回结构中没有 message.content。";
+}
+
+type OpenAiCompatibleChoice = {
+  message?: { content?: unknown; text?: unknown; reasoning_content?: unknown; tool_calls?: unknown };
+  delta?: { content?: unknown; text?: unknown };
+  finish_reason?: string | null;
+};
+
+function readChatCompletion(text: string, displayName: string): {
+  content: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+} {
+  const payload = JSON.parse(text) as {
+    choices?: OpenAiCompatibleChoice[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  const firstChoice = payload.choices?.[0];
+  const content = extractChatText(firstChoice?.message?.content)
+    ?? extractChatText(firstChoice?.message?.text)
+    ?? extractChatText(firstChoice?.delta?.content)
+    ?? extractChatText(firstChoice?.delta?.text);
+  if (!content) throw new ModelProviderUnavailableError(
+    `${displayName} 没有返回可用内容。${describeEmptyChatChoice(firstChoice)}`
+  );
+  return { content, usage: payload.usage };
+}
+
+function isIncompleteJson(error: unknown): boolean {
+  const syntaxError = error instanceof SyntaxError
+    ? error
+    : error instanceof Error && (error as { cause?: unknown }).cause instanceof SyntaxError
+      ? (error as { cause: SyntaxError }).cause
+      : null;
+  return Boolean(syntaxError && /unterminated|string|unexpected end/i.test(syntaxError.message));
 }
 
 function parseStructured<T>(content: string, parse: (value: unknown) => T): T {

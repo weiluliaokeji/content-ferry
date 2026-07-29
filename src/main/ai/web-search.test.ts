@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  BingRssProvider,
+  browserHeaders,
   createWebSearchClient,
   DuckDuckGoProvider,
   TavilyProvider,
@@ -17,6 +19,11 @@ const DDG_HTML = `<html><body>
 <a class="result__snippet">摘要 A</a>
 <a class="result__snippet">摘要 B</a>
 </body></html>`;
+
+const BING_RSS = `<?xml version="1.0"?><rss><channel>
+<item><title><![CDATA[Bing 标题 A]]></title><link>https://example.com/bing-a</link><description><![CDATA[Bing 摘要 A]]></description></item>
+<item><title>Bing 标题 B</title><link>https://example.com/bing-b</link><description>Bing 摘要 B</description></item>
+</channel></rss>`;
 
 function jsonFetch(map: Record<string, unknown>) {
   return vi.fn(async (url: string) => {
@@ -51,11 +58,35 @@ describe("DuckDuckGoProvider", () => {
     await expect(provider.search("测试")).rejects.toThrow(/反爬虫验证页|TAVILY_API_KEY/);
   });
 
+  it("retries with a rotated profile and recovers after an initial anomaly page", async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls++;
+      if (calls < 2) {
+        return new Response("<html>anomaly detection triggered</html>", { status: 200, headers: { "content-type": "text/html" } });
+      }
+      return new Response(DDG_HTML, { status: 200, headers: { "content-type": "text/html" } });
+    }) as unknown as typeof fetch;
+    const provider = new DuckDuckGoProvider(fetchImpl);
+    const items = await provider.search("测试");
+    expect(items).toHaveLength(2);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
   it("is always available and supports both capabilities", () => {
     const provider = new DuckDuckGoProvider();
     expect(provider.isAvailable()).toBe(true);
     expect(provider.supportsSearch()).toBe(true);
     expect(provider.supportsExtract()).toBe(true);
+  });
+});
+
+describe("BingRssProvider", () => {
+  it("parses RSS results without an API key", async () => {
+    const provider = new BingRssProvider(htmlFetch(BING_RSS));
+    const items = await provider.search("测试");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ title: "Bing 标题 A", url: "https://example.com/bing-a", snippet: "Bing 摘要 A" });
   });
 });
 
@@ -100,9 +131,43 @@ describe("createWebSearchClient registry + fallback", () => {
     expect(fetchImpl.mock.calls.some((c) => String(c[0]).includes("tavily.com"))).toBe(true);
   });
 
-  it("surfaces WebSearchError when the selected provider fails", async () => {
+  it("falls back when one public search provider fails", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes("bing.com")) return new Response("<html>blocked</html>", { status: 200 });
+      return new Response(DDG_HTML, { status: 200, headers: { "content-type": "text/html" } });
+    }) as unknown as typeof fetch;
+    const client = createWebSearchClient({ fetchImpl });
+    const items = await client.search("测试");
+    expect(client.activeProviderId).toBe("duckduckgo");
+    expect(items).toHaveLength(2);
+  });
+
+  it("surfaces an actionable error only after all providers fail", async () => {
     const failFetch = vi.fn(async () => new Response("err", { status: 500 })) as unknown as typeof fetch;
     const client = createWebSearchClient({ fetchImpl: failFetch });
-    await expect(client.search("测试")).rejects.toThrow(/DuckDuckGo 检索失败/);
+    await expect(client.search("测试")).rejects.toThrow(/已尝试 bing-rss、duckduckgo/);
+  });
+
+  it("keeps the explicit research-proxy option isolated from the fetch impl", async () => {
+    // The proxy resolver must be accepted and must NOT override an explicitly
+    // provided fetchImpl (the proxy path is only taken when no fetchImpl is set).
+    const client = createWebSearchClient({
+      getResearchProxyUrl: () => "http://127.0.0.1:7890",
+      fetchImpl: htmlFetch(DDG_HTML)
+    });
+    const items = await client.search("测试");
+    expect(client.activeProviderId).toBe("duckduckgo");
+    expect(items.length).toBeGreaterThan(0);
+  });
+});
+
+describe("browserHeaders consistency-first fingerprint", () => {
+  it("defaults sec-fetch-site to cross-site for cross-origin GETs", () => {
+    expect(browserHeaders(0)["sec-fetch-site"]).toBe("cross-site");
+  });
+
+  it("emits same-origin for the DuckDuckGo form POST to its own host", () => {
+    expect(browserHeaders(0, "same-origin")["sec-fetch-site"]).toBe("same-origin");
+    expect(browserHeaders(0, "same-origin")["sec-fetch-mode"]).toBe("navigate");
   });
 });

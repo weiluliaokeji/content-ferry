@@ -17,7 +17,7 @@ export const researchOutput = z.object({
     excerpt: z.string().trim().min(1).max(2000),
     keyClaims: z.array(z.string().trim().min(1).max(500)).min(1).max(5),
     sourceType: z.enum(["official", "public"])
-  })).min(1).max(10)
+  })).min(0).max(10)
 });
 export type ResearchOutput = z.infer<typeof researchOutput>;
 
@@ -31,7 +31,7 @@ export const RESEARCH_SCHEMA = {
     planMarkdown: { type: "string" },
     sources: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 10,
       items: {
         type: "object",
@@ -73,6 +73,23 @@ export interface ResearchCard {
   sources: WebResearchSourceRef[];
 }
 
+const MAX_PROMPT_SEARCH_SOURCES = 10;
+const MAX_PROMPT_SOURCE_SNIPPET_CHARS = 900;
+
+/**
+ * A search result may contain a very long excerpt. Keep the stored research
+ * result intact, but bound the material copied into a single model request.
+ * This prevents multi-round research from growing the prompt without limit.
+ */
+function limitSearchSourcesForPrompt(sources: SearchSourceForPrompt[]): SearchSourceForPrompt[] {
+  return sources.slice(0, MAX_PROMPT_SEARCH_SOURCES).map((source) => ({
+    ...source,
+    snippet: source.snippet.length > MAX_PROMPT_SOURCE_SNIPPET_CHARS
+      ? `${source.snippet.slice(0, MAX_PROMPT_SOURCE_SNIPPET_CHARS)}…`
+      : source.snippet
+  }));
+}
+
 /** Appends `label：value` only when the field is actually filled. */
 export function pushField(lines: string[], label: string, value: string | undefined | null): void {
   if (value && value.trim()) lines.push(`${label}：${value.trim()}`);
@@ -102,7 +119,8 @@ function contextBlock(context: WebResearchContext): string {
  * {action:'search'|'done', query?}. This keeps multi-round exploration working
  * on models that do not support tool calling.
  */
-export function buildPlannerPrompt(context: WebResearchContext, sourcesSoFar: SearchSourceForPrompt[], round: number, maxRounds: number): string {
+export function buildPlannerPrompt(context: WebResearchContext, rawSourcesSoFar: SearchSourceForPrompt[], round: number, maxRounds: number): string {
+  const sourcesSoFar = limitSearchSourcesForPrompt(rawSourcesSoFar);
   return `你是阿文的研究规划器，负责为一篇中文自媒体文章做联网补研的检索规划。联网检索由系统执行，你只决定“下一步该搜什么”。
 
 要求：
@@ -123,7 +141,8 @@ ${sourcesSoFar.length === 0 ? "（暂无）" : sourcesSoFar.map((s, i) => `${i +
  * Final synthesis prompt: turn the gathered sources into traceable research
  * cards. The model must NOT search on its own — all retrieval is already done.
  */
-export function buildResearchSynthesisPrompt(context: WebResearchContext, sources: SearchSourceForPrompt[], instructions: string): string {
+export function buildResearchSynthesisPrompt(context: WebResearchContext, rawSources: SearchSourceForPrompt[], instructions: string): string {
+  const sources = limitSearchSourcesForPrompt(rawSources);
   const contextLines: string[] = [];
   pushField(contextLines, "文章主题", context.topic);
   pushField(contextLines, "写作目标", context.objective);
@@ -138,10 +157,10 @@ export function buildResearchSynthesisPrompt(context: WebResearchContext, source
 
 要求：
 - 每一张资料卡的 URL 必须是下方给出的直接页面，不能编造、不能给搜索页、不能使用无法核对的链接。
-- 优先 2 至 6 个官方来源；仅在官方资料不足时补充公开来源。资料卡最多 10 张。
+  - 优先 2 至 4 个官方来源；仅在官方资料不足时补充公开来源。资料卡最多 4 张。
 - 为每个来源判断 sourceType：official 为官方原始资料（政府/机构/品牌官网等），public 为公开资料。
-- excerpt 是不超过 200 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 5 条具体主张，标明适用条件与时间敏感性。
-- planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，简洁、可审核；不要混入文章章节或给作者的逐步指令。
+  - excerpt 是不超过 120 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 2 条具体主张，标明适用条件与时间敏感性。
+  - planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，总长度不超过 800 字，简洁、可审核；不要混入文章章节或给作者的逐步指令。
 - 不确定、互相矛盾或需要登录才能确认的内容必须明确说明，不能根据模型记忆补全。
 - 请遵循以下 ContentFerry 技能说明：\n\n${instructions}
 
@@ -161,10 +180,11 @@ export interface SearchSourceForPrompt {
 /** Incremental (follow-up) synthesis prompt: only fill the stated gap. */
 export function buildResearchFollowUpSynthesisPrompt(
   context: WebResearchContext,
-  newSources: SearchSourceForPrompt[],
+  rawNewSources: SearchSourceForPrompt[],
   instruction: string,
   instructions: string
 ): string {
+  const newSources = limitSearchSourcesForPrompt(rawNewSources);
   const contextLines: string[] = [];
   pushField(contextLines, "文章主题", context.topic);
   pushField(contextLines, "写作目标", context.objective);

@@ -32,7 +32,7 @@ const defaults: Record<ModelProviderId, Omit<ModelConnection, "credentialConfigu
   nvidia_build: { provider: "nvidia_build", displayName: "NVIDIA Build", modelId: "z-ai/glm-5.2", baseUrl: "https://integrate.api.nvidia.com/v1", proxyUrl: "", enabled: true },
   github_copilot: { provider: "github_copilot", displayName: "GitHub Copilot", modelId: "gpt-5", baseUrl: "", proxyUrl: "", enabled: true },
   modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Qwen/Qwen-Image-2512", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true },
-  gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "http://127.0.0.1:7890", enabled: true }
+  gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "", enabled: true }
 };
 
 export class ModelConnectionRepository {
@@ -92,17 +92,6 @@ export class ModelConnectionRepository {
 
   getCredential(provider: ModelProviderId): string {
     return this.credentials.get(this.credentialKind(provider), `${this.get(provider).displayName} 尚未配置访问凭证。`);
-  }
-
-  /** Returns a proxy URL to use for app-owned external requests (web search + fetch),
-   *  so the检索层 honors the same network proxy the user set on a model connection.
-   *  Prefers the first connection that has one configured. */
-  getSearchProxyUrl(): string | undefined {
-    for (const connection of this.list()) {
-      const proxy = connection.proxyUrl?.trim();
-      if (proxy) return proxy;
-    }
-    return undefined;
   }
 
   private credentialKind(provider: ModelProviderId): string {

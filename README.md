@@ -8,7 +8,7 @@
 
 - 管理多个微信公众号或 CSDN 账号，并保存账号定位、目标读者、写作风格、禁用话题和常用栏目。
 - 扫描 VitePress 文章库，新建草稿时直接写入符合现有 Front Matter 和目录规则的 Markdown 文件，仍可使用 Obsidian 等外部编辑器。
-- 从主题、想法和资料生成创作简报、提纲与正文；支持 OpenAI Codex、OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等模型连接。
+- 从主题、想法和资料生成创作简报、提纲与正文；支持 OpenAI Codex、OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等模型连接，并可配置 Tavily 作为独立的联网检索服务。
 - 使用所见即所得或 Markdown 原文编辑文章，支持图片、表格、手机预览、选区 AI 编辑、修改对比和文章顾问“阿文”。
 - 通过独立技能管理公众号撰写、平台改写、去 AI 味、摘要、封面提示词、封面生成和浏览器检测规则。
 - 自动调用腾讯朱雀或 ContentAny 做 AIGC 特征检测；遇到登录、验证码或网页变化时允许人工接管。

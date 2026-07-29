@@ -121,6 +121,31 @@ describe("local API scaffold", () => {
       .toContain("用户自定义要求");
   });
 
+  it("stores Tavily configuration locally and can test or remove it", async () => {
+    server = createTestServer();
+    const before = await server.inject({ method: "GET", url: "/api/web-search/settings" });
+    expect(before.json()).toMatchObject({ tavilyConfigured: false, tavilyCredentialSource: "none" });
+
+    const saved = await server.inject({
+      method: "PUT",
+      url: "/api/web-search/tavily",
+      payload: { apiKey: "tvly-test-key" }
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ tavilyConfigured: true, tavilyCredentialSource: "local" });
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      results: [{ title: "Tavily result", url: "https://example.com", content: "Search result" }]
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    const tested = await server.inject({ method: "POST", url: "/api/web-search/tavily/test", payload: {} });
+    expect(tested.statusCode).toBe(200);
+    expect(tested.json()).toMatchObject({ ok: true, resultCount: 1 });
+
+    const removed = await server.inject({ method: "DELETE", url: "/api/web-search/tavily" });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ tavilyConfigured: false, tavilyCredentialSource: "none" });
+  });
+
   it("persists the handled status of an Awen suggestion", async () => {
     server = createTestServer();
     const contextKey = "source:posts/example/index.md";

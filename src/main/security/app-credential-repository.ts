@@ -23,6 +23,17 @@ export class AppCredentialRepository {
       .run(kind, id, now, now);
   }
 
+  remove(kind: string): void {
+    const existing = this.db.prepare("SELECT secret_id FROM app_credentials WHERE credential_kind = ?")
+      .get(kind) as { secret_id: string } | undefined;
+    if (!existing) return;
+    const transaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM app_credentials WHERE credential_kind = ?").run(kind);
+      this.db.prepare("DELETE FROM credential_secrets WHERE id = ?").run(existing.secret_id);
+    });
+    transaction();
+  }
+
   get(kind: string, missingMessage = "尚未配置访问凭证。"): string {
     const row = this.db.prepare(`SELECT s.encrypted_value FROM app_credentials a
       JOIN credential_secrets s ON s.id = a.secret_id WHERE a.credential_kind = ?`)
