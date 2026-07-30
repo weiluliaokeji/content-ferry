@@ -22,6 +22,7 @@ declare global {
       openZhuque: () => Promise<void>;
       openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }) => Promise<void>;
       openContentAny: () => Promise<void>;
+      openCsdnPublisher: (jobId: string) => Promise<void>;
       openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;
       runZhuqueDetection: (markdown: string) => Promise<{

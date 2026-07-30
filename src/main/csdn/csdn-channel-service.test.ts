@@ -68,7 +68,7 @@ publish: false
     const job = service.createPublishJob(draft.id);
     expect(job).toMatchObject({ channelDraftId: draft.id, status: "queued" });
     expect(service.createPublishJob(draft.id).id).toBe(job.id);
-    expect(service.capabilities(account.id)).toMatchObject({ canSubmitAfterConfirmation: false, supportsScheduledPublish: false });
+    expect(service.capabilities(account.id)).toMatchObject({ canCreateRemoteDraft: true, canSubmitAfterConfirmation: true, supportsScheduledPublish: false });
   });
 
   it("creates a CSDN channel draft directly from the source without calling a model", async () => {
@@ -122,5 +122,95 @@ publish: false
 
     await expect(service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" }))
       .rejects.toBeInstanceOf(CsdnChannelError);
+  });
+
+  it("drives the publish job state machine from queued to published and rejects illegal transitions", async () => {
+    database = openInMemoryDatabase();
+    const accounts = new AccountRepository(database.connection);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-csdn-"));
+    fs.mkdirSync(path.join(sourceDirectory, "posts", "source", "assets"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDirectory, "posts", "source", "index.md"), "---\ntitle: 主稿\n---\n\n# 主稿\n\n正文", "utf8");
+    const contentSources = new ContentSourceService(database.connection);
+    contentSources.setSource(workspace.id, sourceDirectory);
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "csdn", displayName: "测试 CSDN" });
+    const provider: ModelProvider = {
+      id: "test",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ title: "标题", markdown: "# 标题\n\n正文" }), provider: "test", model: "test-model", usage: null };
+      },
+      async webResearch() { throw new Error("not used"); }
+    };
+    const service = new CsdnChannelService(database.connection, accounts, contentSources, provider);
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+    expect(job.status).toBe("queued");
+
+    // 浏览器辅助只能从可重启状态进入 filling。
+    const filling = service.startBrowserAssist(job.id);
+    expect(filling.status).toBe("filling");
+
+    // 未登录回写。
+    const needsLogin = service.recordNeedsLogin(job.id, "未登录");
+    expect(needsLogin.status).toBe("needs_login");
+
+    // 重新进入浏览器辅助。
+    const fillingAgain = service.startBrowserAssist(job.id);
+    expect(fillingAgain.status).toBe("filling");
+
+    // 填充成功 → 等待最终确认。
+    const ready = service.recordFill(job.id, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+    expect(ready.status).toBe("ready_for_final_confirmation");
+
+    // 最终确认（用户点击“我已在 CSDN 发布”）→ 提交中。
+    const submitting = service.beginSubmit(job.id);
+    expect(submitting.status).toBe("submitting");
+
+    // 读到回执 → 已发布，并回写链接。
+    const published = service.recordSubmission(job.id, { remoteUrl: "https://blog.csdn.net/abc/article/details/123456", remoteContentId: "123456", state: "published" });
+    expect(published.status).toBe("published");
+    expect(published.remoteUrl).toBe("https://blog.csdn.net/abc/article/details/123456");
+    expect(published.remoteContentId).toBe("123456");
+
+    // 已发布任务不可再进入浏览器辅助。
+    await expect(service.startBrowserAssist(job.id)).rejects.toBeInstanceOf(CsdnChannelError);
+  });
+
+  it("falls back to manual reconciliation and supports correction when the receipt cannot be read", async () => {
+    database = openInMemoryDatabase();
+    const accounts = new AccountRepository(database.connection);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-csdn-"));
+    fs.mkdirSync(path.join(sourceDirectory, "posts", "source", "assets"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDirectory, "posts", "source", "index.md"), "---\ntitle: 主稿\n---\n\n# 主稿\n\n正文", "utf8");
+    const contentSources = new ContentSourceService(database.connection);
+    contentSources.setSource(workspace.id, sourceDirectory);
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "csdn", displayName: "测试 CSDN" });
+    const provider: ModelProvider = {
+      id: "test",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ title: "标题", markdown: "# 标题\n\n正文" }), provider: "test", model: "test-model", usage: null };
+      },
+      async webResearch() { throw new Error("not used"); }
+    };
+    const service = new CsdnChannelService(database.connection, accounts, contentSources, provider);
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" });
+    const job = service.createPublishJob(service.approveDraft(draft.id).id);
+
+    service.startBrowserAssist(job.id);
+    service.recordFill(job.id, { verifiedFields: ["title"], state: "needs_user", reason: "摘要未填充" });
+    service.beginSubmit(job.id);
+    const reconciled = service.recordSubmission(job.id, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation", reason: "读不到链接" });
+    expect(reconciled.status).toBe("needs_manual_reconciliation");
+
+    // 人工校正为已发布。
+    const corrected = service.correctStatus(job.id, "published", "在 CSDN 后台确认已发布");
+    expect(corrected.status).toBe("published");
+    const sourceRow = database!.connection.prepare("SELECT status_source FROM csdn_publish_jobs WHERE id = ?").get(job.id) as { status_source: string };
+    expect(sourceRow.status_source).toBe("manual");
+
+    // 已结束任务不可再次校正为失败。
+    await expect(service.correctStatus(job.id, "failed", "x")).rejects.toBeInstanceOf(CsdnChannelError);
   });
 });

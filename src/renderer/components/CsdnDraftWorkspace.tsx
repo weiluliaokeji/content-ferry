@@ -12,16 +12,45 @@ interface CsdnChannelDraftShape {
 
 export type CsdnDraftPatch = Partial<Pick<CsdnChannelDraftShape, "title" | "markdown" | "author" | "digest" | "coverSource">>;
 
+interface CsdnPublishJobShape {
+  id: string;
+  status: "queued" | "needs_login" | "filling" | "needs_user" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "failed" | "cancelled";
+  statusNote: string | null;
+  errorMessage: string | null;
+  remoteUrl: string | null;
+  remoteContentId: string | null;
+  updatedAt: string;
+}
+
 interface CsdnDraftWorkspaceProps {
   draft: CsdnChannelDraftShape;
   accountDisplay: string;
   saving: boolean;
+  job?: CsdnPublishJobShape;
   onChange: (patch: CsdnDraftPatch) => void;
   onSave: () => Promise<void> | void;
   onApprove: () => Promise<void> | void;
   onCreateJob: () => Promise<void> | void;
+  onStartBrowserAssist: (jobId: string) => Promise<void> | void;
+  onConfirmPublish: (jobId: string) => Promise<void> | void;
+  onCorrectStatus: (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => Promise<void> | void;
   onBack: () => void;
-  jobExists?: boolean;
+}
+
+function csdnJobLabel(status: CsdnPublishJobShape["status"]): string {
+  switch (status) {
+    case "queued": return "等待开始浏览器发布";
+    case "needs_login": return "需要登录 CSDN";
+    case "filling": return "浏览器填充中";
+    case "needs_user": return "部分字段未可靠填充，需手动补齐";
+    case "ready_for_final_confirmation": return "待你在文渡确认发布";
+    case "submitting": return "正在读取 CSDN 回执";
+    case "published": return "已发布";
+    case "needs_manual_reconciliation": return "待人工核对发布结果";
+    case "failed_before_submit": return "浏览器填充失败";
+    case "failed": return "已标记为发布失败";
+    case "cancelled": return "已取消发布";
+  }
 }
 
 function normalizeImageMime(file: File): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
@@ -52,13 +81,12 @@ const SELECTION_ACTIONS: Array<{ value: "humanize" | "rewrite" | "expand" | "sho
   { value: "example", label: "补充案例" }
 ];
 
-export function CsdnDraftWorkspace({ draft, accountDisplay, saving, onChange,   onSave, onApprove, onCreateJob, onBack, jobExists }: CsdnDraftWorkspaceProps) {
+export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, onChange, onSave, onApprove, onCreateJob, onStartBrowserAssist, onConfirmPublish, onCorrectStatus, onBack }: CsdnDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("preview");
   const [dirty, setDirty] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState("");
-  const [jobCreated, setJobCreated] = useState(Boolean(jobExists));
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -150,7 +178,6 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, onChange,   
 
   const handleCreateJob = async () => {
     await onCreateJob();
-    setJobCreated(true);
   };
 
   const isDraft = draft.status === "draft";
@@ -284,7 +311,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, onChange,   
         <span>{saving ? "正在保存…" : dirty ? "有未保存修改" : "已保存"}</span>
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {isDraft && <button onClick={() => void handleApprove()} disabled={saving}>审核并冻结</button>}
-        {!isDraft && !jobCreated && <button onClick={() => void handleCreateJob()} disabled={saving}>创建 CSDN 发布任务</button>}
+        {!isDraft && !job && <button onClick={() => void handleCreateJob()} disabled={saving}>创建 CSDN 发布任务</button>}
       </div>
     </header>
     <div className="editor-columns">
@@ -366,10 +393,67 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, onChange,   
             </details>
           </div>
           {!isDraft && <p className="status-badge success">渠道稿已冻结</p>}
-          {!isDraft && !jobCreated && <p className="hint">当前会创建本地可恢复任务，不会向 CSDN 提交内容。浏览器自动填充与最终确认提交将在连接器能力验证完成后开放。</p>}
-          {jobCreated && <section className="csdn-job-created" role="status"><strong>发布任务已创建</strong><p>任务已保存，等待浏览器连接器能力验证。</p><small>当前没有向 CSDN 提交任何内容；关闭窗口不会丢失该任务。</small></section>}
+          {!isDraft && !job && <p className="hint">点击“创建 CSDN 发布任务”会生成一条本地可恢复任务，不会立即向 CSDN 提交内容。之后通过可见浏览器完成登录、填充与最终确认发布。</p>}
+          {job && <CsdnPublishPanel job={job} saving={saving} onStartBrowserAssist={onStartBrowserAssist} onConfirmPublish={onConfirmPublish} onCorrectStatus={onCorrectStatus} />}
         </div>}
       </aside>
     </div>
   </div>;
+}
+
+function CsdnPublishPanel({ job, saving, onStartBrowserAssist, onConfirmPublish, onCorrectStatus }: {
+  job: CsdnPublishJobShape;
+  saving: boolean;
+  onStartBrowserAssist: (jobId: string) => Promise<void> | void;
+  onConfirmPublish: (jobId: string) => Promise<void> | void;
+  onCorrectStatus: (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => Promise<void> | void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+  const [correctStatus, setCorrectStatus] = useState<"published" | "failed" | "cancelled">("published");
+  const [correctReason, setCorrectReason] = useState("");
+
+  const canStart = ["queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "needs_manual_reconciliation"].includes(job.status);
+  const canConfirm = job.status === "ready_for_final_confirmation" || job.status === "needs_user";
+  const canCorrect = ["needs_login", "filling", "submitting", "needs_manual_reconciliation", "failed_before_submit", "failed", "cancelled", "published"].includes(job.status);
+
+  const run = async (action: (id: string) => Promise<void> | void) => {
+    setBusy(true);
+    try {
+      await action(job.id);
+    } catch {
+      // 错误已在父级统一提示
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="csdn-publish-panel" role="status">
+    <h3>浏览器发布</h3>
+    <p className="hint">CSDN 通过可见浏览器完成登录、填充与发布；文渡不会绕过你的确认自动发布。</p>
+    <p className="csdn-job-status">{csdnJobLabel(job.status)}<small>{new Date(job.updatedAt).toLocaleString()}</small></p>
+    {job.statusNote && <p className="hint compact-hint">{job.statusNote}</p>}
+    {job.errorMessage && <p className="error">{job.errorMessage}</p>}
+    <div className="csdn-publish-actions">
+      {canStart && <button onClick={() => void run(onStartBrowserAssist)} disabled={busy || saving}>在浏览器中完成发布</button>}
+      {canConfirm && <button className="secondary-button" onClick={() => void run(onConfirmPublish)} disabled={busy || saving}>我已在 CSDN 发布</button>}
+      {job.status === "submitting" && <span className="status-badge">正在读取 CSDN 回执…</span>}
+      {job.status === "published" && job.remoteUrl && <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a>}
+      {canCorrect && <button className="text-button" onClick={() => setCorrecting((current) => !current)} disabled={busy || saving}>校正状态</button>}
+    </div>
+    {job.status === "published" && !job.remoteUrl && <p className="hint">已发布，但未能自动读回文章链接，请在浏览器中核对。</p>}
+    {correcting && <form className="csdn-correct-form" onSubmit={(event) => {
+      event.preventDefault();
+      void run((id) => onCorrectStatus(id, correctStatus, correctReason));
+      setCorrecting(false);
+    }}>
+      <label>最终状态<select value={correctStatus} onChange={(event) => setCorrectStatus(event.target.value as "published" | "failed" | "cancelled")}>
+        <option value="published">已发布</option>
+        <option value="failed">发布失败</option>
+        <option value="cancelled">取消发布</option>
+      </select></label>
+      <label>核实依据（可选）<textarea value={correctReason} maxLength={500} placeholder="例如：在 CSDN 后台确认已发布，文章链接为……" onChange={(event) => setCorrectReason(event.target.value)} /></label>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrecting(false)}>取消</button><button type="submit" disabled={busy || saving}>确认校正</button></div>
+    </form>}
+  </section>;
 }

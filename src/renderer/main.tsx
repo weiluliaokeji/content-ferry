@@ -134,8 +134,11 @@ type CsdnChannelDraft = {
   status: "draft" | "approved" | "superseded"; updatedAt: string;
 };
 type CsdnPublishJob = {
-  id: string; accountId: string; channelDraftId: string; status: "queued" | "needs_login" | "filling" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "cancelled";
-  statusNote: string | null; updatedAt: string;
+  id: string; accountId: string; channelDraftId: string;
+  status: "queued" | "needs_login" | "filling" | "needs_user" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "failed" | "cancelled";
+  statusNote: string | null; errorMessage: string | null;
+  remoteUrl: string | null; remoteContentId: string | null;
+  updatedAt: string;
 };
 type ChannelAction =
   | { kind: "enter"; label: string; onClick: () => void }
@@ -362,6 +365,11 @@ function App() {
   const [wechatStatusReason, setWechatStatusReason] = useState("");
   const [wechatCorrectionSaving, setWechatCorrectionSaving] = useState(false);
   const [wechatCorrectionError, setWechatCorrectionError] = useState("");
+  const [correctingCsdnJob, setCorrectingCsdnJob] = useState<CsdnPublishJob>();
+  const [correctedCsdnStatus, setCorrectedCsdnStatus] = useState<"published" | "failed" | "cancelled">("published");
+  const [csdnStatusReason, setCsdnStatusReason] = useState("");
+  const [csdnCorrectionSaving, setCsdnCorrectionSaving] = useState(false);
+  const [csdnCorrectionError, setCsdnCorrectionError] = useState("");
   const [csdnDraftSource, setCsdnDraftSource] = useState<ContentSourceArticle>();
   const [csdnDraftAccountId, setCsdnDraftAccountId] = useState("");
   const [csdnDraftGenerationMode, setCsdnDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
@@ -633,6 +641,76 @@ function App() {
       setCsdnDraftSaving(false);
     }
   };
+  const startCsdnBrowserAssist = async (jobId: string) => {
+    setCsdnDraftSaving(true);
+    try {
+      const assistedJob = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/browser-assist`, { method: "POST" });
+      setCsdnPublishJob(assistedJob);
+      if (!window.contentFerry) throw new Error("CSDN 浏览器发布只能在文渡桌面应用中打开。");
+      await window.contentFerry.openCsdnPublisher(jobId);
+      await loadCsdnChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法启动 CSDN 浏览器发布流程。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const confirmCsdnPublish = async (jobId: string) => {
+    setCsdnDraftSaving(true);
+    try {
+      const job = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/confirm`, { method: "POST" });
+      setCsdnPublishJob(job);
+      await loadCsdnChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法确认 CSDN 发布结果。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const correctCsdnStatus = async (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => {
+    setCsdnDraftSaving(true);
+    try {
+      const job = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status, reason: reason.trim() })
+      });
+      setCsdnPublishJob(job);
+      await loadCsdnChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法校正 CSDN 发布状态。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const openCsdnStatusCorrection = (job: CsdnPublishJob) => {
+    setCorrectingCsdnJob(job);
+    setCorrectedCsdnStatus("published");
+    setCsdnStatusReason("已在 CSDN 后台核实");
+    setCsdnCorrectionError("");
+  };
+  const saveCsdnStatusCorrection = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!correctingCsdnJob) {
+      setCsdnCorrectionError("核实依据不能超过 500 个字。");
+      return;
+    }
+    const action = correctedCsdnStatus === "published" ? "已发布" : correctedCsdnStatus === "cancelled" ? "取消发布" : "发布失败";
+    if (!window.confirm(`确定将 CSDN 发布任务人工标记为“${action}”吗？\n\n此操作只校正文渡中的记录，不会调用 CSDN 接口，也不会重新发布。`)) return;
+    setCsdnCorrectionSaving(true);
+    try {
+      await correctCsdnStatus(correctingCsdnJob.id, correctedCsdnStatus, csdnStatusReason);
+      setCorrectingCsdnJob(undefined);
+      setCsdnStatusReason("");
+      setCsdnCorrectionError("");
+    } catch (cause) {
+      setCsdnCorrectionError(cause instanceof Error ? cause.message : "人工校正 CSDN 发布状态失败。");
+    } finally {
+      setCsdnCorrectionSaving(false);
+    }
+  };
   const openWechatStatusCorrection = (job: WechatPublishJob) => {
     setCorrectingWechatJob(job);
     setCorrectedWechatStatus("published");
@@ -698,7 +776,7 @@ function App() {
   }, []);
   useEffect(() => {
     if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
-    if (activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); }
+    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); }
   }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => {
@@ -1765,11 +1843,14 @@ function App() {
       draft={csdnDraft}
       accountDisplay={csdnAccount ? `${csdnAccount.displayName}` : "CSDN 账号"}
       saving={csdnDraftSaving}
-      jobExists={Boolean(csdnPublishJob)}
+      job={csdnPublishJob}
       onChange={(patch) => setCsdnDraft((current) => current ? { ...current, ...patch } : current)}
       onSave={() => void saveCsdnChannelDraft()}
       onApprove={() => void approveCsdnChannelDraft()}
       onCreateJob={() => void createCsdnPublishJob()}
+      onStartBrowserAssist={(jobId) => void startCsdnBrowserAssist(jobId)}
+      onConfirmPublish={(jobId) => void confirmCsdnPublish(jobId)}
+      onCorrectStatus={(jobId, status, reason) => void correctCsdnStatus(jobId, status, reason)}
       onBack={() => { setCsdnDraftSource(undefined); setCsdnDraft(undefined); setCsdnPublishJob(undefined); }}
     />;
   }
@@ -1952,7 +2033,7 @@ function App() {
 
     {activeView === "publish" && <>
       <div className="publish-page-actions"><span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span><button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button></div>
-      {wechatJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
+      {wechatJobs.length === 0 && csdnJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
         {pendingWechatJobs.length > 0 && <section className="card">
           <div className="section-heading"><h2>待处理</h2></div>
           <ul className="publish-job-list">{pendingWechatJobs.map((job) => {
@@ -1965,6 +2046,14 @@ function App() {
           <ul className="publish-job-list">{completedWechatJobs.map((job) => {
             const account = accounts.find((item) => item.id === job.accountId);
             return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{job.status === "cancelled" ? "已取消发布" : job.mode === "mass" ? "已群发" : "已发布"} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && <small className="manual-status-note">人工校正：{job.statusNote}</small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+          })}</ul>
+        </section>}
+        {csdnJobs.length > 0 && <section className="card">
+          <div className="section-heading"><h2>CSDN 发布任务</h2></div>
+          <ul className="publish-job-list">{csdnJobs.map((job) => {
+            const account = accounts.find((item) => item.id === job.accountId);
+            const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
+            return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{csdnJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{csdnJobCanStart(job) && <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>在浏览器中完成发布</button>}{csdnJobCanConfirm(job) && <button className="secondary-button" onClick={() => void confirmCsdnPublish(job.id)} disabled={csdnDraftSaving}>我已在 CSDN 发布</button>}{job.status === "submitting" && <span className="status-badge">正在读取回执</span>}{csdnJobCanCorrect(job) && <button className="text-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>校正状态</button>}</span></li>;
           })}</ul>
         </section>}
       </>}
@@ -2135,6 +2224,16 @@ function App() {
         <label>核实依据（可选）<textarea autoFocus value={wechatStatusReason} disabled={wechatCorrectionSaving} onChange={(event) => { setWechatStatusReason(event.target.value); setWechatCorrectionError(""); }} maxLength={500} placeholder="例如：在公众号后台“发表记录”确认已发布，文章链接为……" /><small>{wechatStatusReason.length}/500，可留空</small></label>
         {wechatCorrectionError && <p className="error">{wechatCorrectionError}</p>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingWechatJob(undefined)} disabled={wechatCorrectionSaving}>取消</button><button disabled={wechatCorrectionSaving}>{wechatCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
+      </form>
+    </Modal>}
+    {correctingCsdnJob && <Modal onClose={() => setCorrectingCsdnJob(undefined)} disabled={csdnCorrectionSaving} title="人工校正 CSDN 状态" eyebrow="回执异常兜底">
+      <form onSubmit={saveCsdnStatusCorrection} className="profile-form status-correction-modal">
+        <p className="hint">如果你是在 CSDN 后台直接发布或取消了发布，核实结果后即可立即校正，无需等待。此操作不会再次调用发布接口。</p>
+        <div className="status-correction-warning"><strong>请先在 CSDN 后台核实</strong><span>错误标记可能导致后续误判和重复发布。</span></div>
+        <label>最终状态<select value={correctedCsdnStatus} disabled={csdnCorrectionSaving} onChange={(event) => setCorrectedCsdnStatus(event.target.value as "published" | "failed" | "cancelled")}><option value="published">已发布</option><option value="failed">发布失败</option><option value="cancelled">取消发布</option></select></label>
+        <label>核实依据（可选）<textarea autoFocus value={csdnStatusReason} disabled={csdnCorrectionSaving} onChange={(event) => { setCsdnStatusReason(event.target.value); setCsdnCorrectionError(""); }} maxLength={500} placeholder="例如：在 CSDN 后台“内容管理”确认已发布，文章链接为……" /><small>{csdnStatusReason.length}/500，可留空</small></label>
+        {csdnCorrectionError && <p className="error">{csdnCorrectionError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingCsdnJob(undefined)} disabled={csdnCorrectionSaving}>取消</button><button disabled={csdnCorrectionSaving}>{csdnCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
       </form>
     </Modal>}
     {orphanedWechatJob && <Modal onClose={() => setOrphanedWechatJob(undefined)} disabled={saving} title="找不到本地文章" eyebrow="发布记录需要处理">
@@ -2756,7 +2855,7 @@ function ArticleWorkspace({
               setSettingsMaterials([]);
             }}>
               <option value="">请选择发布账号</option>
-              {accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}{account.platform === "csdn" ? "（发布接口即将开放）" : ""}</option>)}
+              {accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}
             </select>
             <small>选择后会随文章保存；发布前仍可更改。</small>
           </label>
@@ -3470,6 +3569,34 @@ function wechatJobLabel(job: WechatPublishJob): string {
   if (job.status === "published") return "微信已确认发布完成";
   if (job.status === "cancelled") return "已人工标记为取消发布";
   return job.mode === "mass" ? "群发任务已提交，等待微信回执" : "发布任务已提交，等待微信回执";
+}
+
+function csdnJobLabel(job: CsdnPublishJob): string {
+  switch (job.status) {
+    case "queued": return "等待开始浏览器发布";
+    case "needs_login": return "需要登录 CSDN";
+    case "filling": return "浏览器填充中";
+    case "needs_user": return "部分字段未可靠填充，需手动补齐";
+    case "ready_for_final_confirmation": return "待你在文渡确认发布";
+    case "submitting": return "正在读取 CSDN 回执";
+    case "published": return "已发布";
+    case "needs_manual_reconciliation": return "待人工核对发布结果";
+    case "failed_before_submit": return "浏览器填充失败";
+    case "failed": return "已标记为发布失败";
+    case "cancelled": return "已取消发布";
+  }
+}
+
+function csdnJobCanStart(job: CsdnPublishJob): boolean {
+  return ["queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "needs_manual_reconciliation"].includes(job.status);
+}
+
+function csdnJobCanConfirm(job: CsdnPublishJob): boolean {
+  return job.status === "ready_for_final_confirmation" || job.status === "needs_user";
+}
+
+function csdnJobCanCorrect(job: CsdnPublishJob): boolean {
+  return ["needs_login", "filling", "submitting", "needs_manual_reconciliation", "failed_before_submit", "failed", "cancelled", "published"].includes(job.status);
 }
 
 function ProfileFields({ profile, onChange }: { profile: AccountProfile; onChange: (field: keyof AccountProfile, value: string) => void }) {

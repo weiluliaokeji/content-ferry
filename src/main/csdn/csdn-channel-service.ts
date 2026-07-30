@@ -29,11 +29,13 @@ export type CsdnPublishJobStatus =
   | "queued"
   | "needs_login"
   | "filling"
+  | "needs_user"
   | "ready_for_final_confirmation"
   | "submitting"
   | "published"
   | "needs_manual_reconciliation"
   | "failed_before_submit"
+  | "failed"
   | "cancelled";
 
 export interface CsdnChannelDraft {
@@ -79,10 +81,12 @@ export class CsdnChannelService {
   ) {}
 
   capabilities(_accountId: string): PublishCapabilities {
+    // CSDN 一期通过受控可见浏览器完成登录预检、表单填充与人工最终确认后的单次提交。
+    // 这里只声明“受控浏览器辅助”能力，不等于无人值守自动发布；最终发布点击仍由用户在浏览器内完成。
     return {
-      canCreateRemoteDraft: false,
-      canSubmitAfterConfirmation: false,
-      canReadRemoteReceipt: false,
+      canCreateRemoteDraft: true,
+      canSubmitAfterConfirmation: true,
+      canReadRemoteReceipt: true,
       supportsExternalLink: "restricted",
       supportsScheduledPublish: false
     };
@@ -207,7 +211,7 @@ export class CsdnChannelService {
         (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
-          "渠道稿已冻结；等待 CSDN 浏览器能力验证后再填充和提交。", now, now);
+          "已创建 CSDN 发布任务，等待在浏览器中完成登录、填充与最终确认发布。", now, now);
       this.db.prepare(`INSERT INTO csdn_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
         VALUES (?, ?, '', 'queued', 'system', '创建冻结版本的发布任务', ?)`)
@@ -219,6 +223,178 @@ export class CsdnChannelService {
   listJobs(workspaceId: string): CsdnPublishJob[] {
     return (this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
       .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+  }
+
+  getJob(jobId: string): CsdnPublishJob {
+    return this.requireJob(jobId);
+  }
+
+  getDraftForJob(jobId: string): CsdnChannelDraft {
+    const job = this.requireJob(jobId);
+    return this.requireDraft(job.channelDraftId);
+  }
+
+  /**
+   * 用户在文渡点击“在浏览器中完成发布”后调用：标记浏览器辅助流程已开始。
+   * 实际登录预检与表单填充由主进程可见浏览器驱动，再通过 recordNeedsLogin / recordFill 回写。
+   */
+  startBrowserAssist(jobId: string): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    const restartable: CsdnPublishJobStatus[] = [
+      "queued", "needs_login", "filling", "ready_for_final_confirmation", "failed_before_submit"
+    ];
+    if (!restartable.includes(job.status)) {
+      throw new CsdnChannelError("该 CSDN 发布任务已经结束或正在提交，无法重新进入浏览器辅助流程。");
+    }
+    return this.transitionJob(job, "filling", {
+      statusNote: "已打开 CSDN 编辑器，正在预检登录态并填充表单。",
+      errorMessage: null
+    });
+  }
+
+  /** 浏览器驱动发现未登录：交给用户在浏览器内登录，登录后重新发起。 */
+  recordNeedsLogin(jobId: string, reason: string): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "filling" && job.status !== "needs_login") {
+      throw new CsdnChannelError("只有正在浏览器辅助的任务可以标记为需要登录。");
+    }
+    return this.transitionJob(job, "needs_login", {
+      statusNote: reason.trim().slice(0, 500) || "请在 CSDN 编辑器完成登录后，重新点击“在浏览器中完成发布”。",
+      errorMessage: null
+    });
+  }
+
+  /**
+   * 浏览器驱动完成一次表单填充尝试后的回写。
+   * state 必须是 ready_for_final_confirmation（填充成功，等待用户最终确认）、
+   * needs_user（部分字段未可靠填充，需人工接管）或 failed_before_submit（不可恢复失败）。
+   */
+  recordFill(jobId: string, input: {
+    verifiedFields: Array<"account" | "title" | "summary" | "tags" | "cover" | "asset_count" | "content">;
+    state: "ready_for_final_confirmation" | "needs_user" | "failed_before_submit";
+    reason?: string;
+  }): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "filling" && job.status !== "needs_login") {
+      throw new CsdnChannelError("只有正在浏览器辅助的任务可以回写填充结果。");
+    }
+    const reason = (input.reason ?? "").trim().slice(0, 500);
+    if (input.state === "ready_for_final_confirmation") {
+      return this.transitionJob(job, "ready_for_final_confirmation", {
+        statusNote: `已填充：${input.verifiedFields.join("、") || "无"}。请在浏览器中核对内容并点击发布；确认无误后在文渡点击“我已在 CSDN 发布”。`,
+        errorMessage: null
+      });
+    }
+    if (input.state === "needs_user") {
+      return this.transitionJob(job, "needs_user", {
+        statusNote: reason || "部分字段未能可靠填充，请在浏览器中手动补齐后，回到文渡点击“我已在 CSDN 发布”。",
+        errorMessage: null
+      });
+    }
+    return this.transitionJob(job, "failed_before_submit", {
+      statusNote: reason || "浏览器表单填充失败。",
+      errorMessage: reason || "浏览器表单填充失败。"
+    });
+  }
+
+  /**
+   * 用户在文渡确认“已在 CSDN 发布”后，由主进程读取远端回执并回写。
+   * state 必须是 published（读到文章链接）或 needs_manual_reconciliation（读不到可靠回执）。
+   */
+  recordSubmission(jobId: string, input: {
+    remoteUrl: string | null;
+    remoteContentId: string | null;
+    state: "published" | "needs_manual_reconciliation";
+    reason?: string;
+  }): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "submitting" && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user") {
+      throw new CsdnChannelError("只有等待最终确认或正在提交的任务可以回写发布结果。");
+    }
+    const reason = (input.reason ?? "").trim().slice(0, 500);
+    if (input.state === "published") {
+      return this.transitionJob(job, "published", {
+        remoteUrl: input.remoteUrl,
+        remoteContentId: input.remoteContentId,
+        statusNote: input.remoteUrl ? `已发布：${input.remoteUrl}` : "已发布（未读回文章链接，请在浏览器核对）。",
+        errorMessage: null
+      });
+    }
+    return this.transitionJob(job, "needs_manual_reconciliation", {
+      statusNote: reason || "未能自动读取 CSDN 文章链接，请人工在浏览器核对发布结果。",
+      errorMessage: null
+    });
+  }
+
+  /** 用户在文渡点击“我已在 CSDN 发布”后，标记为正在提交，等待浏览器回执。 */
+  beginSubmit(jobId: string): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "ready_for_final_confirmation" && job.status !== "needs_user") {
+      throw new CsdnChannelError("只有等待最终确认的 CSDN 任务可以提交。");
+    }
+    return this.transitionJob(job, "submitting", {
+      statusNote: "已在浏览器点击发布，正在读取 CSDN 回执。",
+      errorMessage: null
+    });
+  }
+
+  /** 用户人工校正 CSDN 发布结果（与微信一致：只改文渡记录，不调用 CSDN）。 */
+  correctStatus(jobId: string, status: "published" | "failed" | "cancelled", reason: string): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    const correctable: CsdnPublishJobStatus[] = [
+      "queued", "needs_login", "filling", "ready_for_final_confirmation", "submitting",
+      "needs_manual_reconciliation", "failed_before_submit", "failed"
+    ];
+    if (!correctable.includes(job.status)) {
+      throw new CsdnChannelError("该 CSDN 发布任务状态不可人工校正。");
+    }
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length > 500) throw new CsdnChannelError("核实依据不能超过 500 个字。");
+    const now = new Date().toISOString();
+    const note = status === "failed"
+      ? `人工确认发布失败：${normalizedReason || "未填写依据"}`
+      : status === "cancelled"
+        ? `人工确认取消发布：${normalizedReason || "未填写依据"}`
+        : null;
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE csdn_publish_jobs
+        SET status = ?, error_message = ?, status_source = 'manual', status_note = ?, updated_at = ?
+        WHERE id = ?`)
+        .run(status, status === "failed" ? note : null, note, now, jobId);
+      this.db.prepare(`INSERT INTO csdn_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
+        .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
+    })();
+    return this.requireJob(jobId);
+  }
+
+  private transitionJob(
+    job: CsdnPublishJob,
+    nextStatus: CsdnPublishJobStatus,
+    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
+  ): CsdnPublishJob {
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE csdn_publish_jobs
+        SET status = ?, status_note = COALESCE(?, status_note), error_message = COALESCE(?, error_message),
+          remote_url = COALESCE(?, remote_url), remote_content_id = COALESCE(?, remote_content_id), updated_at = ?
+        WHERE id = ?`)
+        .run(
+          nextStatus,
+          patch.statusNote !== undefined ? patch.statusNote : null,
+          patch.errorMessage !== undefined ? patch.errorMessage : null,
+          patch.remoteUrl !== undefined ? patch.remoteUrl : null,
+          patch.remoteContentId !== undefined ? patch.remoteContentId : null,
+          now,
+          job.id
+        );
+      this.db.prepare(`INSERT INTO csdn_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, ?, ?, 'browser', ?, ?)`)
+        .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
+    })();
+    return this.requireJob(job.id);
   }
 
   private requireDraft(id: string): CsdnChannelDraft {

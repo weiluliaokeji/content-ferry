@@ -204,13 +204,23 @@ const articleChatSuggestionParams = z.object({
 });
 const articleChatSuggestionStatusInput = z.object({ status: z.enum(["accepted", "rejected", "unavailable"]) });
 
+export interface CsdnBrowserConfirmResult {
+  remoteUrl: string | null;
+  remoteContentId: string | null;
+}
+
 export function buildServer(
   startedAt: string,
   database: AppDatabase,
   vault: CredentialVault,
   modelProvider: ModelProvider = new UnavailableModelProvider(),
   assetStore?: LocalAssetStore,
-  options?: { logFilePath?: string; skillsDirectory?: string; visibleBrowserSearch?: VisibleBrowserSearch }
+  options?: {
+    logFilePath?: string;
+    skillsDirectory?: string;
+    visibleBrowserSearch?: VisibleBrowserSearch;
+    csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
+  }
 ) {
   const server = Fastify({
     bodyLimit: 22 * 1024 * 1024,
@@ -756,6 +766,53 @@ export function buildServer(
   server.post("/api/integrations/csdn/channel-drafts/:draftId/jobs", async (request, reply) => {
     const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
     return reply.code(201).send(csdnChannels.createPublishJob(params.draftId));
+  });
+
+  server.get("/api/integrations/csdn/jobs/:jobId", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const job = csdnChannels.getJob(params.jobId);
+    const draft = csdnChannels.getDraftForJob(params.jobId);
+    return { job, draft };
+  });
+
+  server.post("/api/integrations/csdn/jobs/:jobId/browser-assist", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    return reply.code(201).send(csdnChannels.startBrowserAssist(params.jobId));
+  });
+
+  server.post("/api/integrations/csdn/jobs/:jobId/fill", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      verifiedFields: z.array(z.enum(["account", "title", "summary", "tags", "cover", "asset_count", "content"])).default([]),
+      state: z.enum(["ready_for_final_confirmation", "needs_user", "failed_before_submit"]),
+      reason: z.string().max(500).optional()
+    }).parse(request.body);
+    return csdnChannels.recordFill(params.jobId, body);
+  });
+
+  server.post("/api/integrations/csdn/jobs/:jobId/confirm", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    if (!options?.csdnBrowserConfirm) throw new CsdnChannelError("当前环境未启用 CSDN 浏览器发布能力。");
+    csdnChannels.beginSubmit(params.jobId);
+    let receipt: CsdnBrowserConfirmResult | null;
+    try {
+      receipt = await options.csdnBrowserConfirm(params.jobId);
+    } catch (cause) {
+      throw cause instanceof CsdnChannelError ? cause : new CsdnChannelError(cause instanceof Error ? cause.message : "CSDN 浏览器确认失败。");
+    }
+    if (!receipt) {
+      return csdnChannels.recordSubmission(params.jobId, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation", reason: "未能自动读取 CSDN 文章链接。" });
+    }
+    return reply.code(201).send(csdnChannels.recordSubmission(params.jobId, { ...receipt, state: "published" }));
+  });
+
+  server.post("/api/integrations/csdn/jobs/:jobId/status", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      status: z.enum(["published", "failed", "cancelled"]),
+      reason: z.string().max(500).default("")
+    }).parse(request.body);
+    return csdnChannels.correctStatus(params.jobId, body.status, body.reason);
   });
 
   server.get("/api/content-projects", async () => {
@@ -1463,9 +1520,10 @@ export async function createServer(
   assetStore?: LocalAssetStore,
   logFilePath?: string,
   skillsDirectory?: string,
-  visibleBrowserSearch?: VisibleBrowserSearch
+  visibleBrowserSearch?: VisibleBrowserSearch,
+  csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

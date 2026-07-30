@@ -348,7 +348,8 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     assetStore,
     logFilePath,
     path.join(dataDirectory, "skills"),
-    searchWithVisibleResearchBrowser
+    searchWithVisibleResearchBrowser,
+    confirmCsdnBrowserPublish
   );
   runtimeInfoLogger = (details, message) => server.log.info(details, message);
   let runtimeClosed = false;
@@ -433,6 +434,11 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
       await window.webContents.executeJavaScript("sessionStorage.removeItem('contentferry-wechat-draft-target'); window.__contentFerryWechatDraftTarget = undefined;", true);
     }
     await driveWechatBackendToDrafts(window, wechatBackendTarget);
+  });
+  ipcMain.handle("contentferry:open-csdn-publisher", async (_event, jobId?: unknown) => {
+    if (typeof jobId !== "string" || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(jobId)) throw new Error("缺少有效的 CSDN 发布任务标识。");
+    logCsdnBrowserAssist("requested", { jobId });
+    await driveCsdnBrowserPublish(jobId);
   });
   ipcMain.handle("contentferry:open-contentany", async () => {
     const window = await getOrCreateContentAnyWindow();
@@ -917,6 +923,236 @@ async function getOrCreateWechatBackendWindow(): Promise<BrowserWindow> {
   window.webContents.on("did-finish-load", () => { void driveWechatBackendToDrafts(window, wechatBackendTarget); });
   await window.loadURL("https://mp.weixin.qq.com/");
   return window;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSDN 受控浏览器发布（FR-15.3）：登录预检、表单填充、用户最终确认后单次提交、远端回读。
+// 与微信一致，状态落库全部在 create-server 路由；这里只驱动可见浏览器并回写结果。
+// ─────────────────────────────────────────────────────────────────────────────
+const CSDN_API_BASE = "http://127.0.0.1:4317";
+const CSDN_EDITOR_URL = "https://editor.csdn.net/md/";
+let csdnWindow: BrowserWindow | undefined;
+
+function logCsdnBrowserAssist(step: string, details: Record<string, unknown> = {}): void {
+  runtimeInfoLogger?.({ scope: "csdn-browser-assist", step, ...details }, "CSDN 浏览器辅助");
+}
+
+async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
+  if (csdnWindow && !csdnWindow.isDestroyed()) return csdnWindow;
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    show: true,
+    title: "文渡 · CSDN 编辑器",
+    icon: createWenduWindowIcon(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      // 账号隔离且持久：登录态在本机会话中保留，符合 FR-15.3 的“持久且账号隔离的可见浏览器会话”。
+      partition: "persist:contentferry-csdn"
+    }
+  });
+  csdnWindow = window;
+  window.on("closed", () => { if (csdnWindow === window) csdnWindow = undefined; });
+  await window.loadURL(CSDN_EDITOR_URL);
+  return window;
+}
+
+function showCsdnAssistStatus(window: BrowserWindow, lines: string[]): void {
+  if (window.isDestroyed()) return;
+  const text = lines.join("\n");
+  const safe = JSON.stringify(text);
+  void window.webContents.executeJavaScript(`(function(){
+    var panel = document.getElementById('contentferry-csdn-assist-status');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'contentferry-csdn-assist-status';
+      panel.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:rgba(23,32,51,.82);color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;white-space:pre-line;cursor:move;user-select:none;';
+      document.body.appendChild(panel);
+      var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+      panel.addEventListener('mousedown', function(e){ dragging = true; var r = panel.getBoundingClientRect(); sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top; panel.style.left = sl + 'px'; panel.style.top = st + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto'; e.preventDefault(); });
+      document.addEventListener('mousemove', function(e){ if(!dragging) return; var nl = Math.max(0, Math.min(sl + e.clientX - sx, window.innerWidth - panel.offsetWidth)); var nt = Math.max(0, Math.min(st + e.clientY - sy, window.innerHeight - panel.offsetHeight)); panel.style.left = nl + 'px'; panel.style.top = nt + 'px'; });
+      document.addEventListener('mouseup', function(){ dragging = false; });
+    }
+    panel.textContent = ${safe};
+  })()`).catch(() => undefined);
+}
+
+async function waitForCsdnEditor(window: BrowserWindow, timeoutMs = 15_000): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (window.isDestroyed()) return false;
+    const ready = await window.webContents.executeJavaScript(`(function(){
+      return document.readyState === 'complete' && (document.querySelector('input.title, #title, input[placeholder*="标题"]') || document.querySelector('.CodeMirror') || document.querySelector('[contenteditable="true"]')) != null;
+    })()`).catch(() => false);
+    if (ready) return true;
+    await delay(400);
+  }
+  return false;
+}
+
+async function persistCsdnFill(jobId: string, body: unknown): Promise<void> {
+  try {
+    await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/fill`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    logCsdnBrowserAssist("fill-persist-failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
+  let window: BrowserWindow;
+  try {
+    window = await getOrCreateCsdnWindow();
+  } catch (error) {
+    logCsdnBrowserAssist("window-create-failed", { error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+  window.show();
+  window.focus();
+  let draft: { title: string; markdown: string; author: string; digest: string };
+  try {
+    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json() as { draft: { title: string; markdown: string; author: string; digest: string } };
+    draft = payload.draft;
+  } catch (error) {
+    logCsdnBrowserAssist("fetch-draft-failed", { error: error instanceof Error ? error.message : String(error) });
+    showCsdnAssistStatus(window, ["无法读取 CSDN 渠道稿内容，请稍后重试或刷新页面。"]);
+    return;
+  }
+
+  const ready = await waitForCsdnEditor(window);
+  if (!ready) {
+    logCsdnBrowserAssist("editor-not-ready", {});
+    showCsdnAssistStatus(window, ["CSDN 编辑器加载超时。", "请确认浏览器已打开 CSDN 编辑器；若未登录请先登录，再重新发起。"]);
+    return;
+  }
+
+  // 登录预检：未登录时 CSDN 会跳转 passport 或显示登录入口。
+  const loginState = await window.webContents.executeJavaScript(`(function(){
+    var u = (location.href || '').toLowerCase();
+    if (u.indexOf('passport.csdn.net') >= 0 || /\\/login/.test(u)) return 'login';
+    var loginEl = document.querySelector('a[href*="passport"], .login_box, #csdn-login, [class*="loginBtn"], [class*="login-btn"]');
+    if (loginEl && /登录/.test(loginEl.textContent || '')) return 'login';
+    return 'ok';
+  })()`).catch(() => "ok");
+  if (loginState === "login") {
+    logCsdnBrowserAssist("needs-login", {});
+    await persistCsdnFill(jobId, { verifiedFields: [], state: "needs_login", reason: "CSDN 编辑器未登录，请先在浏览器登录后再发起发布。" });
+    showCsdnAssistStatus(window, ["CSDN 编辑器尚未登录。", "请在打开的浏览器中登录 CSDN，然后回到文渡重新点击“在浏览器中完成发布”。"]);
+    return;
+  }
+
+  // 填充标题与正文（Markdown）。CSDN 编辑器为 CodeMirror；若取不到实例则退回 execCommand/粘贴兜底。
+  const fillArgs = JSON.stringify({ title: draft.title, markdown: draft.markdown });
+  const fill = await window.webContents.executeJavaScript(`(function(args){
+    var title = args.title, markdown = args.markdown;
+    var result = { title: false, content: false };
+    function setValue(el, value){
+      try {
+        var proto = Object.getPrototypeOf(el);
+        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) { desc.set.call(el, value); } else { el.value = value; }
+      } catch (e) { el.value = value; }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    var titleEl = document.querySelector('input.title') || document.querySelector('input[placeholder*="标题"]') || document.querySelector('#title');
+    if (titleEl) { setValue(titleEl, title); result.title = (titleEl.value || '').length > 0; }
+    var cm = document.querySelector('.CodeMirror');
+    if (cm && cm.CodeMirror) { cm.CodeMirror.setValue(markdown); result.content = (cm.CodeMirror.getValue() || '').length > 0; }
+    else {
+      var ed = document.querySelector('[contenteditable="true"]') || document.querySelector('.editor');
+      if (ed) { ed.focus(); try { document.execCommand('selectAll', false, null); document.execCommand('insertText', false, markdown); } catch (e) {} result.content = (ed.innerText || '').length > 0; }
+    }
+    return result;
+  })(${fillArgs})`, false).catch((error: unknown) => {
+    logCsdnBrowserAssist("fill-execute-failed", { error: error instanceof Error ? error.message : String(error) });
+    return { title: false, content: false };
+  });
+
+  const verifiedFields: string[] = [];
+  if (fill.title) verifiedFields.push("title");
+  if (fill.content) verifiedFields.push("content");
+  logCsdnBrowserAssist("filled", { title: fill.title, content: fill.content });
+
+  if (!fill.title || !fill.content) {
+    await persistCsdnFill(jobId, {
+      verifiedFields,
+      state: fill.title || fill.content ? "needs_user" : "failed_before_submit",
+      reason: "未能可靠填充标题或正文；请在浏览器中手动补齐，再回到文渡点击“我已在 CSDN 发布”。"
+    });
+    showCsdnAssistStatus(window, [
+      "已打开 CSDN 编辑器，但标题或正文未能自动填充。",
+      "请在浏览器中手动补齐内容；确认无误后，回到文渡点击“我已在 CSDN 发布”。"
+    ]);
+    return;
+  }
+
+  await persistCsdnFill(jobId, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+  showCsdnAssistStatus(window, [
+    "已填充标题与正文。",
+    "请在浏览器中核对内容、摘要、标签与封面。",
+    "确认无误后，回到文渡点击“我已在 CSDN 发布”，文渡会点击 CSDN 的“发布文章”并读取回执。"
+  ]);
+}
+
+async function confirmCsdnBrowserPublish(jobId: string): Promise<{ remoteUrl: string | null; remoteContentId: string | null } | null> {
+  const window = csdnWindow;
+  if (!window || window.isDestroyed()) {
+    logCsdnBrowserAssist("confirm-window-missing", { jobId });
+    return null;
+  }
+  window.show();
+  window.focus();
+  showCsdnAssistStatus(window, ["正在点击 CSDN 的“发布文章”按钮……", "若页面要求二次确认，请在浏览器中完成。"]);
+  const clicked = await window.webContents.executeJavaScript(`(function(){
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('button, .btn, a.btn'));
+    var target = buttons.find(function(b){ return /发布文章|发布$/.test((b.textContent || '').trim()); });
+    if (!target) return false;
+    target.click();
+    return true;
+  })()`).catch(() => false);
+  if (!clicked) {
+    logCsdnBrowserAssist("publish-button-not-found", { jobId });
+    showCsdnAssistStatus(window, ["未找到 CSDN 的“发布文章”按钮。", "请在浏览器中手动点击发布；发布成功后回到文渡点击“我已在 CSDN 发布”。"]);
+    return null;
+  }
+
+  // 等待发布完成并读取文章链接（CSDN 成功后会弹出含 blog.csdn.net 详情链接的提示）。
+  const startedAt = Date.now();
+  let remoteUrl: string | null = null;
+  while (Date.now() - startedAt < 20_000) {
+    if (window.isDestroyed()) return null;
+    const found = await window.webContents.executeJavaScript(`(function(){
+      var u = location.href || '';
+      var detailsMatch = u.match(/blog\\.csdn\\.net\\/[^\\/]+\\/article\\/details\\/(\\d+)/);
+      if (detailsMatch) return location.href;
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href*="article/details/"]'));
+      for (var i = 0; i < links.length; i++) {
+        var href = links[i].href || '';
+        if (/article\\/details\\/\\d+/.test(href)) return href;
+      }
+      return '';
+    })()`).catch(() => "");
+    if (found) { remoteUrl = found; break; }
+    await delay(800);
+  }
+
+  if (!remoteUrl) {
+    logCsdnBrowserAssist("receipt-not-read", { jobId });
+    showCsdnAssistStatus(window, ["已尝试点击发布，但未能自动读取 CSDN 文章链接。", "请在浏览器确认发布结果；如已发布，可人工校正并粘贴链接。"]);
+    return null;
+  }
+  const contentIdMatch = /article\/details\/(\d+)/.exec(remoteUrl);
+  const remoteContentId = contentIdMatch ? contentIdMatch[1] : null;
+  logCsdnBrowserAssist("receipt-read", { remoteUrl, remoteContentId });
+  showCsdnAssistStatus(window, ["已在 CSDN 发布，已回写文章链接：", remoteUrl]);
+  return { remoteUrl, remoteContentId };
 }
 
 async function driveWechatEditorSettings(window: BrowserWindow, target?: WechatBackendTarget): Promise<void> {

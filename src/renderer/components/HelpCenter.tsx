@@ -80,7 +80,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         </details>
         <details>
           <summary>怎样创建 CSDN 渠道稿？</summary>
-          <p>先添加一个 CSDN 账号，再到“内容库”对任一文章点击“生成 CSDN 稿”。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流；当前可先创建发布任务，浏览器自动提交仍在测试账号能力验证阶段。</p>
+          <p>先添加一个 CSDN 账号，再到“内容库”对任一文章点击“生成 CSDN 稿”。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流。冻结后创建发布任务，再点「在浏览器中完成发布」：文渡会打开 CSDN 编辑器自动填充标题与正文，你在浏览器核对后点文渡的「我已在 CSDN 发布」，文渡会点击 CSDN 的发布按钮并读回链接；读不到链接时可在后台核实后「校正状态」。文渡不会绕过你的确认自动发布。</p>
           <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
         </details>
 
