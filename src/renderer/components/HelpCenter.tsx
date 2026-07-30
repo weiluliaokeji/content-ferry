@@ -55,7 +55,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         <article>
           <span>4</span>
           <h3>创作并发布</h3>
-          <p>从主题开始，阿文先联网补充可追溯资料；资料不足时可在资料窗口继续指示补研。再生成提纲与正文；完成封面与 AIGC 特征检测后，先同步微信草稿并人工预览，再决定普通发布或群发。</p>
+          <p>从主题开始，阿文先联网补充可追溯资料；之后可在“编辑创作方向”修改主题、目标、读者、角度和资料。再生成提纲与正文；完成封面与 AIGC 特征检测后，先同步微信草稿并人工预览，再决定普通发布或群发。</p>
           <button className="text-button" onClick={() => onNavigate("dashboard")}>新建文章</button>
         </article>
       </section>
@@ -77,6 +77,11 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         <details>
           <summary>原创、赞赏和合集怎么设置？</summary>
           <p>在文章编辑页的“文章设置”中勾选申请原创声明、开启赞赏，或填写合集名称。草稿创建后，在发布中心点击“在微信后台完善并发布”；文渡会先读取微信“选择合集”窗口中可见的名称，按公众号缓存后再匹配文章设置。下次可直接从同一公众号的下拉建议中选择；微信后台仍是最终来源。你仍要核对最终效果，并在微信后台点击发布。</p>
+        </details>
+        <details>
+          <summary>怎样创建 CSDN 渠道稿？</summary>
+          <p>先添加一个 CSDN 账号，再到“内容库”对任一文章点击“生成 CSDN 稿”。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流；当前可先创建发布任务，浏览器自动提交仍在测试账号能力验证阶段。</p>
+          <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
         </details>
 
         <h2>常见问题</h2>
@@ -102,6 +107,10 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <summary>遇到错误怎么办？</summary>
           <p>到“运行日志”选择发生问题的日期，查看错误、请求路径、状态码和请求 ID。涉及微信发布时，可在发布中心核实后台结果并人工校正状态。</p>
           <button className="text-button" onClick={() => onNavigate("logs")}>查看运行日志</button>
+        </details>
+        <details>
+          <summary>生成 AI 封面很久没有结果怎么办？</summary>
+          <p>图片模型的排队时间可能较长，但不会锁定正文编辑。可继续编辑文章；若开启“AI 调用审计”，可在“技能与模型”页面给出的审计日志目录查看图片任务的提交、轮询和下载结果。</p>
         </details>
       </section>
     </div>

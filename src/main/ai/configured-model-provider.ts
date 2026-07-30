@@ -162,12 +162,6 @@ export class ConfiguredModelProvider implements ModelProvider {
 
   /** Scheme B: app drives the loop; the model returns a JSON plan each round. */
   private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number): Promise<number> {
-    const plannerSchema = {
-      type: "object",
-      properties: { action: { type: "string", enum: ["search", "done"] }, query: { type: "string" } },
-      required: ["action"],
-      additionalProperties: false
-    } as const;
     let rounds = 0;
     for (let round = 1; round <= maxRounds; round++) {
       onStatus(`第 ${round} 轮研究：规划检索方向…`);
@@ -223,7 +217,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       outputSchema: {
         type: "object",
         properties: { action: { type: "string", enum: ["search", "done"] }, query: { type: "string" } },
-        required: ["action"],
+        required: ["action", "query"],
         additionalProperties: false
       },
       timeoutMs: 60_000,

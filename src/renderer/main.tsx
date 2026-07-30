@@ -4,8 +4,9 @@ import "./styles.css";
 import wenduLogo from "./assets/wendu-icon.png";
 import { locateMarkdownSelection } from "./markdown-selection";
 import { HelpCenter } from "./components/HelpCenter";
+import { CsdnDraftWorkspace } from "./components/CsdnDraftWorkspace";
 
-const apiBase = "http://127.0.0.1:4317/api";
+export const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
   import("./components/VisualMarkdownEditor").then((module) => ({ default: module.VisualMarkdownEditor }))
 );
@@ -113,7 +114,7 @@ type MediaAccount = { id: string; platform: AccountPlatform; displayName: string
 type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null }>; truncated: boolean; warnings: string[] };
 type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
 type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; briefReady: boolean; researchReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
-type ContentBrief = { projectId: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
+type ContentBrief = { projectId: string; topic: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
 type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; retrievedAt: string; selected: boolean };
 type ContentResearch = { projectId: string; planMarkdown: string; sources: ResearchSource[]; updatedAt: string | null; provider?: string; model?: string | null };
 type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
@@ -127,6 +128,26 @@ type WechatPublishJob = {
   statusSource: "system" | "wechat" | "browser" | "manual"; statusNote: string | null;
   declareOriginal: boolean; enableReward: boolean; collectionName: string; updatedAt: string;
 };
+type CsdnChannelDraft = {
+  id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
+  generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string;
+};
+type CsdnPublishJob = {
+  id: string; accountId: string; channelDraftId: string; status: "queued" | "needs_login" | "filling" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "cancelled";
+  statusNote: string | null; updatedAt: string;
+};
+type ChannelAction =
+  | { kind: "enter"; label: string; onClick: () => void }
+  | { kind: "generate"; label: string; onClick: () => void }
+  | { kind: "continue"; label: string; onClick: () => void };
+type ChannelRow = {
+  platform: AccountPlatform;
+  label: string;
+  statusLabel: string;
+  tone: "neutral" | "info" | "success" | "warning";
+  action: ChannelAction;
+};
 type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string };
 type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
 type SelectedImage = { fileName: string; mimeType: string; base64: string };
@@ -134,6 +155,7 @@ type ArticleSettings = {
   author: string;
   digest: string;
   coverSource: string;
+  coverPrompt: string;
   accountId: string;
   needOpenComment: boolean;
   onlyFansCanComment: boolean;
@@ -187,7 +209,7 @@ type RuntimeLogResponse = {
 
 const emptyProfile: AccountProfile = { positioning: "", targetAudience: "", prohibitedTopics: "", writingStyle: "", regularColumns: "" };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body != null && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(`${apiBase}${path}`, { ...init, headers });
@@ -235,7 +257,7 @@ async function streamGeneration<T>(path: string, signal: AbortSignal, onEvent: (
   }
 }
 
-const platformName = (platform: AccountPlatform) => platform === "wechat_official" ? "微信公众号" : "CSDN";
+export const platformName = (platform: AccountPlatform) => platform === "wechat_official" ? "微信公众号" : "CSDN";
 const providerName = (provider: ModelProviderId | null) => provider === null ? "无需模型" : ({
   openai_codex: "OpenAI Codex",
   openai: "OpenAI API",
@@ -300,6 +322,9 @@ function App() {
   const [outlineGenerating, setOutlineGenerating] = useState(false);
   const [outlineGenerationStatus, setOutlineGenerationStatus] = useState("");
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
+  const [outlineEditorMode, setOutlineEditorMode] = useState<"visual" | "markdown">("visual");
+  const [outlineModeScrollOffset, setOutlineModeScrollOffset] = useState(0);
+  const outlineMarkdownSourceRef = useRef<HTMLTextAreaElement | null>(null);
   const [researchProject, setResearchProject] = useState<ContentProject>();
   const [research, setResearch] = useState<ContentResearch>();
   const [researchGenerating, setResearchGenerating] = useState(false);
@@ -337,6 +362,15 @@ function App() {
   const [wechatStatusReason, setWechatStatusReason] = useState("");
   const [wechatCorrectionSaving, setWechatCorrectionSaving] = useState(false);
   const [wechatCorrectionError, setWechatCorrectionError] = useState("");
+  const [csdnDraftSource, setCsdnDraftSource] = useState<ContentSourceArticle>();
+  const [csdnDraftAccountId, setCsdnDraftAccountId] = useState("");
+  const [csdnDraftGenerationMode, setCsdnDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [csdnDraft, setCsdnDraft] = useState<CsdnChannelDraft>();
+  const [csdnDraftSaving, setCsdnDraftSaving] = useState(false);
+  const [csdnPublishJob, setCsdnPublishJob] = useState<CsdnPublishJob>();
+  const [csdnDrafts, setCsdnDrafts] = useState<CsdnChannelDraft[]>([]);
+  const [csdnJobs, setCsdnJobs] = useState<CsdnPublishJob[]>([]);
+  const [csdnEntryChoices, setCsdnEntryChoices] = useState<Array<{ draft: CsdnChannelDraft; accountName: string; job?: CsdnPublishJob }> | null>(null);
   const [publishProject, setPublishProject] = useState<ContentProject>();
   const [publishSource, setPublishSource] = useState<ContentSourceArticle>();
   const [publishAccountId, setPublishAccountId] = useState("");
@@ -442,6 +476,163 @@ function App() {
       setWechatJobsRefreshing(false);
     }
   };
+  const loadCsdnChannelDrafts = async () => {
+    try {
+      const [drafts, jobs] = await Promise.all([
+        request<{ items: CsdnChannelDraft[] }>("/integrations/csdn/channel-drafts"),
+        request<{ items: CsdnPublishJob[] }>("/integrations/csdn/jobs")
+      ]);
+      setCsdnDrafts(drafts.items);
+      setCsdnJobs(jobs.items);
+    } catch {
+      /* 读取失败时不阻塞内容库，按钮仍可作为“生成 CSDN 稿”使用。 */
+    }
+  };
+  const openCsdnChannelDraft = async (relativePath: string) => {
+    const csdnAccounts = accounts.filter((account) => account.platform === "csdn");
+    if (csdnAccounts.length === 0) {
+      setError("请先在“账号”中添加一个 CSDN 账号，再创建 CSDN 渠道稿。");
+      return;
+    }
+    try {
+      const [article, drafts, jobs] = await Promise.all([
+        request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(relativePath)}`),
+        request<{ items: CsdnChannelDraft[] }>("/integrations/csdn/channel-drafts"),
+        request<{ items: CsdnPublishJob[] }>("/integrations/csdn/jobs")
+      ]);
+      setCsdnDrafts(drafts.items);
+      setCsdnJobs(jobs.items);
+      const existing = drafts.items.filter((candidate) => candidate.sourceRelativePath === relativePath);
+      if (existing.length === 0) {
+        setCsdnDraftSource(article);
+        setCsdnDraftAccountId(csdnAccounts[0].id);
+        setCsdnDraftGenerationMode("rewrite");
+        setCsdnDraft(undefined);
+        setCsdnPublishJob(undefined);
+        setError("");
+        return;
+      }
+      setCsdnDraftSource(article);
+      setCsdnEntryChoices(existing.map((draft) => ({
+        draft,
+        accountName: csdnAccounts.find((account) => account.id === draft.accountId)?.displayName ?? "CSDN 账号",
+        job: jobs.items.find((job) => job.channelDraftId === draft.id)
+      })));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开 CSDN 渠道稿。");
+    }
+  };
+  const openExistingCsdnDraft = (choice: { draft: CsdnChannelDraft; job?: CsdnPublishJob }) => {
+    setCsdnDraft(choice.draft);
+    setCsdnPublishJob(choice.job);
+    setCsdnDraftSource(undefined);
+    setCsdnEntryChoices(null);
+    setError("");
+  };
+  const channelRowsFor = (item: { relativePath: string; title?: string | null }): ChannelRow[] => {
+    const rows: ChannelRow[] = [];
+    const wechatJob = bestWechatJob(wechatJobs, (entry) => entry.sourceRelativePath === item.relativePath || entry.title === item.title);
+    if (accounts.some((account) => account.platform === "wechat_official")) {
+      if (wechatJob) {
+        switch (wechatJob.status) {
+          case "draft_ready":
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "草稿待发布", tone: "info", action: { kind: "continue", label: "继续发布", onClick: () => setActiveView("publish") } });
+            break;
+          case "submitted":
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "微信处理中", tone: "neutral", action: { kind: "enter", label: "查看进度", onClick: () => setActiveView("publish") } });
+            break;
+          case "published":
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "已发布", tone: "success", action: { kind: "enter", label: "查看", onClick: () => setActiveView("publish") } });
+            break;
+          case "cancelled":
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "已取消发布", tone: "warning", action: { kind: "generate", label: "重新设置并发布", onClick: () => void openSourceArticle(item.relativePath, "settings") } });
+            break;
+          default:
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "发布失败", tone: "warning", action: { kind: "generate", label: "重新设置", onClick: () => void openSourceArticle(item.relativePath, "settings") } });
+        }
+      } else {
+        rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "未发布", tone: "neutral", action: { kind: "generate", label: "设置并发布", onClick: () => void openSourceArticle(item.relativePath, "settings") } });
+      }
+    }
+    if (accounts.some((account) => account.platform === "csdn")) {
+      const csdnExisting = csdnDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+      if (csdnExisting) {
+        rows.push({
+          platform: "csdn", label: "CSDN",
+          statusLabel: csdnExisting.status === "approved" ? "已冻结" : "草稿",
+          tone: csdnExisting.status === "approved" ? "success" : "neutral",
+          action: { kind: "enter", label: "进入 CSDN 稿", onClick: () => void openCsdnChannelDraft(item.relativePath) }
+        });
+      } else {
+        rows.push({ platform: "csdn", label: "CSDN", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成 CSDN 稿", onClick: () => void openCsdnChannelDraft(item.relativePath) } });
+      }
+    }
+    return rows;
+  };
+  const generateCsdnChannelDraft = async () => {
+    if (!csdnDraftSource || !csdnDraftAccountId) return;
+    setCsdnDraftSaving(true);
+    try {
+      const draft = await request<CsdnChannelDraft>("/integrations/csdn/channel-drafts", {
+        method: "POST",
+        body: JSON.stringify({ accountId: csdnDraftAccountId, relativePath: csdnDraftSource.relativePath, generationMode: csdnDraftGenerationMode })
+      });
+      setCsdnDraft(draft);
+      setError("");
+      void loadCsdnChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "生成 CSDN 渠道稿失败。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const saveCsdnChannelDraft = async () => {
+    if (!csdnDraft) return;
+    setCsdnDraftSaving(true);
+    try {
+      const saved = await request<CsdnChannelDraft>(`/integrations/csdn/channel-drafts/${csdnDraft.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title: csdnDraft.title, markdown: csdnDraft.markdown, author: csdnDraft.author, digest: csdnDraft.digest, coverSource: csdnDraft.coverSource })
+      });
+      setCsdnDraft(saved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 CSDN 渠道稿失败。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const approveCsdnChannelDraft = async () => {
+    if (!csdnDraft) return;
+    setCsdnDraftSaving(true);
+    try {
+      const saved = await request<CsdnChannelDraft>(`/integrations/csdn/channel-drafts/${csdnDraft.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title: csdnDraft.title, markdown: csdnDraft.markdown, author: csdnDraft.author, digest: csdnDraft.digest, coverSource: csdnDraft.coverSource })
+      });
+      const approved = await request<CsdnChannelDraft>(`/integrations/csdn/channel-drafts/${saved.id}/approve`, { method: "POST" });
+      setCsdnDraft(approved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "冻结 CSDN 渠道稿失败。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
+  const createCsdnPublishJob = async () => {
+    if (!csdnDraft) return;
+    setCsdnDraftSaving(true);
+    try {
+      const job = await request<CsdnPublishJob>(`/integrations/csdn/channel-drafts/${csdnDraft.id}/jobs`, { method: "POST" });
+      setCsdnPublishJob(job);
+      setError("");
+      void loadCsdnChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建 CSDN 发布任务失败。");
+    } finally {
+      setCsdnDraftSaving(false);
+    }
+  };
   const openWechatStatusCorrection = (job: WechatPublishJob) => {
     setCorrectingWechatJob(job);
     setCorrectedWechatStatus("published");
@@ -507,7 +698,7 @@ function App() {
   }, []);
   useEffect(() => {
     if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
-    if (activeView === "library") void refreshSourcePreview().catch(() => undefined);
+    if (activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); }
   }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => {
@@ -628,11 +819,7 @@ function App() {
     }
     setSaving(true);
     try {
-      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
-      await request<ContentBrief>(`/content-projects/${project.id}/brief`, {
-        method: "PUT",
-        body: JSON.stringify({ objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim() })
-      });
+      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
       setProjectTopic(""); setProjectTitle(""); setProjectAccountId("");
       setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes("");
       setProjectModalOpen(false);
@@ -647,7 +834,8 @@ function App() {
     const publishedNotice = publishJob
       ? "\n\n微信公众号中的草稿、已提交任务或已发布文章不会被撤回；文渡会保留微信发布记录。"
       : "";
-    if (!window.confirm(`确定删除本地文章“${project.topic}”吗？\n\n将永久删除 VitePress 文章目录：\n${relativePath}${publishedNotice}\n\n此操作不能撤销。`)) return;
+    const csdnNotice = "\n\n与本文关联的 CSDN 渠道稿（含其本地图片）也会被一并删除，无法恢复。";
+    if (!window.confirm(`确定删除本地文章“${project.topic}”吗？\n\n将永久删除 VitePress 文章目录：\n${relativePath}${publishedNotice}${csdnNotice}\n\n此操作不能撤销。`)) return;
     setSaving(true);
     try {
       await request<void>(`/content-projects/${project.id}`, { method: "DELETE" });
@@ -693,7 +881,7 @@ function App() {
     if (!briefProject || !brief) return;
     setSaving(true);
     try {
-      await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes }) });
+      await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ topic: brief.topic, objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes }) });
       if (briefTitle.trim() && briefTitle.trim() !== briefProject.topic) {
         await request<ContentProject>(`/content-projects/${briefProject.id}/title`, { method: "PUT", body: JSON.stringify({ title: briefTitle.trim() }) });
       }
@@ -714,7 +902,7 @@ function App() {
     try {
       const suggested = await request<TitleSuggestion>(`/content-projects/${briefProject.id}/title/suggest`, {
         method: "POST",
-        body: JSON.stringify({ objective: brief?.objective ?? "", audience: brief?.audience ?? "", angle: brief?.angle ?? "", sourceNotes: brief?.sourceNotes ?? "" }),
+        body: JSON.stringify({ topic: brief?.topic ?? briefProject.topic, objective: brief?.objective ?? "", audience: brief?.audience ?? "", angle: brief?.angle ?? "", sourceNotes: brief?.sourceNotes ?? "" }),
         signal: controller.signal
       });
       setTitleSuggestions(suggested.titles);
@@ -806,13 +994,31 @@ function App() {
   };
   const openOutline = async (project: ContentProject) => {
     if (project.outlineReady) {
-      setOutlineProject(project); setOutline(undefined); setSaving(false);
+      setOutlineProject(project); setOutline(undefined); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0);
       try { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); }
       catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); }
       return;
     }
+    setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0);
     await generateOutline(project);
   };
+  const switchOutlineToMarkdown = (offset: number) => {
+    setOutlineModeScrollOffset(offset);
+    setOutlineEditorMode("markdown");
+  };
+  const switchOutlineToVisual = () => {
+    const textarea = outlineMarkdownSourceRef.current;
+    if (textarea) setOutlineModeScrollOffset(markdownOffsetAtTextareaTop(textarea, outline?.markdown ?? ""));
+    setOutlineEditorMode("visual");
+  };
+  useEffect(() => {
+    if (outlineEditorMode !== "markdown") return;
+    requestAnimationFrame(() => {
+      const textarea = outlineMarkdownSourceRef.current;
+      const canvas = textarea?.closest<HTMLElement>(".editor-canvas");
+      if (canvas) canvas.scrollTop = 0;
+    });
+  }, [outlineEditorMode]);
   const saveOutline = async (event: FormEvent) => {
     event.preventDefault(); if (!outlineProject || !outline) return;
     setSaving(true);
@@ -1552,6 +1758,21 @@ function App() {
     />;
   }
 
+  if (csdnDraft) {
+    const csdnAccount = accounts.find((account) => account.id === csdnDraft.accountId);
+    return <CsdnDraftWorkspace
+      draft={csdnDraft}
+      accountDisplay={csdnAccount ? `${csdnAccount.displayName}` : "CSDN 账号"}
+      saving={csdnDraftSaving}
+      jobExists={Boolean(csdnPublishJob)}
+      onChange={(patch) => setCsdnDraft((current) => current ? { ...current, ...patch } : current)}
+      onSave={() => void saveCsdnChannelDraft()}
+      onApprove={() => void approveCsdnChannelDraft()}
+      onCreateJob={() => void createCsdnPublishJob()}
+      onBack={() => { setCsdnDraftSource(undefined); setCsdnDraft(undefined); setCsdnPublishJob(undefined); }}
+    />;
+  }
+
   if (sourceArticle) {
     return <ArticleWorkspace
       title={sourceArticle.title ?? sourceArticle.relativePath}
@@ -1708,7 +1929,24 @@ function App() {
     </>}
 
     {activeView === "library" && <>
-    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以直接发布到微信公众号。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章。</p><ul className="content-library-list">{sourcePreview.items.map((item) => { const job = bestWechatJob(wechatJobs, (entry) => entry.sourceRelativePath === item.relativePath || entry.title === item.title); return <li key={item.relativePath}><span><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>{job && <small>{wechatJobLabel(job)}</small>}</span><span className="account-actions">{job?.status === "draft_ready" ? <button className="secondary-button" onClick={() => setActiveView("publish")}>继续发布</button> : job?.status === "submitted" ? <span className="status-badge">微信处理中</span> : job?.status === "published" ? <span className="status-badge success">已发布</span> : job?.status === "cancelled" ? <span className="status-badge warning">已取消发布</span> : <button className="secondary-button" onClick={() => void openSourceArticle(item.relativePath, "settings")}>设置并发布</button>}</span></li>; })}</ul></>}</section>
+    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章。</p><ul className="content-library-list">
+        {sourcePreview.items.map((item) => (
+          <li key={item.relativePath}>
+            <span className="article-primary">
+              <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+            </span>
+            <span className="channel-distribution">
+              {channelRowsFor(item).map((row) => (
+                <span className="channel-row" key={row.platform}>
+                  <span className="channel-name">{row.label}</span>
+                  <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
+                  <button className={row.action.kind === "continue" ? "secondary-button" : "text-button"} onClick={row.action.onClick}>{row.action.label}</button>
+                </span>
+              ))}
+            </span>
+          </li>
+        ))}
+      </ul></>}</section>
     </>}
 
     {activeView === "publish" && <>
@@ -1849,6 +2087,16 @@ function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setWechatAccount(undefined)}>{wechatTestResult === "success" ? "完成" : "取消"}</button><button disabled={saving}>{saving ? "正在验证连接…" : wechatTestResult === "success" ? "重新测试" : "保存并测试连接"}</button></div>
       </form></>}
     </Modal>}
+    {csdnEntryChoices && <Modal onClose={() => { setCsdnEntryChoices(null); setCsdnDraftSource(undefined); }} disabled={csdnDraftSaving} title="已有 CSDN 渠道稿" wide>
+      <section className="csdn-entry-choices">
+        <p className="hint">这篇文章已经生成过 CSDN 渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
+        <ul className="csdn-entry-list">{csdnEntryChoices.map((choice) => <li key={choice.draft.id}><span><strong>{choice.draft.title || "未命名渠道稿"}</strong><small>{choice.accountName} · {choice.draft.status === "approved" ? "已冻结" : "草稿"} · 更新于 {new Date(choice.draft.updatedAt).toLocaleString()}</small></span><button className="secondary-button" onClick={() => openExistingCsdnDraft(choice)} disabled={csdnDraftSaving}>进入编辑</button></li>)}</ul>
+        <button className="text-button" onClick={() => setCsdnEntryChoices(null)} disabled={csdnDraftSaving}>＋ 新建渠道稿</button>
+      </section>
+    </Modal>}
+    {csdnDraftSource && !csdnEntryChoices && <Modal onClose={() => { if (!csdnDraftSaving) { setCsdnDraftSource(undefined); setCsdnDraft(undefined); setCsdnPublishJob(undefined); setCsdnEntryChoices(null); } }} disabled={csdnDraftSaving} title={`CSDN 渠道稿：${csdnDraftSource.title ?? csdnDraftSource.relativePath}`} wide>
+      { <section className="csdn-channel-start"><label className="csdn-account-field">目标 CSDN 账号<select value={csdnDraftAccountId} onChange={(event) => setCsdnDraftAccountId(event.target.value)} disabled={csdnDraftSaving}>{accounts.filter((account) => account.platform === "csdn").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={csdnDraftSaving}><legend>生成方式</legend><label className={csdnDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="csdn-generation-mode" checked={csdnDraftGenerationMode === "rewrite"} onChange={() => setCsdnDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为 CSDN 调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={csdnDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="csdn-generation-mode" checked={csdnDraftGenerationMode === "source"} onChange={() => setCsdnDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCsdnDraftSource(undefined)} disabled={csdnDraftSaving}>取消</button><button type="button" onClick={() => void generateCsdnChannelDraft()} disabled={!csdnDraftAccountId || csdnDraftSaving}>{csdnDraftSaving ? (csdnDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : csdnDraftGenerationMode === "rewrite" ? "生成 CSDN 渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
+    </Modal>}
     {(publishProject || publishSource) && <Modal onClose={() => { setPublishProject(undefined); setPublishSource(undefined); }} disabled={saving || coverGenerating} title={`同步微信草稿：${publishProject?.topic ?? publishSource?.title ?? publishSource?.relativePath}`} eyebrow="第一步只创建草稿" wide>
       <p className="hint">这里仅确认文章设置并同步草稿，不再重复编辑账号、作者、摘要和封面。同步成功后请到公众号草稿箱进行手机预览。</p>
       <form onSubmit={createWechatDraft} className="profile-form">
@@ -1892,9 +2140,9 @@ function App() {
     {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} title="配置文章库" eyebrow="只读导入预览" wide><p className="hint">选择 VitePress 仓库中的 `docs` 文件夹。只会识别 `posts/文章标题/index.md` 为文章；首页、列表页和排序配置页会自动排除。</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); openProjectCreator(); }}>下一步：新建文章</button></div></div>}</Modal>}
 
     {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
-    {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，阿文会默认联网补充资料，再生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>写作目标<textarea autoFocus value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>{historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
+    {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"} 保存后，阿文会默认联网补充资料，再生成文章提纲。</p><form onSubmit={saveBrief} className="profile-form"><label>创作主题或想法<textarea autoFocus value={brief.topic} onChange={(event) => changeBrief("topic", event.target.value)} maxLength={12000} placeholder="这篇文章想讨论的问题、判断或初始构思" /></label><label>写作目标<textarea value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>{historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>稍后继续</button><button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button></div></form></>}</Modal>}
     {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); setResearchError(""); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>{researchGenerating || researchFollowingUp ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>{researchStatus || "阿文正在检索官方与公开网页，并整理可追溯资料卡…"}</span></div> : researchError ? <section className="research-follow-up"><h3>联网检索需要处理</h3><p className="error" role="alert">{researchError}</p><p className="hint">若已打开“文渡 · 联网检索协助”窗口，请在该窗口中完成网站要求的验证或登录，再回到这里重试。浏览器会保留该站点会话。</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); setResearchError(""); }}>稍后继续</button><button type="button" onClick={() => void openResearch(researchProject, true)}>完成验证后重试</button></div></section> : !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>正在准备资料窗口…</span></div> : <><p className="hint">{researchReadOnly ? "这篇文章已发布，以下资料仅供查看，不可修改。" : "阿文已默认联网补研。保留的资料卡会作为提纲和正文的事实依据；取消勾选后不会再交给写作模型。"}</p><section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section><section className="research-sources"><h3>资料卡</h3>{research.sources.map((source) => <article className="research-source-card" key={source.id}><label><input type="checkbox" checked={source.selected} onChange={researchReadOnly ? undefined : () => void toggleResearchSource(source)} disabled={researchReadOnly} /> 用于后续写作</label><strong>{source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">打开来源</a><p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul><small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section>{!researchReadOnly && <section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的"与阿文对话"最前面。</p></div><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={!researchFollowUp.trim() || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : "让阿文继续补研"}</button><small>{researchFollowUp.length}/4000</small></div></section>}<div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div></>}</Modal>}
-    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></>}</div></form></>}</Modal>}
+    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : outlineEditorMode === "markdown" ? <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchOutlineToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={outlineMarkdownSourceRef} className="markdown-source-editor" value={outline.markdown} readOnly={outlineReadOnly} onChange={(event) => setOutline((current) => current ? { ...current, markdown: event.target.value } : current)} spellCheck={false} /></div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onSwitchToMarkdown={switchOutlineToMarkdown} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></>}</div></form></>}</Modal>}
   </main></div>;
 }
 
@@ -1946,6 +2194,7 @@ function ArticleWorkspace({
     author: "",
     digest: "",
     coverSource: "",
+    coverPrompt: "",
     accountId: "",
     needOpenComment: true,
     onlyFansCanComment: false,
@@ -1991,6 +2240,7 @@ function ArticleWorkspace({
     author: "",
     digest: "",
     coverSource: "",
+    coverPrompt: "",
     accountId: "",
     needOpenComment: true,
     onlyFansCanComment: false,
@@ -2076,6 +2326,7 @@ function ArticleWorkspace({
       request<{ items: string[] }>("/article-settings/authors")
     ]).then(([settings, authors]) => {
       setArticleSettings(settings);
+      setSettingsCoverPrompt(settings.coverPrompt);
       setSavedSettings(settings);
       setAuthorHistory(authors.items);
     }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"));
@@ -2202,7 +2453,7 @@ function ArticleWorkspace({
           ...(settingsCoverPrompt.trim() ? { prompt: settingsCoverPrompt.trim() } : {})
         })
       });
-      setArticleSettings((current) => ({ ...current, coverSource: generated.assetUrl }));
+      setArticleSettings((current) => ({ ...current, coverSource: generated.assetUrl, coverPrompt: settingsCoverPrompt }));
       setSettingsCoverError("");
     } catch (cause) {
       setSettingsCoverError(cause instanceof Error ? cause.message : "AI 封面生成失败。");
@@ -2219,6 +2470,7 @@ function ArticleWorkspace({
         body: JSON.stringify({ title, markdown })
       });
       setSettingsCoverPrompt(generated.prompt);
+      setArticleSettings((current) => ({ ...current, coverPrompt: generated.prompt }));
       setSettingsCoverError("");
     } catch (cause) {
       setSettingsCoverError(cause instanceof Error ? cause.message : "封面提示词生成失败。");
@@ -2440,7 +2692,7 @@ function ArticleWorkspace({
     : image.src.startsWith("contentferry-asset://"));
   const headings = markdown.split(/\r?\n/).map((line) => /^(#{1,6})\s+(.+)$/.exec(line)).filter((value): value is RegExpExecArray => Boolean(value));
   const sources = [...new Set([...markdown.matchAll(/https?:\/\/[^\s)>]+/g)].map((match) => match[0]))];
-  const editorBusy = saving || settingsSaving || settingsCoverBusy || settingsCoverPromptBusy || settingsSummaryBusy;
+  const editorBusy = saving || settingsSaving || settingsCoverPromptBusy || settingsSummaryBusy;
   const busy = editorBusy;
   useEffect(() => {
     const saveWithShortcut = (event: KeyboardEvent) => {
@@ -2568,9 +2820,10 @@ function ArticleWorkspace({
                 </select>
               </label>
               <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : settingsCoverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>
-              <textarea value={settingsCoverPrompt} maxLength={2000} onChange={(event) => { setSettingsCoverPrompt(event.target.value); setSettingsCoverError(""); }} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" />
+              <textarea value={settingsCoverPrompt} maxLength={2000} onChange={(event) => { setSettingsCoverPrompt(event.target.value); setArticleSettings((current) => ({ ...current, coverPrompt: event.target.value })); setSettingsCoverError(""); }} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" />
               <small>{settingsCoverPrompt.length}/2000 字 · 图片模型只会收到这里最终确认的提示词</small>
               <button type="button" className="secondary-button" onClick={() => void generateSettingsCover()} disabled={settingsCoverBusy || settingsCoverPromptBusy || !settingsCoverPrompt.trim()}>{settingsCoverBusy ? "正在生成封面…" : "使用此提示词生成并设为封面"}</button>
+              {settingsCoverBusy && <small className="hint compact-hint">封面正在后台生成，可继续编辑正文和文章设置。</small>}
               {settingsCoverError && <div className="cover-action-error" role="alert"><strong>封面生成未完成</strong><span>{settingsCoverError}</span>{/凭证|credential|API\s*Key/i.test(settingsCoverError) && <small>请保存文章后，到“技能与模型”配置对应图片模型的访问凭证，再回来重试。</small>}<button type="button" className="text-button" onClick={() => setSettingsCoverError("")}>关闭提示</button></div>}
             </details>
           </div>
@@ -2969,12 +3222,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function extractMarkdownImages(markdown: string): Array<{ alt: string; src: string }> {
+export function extractMarkdownImages(markdown: string): Array<{ alt: string; src: string }> {
   return [...markdown.matchAll(/!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g)]
     .map((match) => ({ alt: match[1], src: match[2] }));
 }
 
-function resolveArticleImageUrl(source: string, assetContextId: string, sourceArticlePath?: string): string {
+export function resolveArticleImageUrl(source: string, assetContextId: string, sourceArticlePath?: string): string {
   if (/^(?:https?:|data:|blob:)/i.test(source)) return source;
   if (sourceArticlePath) {
     return `${apiBase}/content-source/article-resource?path=${encodeURIComponent(sourceArticlePath)}&src=${encodeURIComponent(source)}`;
@@ -2985,7 +3238,7 @@ function resolveArticleImageUrl(source: string, assetContextId: string, sourceAr
   return `${apiBase}/content-assets/${assetContextId}/${source.replace(/^\.?\//, "")}`;
 }
 
-function renderPhonePreview(markdown: string, assetContextId: string, sourceArticlePath: string | undefined, articleTitle: string): ReactNode[] {
+export function renderPhonePreview(markdown: string, assetContextId: string, sourceArticlePath: string | undefined, articleTitle: string): ReactNode[] {
   const lines = markdown.split(/\r?\n/);
   const firstHeadingIndex = lines.findIndex((line) => /^#\s+/.test(line));
   if (firstHeadingIndex >= 0) {
@@ -3216,8 +3469,8 @@ function ProfileFields({ profile, onChange }: { profile: AccountProfile; onChang
   return <><label>账号定位<textarea autoFocus value={profile.positioning} onChange={(event) => onChange("positioning", event.target.value)} placeholder="这个账号长期为谁解决什么问题？" /></label><label>目标读者<textarea value={profile.targetAudience} onChange={(event) => onChange("targetAudience", event.target.value)} placeholder="例如：关注 AI 工具的技术从业者" /></label><label>禁用话题<textarea value={profile.prohibitedTopics} onChange={(event) => onChange("prohibitedTopics", event.target.value)} placeholder="不希望涉及的话题、表达或承诺" /></label><label>写作风格<textarea value={profile.writingStyle} onChange={(event) => onChange("writingStyle", event.target.value)} placeholder="例如：务实、清晰、有案例" /></label><label>常用栏目<textarea value={profile.regularColumns} onChange={(event) => onChange("regularColumns", event.target.value)} placeholder="例如：工具实测、工作流拆解" /></label></>;
 }
 
-function Modal({ title, eyebrow, children, onClose, disabled, wide = false, priority = false }: { title: string; eyebrow: string; children: ReactNode; onClose: () => void; disabled: boolean; wide?: boolean; priority?: boolean }) {
-  return <div className={`modal-backdrop${priority ? " priority-modal" : ""}`} role="presentation" onMouseDown={() => !disabled && onClose()}><section className={`modal-card${wide ? " wide-modal" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="text-button" onClick={onClose} disabled={disabled}>关闭</button></div>{children}</section></div>;
+function Modal({ title, eyebrow, children, onClose, disabled, wide = false, priority = false }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; disabled: boolean; wide?: boolean; priority?: boolean }) {
+  return <div className={`modal-backdrop${priority ? " priority-modal" : ""}`} role="presentation" onMouseDown={() => !disabled && onClose()}><section className={`modal-card${wide ? " wide-modal" : ""}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h2>{title}</h2></div><button className="text-button" onClick={onClose} disabled={disabled}>关闭</button></div>{children}</section></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><Root /></StrictMode>);

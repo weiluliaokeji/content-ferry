@@ -75,7 +75,7 @@ function codexPlannerThenSynthesis(): ModelProvider {
     generateStructured: vi.fn(async (req: { prependInstructions?: boolean }) => {
       if (req.prependInstructions === true) {
         plannerCalls++;
-        const value = plannerCalls === 1 ? { action: "search", query: "检索词一" } : { action: "done" };
+        const value = plannerCalls === 1 ? { action: "search", query: "检索词一" } : { action: "done", query: "" };
         return { value, provider: "openai_codex", model: "gpt-test", usage: null };
       }
       return { value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null };
@@ -152,7 +152,7 @@ describe("ConfiguredModelProvider.webResearch", () => {
       const schema = body.response_format?.json_schema?.schema;
       if (schema?.properties?.action) {
         plannerCalls++;
-        const value = plannerCalls === 1 ? { action: "search", query: "检索词B" } : { action: "done" };
+        const value = plannerCalls === 1 ? { action: "search", query: "检索词B" } : { action: "done", query: "" };
         return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { status: 200, headers: { "content-type": "application/json" } });
       }
       return new Response(
@@ -190,7 +190,7 @@ describe("ConfiguredModelProvider.webResearch", () => {
       generateStructured: vi.fn(async (req: { prependInstructions?: boolean }) => {
         if (req.prependInstructions === true) {
           plannerCalls++;
-          return { value: plannerCalls === 1 ? { action: "search", query: "q" } : { action: "done" }, provider: "openai_codex", model: "gpt-test", usage: null };
+          return { value: plannerCalls === 1 ? { action: "search", query: "q" } : { action: "done", query: "" }, provider: "openai_codex", model: "gpt-test", usage: null };
         }
         return { value: { planMarkdown: "x", sources: [] }, provider: "openai_codex", model: "gpt-test", usage: null };
       })

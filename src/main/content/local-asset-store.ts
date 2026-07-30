@@ -30,6 +30,12 @@ export class LocalAssetStore {
     };
   }
 
+  deleteContext(contextId: string): void {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(contextId)) throw new Error("Invalid asset context.");
+    const directory = path.join(this.rootDirectory, contextId);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+
   read(contextId: string, fileName: string): { stream: fs.ReadStream; mimeType: string } {
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(contextId) || !/^[A-Fa-f0-9-]{36}\.(jpg|png|gif|webp)$/.test(fileName)) {
       throw new Error("Invalid asset path.");

@@ -128,6 +128,7 @@ function initialiseDatabase(db: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS content_briefs (
       project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
+      topic TEXT NOT NULL DEFAULT '',
       objective TEXT NOT NULL DEFAULT '',
       audience TEXT NOT NULL DEFAULT '',
       angle TEXT NOT NULL DEFAULT '',
@@ -173,6 +174,7 @@ function initialiseDatabase(db: Database.Database): void {
       author TEXT NOT NULL DEFAULT '',
       digest TEXT NOT NULL DEFAULT '',
       cover_source TEXT NOT NULL DEFAULT '',
+      cover_prompt TEXT NOT NULL DEFAULT '',
       account_id TEXT,
       need_open_comment INTEGER NOT NULL DEFAULT 1,
       only_fans_can_comment INTEGER NOT NULL DEFAULT 0,
@@ -289,6 +291,63 @@ function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_wechat_publish_job_events_job_created
       ON wechat_publish_job_events(job_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS channel_drafts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      project_id TEXT REFERENCES content_projects(id),
+      source_relative_path TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      generation_mode TEXT NOT NULL DEFAULT 'rewrite' CHECK(generation_mode IN ('rewrite', 'source')),
+      title TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      author TEXT NOT NULL DEFAULT '',
+      digest TEXT NOT NULL DEFAULT '',
+      cover_source TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL CHECK(status IN ('draft', 'approved', 'superseded')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_channel_drafts_account_updated
+      ON channel_drafts(account_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS csdn_publish_jobs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+      rendered_package_hash TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK(status IN (
+        'queued', 'needs_login', 'filling', 'ready_for_final_confirmation',
+        'submitting', 'published', 'needs_manual_reconciliation',
+        'failed_before_submit', 'cancelled'
+      )),
+      remote_url TEXT,
+      remote_content_id TEXT,
+      status_note TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_csdn_publish_jobs_account_updated
+      ON csdn_publish_jobs(account_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS csdn_publish_job_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES csdn_publish_jobs(id) ON DELETE CASCADE,
+      previous_status TEXT NOT NULL,
+      new_status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_csdn_publish_job_events_job_created
+      ON csdn_publish_job_events(job_id, created_at DESC);
+
     -- The public-account web UI is the source of truth. This table is only a
     -- per-account cache of collection names observed by the visible browser,
     -- so the editor can offer real previously-synchronised choices offline.
@@ -333,10 +392,18 @@ function initialiseDatabase(db: Database.Database): void {
   if (!articleSettingColumns.some((column) => column.name === "collection_name")) {
     db.exec("ALTER TABLE article_settings ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");
   }
+  if (!articleSettingColumns.some((column) => column.name === "cover_prompt")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN cover_prompt TEXT NOT NULL DEFAULT ''");
+  }
 
   const articleQualityColumns = db.prepare("PRAGMA table_info(article_quality_checks)").all() as Array<{ name: string }>;
   if (!articleQualityColumns.some((column) => column.name === "ai_check_report")) {
     db.exec("ALTER TABLE article_quality_checks ADD COLUMN ai_check_report TEXT NOT NULL DEFAULT ''");
+  }
+
+  const contentBriefColumns = db.prepare("PRAGMA table_info(content_briefs)").all() as Array<{ name: string }>;
+  if (!contentBriefColumns.some((column) => column.name === "topic")) {
+    db.exec("ALTER TABLE content_briefs ADD COLUMN topic TEXT NOT NULL DEFAULT ''");
   }
 
   const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;
@@ -362,6 +429,20 @@ function initialiseDatabase(db: Database.Database): void {
   }
   if (!publishJobColumns.some((column) => column.name === "collection_name")) {
     db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");
+  }
+
+  const channelDraftColumns = db.prepare("PRAGMA table_info(channel_drafts)").all() as Array<{ name: string }>;
+  if (!channelDraftColumns.some((column) => column.name === "generation_mode")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN generation_mode TEXT NOT NULL DEFAULT 'rewrite'");
+  }
+  if (!channelDraftColumns.some((column) => column.name === "author")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN author TEXT NOT NULL DEFAULT ''");
+  }
+  if (!channelDraftColumns.some((column) => column.name === "digest")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN digest TEXT NOT NULL DEFAULT ''");
+  }
+  if (!channelDraftColumns.some((column) => column.name === "cover_source")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN cover_source TEXT NOT NULL DEFAULT ''");
   }
 
 }

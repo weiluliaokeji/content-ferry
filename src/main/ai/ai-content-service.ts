@@ -16,6 +16,7 @@ const markdownOutputSchema = {
 
 export interface CreationContext {
   topic: string;
+  creationTopic: string;
   objective: string;
   audience: string;
   angle: string;
@@ -49,7 +50,7 @@ export class AiContentService {
   async generateResearch(projectId: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
     const researchContext: WebResearchContext = {
-      topic: context.topic,
+      topic: context.creationTopic,
       objective: context.objective,
       audience: context.audience,
       angle: context.angle,
@@ -63,7 +64,7 @@ export class AiContentService {
   async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
     const researchContext: WebResearchContext = {
-      topic: context.topic,
+      topic: context.creationTopic,
       objective: context.objective,
       audience: context.audience,
       angle: context.angle,
@@ -78,13 +79,13 @@ export class AiContentService {
   async suggestTitles(
     projectId: string,
     historicalSeries: Array<{ name: string; count: number; examples: string[] }> = [],
-    briefOverride?: Pick<CreationContext, "objective" | "audience" | "angle" | "sourceNotes">
+    briefOverride?: Pick<CreationContext, "creationTopic" | "objective" | "audience" | "angle" | "sourceNotes">
   ) {
     const context = { ...this.getContext(projectId), ...briefOverride };
     return this.provider.generateStructured({
       task: "outline",
       skillId: "wechat-writing",
-      prompt: `请为下面这份已确认的创作简报推荐 3 个中文文章标题。标题应具体、自然、有信息量，符合账号定位和目标读者；不要使用夸张承诺、编号或引号。只返回 JSON。\n\n若历史系列中存在与本次主题明显相关的系列：至少给出 1 个以“系列名——”开头的延续标题；若不相关，不要勉强套用系列。\n\n初始主题：${context.topic}\n写作目标：${context.objective}\n目标读者：${context.audience || "未单独填写"}\n核心角度：${context.angle || "未单独填写"}\n账号定位：${context.positioning || "未设置"}\n写作风格：${context.writingStyle || "自然、具体"}\n已有资料：${context.sourceNotes || "暂无"}\n\n历史文章系列：\n${historicalSeries.length ? historicalSeries.map((series) => `- ${series.name}（${series.count} 篇）：${series.examples.join("；")}`).join("\n") : "未识别到系列；请提供独立标题。"}`,
+      prompt: `请为下面这份已确认的创作简报推荐 3 个中文文章标题。标题应具体、自然、有信息量，符合账号定位和目标读者；不要使用夸张承诺、编号或引号。只返回 JSON。\n\n若历史系列中存在与本次主题明显相关的系列：至少给出 1 个以“系列名——”开头的延续标题；若不相关，不要勉强套用系列。\n\n创作主题或想法：${context.creationTopic}\n写作目标：${context.objective}\n目标读者：${context.audience || "未单独填写"}\n核心角度：${context.angle || "未单独填写"}\n账号定位：${context.positioning || "未设置"}\n写作风格：${context.writingStyle || "自然、具体"}\n已有资料：${context.sourceNotes || "暂无"}\n\n历史文章系列：\n${historicalSeries.length ? historicalSeries.map((series) => `- ${series.name}（${series.count} 篇）：${series.examples.join("；")}`).join("\n") : "未识别到系列；请提供独立标题。"}`,
       outputSchema: { type: "object", properties: { titles: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } } }, required: ["titles"], additionalProperties: false },
       parse: (value) => titleSuggestionsOutput.parse(value)
     });
@@ -156,7 +157,7 @@ export class AiContentService {
 
   private getContext(projectId: string): CreationContext {
     const row = this.db.prepare(`
-      SELECT p.topic, b.objective, b.audience, b.angle, b.source_notes,
+      SELECT p.topic, COALESCE(NULLIF(b.topic, ''), p.topic) AS creation_topic, b.objective, b.audience, b.angle, b.source_notes,
         ap.positioning, ap.prohibited_topics, ap.writing_style, ap.regular_columns,
         o.markdown AS outline_markdown
       FROM content_projects p
@@ -171,6 +172,7 @@ export class AiContentService {
       FROM content_research_sources WHERE project_id = ? AND selected = 1 ORDER BY retrieved_at DESC`).all(projectId) as Array<Record<string, string>>;
     return {
       topic: row.topic ?? "",
+      creationTopic: row.creation_topic ?? row.topic ?? "",
       objective: row.objective ?? "",
       audience: row.audience ?? "",
       angle: row.angle ?? "",
@@ -232,6 +234,7 @@ function translateResearchStatus(message: string): string {
  *  caller, so this only contains the fields the user actually filled in. */
 function outlineContextBlock(context: CreationContext): string {
   const lines: string[] = [];
+  pushField(lines, "创作主题或想法", context.creationTopic);
   pushField(lines, "写作目标", context.objective);
   pushField(lines, "目标读者", context.audience);
   pushField(lines, "核心角度", context.angle);
@@ -245,6 +248,7 @@ function outlineContextBlock(context: CreationContext): string {
 
 export function buildDraftPrompt(context: CreationContext): string {
   const contextLines: string[] = [];
+  pushField(contextLines, "创作主题或想法", context.creationTopic);
   pushField(contextLines, "写作目标", context.objective);
   pushField(contextLines, "目标读者", context.audience);
   pushField(contextLines, "核心角度", context.angle);

@@ -558,6 +558,8 @@ describe("local API scaffold", () => {
     const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "AI Agent 如何改变个人开发者工作流" } });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({ topic: "AI Agent 如何改变个人开发者工作流", status: "idea" });
+    const brief = await server.inject({ method: "GET", url: `/api/content-projects/${created.json().id}/brief` });
+    expect(brief.json()).toMatchObject({ topic: created.json().topic });
     const relativePath = created.json().sourceRelativePath as string;
     const rootPath = database!.connection.prepare("SELECT root_path FROM content_sources WHERE workspace_id = 'local-default'")
       .pluck().get() as string;
@@ -583,6 +585,16 @@ describe("local API scaffold", () => {
     expect(created.json()).toMatchObject({ topic: "零成本基建系列——长期免费的 AI 模型 API" });
     const relativePath = created.json().sourceRelativePath as string;
     expect(relativePath).toContain("零成本基建系列——长期免费的 AI 模型 API");
+  });
+
+  it("keeps the original creation topic when a title is supplied", async () => {
+    server = createTestServer();
+    const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
+      topic: "original idea", title: "confirmed title", objective: "reader outcome"
+    } });
+    const brief = await server.inject({ method: "GET", url: `/api/content-projects/${created.json().id}/brief` });
+    expect(created.json()).toMatchObject({ topic: "confirmed title" });
+    expect(brief.json()).toMatchObject({ topic: "original idea", objective: "reader outcome" });
   });
 
   it("falls back to copy-and-remove when Windows blocks an article directory rename", () => {

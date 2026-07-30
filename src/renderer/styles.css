@@ -45,6 +45,32 @@ h2 { margin: 0; font-size: 1.15rem; }
 .article-title-button:hover { color: #315bdd; text-decoration: underline; }
 .danger-button { background: #b42318; color: #fff; }
 .publish-job-list .error { align-self: start; font-size: .8rem; }
+.csdn-channel-start, .csdn-channel-editor { display: grid; gap: 1.25rem; }
+.csdn-channel-start label, .csdn-channel-editor label { display: grid; gap: .45rem; color: #334155; font-weight: 600; }
+.csdn-body-field { display: grid; gap: .45rem; color: #334155; font-weight: 600; }
+.csdn-account-field select { width: 100%; }
+.csdn-generation-mode { display: grid; gap: .75rem; margin: 0; padding: 0; border: none; }
+.csdn-generation-mode legend { padding: 0; color: #334155; font-weight: 600; }
+.csdn-mode-option { display: grid; grid-template-columns: auto 1fr; gap: .25rem .75rem; padding: .85rem 1rem; border: 1px solid #dbe4f0; border-radius: .75rem; cursor: pointer; transition: border-color .12s, background .12s; }
+.csdn-mode-option input { grid-row: 1; align-self: start; margin-top: .18rem; }
+.csdn-mode-option .csdn-mode-title { grid-column: 2; font-weight: 600; color: #0f172a; }
+.csdn-mode-option small { grid-column: 2; margin: 0; font-weight: 400; }
+.csdn-mode-option:hover { border-color: #b8c5da; background: #f8fafc; }
+.csdn-mode-option.selected { border-color: #315bdd; background: #f4f7ff; }
+.csdn-job-created { display: grid; gap: .45rem; padding: 1rem; border: 1px solid #b9d5c1; border-radius: .75rem; background: #f0faf2; color: #245b32; }
+.csdn-job-created p, .csdn-job-created small { margin: 0; }
+.csdn-entry-choices { display: grid; gap: 1rem; }
+.csdn-entry-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .65rem; }
+.csdn-entry-list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem .9rem; border: 1px solid #dbe4f0; border-radius: .75rem; background: #fbfcfe; }
+.csdn-entry-list li span { display: grid; gap: .25rem; }
+.csdn-entry-list li strong { color: #1f2a3d; }
+.csdn-entry-list li small { color: #6f7c92; }
+.csdn-workspace .csdn-canvas { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 1rem; padding: 1.25rem 1.5rem; }
+.csdn-workspace .csdn-canvas .markdown-editor-shell,
+.csdn-workspace .csdn-canvas .visual-editor-shell { height: 100%; min-height: 0; }
+.csdn-title-field { display: grid; gap: .4rem; color: #334155; font-weight: 600; }
+.csdn-title-field input { font-size: 1.3rem; font-weight: 700; padding: .55rem .7rem; }
+.readonly-account { padding: .5rem .65rem; border: 1px solid #dbe4f0; border-radius: .55rem; background: #f1f5fb; color: #334155; font-weight: 600; }
 small, .hint, .muted { color: #6f7c92; }
 em { align-self: center; font-size: .85rem; color: #5472d3; font-style: normal; }
 .account-actions { display: flex; align-items: center; gap: .75rem; }
@@ -148,6 +174,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .modal-card .eyebrow { margin-bottom: .35rem; font-size: .8rem; }
 .modal-card .section-heading > div, .modal-card .profile-form, .modal-card label, .modal-card .visual-editor-shell, .modal-card .visual-markdown-editor { min-width: 0; }
 .modal-card .section-heading h2 { overflow-wrap: anywhere; }
+.modal-card .markdown-editor-shell { height: 62vh; }
 .modal-actions { display: flex; justify-content: flex-end; gap: .75rem; padding-top: .25rem; }
 .generation-progress { display: flex; align-items: center; gap: .55rem; min-width: 0; margin: .8rem 0; padding: .65rem .8rem; border: 1px solid #d9e4fb; border-radius: 8px; background: #f5f8ff; color: #3c5da8; font-size: .9rem; }
 .generation-progress .loading-dot { width: 14px; height: 14px; flex: 0 0 auto; border-width: 2px; }
@@ -159,8 +186,12 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .scan-result { margin-top: 1.5rem; }
 .library-summary { color: #516078; }
 .content-library-list { padding: 0; margin: 1rem 0 0; list-style: none; border-top: 1px solid #edf0f6; }
-.content-library-list li { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: .8rem 0; border-bottom: 1px solid #edf0f6; }
-.content-library-list li span { display: grid; gap: .25rem; min-width: 0; }
+.content-library-list li { display: flex; justify-content: space-between; gap: 1.25rem; align-items: flex-start; padding: .85rem 0; border-bottom: 1px solid #edf0f6; }
+.content-library-list li .article-primary { display: grid; gap: .25rem; min-width: 0; }
+.channel-distribution { display: grid; gap: .4rem; justify-items: end; }
+.channel-row { display: flex; align-items: center; gap: .6rem; }
+.channel-name { font-weight: 600; min-width: 5.5rem; color: #334155; text-align: right; }
+.status-badge.info { background: #e7effd; color: #2b5fd0; }
 .editor-workspace { height: 100vh; overflow: hidden; background: #eef2f8; color: #172033; }
 .editor-topbar { box-sizing: border-box; height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .4rem 1rem; border-bottom: 1px solid #dfe5f0; background: #fff; }
 .editor-document-title { display: grid; gap: .2rem; min-width: 0; }
@@ -253,6 +284,13 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .diff-choice input { margin: 0 .35rem 0 .15rem; vertical-align: middle; }
 .assistant-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
 .assistant-heading h3 { margin-bottom: .2rem; }
+.assistant-chat-log { display: grid; gap: .6rem; margin-top: .4rem; padding-top: .8rem; border-top: 1px solid #e9eef6; }
+.assistant-chat-log h4 { margin: 0; font-size: .82rem; color: #526078; }
+.assistant-message { padding: .6rem .75rem; border-radius: 9px; line-height: 1.6; white-space: pre-wrap; background: #f5f7fb; color: #263247; }
+.assistant-message.assistant { background: #f5f7fb; }
+.assistant-message.user { background: #e9f0ff; color: #1e3a76; }
+.assistant-role { display: inline-block; margin-bottom: .2rem; font-size: .74rem; font-weight: 700; color: #6a86e8; }
+.assistant-message.user .assistant-role { color: #315bd8; }
 .awen-chat-modal { width: min(900px, calc(100vw - 2rem)); }
 .awen-memory { margin: .7rem 0; padding: .55rem .7rem; border: 1px solid #dbe5f3; border-radius: 8px; background: #f7faff; font-size: .82rem; }
 .awen-memory pre { margin: .55rem 0 0; white-space: pre-wrap; font: inherit; }

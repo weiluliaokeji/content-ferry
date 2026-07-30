@@ -1440,12 +1440,14 @@ async function driveWechatBackendToDrafts(window: BrowserWindow, target?: Wechat
       const draftTarget = window.__contentFerryWechatDraftTarget;
       const title = String(draftTarget?.title || "").replace(/\\s+/g, "").trim();
       if (!title) return false;
+      const shortenedTitle = (value) => value.replace(/(?:…|\.\.\.)$/, "");
+      const titleMatches = (value) => value === title || (shortenedTitle(value).length >= 12 && title.startsWith(shortenedTitle(value))) || (value.includes(title) && value.length <= title.length + 32);
       const exactTitleLinks = [...document.querySelectorAll("a.weui-desktop-publish__cover__title")]
-        .filter(visible).filter((item) => normalizedText(item) === title);
+        .filter(visible).filter((item) => titleMatches(normalizedText(item)) || titleMatches(String(item.getAttribute("title") || "").replace(/\s+/g, "").trim()));
       const titleNodes = exactTitleLinks.length > 0 ? exactTitleLinks : [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span, div, p, h1, h2, h3")]
         .filter(visible).filter((item) => {
           const value = normalizedText(item);
-          return value === title || (value.includes(title) && value.length <= title.length + 32);
+          return titleMatches(value) || titleMatches(String(item.getAttribute("title") || "").replace(/\s+/g, "").trim());
         });
       const findDraftCard = (item) => {
         const titleLink = item.closest("a.weui-desktop-publish__cover__title") || item.closest("a") || item;
@@ -1702,12 +1704,14 @@ async function advanceWechatDraftEditing(window: BrowserWindow): Promise<void> {
           if (!target?.title || target.draftOpened) return { kind: "done" };
           const title = String(target.title).replace(/\\s+/g, "").trim();
           const text = (element) => (element.textContent || "").replace(/\\s+/g, "").trim();
+          const shortenedTitle = (value) => value.replace(/(?:…|\.\.\.)$/, "");
+          const titleMatches = (value) => value === title || (shortenedTitle(value).length >= 12 && title.startsWith(shortenedTitle(value))) || (value.includes(title) && value.length <= title.length + 32);
           const exactTitleLinks = [...document.querySelectorAll("a.weui-desktop-publish__cover__title")]
-            .filter(visible).filter((node) => text(node) === title);
+            .filter(visible).filter((node) => titleMatches(text(node)) || titleMatches(String(node.getAttribute("title") || "").replace(/\s+/g, "").trim()));
           const titleNodes = exactTitleLinks.length > 0 ? exactTitleLinks : [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span, div, p, h1, h2, h3")]
             .filter(visible).filter((node) => {
               const value = text(node);
-              return value === title || (value.includes(title) && value.length <= title.length + 32);
+              return titleMatches(value) || titleMatches(String(node.getAttribute("title") || "").replace(/\s+/g, "").trim());
             });
           const findDraftCard = (node) => {
             const titleLink = node.closest("a.weui-desktop-publish__cover__title") || node.closest("a") || node;

@@ -37,6 +37,7 @@ export function VisualMarkdownEditor({
   onChange,
   assetContextId,
   sourceArticlePath,
+  uploadToSource,
   onError,
   onTextSelection,
   onSwitchToMarkdown,
@@ -53,6 +54,15 @@ export function VisualMarkdownEditor({
   onChange: (markdown: string) => void;
   assetContextId: string;
   sourceArticlePath?: string;
+  /**
+   * When a `sourceArticlePath` is provided, existing source images can be
+   * previewed, but uploads may still target the local project asset store
+   * (`content-assets`) instead of the source article. Pass `false` to keep
+   * new uploads isolated from the source even though `sourceArticlePath` is
+   * set (used by CSDN channel drafts that reuse the source article's images
+   * but own their own asset context).
+   */
+  uploadToSource?: boolean;
   onError?: (message: string) => void;
   onTextSelection?: (selection?: VisualMarkdownSelection) => void;
   onSwitchToMarkdown?: (markdownOffset: number) => void;
@@ -115,6 +125,11 @@ export function VisualMarkdownEditor({
         userHasEdited = true;
       }
     };
+    // `sourceArticlePath` lets the editor preview existing source images, but
+    // uploads should only land in the source article when explicitly asked.
+    // CSDN channel drafts pass `sourceArticlePath` for preview while keeping
+    // their own isolated asset context via `uploadToSource={false}`.
+    const storeInSource = uploadToSource === undefined ? !!sourceArticlePath : uploadToSource;
     const copySelection = (event: ClipboardEvent) => {
       const copied = crepeRef.current?.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
@@ -138,10 +153,10 @@ export function VisualMarkdownEditor({
         if (file.size > 15 * 1024 * 1024) throw new Error("图片文件不能超过 15 MB。");
         const mimeType = normalizeImageMime(file);
         const base64 = await fileToBase64(file);
-        const response = await fetch(`http://127.0.0.1:4317/api/${sourceArticlePath ? "content-source/article-asset" : "content-assets"}`, {
+        const response = await fetch(`http://127.0.0.1:4317/api/${storeInSource ? "content-source/article-asset" : "content-assets"}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(sourceArticlePath
+          body: JSON.stringify(storeInSource
             ? { path: sourceArticlePath, mimeType, base64 }
             : { contextId: assetContextId, mimeType, base64 })
         });
@@ -156,10 +171,10 @@ export function VisualMarkdownEditor({
     };
     const importRemoteImage = async (url: string): Promise<string> => {
       try {
-        const response = await fetch(`http://127.0.0.1:4317/api/${sourceArticlePath ? "content-source/article-asset/import-remote" : "content-assets/import-remote"}`, {
+        const response = await fetch(`http://127.0.0.1:4317/api/${storeInSource ? "content-source/article-asset/import-remote" : "content-assets/import-remote"}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(sourceArticlePath ? { path: sourceArticlePath, url } : { contextId: assetContextId, url })
+          body: JSON.stringify(storeInSource ? { path: sourceArticlePath, url } : { contextId: assetContextId, url })
         });
         const payload = await response.json() as { assetUrl?: string; error?: string };
         if (!response.ok || !payload.assetUrl) throw new Error(payload.error ?? "远程图片下载失败。");

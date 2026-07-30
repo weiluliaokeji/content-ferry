@@ -116,7 +116,8 @@ function contextBlock(context: WebResearchContext): string {
 /**
  * Scheme B planner prompt: given the topic and what we have retrieved so far,
  * decide the next search direction (or stop). The model returns JSON
- * {action:'search'|'done', query?}. This keeps multi-round exploration working
+ * {action:'search'|'done', query}. A done plan uses an empty query; this keeps
+ * the schema compatible with strict OpenAI structured outputs.
  * on models that do not support tool calling.
  */
 export function buildPlannerPrompt(context: WebResearchContext, rawSourcesSoFar: SearchSourceForPrompt[], round: number, maxRounds: number): string {
@@ -127,8 +128,8 @@ export function buildPlannerPrompt(context: WebResearchContext, rawSourcesSoFar:
 - 围绕文章主题与写作目标，找出还缺的事实、限制、反例或使用路径。
 - 优先规划官方原始资料的检索；官方资料不足时再规划高质量公开资料。
 - 不要重复已有资料已覆盖的方向；每次给出具体、可检索的查询词（中文或英文关键词皆可）。
-- 若已有资料已足够支撑补研结论，返回 action:"done"。
-- 严格只返回 JSON，不要解释：{"action":"search","query":"下一步检索词"} 或 {"action":"done"}。
+- 若已有资料已足够支撑补研结论，返回 action:"done"，且 query 必须是空字符串。
+- 严格只返回 JSON，不要解释：{"action":"search","query":"下一步检索词"} 或 {"action":"done","query":""}。
 
 文章信息：
 ${contextBlock(context)}

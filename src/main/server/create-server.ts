@@ -21,6 +21,7 @@ import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProv
 import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
 import { WechatApiError, WechatPublishingService } from "../wechat/wechat-publishing-service";
+import { CsdnChannelError, CsdnChannelService } from "../csdn/csdn-channel-service";
 import { WechatCallbackService } from "../wechat/wechat-callback-service";
 import { createDailyLogStream, dailyLogFilePath, listRuntimeLogFiles } from "../logging/daily-log-stream";
 import { AppCredentialRepository } from "../security/app-credential-repository";
@@ -71,10 +72,14 @@ const contentSourceAssetInput = z.object({
 const contentProjectInput = z.object({
   topic: z.string().trim().min(1).max(12000),
   title: z.string().trim().min(1).max(120).optional(),
-  targetAccountId: z.string().uuid().optional()
+  targetAccountId: z.string().uuid().optional(),
+  objective: z.string().max(4000).optional(),
+  audience: z.string().max(4000).optional(),
+  angle: z.string().max(4000).optional(),
+  sourceNotes: z.string().max(12000).optional()
 });
 const contentProjectTitleInput = z.object({ title: z.string().trim().min(1).max(120) });
-const contentBriefInput = z.object({ objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
+const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
 const titleSuggestionInput = contentBriefInput;
 const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
 const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
@@ -123,6 +128,19 @@ const wechatSourceDraftInput = z.object({
   collectionName: z.string().trim().max(80).default("")
 });
 const wechatSubmitInput = z.object({ mode: z.enum(["publish", "mass"]) });
+const csdnChannelDraftInput = z.object({
+  accountId: z.string().uuid(),
+  relativePath: z.string().trim().min(1).max(1000),
+  projectId: z.string().uuid().optional(),
+  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+});
+const csdnChannelDraftSaveInput = z.object({
+  title: z.string().trim().min(1).max(120),
+  markdown: z.string().trim().min(1).max(100_000),
+  author: z.string().trim().max(16).optional(),
+  digest: z.string().trim().max(200).optional(),
+  coverSource: z.string().trim().max(2000).optional()
+});
 const modelProviderSchema = z.enum(modelProviderIds);
 const modelConnectionInput = z.object({
   displayName: z.string().trim().min(1).max(100),
@@ -220,12 +238,13 @@ export function buildServer(
   const getResearchProxyUrl = (): string => loadAppSettings().researchProxyUrl?.trim() ?? "";
   const modelConnections = new ModelConnectionRepository(database.connection, appCredentials);
   const skills = options?.skillsDirectory ? new SkillRegistry(database.connection, options.skillsDirectory) : undefined;
+  const aiAuditLog = skills ? new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls) : undefined;
   const effectiveModelProvider = skills
     ? new ConfiguredModelProvider(
       modelConnections,
       skills,
       modelProvider,
-      new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls),
+      aiAuditLog,
       createWebSearchClient({
         getTavilyApiKey,
         getResearchProxyUrl,
@@ -234,7 +253,8 @@ export function buildServer(
     )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
-  const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources);
+  const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider);
+  const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
@@ -260,6 +280,9 @@ export function buildServer(
     }
     if (error instanceof WechatApiError) {
       return reply.code(400).send({ error: error.message, errcode: error.errcode });
+    }
+    if (error instanceof CsdnChannelError) {
+      return reply.code(400).send({ error: error.message });
     }
     if (error instanceof z.ZodError) {
       const fields = [...new Set(error.issues.map((issue) => issue.path.join(".") || "请求内容"))];
@@ -474,8 +497,8 @@ export function buildServer(
 
   server.get("/api/article-settings", async (request) => {
     const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
-    const row = database.connection.prepare("SELECT author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name FROM article_settings WHERE context_key = ?")
-      .get(query.contextKey) as { author: string; digest: string; cover_source: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number; declare_original: number; enable_reward: number; collection_name: string } | undefined;
+    const row = database.connection.prepare("SELECT author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name FROM article_settings WHERE context_key = ?")
+      .get(query.contextKey) as { author: string; digest: string; cover_source: string; cover_prompt: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number; declare_original: number; enable_reward: number; collection_name: string } | undefined;
     const projectId = query.contextKey.startsWith("project:") ? query.contextKey.slice("project:".length) : "";
     const sourcePath = query.contextKey.startsWith("source:") ? query.contextKey.slice("source:".length) : "";
     const project = projectId
@@ -487,6 +510,7 @@ export function buildServer(
       author: row?.author ?? "",
       digest: row?.digest ?? "",
       coverSource: row?.cover_source ?? "",
+      coverPrompt: row?.cover_prompt ?? "",
       accountId: project?.target_account_id ?? row?.account_id ?? "",
       needOpenComment: row ? row.need_open_comment === 1 : true,
       onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false,
@@ -502,6 +526,7 @@ export function buildServer(
       author: z.string().max(16),
       digest: z.string().max(200),
       coverSource: z.string().max(2000),
+      coverPrompt: z.string().max(2000).default(""),
       accountId: z.string().uuid().or(z.literal("")).default(""),
       needOpenComment: z.boolean().default(true),
       onlyFansCanComment: z.boolean().default(false),
@@ -511,13 +536,13 @@ export function buildServer(
     }).parse(request.body);
     const now = new Date().toISOString();
     database.connection.prepare(`INSERT INTO article_settings
-      (context_key, author, digest, cover_source, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (context_key, author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(context_key) DO UPDATE SET author = excluded.author, digest = excluded.digest,
-        cover_source = excluded.cover_source, account_id = excluded.account_id,
+        cover_source = excluded.cover_source, cover_prompt = excluded.cover_prompt, account_id = excluded.account_id,
         need_open_comment = excluded.need_open_comment, only_fans_can_comment = excluded.only_fans_can_comment,
         declare_original = excluded.declare_original, enable_reward = excluded.enable_reward, collection_name = excluded.collection_name,
         updated_at = excluded.updated_at`)
-      .run(input.contextKey, input.author, input.digest, input.coverSource, input.accountId || null,
+      .run(input.contextKey, input.author, input.digest, input.coverSource, input.coverPrompt, input.accountId || null,
         input.needOpenComment ? 1 : 0, input.needOpenComment && input.onlyFansCanComment ? 1 : 0,
         input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName, now);
     if (input.contextKey.startsWith("project:")) {
@@ -531,6 +556,7 @@ export function buildServer(
       author: input.author,
       digest: input.digest,
       coverSource: input.coverSource,
+      coverPrompt: input.coverPrompt,
       accountId: input.accountId,
       needOpenComment: input.needOpenComment,
       onlyFansCanComment: input.needOpenComment && input.onlyFansCanComment,
@@ -693,6 +719,44 @@ export function buildServer(
     }
   });
 
+  server.get("/api/integrations/csdn/capabilities/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const account = accounts.requireAccount(params.accountId);
+    if (account.platform !== "csdn") throw new CsdnChannelError("请选择一个 CSDN 账号。");
+    return csdnChannels.capabilities(account.id);
+  });
+
+  server.get("/api/integrations/csdn/channel-drafts", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
+    return { items: csdnChannels.listDrafts(workspace.id, query.accountId) };
+  });
+
+  server.post("/api/integrations/csdn/channel-drafts", async (request, reply) => {
+    const input = csdnChannelDraftInput.parse(request.body);
+    return reply.code(201).send(await csdnChannels.createFromSource(input));
+  });
+
+  server.post("/api/integrations/csdn/channel-drafts/:draftId/approve", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return csdnChannels.approveDraft(params.draftId);
+  });
+
+  server.put("/api/integrations/csdn/channel-drafts/:draftId", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return csdnChannels.saveDraft(params.draftId, csdnChannelDraftSaveInput.parse(request.body));
+  });
+
+  server.get("/api/integrations/csdn/jobs", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: csdnChannels.listJobs(workspace.id) };
+  });
+
+  server.post("/api/integrations/csdn/channel-drafts/:draftId/jobs", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return reply.code(201).send(csdnChannels.createPublishJob(params.draftId));
+  });
+
   server.get("/api/content-projects", async () => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     return { items: contentProjects.list(workspace.id) };
@@ -703,15 +767,28 @@ export function buildServer(
     const input = contentProjectInput.parse(request.body);
     const articleTitle = initialArticleTitle(input.topic, input.title);
     const article = contentSources.createArticle(workspace.id, articleTitle);
-    return reply.code(201).send(contentProjects.create({
-      workspaceId: workspace.id,
-      // The project title is the canonical article title used by the dashboard,
-      // outline and VitePress front matter. The longer initial idea is stored in
-      // the creation brief rather than competing with the displayed title.
-      topic: articleTitle,
-      targetAccountId: input.targetAccountId,
-      sourceRelativePath: article.relativePath
-    }));
+    const project = database.connection.transaction(() => {
+      const created = contentProjects.create({
+        workspaceId: workspace.id,
+        // The project title is the canonical article title used by the dashboard,
+        // outline and VitePress front matter. The longer initial idea is stored in
+        // the creation brief rather than competing with the displayed title.
+        topic: articleTitle,
+        targetAccountId: input.targetAccountId,
+        sourceRelativePath: article.relativePath
+      });
+      if (input.objective !== undefined || input.audience !== undefined || input.angle !== undefined || input.sourceNotes !== undefined) {
+        contentBriefs.save(created.id, {
+          topic: input.topic,
+          objective: input.objective ?? "",
+          audience: input.audience ?? "",
+          angle: input.angle ?? "",
+          sourceNotes: input.sourceNotes ?? ""
+        });
+      }
+      return created;
+    })();
+    return reply.code(201).send(project);
   });
 
   server.delete("/api/content-projects/:projectId", async (request, reply) => {
@@ -720,6 +797,7 @@ export function buildServer(
     if (!project.sourceRelativePath) throw new ContentSourceError("这篇旧草稿尚未迁移到 VitePress 文章库，请先打开正文完成迁移。");
     const staged = contentSources.stageArticleDeletion(project.workspaceId, project.sourceRelativePath);
     try {
+      csdnChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
       database.connection.transaction(() => {
         database.connection.prepare("UPDATE wechat_publish_jobs SET project_id = NULL WHERE project_id = ?").run(project.id);
         database.connection.prepare("DELETE FROM article_settings WHERE context_key IN (?, ?)")
@@ -741,7 +819,8 @@ export function buildServer(
 
   server.put("/api/content-projects/:projectId/brief", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    return contentBriefs.save(params.projectId, contentBriefInput.parse(request.body));
+    const input = contentBriefInput.parse(request.body);
+    return contentBriefs.save(params.projectId, { ...input, topic: input.topic ?? contentBriefs.get(params.projectId).topic });
   });
 
   server.get("/api/content-projects/:projectId/research", async (request) => {
@@ -783,7 +862,7 @@ export function buildServer(
     const brief = titleSuggestionInput.parse(request.body);
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const historicalSeries = extractHistoricalSeries(contentSources.preview(workspace.id).items.map((item) => item.title));
-    const generated = await aiContent.suggestTitles(params.projectId, historicalSeries, brief);
+    const generated = await aiContent.suggestTitles(params.projectId, historicalSeries, { ...brief, creationTopic: brief.topic ?? contentBriefs.get(params.projectId).topic });
     return { projectId: params.projectId, titles: generated.value.titles, historicalSeries, provider: generated.provider, usage: generated.usage };
   });
 
@@ -968,6 +1047,7 @@ export function buildServer(
     try {
       return await coverGenerator.generate({ workspaceId: workspace.id, provider: "modelscope", ...input });
     } catch (error) {
+      request.log.warn({ err: error, provider: "modelscope" }, "Cover generation failed");
       return reply.code(400).send({ error: error instanceof Error ? error.message : "ModelScope 生成封面失败。" });
     }
   });
@@ -1280,6 +1360,7 @@ ${input.markdown}`,
     try {
       return await coverGenerator.generate({ workspaceId: workspace.id, ...input, provider });
     } catch (error) {
+      request.log.warn({ err: error, provider }, "Cover generation failed");
       return reply.code(400).send({ error: error instanceof Error ? error.message : "封面生成失败。" });
     }
   });
