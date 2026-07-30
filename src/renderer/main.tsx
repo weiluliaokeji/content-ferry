@@ -166,7 +166,7 @@ type ArticleSettings = {
 type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "nvidia_build" | "github_copilot" | "modelscope" | "gemini";
 type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
-  enabled: boolean; credentialConfigured: boolean;
+  enabled: boolean; builtInSearch: boolean; credentialConfigured: boolean;
 };
 type WebSearchSettings = {
   tavilyConfigured: boolean;
@@ -1629,6 +1629,7 @@ function App() {
           baseUrl: editingConnection.baseUrl,
           proxyUrl: editingConnection.proxyUrl,
           enabled: editingConnection.enabled,
+          builtInSearch: editingConnection.builtInSearch,
           ...(connectionCredential.trim() ? { credential: connectionCredential.trim() } : {})
         })
       });
@@ -2042,6 +2043,12 @@ function App() {
         {editingConnection.provider !== "openai_codex" && editingConnection.provider !== "github_copilot" && <label>服务地址<input value={editingConnection.baseUrl} onChange={(event) => setEditingConnection((current) => current ? { ...current, baseUrl: event.target.value } : current)} /></label>}
         {editingConnection.provider !== "openai_codex" && <label>代理地址（可选）<input value={editingConnection.proxyUrl} onChange={(event) => setEditingConnection((current) => current ? { ...current, proxyUrl: event.target.value } : current)} placeholder="例如：http://127.0.0.1:7890" /><small>留空表示直连。需要代理才能访问的模型（如 Nous / OpenRouter / OpenAI）请填写；格式 http://127.0.0.1:7890。代理不可用时请求会明确报错，不会静默切换。</small></label>}
         {editingConnection.provider === "openai_codex" && <p className="hint">OpenAI Codex 使用本机 ChatGPT/Codex 登录状态，不需要 API Key。安装包会携带 SDK 所需运行组件，不要求安装 Hermes Agent。</p>}
+        {editingConnection.provider === "openai_codex" && (
+          <label className="checkbox-row">
+            <input type="checkbox" checked={editingConnection.builtInSearch} onChange={(event) => setEditingConnection((current) => current ? { ...current, builtInSearch: event.target.checked } : current)} />
+            <span>联网补研使用 Codex 内置搜索<small>开启时由 Codex SDK 直接联网检索并综合资料卡，开箱即用、质量更好。关闭时改用应用的 Tavily / DuckDuckGo 检索链（资料 URL 由系统真实抓取、可追溯，且走全局检索代理）。默认开启。</small></span>
+          </label>
+        )}
         {editingConnection.provider === "github_copilot" && <p className="hint">支持 GitHub Copilot Token。后续还会补充浏览器设备授权入口；现在也可使用本机已有的 GitHub/Copilot 登录环境。</p>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditingConnection(undefined)}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存连接"}</button></div>
       </form>

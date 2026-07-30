@@ -21,18 +21,22 @@ export interface ModelConnection {
   baseUrl: string;
   proxyUrl: string;
   enabled: boolean;
+  /** When true (default for OpenAI Codex), 联网补研 uses the provider's own
+   *  built-in web search instead of the app-owned WebSearchClient. Only
+   *  meaningful for providers that ship a built-in search (currently Codex). */
+  builtInSearch: boolean;
   credentialConfigured: boolean;
 }
 
 const defaults: Record<ModelProviderId, Omit<ModelConnection, "credentialConfigured">> = {
-  openai_codex: { provider: "openai_codex", displayName: "OpenAI Codex", modelId: "", baseUrl: "", proxyUrl: "", enabled: true },
-  openai: { provider: "openai", displayName: "OpenAI API", modelId: "gpt-5-mini", baseUrl: "https://api.openai.com/v1", proxyUrl: "", enabled: true },
-  openrouter: { provider: "openrouter", displayName: "OpenRouter", modelId: "openai/gpt-5-mini", baseUrl: "https://openrouter.ai/api/v1", proxyUrl: "", enabled: true },
-  nous: { provider: "nous", displayName: "Nous Research Portal", modelId: "stepfun/step-3.7-flash:free", baseUrl: "https://inference-api.nousresearch.com/v1", proxyUrl: "", enabled: true },
-  nvidia_build: { provider: "nvidia_build", displayName: "NVIDIA Build", modelId: "z-ai/glm-5.2", baseUrl: "https://integrate.api.nvidia.com/v1", proxyUrl: "", enabled: true },
-  github_copilot: { provider: "github_copilot", displayName: "GitHub Copilot", modelId: "gpt-5", baseUrl: "", proxyUrl: "", enabled: true },
-  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Qwen/Qwen-Image-2512", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true },
-  gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "", enabled: true }
+  openai_codex: { provider: "openai_codex", displayName: "OpenAI Codex", modelId: "", baseUrl: "", proxyUrl: "", enabled: true, builtInSearch: true },
+  openai: { provider: "openai", displayName: "OpenAI API", modelId: "gpt-5-mini", baseUrl: "https://api.openai.com/v1", proxyUrl: "", enabled: true, builtInSearch: true },
+  openrouter: { provider: "openrouter", displayName: "OpenRouter", modelId: "openai/gpt-5-mini", baseUrl: "https://openrouter.ai/api/v1", proxyUrl: "", enabled: true, builtInSearch: true },
+  nous: { provider: "nous", displayName: "Nous Research Portal", modelId: "stepfun/step-3.7-flash:free", baseUrl: "https://inference-api.nousresearch.com/v1", proxyUrl: "", enabled: true, builtInSearch: true },
+  nvidia_build: { provider: "nvidia_build", displayName: "NVIDIA Build", modelId: "z-ai/glm-5.2", baseUrl: "https://integrate.api.nvidia.com/v1", proxyUrl: "", enabled: true, builtInSearch: true },
+  github_copilot: { provider: "github_copilot", displayName: "GitHub Copilot", modelId: "gpt-5", baseUrl: "", proxyUrl: "", enabled: true, builtInSearch: true },
+  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Qwen/Qwen-Image-2512", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true, builtInSearch: true },
+  gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "", enabled: true, builtInSearch: true }
 };
 
 export class ModelConnectionRepository {
@@ -41,6 +45,21 @@ export class ModelConnectionRepository {
     private readonly credentials: AppCredentialRepository
   ) {
     this.migrateNousEndpoint();
+    this.migrateBuiltInSearchColumn();
+  }
+
+  /** Add the `built_in_search` column on existing installs. The column was
+   *  introduced after launch, so only databases created earlier lack it. The
+   *  NOT NULL DEFAULT 1 keeps the on-by-default behaviour for every existing
+   *  row, matching the shipped default for new connections. */
+  private migrateBuiltInSearchColumn(): void {
+    const row = this.db
+      .prepare(`SELECT 1 AS present FROM pragma_table_info('model_connections') WHERE name = 'built_in_search'`)
+      .get() as { present: number } | undefined;
+    if (row) return;
+    this.db
+      .prepare(`ALTER TABLE model_connections ADD COLUMN built_in_search INTEGER NOT NULL DEFAULT 1`)
+      .run();
   }
 
   /** Self-heal the Nous Research Portal endpoint. The original default pointed at a
@@ -59,9 +78,9 @@ export class ModelConnectionRepository {
   }
 
   get(provider: ModelProviderId): ModelConnection {
-    const row = this.db.prepare(`SELECT provider, display_name, model_id, base_url, proxy_url, enabled
+    const row = this.db.prepare(`SELECT provider, display_name, model_id, base_url, proxy_url, enabled, built_in_search
       FROM model_connections WHERE provider = ?`).get(provider) as {
-        provider: ModelProviderId; display_name: string; model_id: string; base_url: string; proxy_url: string; enabled: number;
+        provider: ModelProviderId; display_name: string; model_id: string; base_url: string; proxy_url: string; enabled: number; built_in_search: number;
       } | undefined;
     const value = row ? {
       provider: row.provider,
@@ -69,7 +88,8 @@ export class ModelConnectionRepository {
       modelId: row.model_id,
       baseUrl: row.base_url,
       proxyUrl: row.proxy_url,
-      enabled: Boolean(row.enabled)
+      enabled: Boolean(row.enabled),
+      builtInSearch: Boolean(row.built_in_search)
     } : defaults[provider];
     return {
       ...value,
@@ -80,12 +100,12 @@ export class ModelConnectionRepository {
   save(input: Omit<ModelConnection, "credentialConfigured"> & { credential?: string }): ModelConnection {
     const now = new Date().toISOString();
     this.db.prepare(`INSERT INTO model_connections
-      (provider, display_name, model_id, base_url, proxy_url, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (provider, display_name, model_id, base_url, proxy_url, enabled, built_in_search, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider) DO UPDATE SET display_name = excluded.display_name,
         model_id = excluded.model_id, base_url = excluded.base_url, proxy_url = excluded.proxy_url,
-        enabled = excluded.enabled, updated_at = excluded.updated_at`)
-      .run(input.provider, input.displayName, input.modelId, input.baseUrl, input.proxyUrl, input.enabled ? 1 : 0, now, now);
+        enabled = excluded.enabled, built_in_search = excluded.built_in_search, updated_at = excluded.updated_at`)
+      .run(input.provider, input.displayName, input.modelId, input.baseUrl, input.proxyUrl, input.enabled ? 1 : 0, input.builtInSearch ? 1 : 0, now, now);
     if (input.credential?.trim()) this.credentials.save(this.credentialKind(input.provider), input.credential.trim());
     return this.get(input.provider);
   }

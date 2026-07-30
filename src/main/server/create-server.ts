@@ -148,6 +148,7 @@ const modelConnectionInput = z.object({
   baseUrl: z.string().trim().max(1000).default(""),
   proxyUrl: z.string().trim().max(1000).default(""),
   enabled: z.boolean().default(true),
+  builtInSearch: z.boolean().default(true),
   credential: z.string().max(10000).optional()
 });
 const tavilySettingsInput = z.object({ apiKey: z.string().trim().min(1).max(10000) });

@@ -24,4 +24,11 @@ describe("ModelConnectionRepository defaults", () => {
       expect(connection.proxyUrl, `default "${connection.provider}" must not bake in a proxy`).toBe("");
     }
   });
+
+  it("ships built-in search on by default (Codex native retrieval trade-off)", () => {
+    const repo = new ModelConnectionRepository(stubDb(), stubCredentials());
+    for (const connection of repo.list()) {
+      expect(connection.builtInSearch, `default "${connection.provider}" should enable built-in search`).toBe(true);
+    }
+  });
 });

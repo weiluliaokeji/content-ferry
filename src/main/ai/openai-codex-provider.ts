@@ -28,6 +28,12 @@ export class OpenAICodexProvider implements ModelProvider {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 180_000);
 
+    // Built-in web search is opt-in per call. When on, Codex reaches the
+    // network and performs its own retrieval (used by 联网补研 when the
+    // connection's built-in search toggle is enabled). Otherwise writing and
+    // synthesis stay offline — the app owns retrieval via WebSearchClient.
+    const allowWebSearch = request.webSearch === true && request.task === "research";
+
     try {
       const { Codex } = await importEsm("@openai/codex-sdk");
       const codex = new Codex({ config: { mcp_servers: {} } });
@@ -36,11 +42,8 @@ export class OpenAICodexProvider implements ModelProvider {
         skipGitRepoCheck: true,
         sandboxMode: "read-only",
         approvalPolicy: "never",
-        // Writing stays offline by default. Web research retrieval is now owned
-        // by the app (WebSearchClient), so the synthesis call must NOT search on
-        // its own — the model works only from sources we already gathered.
-        networkAccessEnabled: false,
-        webSearchMode: "disabled",
+        networkAccessEnabled: allowWebSearch,
+        webSearchMode: allowWebSearch ? "live" : "disabled",
         ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });

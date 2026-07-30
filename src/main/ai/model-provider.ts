@@ -21,6 +21,10 @@ export interface GenerateStructuredRequest<T> {
   prependInstructions?: boolean;
   /** Provider lifecycle feedback. Only some providers emit this during structured calls. */
   onStatus?: (message: string) => void;
+  /** When true, the provider may perform its own built-in web search during the
+   *  call (currently only OpenAI Codex). Used by 联网补研 when the connection's
+   *  built-in search toggle is on. Off by default — the app drives retrieval. */
+  webSearch?: boolean;
 }
 
 export interface GenerateStructuredResult<T> {

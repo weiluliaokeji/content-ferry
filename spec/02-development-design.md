@@ -96,7 +96,8 @@ OpenAI API Key provider 与其他模型后续复用同一接口；切换 provide
   - 方案 A（模型支持工具调用时优先：openai / openrouter / nous / nvidia_build）：把 `web_search` 作为函数工具暴露给模型，由主进程执行工具循环（模型发工具调用 → 应用检索 → 回填结果 → 重复直至模型停止）。若方案 A 失败或无工具调用，自动降级到方案 B。
 - 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
 - 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
-- 装配：`create-server.ts` 通过 `createWebSearchClient({ getTavilyApiKey })` 注入检索层；Tavily API Key 可在“技能与模型 → 联网检索服务”中配置，使用 `AppCredentialRepository` 加密保存，并在每次检索时动态读取，因此保存后无需重启本地服务。开发环境中的 `TAVILY_API_KEY` 仅作兼容兜底；本机保存的 Key 优先。`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`），不再承担检索。
+- 装配：`create-server.ts` 通过 `createWebSearchClient({ getTavilyApiKey })` 注入检索层；Tavily API Key 可在“技能与模型 → 联网检索服务”中配置，使用 `AppCredentialRepository` 加密保存，并在每次检索时动态读取，因此保存后无需重启本地服务。开发环境中的 `TAVILY_API_KEY` 仅作兼容兜底；本机保存的 Key 优先。`OpenAICodexProvider` 在研究流程中默认仅作为综合模型使用（`webSearchMode: "disabled"`，不自行联网）；但当 `web-research` 技能指派给 Codex 且该 Codex 连接的“内置搜索”开关打开时，`ConfiguredModelProvider.webResearch` 会改为走 `gatherCodexBuiltIn`，让 Codex 以 `webSearchMode: "live"` 自行完成检索与综合。
+- **Codex 内置搜索开关（连接级，默认开）**：`model_connections.built_in_search`（建表默认 1，旧库经迁移补列）控制 Codex 连接是否使用 SDK 内置检索。`web-research` 技能指派 Codex 时：开关开（默认）→ Codex 自行检索并综合（`gatherCodexBuiltIn`），绕过应用自有检索层，因此也绕过全局检索代理与“来源 URL 由应用真抓”的可追溯保证；开关关 → 仍走应用检索链（方案 A/B，综合由 Codex 在 `webSearchMode: "disabled"` 下基于已抓取来源完成）。其它 provider 没有内置检索能力，该开关对其无意义，UI 仅在 Codex 连接编辑表单展示。这是用户为换取 Codex 原生检索质量与开箱即用而显式选择的权衡。
 - **补研技能必须显式指定模型，不再默认 Codex**：`web-research` 技能的 `defaultProvider` 已改为 `null`，`ConfiguredModelProvider.webResearch` 在技能未指派 provider 时直接抛出明确提示（“请在技能与模型中为该技能选择一个模型连接”），不再静默回退到 `openai_codex`。UI 上“研究”类技能（分类 `研究`）已纳入“文本类技能”可切换模型分组（此前因分类不在任何分组中而不显示，导致用户无法改派、一直卡在默认 Codex）。补研实际使用的模型完全由用户在“技能与模型”里为该技能指派，与其直觉一致。
 
 本方案借鉴了 Hermes Agent 的“provider 注册表 + 能力标志 + 统一响应信封 + 回退链”思路，但检索工具为应用自有、网络访问不与任何模型绑定。

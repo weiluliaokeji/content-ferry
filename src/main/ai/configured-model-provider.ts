@@ -17,6 +17,7 @@ import {
   buildPlannerPrompt,
   buildResearchSynthesisPrompt,
   buildResearchFollowUpSynthesisPrompt,
+  buildCodexBuiltInResearchPrompt,
   type ResearchCard,
   type SearchSourceForPrompt,
   type WebResearchContext,
@@ -130,6 +131,19 @@ export class ConfiguredModelProvider implements ModelProvider {
       meta.model = this.modelIdFor(provider);
       const instructions = this.skills.instructionsFor(skillId, "");
       const onStatusHook = onStatus ?? (() => {});
+
+      // Codex built-in search path: when the Codex connection's built-in search
+      // toggle is on, let Codex perform its own retrieval + synthesis in one
+      // call (network enabled at the SDK level). This bypasses the app-owned
+      // WebSearchClient, so it also bypasses the global research proxy and the
+      // app-fetched-URL traceability guarantee — an explicit, on-by-default
+      // trade-off the user opted into for Codex.
+      if (provider === "openai_codex" && this.connections.get("openai_codex").builtInSearch) {
+        const card = await this.gatherCodexBuiltIn(context, instructions, onStatusHook, options);
+        meta.retrieval = { rounds: 1, sources: card.value.sources.length, provider: "openai_codex" };
+        return card;
+      }
+
       const accumulated: SearchSourceForPrompt[] = [];
       let rounds = 0;
 
@@ -206,6 +220,26 @@ export class ConfiguredModelProvider implements ModelProvider {
       }
     });
     return rounds;
+  }
+
+  /** Codex built-in search path: Codex runs its own retrieval + synthesis in a
+   *  single structured call (network enabled at the SDK level). The prompt asks
+   *  it to search and return the same ResearchCard schema as the app-owned
+   *  synthesis path. */
+  private async gatherCodexBuiltIn(context: WebResearchContext, instructions: string, onStatus: (m: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+    onStatus("正在使用 Codex 内置检索联网补研…");
+    const prompt = buildCodexBuiltInResearchPrompt(context, instructions, options?.instruction ? { instruction: options.instruction } : {});
+    return this.codexProvider.generateStructured<ResearchCard>({
+      task: "research",
+      skillId: "web-research",
+      prompt,
+      outputSchema: RESEARCH_SCHEMA as object,
+      timeoutMs: 240_000,
+      parse: (value) => researchOutput.parse(value) as ResearchCard,
+      prependInstructions: false,
+      onStatus,
+      webSearch: true
+    });
   }
 
   private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void): Promise<{ action: "search" | "done"; query?: string }> {

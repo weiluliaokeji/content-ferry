@@ -99,6 +99,7 @@ function initialiseDatabase(db: Database.Database): void {
       base_url TEXT NOT NULL DEFAULT '',
       proxy_url TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
+      built_in_search INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
