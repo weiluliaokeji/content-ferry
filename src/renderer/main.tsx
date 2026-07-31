@@ -166,7 +166,7 @@ type ArticleSettings = {
   enableReward: boolean;
   collectionName: string;
 };
-type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "nvidia_build" | "github_copilot" | "modelscope" | "gemini";
+type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "nvidia_build" | "github_copilot" | "modelscope" | "agnes";
 type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
   enabled: boolean; builtInSearch: boolean; credentialConfigured: boolean;
@@ -269,7 +269,7 @@ const providerName = (provider: ModelProviderId | null) => provider === null ? "
   nvidia_build: "NVIDIA Build",
   github_copilot: "GitHub Copilot",
   modelscope: "ModelScope",
-  gemini: "Google Gemini"
+  agnes: "Agnes AI"
 } as Record<ModelProviderId, string>)[provider];
 
 /** Returns the model status label shown on a skill card. Detection skills genuinely
@@ -402,7 +402,7 @@ function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState<Record<string, boolean>>({});
   const skillModelGroups = [
     { key: "text", title: "文本类技能", description: "依赖文本大模型（OpenAI 系列）", match: (c: ManagedSkill["category"]) => c === "创作" || c === "改写" || c === "研究", providers: ["openai_codex", "openai", "openrouter", "nous", "nvidia_build", "github_copilot"] as ModelProviderId[] },
-    { key: "image", title: "图像类技能", description: "依赖图像大模型（ModelScope / Gemini）", match: (c: ManagedSkill["category"]) => c === "图片", providers: ["modelscope", "gemini"] as ModelProviderId[] },
+    { key: "image", title: "图像类技能", description: "依赖图像大模型（ModelScope / Agnes AI）", match: (c: ManagedSkill["category"]) => c === "图片", providers: ["modelscope", "agnes"] as ModelProviderId[] },
     { key: "none", title: "无模型技能", description: "走浏览器自动化，不需要大模型连接", match: (c: ManagedSkill["category"]) => c === "检测" }
   ];
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([]);
@@ -423,7 +423,7 @@ function App() {
   const [researchProxySaving, setResearchProxySaving] = useState(false);
   const [researchProxyError, setResearchProxyError] = useState("");
   const [researchProxyModalOpen, setResearchProxyModalOpen] = useState(false);
-  const [coverProvider, setCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
+  const [coverProvider, setCoverProvider] = useState<"modelscope" | "agnes">("modelscope");
   const [publishCropImage, setPublishCropImage] = useState<SelectedImage>();
   const [publishCheckMarkdown, setPublishCheckMarkdown] = useState("");
   const [publishAiCheckResult, setPublishAiCheckResult] = useState("");
@@ -753,7 +753,7 @@ function App() {
       setWebSearchSettings(searchSettingsResult);
       setResearchProxyUrl(searchSettingsResult.researchProxyUrl ?? "");
       const coverSkill = skillResult.items.find((skill) => skill.id === "cover-generation");
-      if (coverSkill?.provider === "modelscope" || coverSkill?.provider === "gemini") setCoverProvider(coverSkill.provider);
+      if (coverSkill?.provider === "modelscope" || coverSkill?.provider === "agnes") setCoverProvider(coverSkill.provider);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法读取技能和模型连接。");
     }
@@ -2114,7 +2114,7 @@ function App() {
         <p className="hint">{editingSkill.description}</p>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={editingSkill.enabled} onChange={(event) => setEditingSkill((current) => current ? { ...current, enabled: event.target.checked } : current)} />启用此技能</label>
-          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "gemini" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "nvidia_build" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
+          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "agnes" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "nvidia_build" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
         </div>
         <div className="skill-file-workspace">
           <aside><strong>技能文件</strong>{editingSkill.files.map((file) => <button type="button" className={editingSkillFile?.relativePath === file.relativePath ? "active" : ""} onClick={() => void chooseSkillFile(file.relativePath)} key={file.relativePath}><span>{file.relativePath}</span><small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small></button>)}</aside>
@@ -2315,7 +2315,7 @@ function ArticleWorkspace({
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [coverCropImage, setCoverCropImage] = useState<SelectedImage>();
   const [settingsMaterials, setSettingsMaterials] = useState<WechatMaterial[]>([]);
-  const [settingsCoverProvider, setSettingsCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
+  const [settingsCoverProvider, setSettingsCoverProvider] = useState<"modelscope" | "agnes">("modelscope");
   const [settingsCoverPrompt, setSettingsCoverPrompt] = useState("");
   const [settingsCoverBusy, setSettingsCoverBusy] = useState(false);
   const [settingsCoverError, setSettingsCoverError] = useState("");
@@ -2920,9 +2920,9 @@ function ArticleWorkspace({
             <details className="ai-cover-details">
               <summary>AI 生成封面</summary>
               <label>图片模型
-                <select value={settingsCoverProvider} onChange={(event) => { setSettingsCoverProvider(event.target.value as "modelscope" | "gemini"); setSettingsCoverError(""); }}>
+                <select value={settingsCoverProvider} onChange={(event) => { setSettingsCoverProvider(event.target.value as "modelscope" | "agnes"); setSettingsCoverError(""); }}>
                   <option value="modelscope">ModelScope</option>
-                  <option value="gemini">Google Gemini</option>
+                  <option value="agnes">Agnes AI</option>
                 </select>
               </label>
               <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : settingsCoverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>

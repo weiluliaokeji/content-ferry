@@ -1409,11 +1409,11 @@ ${input.markdown}`,
       projectId: z.string().uuid().optional(),
       relativePath: z.string().trim().min(1).max(1000).optional(),
       prompt: z.string().max(2000).optional(),
-      provider: z.enum(["modelscope", "gemini"]).optional()
+      provider: z.enum(["modelscope", "agnes"]).optional()
     }).refine((value) => Boolean(value.projectId) !== Boolean(value.relativePath), "必须指定一篇文章。").parse(request.body);
     const provider = input.provider ?? skill.provider;
-    if (provider !== "modelscope" && provider !== "gemini") {
-      return reply.code(400).send({ error: "请在技能设置中选择 ModelScope 或 Gemini。" });
+    if (provider !== "modelscope" && provider !== "agnes") {
+      return reply.code(400).send({ error: "请在技能设置中选择 ModelScope 或 Agnes AI。" });
     }
     try {
       return await coverGenerator.generate({ workspaceId: workspace.id, ...input, provider });

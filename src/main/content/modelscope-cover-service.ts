@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
 import type { ModelConnectionRepository, ModelProviderId } from "../ai/model-connection-repository";
 import type { AiAuditLog } from "../ai/ai-audit-log";
 import type { LocalAssetStore } from "./local-asset-store";
@@ -27,16 +26,16 @@ export class CoverGenerationService {
   }) {
     this.getArticle(input);
     const provider = input.provider ?? "modelscope";
-    if (provider !== "modelscope" && provider !== "gemini") {
-      throw new Error("封面生成技能只支持 ModelScope 或 Gemini 图片模型。");
+    if (provider !== "modelscope" && provider !== "agnes") {
+      throw new Error("封面生成技能只支持 ModelScope 或 Agnes AI 图片模型。");
     }
     const prompt = normalizeCoverImagePrompt(input.prompt);
     const exchanges: ExternalExchange[] = [];
     const startedAt = Date.now();
     const connection = this.connections.get(provider);
     try {
-      const generated = provider === "gemini"
-        ? await this.generateWithGemini(prompt, exchanges)
+      const generated = provider === "agnes"
+        ? await this.generateWithAgnes(prompt, exchanges)
         : await this.generateWithModelScope(prompt, exchanges);
       const saved = this.save(input, generated.mimeType, generated.base64);
       this.recordAudit({ provider, model: connection.modelId, prompt, exchanges, startedAt, ok: true, error: null });
@@ -83,52 +82,50 @@ export class CoverGenerationService {
     };
   }
 
-  private async generateWithGemini(prompt: string, exchanges: ExternalExchange[]): Promise<{ mimeType: ImageMime; base64: string }> {
-    const connection = this.connections.get("gemini");
-    const apiKey = this.connections.getCredential("gemini");
-    const baseUrl = connection.baseUrl.replace(/\/+$/, "") || "https://generativelanguage.googleapis.com";
-    const model = connection.modelId || "gemini-3.1-flash-image";
+  private async generateWithAgnes(prompt: string, exchanges: ExternalExchange[]): Promise<{ mimeType: ImageMime; base64: string }> {
+    const connection = this.connections.get("agnes");
+    const apiKey = this.connections.getCredential("agnes");
+    const baseUrl = connection.baseUrl.replace(/\/+$/, "") || "https://apihub.agnes-ai.com/v1";
+    const model = connection.modelId || "agnes-image-2.1-flash";
+    const url = `${baseUrl}/images/generations`;
     const init = {
       method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseModalities: ["TEXT", "IMAGE"],
-          imageConfig: { aspectRatio: "16:9" }
-        }
+        model,
+        prompt,
+        size: "1K",
+        ratio: "1:1",
+        n: 1,
+        response_format: "b64_json"
       })
     };
-    const url = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    let response: Response;
     let text = "";
     try {
-      response = connection.proxyUrl.trim()
-        ? await undiciFetch(url, { ...init, dispatcher: new ProxyAgent(connection.proxyUrl.trim()) })
-        : await this.fetcher(url, init);
+      const response = await this.fetcher(url, init);
       text = await response.text();
       exchanges.push({ method: "POST", url: auditUrl(url), request: auditBody(init.body), response: auditText(text), error: null });
+      if (!response.ok) throw new Error(`Agnes AI 生图请求失败（HTTP ${response.status}）：${text.slice(0, 300)}`);
     } catch (error) {
-      exchanges.push({ method: "POST", url: auditUrl(url), request: auditBody(init.body), response: null, error: error instanceof Error ? error.message : String(error) });
+      exchanges.push({ method: "POST", url: auditUrl(url), request: auditBody(init.body), response: exchanges.length ? exchanges[exchanges.length - 1].response : null, error: error instanceof Error ? error.message : String(error) });
       throw error;
     }
-    if (!response.ok) throw new Error(`Gemini 生图请求失败（HTTP ${response.status}）：${text.slice(0, 300)}`);
     const payload = JSON.parse(text) as {
-      candidates?: Array<{
-        content?: {
-          parts?: Array<{
-            inlineData?: { mimeType?: string; data?: string };
-            inline_data?: { mime_type?: string; data?: string };
-          }>;
-        };
-      }>;
+      data?: Array<{ b64_json?: string; url?: string }>;
     };
-    for (const part of payload.candidates?.[0]?.content?.parts ?? []) {
-      const inline = part.inlineData
-        ?? (part.inline_data ? { mimeType: part.inline_data.mime_type, data: part.inline_data.data } : undefined);
-      if (inline?.data) return { mimeType: normalizeImageMime(inline.mimeType ?? null), base64: inline.data };
+    const first = payload.data?.[0];
+    if (!first) throw new Error("Agnes AI 已返回结果，但没有可用的图片数据。请调整提示词或模型后重试。");
+    if (first.b64_json) {
+      return { mimeType: "image/png", base64: first.b64_json };
     }
-    throw new Error("Gemini 已返回结果，但其中没有可用的图片。请调整提示词或模型后重试。");
+    if (first.url) {
+      const image = await this.requestImage(first.url, exchanges);
+      return {
+        mimeType: normalizeImageMime(image.headers.get("content-type")),
+        base64: Buffer.from(await image.arrayBuffer()).toString("base64")
+      };
+    }
+    throw new Error("Agnes AI 返回了无法解析的图片结果。");
   }
 
   private save(

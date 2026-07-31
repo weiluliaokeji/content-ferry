@@ -9,7 +9,7 @@ export const modelProviderIds = [
   "nvidia_build",
   "github_copilot",
   "modelscope",
-  "gemini"
+  "agnes"
 ] as const;
 
 export type ModelProviderId = typeof modelProviderIds[number];
@@ -35,8 +35,8 @@ const defaults: Record<ModelProviderId, Omit<ModelConnection, "credentialConfigu
   nous: { provider: "nous", displayName: "Nous Research Portal", modelId: "stepfun/step-3.7-flash:free", baseUrl: "https://inference-api.nousresearch.com/v1", proxyUrl: "", enabled: true, builtInSearch: true },
   nvidia_build: { provider: "nvidia_build", displayName: "NVIDIA Build", modelId: "z-ai/glm-5.2", baseUrl: "https://integrate.api.nvidia.com/v1", proxyUrl: "", enabled: true, builtInSearch: true },
   github_copilot: { provider: "github_copilot", displayName: "GitHub Copilot", modelId: "gpt-5", baseUrl: "", proxyUrl: "", enabled: true, builtInSearch: true },
-  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Qwen/Qwen-Image-2512", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true, builtInSearch: true },
-  gemini: { provider: "gemini", displayName: "Google Gemini", modelId: "gemini-3.1-flash-image", baseUrl: "https://generativelanguage.googleapis.com", proxyUrl: "", enabled: true, builtInSearch: true }
+  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Tongyi-MAI/Z-Image-Turbo", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true, builtInSearch: true },
+  agnes: { provider: "agnes", displayName: "Agnes AI", modelId: "agnes-image-2.1-flash", baseUrl: "https://apihub.agnes-ai.com/v1", proxyUrl: "", enabled: true, builtInSearch: true }
 };
 
 export class ModelConnectionRepository {

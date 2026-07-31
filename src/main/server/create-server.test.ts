@@ -96,27 +96,27 @@ describe("local API scaffold", () => {
 
     const connection = await server.inject({
       method: "PUT",
-      url: "/api/model-connections/gemini",
+      url: "/api/model-connections/agnes",
       payload: {
-        displayName: "Google Gemini",
-        modelId: "gemini-3.1-flash-image",
-        baseUrl: "https://generativelanguage.googleapis.com",
+        displayName: "Agnes AI",
+        modelId: "agnes-image-2.1-flash",
+        baseUrl: "https://apihub.agnes-ai.com/v1",
         proxyUrl: "http://127.0.0.1:7890",
         enabled: true,
         credential: "secret-key"
       }
     });
     expect(connection.statusCode).toBe(200);
-    expect(connection.json()).toMatchObject({ provider: "gemini", credentialConfigured: true });
+    expect(connection.json()).toMatchObject({ provider: "agnes", credentialConfigured: true });
 
     const cover = listed.json().items.find((item: { id: string }) => item.id === "cover-generation");
     const updated = await server.inject({
       method: "PUT",
       url: "/api/skills/cover-generation",
-      payload: { markdown: `${cover.markdown}\n用户自定义要求。`, enabled: true, provider: "gemini" }
+      payload: { markdown: `${cover.markdown}\n用户自定义要求。`, enabled: true, provider: "agnes" }
     });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ provider: "gemini" });
+    expect(updated.json()).toMatchObject({ provider: "agnes" });
     expect(fs.readFileSync(path.join(skillsDirectory, "cover-generation", "SKILL.md"), "utf8"))
       .toContain("用户自定义要求");
   });

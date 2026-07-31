@@ -105,7 +105,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, onChang
   const [coverPrompt, setCoverPrompt] = useState("");
   const [coverPromptBusy, setCoverPromptBusy] = useState(false);
   const [coverGenBusy, setCoverGenBusy] = useState(false);
-  const [coverProvider, setCoverProvider] = useState<"modelscope" | "gemini">("modelscope");
+  const [coverProvider, setCoverProvider] = useState<"modelscope" | "agnes">("modelscope");
   const [coverGenError, setCoverGenError] = useState("");
 
   const wordCount = useMemo(
@@ -380,9 +380,9 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, onChang
             <details className="ai-cover-details">
               <summary>AI 生成封面</summary>
               <label>图片模型
-                <select value={coverProvider} onChange={(event) => { setCoverProvider(event.target.value as "modelscope" | "gemini"); setCoverGenError(""); }}>
+                <select value={coverProvider} onChange={(event) => { setCoverProvider(event.target.value as "modelscope" | "agnes"); setCoverGenError(""); }}>
                   <option value="modelscope">ModelScope</option>
-                  <option value="gemini">Google Gemini</option>
+                  <option value="agnes">Agnes AI</option>
                 </select>
               </label>
               <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateCoverPrompt()} disabled={coverPromptBusy || coverGenBusy || !isDraft || saving}>{coverPromptBusy ? "AI 正在分析正文…" : coverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>
