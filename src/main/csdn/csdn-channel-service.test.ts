@@ -173,8 +173,8 @@ publish: false
     expect(published.remoteUrl).toBe("https://blog.csdn.net/abc/article/details/123456");
     expect(published.remoteContentId).toBe("123456");
 
-    // 已发布任务不可再进入浏览器辅助。
-    await expect(service.startBrowserAssist(job.id)).rejects.toBeInstanceOf(CsdnChannelError);
+    // 已发布任务不可再进入浏览器辅助（同步方法，直接抛错）。
+    expect(() => service.startBrowserAssist(job.id)).toThrow(CsdnChannelError);
   });
 
   it("falls back to manual reconciliation and supports correction when the receipt cannot be read", async () => {
@@ -210,7 +210,7 @@ publish: false
     const sourceRow = database!.connection.prepare("SELECT status_source FROM csdn_publish_jobs WHERE id = ?").get(job.id) as { status_source: string };
     expect(sourceRow.status_source).toBe("manual");
 
-    // 已结束任务不可再次校正为失败。
-    await expect(service.correctStatus(job.id, "failed", "x")).rejects.toBeInstanceOf(CsdnChannelError);
+    // 已结束任务不可再次校正为失败（同步方法，直接抛错）。
+    expect(() => service.correctStatus(job.id, "failed", "x")).toThrow(CsdnChannelError);
   });
 });

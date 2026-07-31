@@ -323,12 +323,13 @@ function initialiseDatabase(db: Database.Database): void {
       status TEXT NOT NULL CHECK(status IN (
         'queued', 'needs_login', 'filling', 'ready_for_final_confirmation',
         'submitting', 'published', 'needs_manual_reconciliation',
-        'failed_before_submit', 'cancelled'
+        'needs_user', 'failed_before_submit', 'failed', 'cancelled'
       )),
       remote_url TEXT,
       remote_content_id TEXT,
       status_note TEXT,
       error_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -444,6 +445,53 @@ function initialiseDatabase(db: Database.Database): void {
   }
   if (!channelDraftColumns.some((column) => column.name === "cover_source")) {
     db.exec("ALTER TABLE channel_drafts ADD COLUMN cover_source TEXT NOT NULL DEFAULT ''");
+  }
+
+  // 迁移：放宽 csdn_publish_jobs.status 的 CHECK 约束，容纳 needs_user / failed。
+  // 早期版本的约束缺少这两个状态，会导致填充失败回写与人工校正失败。幂等：仅在
+  // 现有表的 CHECK 尚未包含 needs_user 时重建，保留任务与事件数据。
+  const jobTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='csdn_publish_jobs'").get() as { sql: string } | undefined;
+  if (jobTableSql && !/needs_user/.test(jobTableSql.sql)) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE csdn_publish_jobs_new (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        account_id TEXT NOT NULL REFERENCES media_accounts(id),
+        channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+        rendered_package_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN (
+          'queued', 'needs_login', 'filling', 'ready_for_final_confirmation',
+          'submitting', 'published', 'needs_manual_reconciliation',
+          'needs_user', 'failed_before_submit', 'failed', 'cancelled'
+        )),
+        remote_url TEXT,
+        remote_content_id TEXT,
+        status_note TEXT,
+        error_message TEXT,
+        status_source TEXT NOT NULL DEFAULT 'system',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      db.exec(`INSERT INTO csdn_publish_jobs_new (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, remote_url, remote_content_id, status_note, error_message, status_source, created_at, updated_at)
+        SELECT id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, remote_url, remote_content_id, status_note, error_message, COALESCE(status_source, 'system'), created_at, updated_at FROM csdn_publish_jobs`);
+      db.exec(`CREATE TABLE csdn_publish_job_events_backup AS SELECT * FROM csdn_publish_job_events`);
+      db.exec(`DROP TABLE csdn_publish_job_events`);
+      db.exec(`DROP TABLE csdn_publish_jobs`);
+      db.exec(`ALTER TABLE csdn_publish_jobs_new RENAME TO csdn_publish_jobs`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_csdn_publish_jobs_account_updated ON csdn_publish_jobs(account_id, updated_at DESC)`);
+      db.exec(`CREATE TABLE csdn_publish_job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES csdn_publish_jobs(id) ON DELETE CASCADE,
+        previous_status TEXT NOT NULL,
+        new_status TEXT NOT NULL,
+        source TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`);
+      db.exec(`INSERT INTO csdn_publish_job_events SELECT * FROM csdn_publish_job_events_backup`);
+      db.exec(`DROP TABLE csdn_publish_job_events_backup`);
+    })();
   }
 
 }
