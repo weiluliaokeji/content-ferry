@@ -5,6 +5,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
+import { resolveCsdnImagesForBrowser } from "./csdn-image-inliner";
 
 const csdnDraftSchema = {
   type: "object",
@@ -232,6 +233,31 @@ export class CsdnChannelService {
   getDraftForJob(jobId: string): CsdnChannelDraft {
     const job = this.requireJob(jobId);
     return this.requireDraft(job.channelDraftId);
+  }
+
+  /** Return the draft content prepared for the visible browser assistant, plus
+   * every uploadable image resolved to a base64 data URL. The actual upload to
+   * CSDN's image hosting is performed inside the already-logged-in editor page
+   * (via its own `window.csdn.upload.uploadImg` API) by the caller, so it never
+   * depends on CSDN's private token/OSS endpoint or on transferring cookies. */
+  async getBrowserDraft(
+    jobId: string
+  ): Promise<{
+    title: string;
+    markdown: string;
+    author: string;
+    digest: string;
+    images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }>;
+  }> {
+    const draft = this.getDraftForJob(jobId);
+    const images = await resolveCsdnImagesForBrowser(draft.markdown, draft.workspaceId, draft.sourceRelativePath, this.contentSources);
+    return {
+      title: draft.title,
+      markdown: draft.markdown,
+      author: draft.author,
+      digest: draft.digest,
+      images
+    };
   }
 
   /**

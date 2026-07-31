@@ -10,6 +10,8 @@ import { ElectronCredentialVault } from "./security/credential-vault";
 import { OpenAICodexProvider } from "./ai/openai-codex-provider";
 import { LocalAssetStore } from "./content/local-asset-store";
 import { dailyLogFilePath } from "./logging/daily-log-stream";
+import { csdnDiagnosticsPath, resetCsdnDiagnostics, appendCsdnDiagnostics } from "./csdn/csdn-diagnostics";
+import { collectImageMatches } from "./csdn/csdn-image-inliner";
 import {
   detectCodexBinary,
   inspectCodexStatus,
@@ -935,6 +937,11 @@ let csdnWindow: BrowserWindow | undefined;
 
 function logCsdnBrowserAssist(step: string, details: Record<string, unknown> = {}): void {
   runtimeInfoLogger?.({ scope: "csdn-browser-assist", step, ...details }, "CSDN 浏览器辅助");
+  try {
+    appendCsdnDiagnostics(`[${step}] ${JSON.stringify(details)}`);
+  } catch {
+    /* best-effort */
+  }
 }
 
 async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
@@ -954,6 +961,22 @@ async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
   });
   csdnWindow = window;
   window.on("closed", () => { if (csdnWindow === window) csdnWindow = undefined; });
+  // 与检索浏览器一致：若用户在“联网检索服务”里配置了检索代理，CSDN 编辑器也走同一代理。
+  // 否则在需要代理才能访问外网的环境里，窗口会静默加载失败（白屏）。
+  await applyProxyToPartition("persist:contentferry-csdn");
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    logCsdnBrowserAssist("did-fail-load", { errorCode, errorDescription, validatedURL });
+    if (window.isDestroyed()) return;
+    // 不要把失败藏成白屏：用一张错误页告诉用户原因与对策。
+    const safeDesc = (errorDescription || `错误码 ${errorCode}`).replace(/[<>&]/g, "");
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>CSDN 编辑器加载失败</title></head>` +
+      `<body style="font-family:system-ui,-apple-system,sans-serif;padding:40px;color:#222;line-height:1.7">` +
+      `<h2 style="margin:0 0 12px">CSDN 编辑器加载失败</h2>` +
+      `<p style="margin:0 0 10px">原因：${safeDesc}</p>` +
+      `<p style="margin:0 0 10px">如果你所在网络需要代理才能访问外网，请到文渡「设置 → 联网检索服务 → 检索代理」中填写代理地址（如 <code>http://127.0.0.1:7890</code>），保存后重新点击「在浏览器中完成发布」。</p>` +
+      `</body></html>`;
+    void window.loadURL(`data:text/html,${encodeURIComponent(html)}`).catch(() => undefined);
+  });
   await window.loadURL(CSDN_EDITOR_URL);
   return window;
 }
@@ -1003,25 +1026,146 @@ async function persistCsdnFill(jobId: string, body: unknown): Promise<void> {
   }
 }
 
+/** Page-context uploader source. Runs inside the CSDN editor page (same-origin,
+ * logged-in) and calls CSDN's own image-hosting API. Kept as a string so the
+ * browser-only globals (window/atob/Blob/File) are never type-checked by the
+ * Node/Electron main build. */
+const IN_PAGE_UPLOAD_FN_SOURCE = `
+(function (arg) {
+  return (async function (a) {
+    if (typeof window.csdn === 'undefined' || typeof window.csdn.upload === 'undefined' || typeof window.csdn.upload.uploadImg !== 'function') {
+      throw new Error('WINDOW_CSDN_UPLOAD_UNAVAILABLE');
+    }
+    var comma = a.dataUrl.indexOf(',');
+    var b64 = comma >= 0 ? a.dataUrl.slice(comma + 1) : a.dataUrl;
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], { type: a.mimeType || 'application/octet-stream' });
+    var file = new File([blob], a.filename || 'image', { type: a.mimeType });
+    var res = await window.csdn.upload.uploadImg({ appName: 'direct_blog', type: 'blog', imageTemplate: '', file: file });
+    var first = Array.isArray(res) ? res[0] : res;
+    var url = first && (first.data || first.url || first.imageUrl);
+    if (typeof url !== 'string' || url.indexOf('http') !== 0) {
+      throw new Error('UPLOAD_NO_URL:' + JSON.stringify(res));
+    }
+    return url;
+  })(arg);
+})
+`;
+
+interface InPageImageUpload {
+  source: string;
+  dataUrl: string;
+  mimeType: string;
+  filename: string;
+}
+
+interface PageUploadOutcome {
+  replaced: Map<string, string>;
+  failures: Array<{ source: string; reason: string }>;
+}
+
+/** Wait until the page's own upload API is ready (or give up after a short poll). */
+async function waitForPageUploadApi(window: BrowserWindow, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ok = await window.webContents
+      .executeJavaScript(`typeof window.csdn?.upload?.uploadImg === 'function'`)
+      .catch(() => false);
+    if (ok === true) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function uploadOneImageInPage(window: BrowserWindow, image: InPageImageUpload): Promise<string> {
+  const script = `(${IN_PAGE_UPLOAD_FN_SOURCE})(${JSON.stringify({ dataUrl: image.dataUrl, filename: image.filename, mimeType: image.mimeType })})`;
+  return await window.webContents.executeJavaScript(script, false) as Promise<string>;
+}
+
+/** Upload every resolved image by driving CSDN's own in-page upload API. Returns
+ * a map of original source → CSDN URL plus a list of failures. */
+async function uploadCsdnImagesInPage(window: BrowserWindow, images: InPageImageUpload[]): Promise<PageUploadOutcome> {
+  const replaced = new Map<string, string>();
+  const failures: Array<{ source: string; reason: string }> = [];
+
+  const apiReady = await waitForPageUploadApi(window);
+  logCsdnBrowserAssist("page-upload-api", { ready: apiReady });
+  if (!apiReady) {
+    const pageUrl = await window.webContents.executeJavaScript("location.href").catch(() => "?");
+    appendCsdnDiagnostics(`CSDN 页内上传 API 不可用（window.csdn.upload.uploadImg 未找到）。page=${pageUrl}`);
+    for (const image of images) {
+      failures.push({ source: image.source, reason: "CSDN 页内上传 API 不可用（window.csdn.upload.uploadImg 未找到）。" });
+    }
+    return { replaced, failures };
+  }
+
+  for (const image of images) {
+    try {
+      const url = await uploadOneImageInPage(window, image);
+      replaced.set(image.source, url);
+      logCsdnBrowserAssist("image-uploaded", { source: image.source, url });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      failures.push({ source: image.source, reason });
+      appendCsdnDiagnostics(`CSDN 页内上传失败 ${image.source}：${reason}`);
+    }
+  }
+
+  return { replaced, failures };
+}
+
+/** Replace `![alt](source)` with `![alt](csdnUrl)` for every uploaded image. */
+function rewriteMarkdownImages(markdown: string, replaced: Map<string, string>): string {
+  if (replaced.size === 0) return markdown;
+  const matches = collectImageMatches(markdown);
+  let result = markdown;
+  for (let index = matches.length - 1; index >= 0; index--) {
+    const match = matches[index];
+    const url = replaced.get(match.source);
+    if (url) {
+      result = result.slice(0, match.start) + `![${match.alt}](${url})` + result.slice(match.end);
+    }
+  }
+  return result;
+}
+
 async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
+  resetCsdnDiagnostics();
   let window: BrowserWindow;
   try {
     window = await getOrCreateCsdnWindow();
   } catch (error) {
     logCsdnBrowserAssist("window-create-failed", { error: error instanceof Error ? error.message : String(error) });
-    return;
+    // 不再静默吞掉：把错误抛回渲染进程，主窗口会显示提示，避免只剩一个白窗。
+    throw error instanceof Error ? error : new Error("无法打开 CSDN 发布浏览器窗口。");
   }
   window.show();
   window.focus();
-  let draft: { title: string; markdown: string; author: string; digest: string };
+  let draft: { title: string; markdown: string; author: string; digest: string; images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }> };
   try {
+    const cookies = await window.webContents.session.cookies.get({ url: CSDN_EDITOR_URL });
+    logCsdnBrowserAssist("draft-fetch-started", {
+      cookieCount: cookies.length,
+      hasLoginCookie: cookies.some((c) => /^(UserName|UserToken|ssxin|csdn_user|uid)$/.test(c.name))
+    });
     const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json() as { draft: { title: string; markdown: string; author: string; digest: string } };
+    const payload = await response.json() as { draft: { title: string; markdown: string; author: string; digest: string; images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }> } };
     draft = payload.draft;
+    logCsdnBrowserAssist("draft-fetched", {
+      title: draft.title,
+      markdownLength: draft.markdown.length,
+      imageCount: draft.images.length
+    });
   } catch (error) {
     logCsdnBrowserAssist("fetch-draft-failed", { error: error instanceof Error ? error.message : String(error) });
-    showCsdnAssistStatus(window, ["无法读取 CSDN 渠道稿内容，请稍后重试或刷新页面。"]);
+    showCsdnAssistStatus(window, [
+      "无法读取 CSDN 渠道稿内容。",
+      `完整诊断已写入文件：${csdnDiagnosticsPath()}`,
+      "请把该文件的全部内容发给我，即可精准定位失败原因。"
+    ]);
     return;
   }
 
@@ -1047,8 +1191,18 @@ async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
     return;
   }
 
+  // 上传图片到 CSDN 图床：在已登录的编辑器页面内调用 CSDN 自带的
+  // window.csdn.upload.uploadImg（同域、自带 cookie，无需反向工程私有接口）。
+  const imageUpload = await uploadCsdnImagesInPage(window, draft.images);
+  const finalMarkdown = rewriteMarkdownImages(draft.markdown, imageUpload.replaced);
+  logCsdnBrowserAssist("images-uploaded", {
+    total: draft.images.length,
+    uploaded: imageUpload.replaced.size,
+    failed: imageUpload.failures.length
+  });
+
   // 填充标题与正文（Markdown）。CSDN 编辑器为 CodeMirror；若取不到实例则退回 execCommand/粘贴兜底。
-  const fillArgs = JSON.stringify({ title: draft.title, markdown: draft.markdown });
+  const fillArgs = JSON.stringify({ title: draft.title, markdown: finalMarkdown });
   const fill = await window.webContents.executeJavaScript(`(function(args){
     var title = args.title, markdown = args.markdown;
     var result = { title: false, content: false };
@@ -1094,11 +1248,35 @@ async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   }
 
   await persistCsdnFill(jobId, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
-  showCsdnAssistStatus(window, [
+  const statusLines = [
     "已填充标题与正文。",
-    "请在浏览器中核对内容、摘要、标签与封面。",
-    "确认无误后，回到文渡点击“我已在 CSDN 发布”，文渡会点击 CSDN 的“发布文章”并读取回执。"
-  ]);
+    imageUpload.replaced.size > 0 ? `已将 ${imageUpload.replaced.size} 张图片上传到 CSDN 图床并替换正文链接。` : (draft.images.length === 0 ? "" : "本文没有需要上传的本地图片。")
+  ];
+  if (imageUpload.failures.length > 0) {
+    statusLines.push(`有 ${imageUpload.failures.length} 张图片未能上传到 CSDN 图床（CSDN 编辑器中这些图片会显示“转存失败”，需手动处理或重试）：`);
+    for (const failure of imageUpload.failures.slice(0, 8)) {
+      statusLines.push(`  • ${failure.source}`);
+      if (failure.reason) statusLines.push(`    原因：${failure.reason}`);
+    }
+    if (imageUpload.failures.length > 8) {
+      statusLines.push(`  … 还有 ${imageUpload.failures.length - 8} 张。`);
+    }
+    appendCsdnDiagnostics(`CSDN 图片上传失败明细（${imageUpload.failures.length} 张）：${JSON.stringify(imageUpload.failures)}`);
+    statusLines.push(`完整诊断已写入文件：${csdnDiagnosticsPath()}`);
+    statusLines.push("请把该文件的全部内容发给我，即可精准定位失败原因。");
+  }
+  statusLines.push("请在浏览器中核对内容、摘要、标签与封面。");
+  statusLines.push("确认无误后，回到文渡点击“我已在 CSDN 发布”，文渡会读取 CSDN 回执。");
+  showCsdnAssistStatus(window, statusLines.filter(Boolean));
+
+  if (imageUpload.failures.length > 0) {
+    console.error("[contentferry] CSDN 图片上传失败明细：", JSON.stringify({
+      jobId,
+      uploadedCount: imageUpload.replaced.size,
+      failedCount: imageUpload.failures.length,
+      failures: imageUpload.failures
+    }, null, 2));
+  }
 }
 
 async function confirmCsdnBrowserPublish(jobId: string): Promise<{ remoteUrl: string | null; remoteContentId: string | null } | null> {
@@ -2094,27 +2272,32 @@ async function installResearchStealth(window: BrowserWindow): Promise<void> {
   }
 }
 
-/** Point the research session partition at the global research proxy (or clear
- * it). Mirrors the proxy used by the fetch-based providers so both channels
- * behave identically. A blank/invalid value falls back to a direct connection. */
-async function applyResearchProxy(window: BrowserWindow): Promise<void> {
+/** Point a session partition at the global research proxy (or clear it).
+ * Mirrors the proxy used by the fetch-based providers so both channels behave
+ * identically. A blank/invalid value falls back to a direct connection. */
+async function applyProxyToPartition(partition: string): Promise<void> {
   const proxy = loadAppSettings().researchProxyUrl?.trim() ?? "";
   try {
-    const researchSession = session.fromPartition("persist:contentferry-research");
+    const targetSession = session.fromPartition(partition);
     if (proxy) {
       const parsed = new URL(proxy);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "socks5:") {
         console.warn(`[contentferry] 检索代理协议不支持，已忽略并直连：${proxy}`);
-        await researchSession.setProxy({ proxyRules: "" });
+        await targetSession.setProxy({ proxyRules: "" });
         return;
       }
-      await researchSession.setProxy({ proxyRules: proxy });
+      await targetSession.setProxy({ proxyRules: proxy });
     } else {
-      await researchSession.setProxy({ proxyRules: "" });
+      await targetSession.setProxy({ proxyRules: "" });
     }
   } catch {
-    /* proxy misconfiguration must not block research */
+    /* proxy misconfiguration must not block the browser */
   }
+}
+
+/** Apply the global research proxy to the research session partition. */
+async function applyResearchProxy(window: BrowserWindow): Promise<void> {
+  await applyProxyToPartition("persist:contentferry-research");
 }
 
 const RESEARCH_RENDER_TIMEOUT_MS = 12_000;

@@ -29,7 +29,7 @@ export function openInMemoryDatabase(): AppDatabase {
   };
 }
 
-function initialiseDatabase(db: Database.Database): void {
+export function initialiseDatabase(db: Database.Database): void {
 
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
@@ -473,8 +473,10 @@ function initialiseDatabase(db: Database.Database): void {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`);
+      // 旧表没有 status_source 列（该列随本次迁移一同引入），因此这里用字面量
+      // 'system' 填充，不能从旧表 SELECT，否则会触发 "no such column: status_source"。
       db.exec(`INSERT INTO csdn_publish_jobs_new (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, remote_url, remote_content_id, status_note, error_message, status_source, created_at, updated_at)
-        SELECT id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, remote_url, remote_content_id, status_note, error_message, COALESCE(status_source, 'system'), created_at, updated_at FROM csdn_publish_jobs`);
+        SELECT id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, remote_url, remote_content_id, status_note, error_message, 'system', created_at, updated_at FROM csdn_publish_jobs`);
       db.exec(`CREATE TABLE csdn_publish_job_events_backup AS SELECT * FROM csdn_publish_job_events`);
       db.exec(`DROP TABLE csdn_publish_job_events`);
       db.exec(`DROP TABLE csdn_publish_jobs`);

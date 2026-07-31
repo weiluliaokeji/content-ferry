@@ -771,7 +771,10 @@ export function buildServer(
   server.get("/api/integrations/csdn/jobs/:jobId", async (request) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
     const job = csdnChannels.getJob(params.jobId);
-    const draft = csdnChannels.getDraftForJob(params.jobId);
+    // Images are resolved to data URLs here; the actual upload to CSDN's image
+    // hosting happens inside the already-logged-in editor page (which exposes
+    // `window.csdn.upload.uploadImg`), so no cookie or token plumbing is needed.
+    const draft = await csdnChannels.getBrowserDraft(params.jobId);
     return { job, draft };
   });
 
