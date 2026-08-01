@@ -202,6 +202,10 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .editor-document-title strong, .editor-document-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-top-actions { display: flex; align-items: center; gap: .75rem; }
 .editor-top-actions span { font-size: .8rem; color: #718096; }
+.csdn-inline-status { margin: 0; font-size: .8rem; color: #718096; white-space: nowrap; }
+.csdn-workspace-error { display: flex; align-items: center; gap: .75rem; padding: .55rem 1rem; background: #fdecea; border-bottom: 1px solid #f5c2c0; color: #b42318; font-size: .85rem; }
+.csdn-workspace-error-text { flex: 1 1 auto; min-width: 0; }
+.csdn-workspace-error .text-button { color: #b42318; flex: 0 0 auto; }
 .editor-columns { height: calc(100vh - 54px); display: grid; grid-template-columns: 190px minmax(480px, 1fr) 330px; gap: 1px; background: #dfe5f0; }
 .workspace-loading { height: calc(100vh - 54px); display: grid; place-content: center; justify-items: center; gap: 1rem; color: #64748b; }
 .loading-dot { width: 22px; height: 22px; border: 3px solid #dce5fb; border-top-color: #315bd8; border-radius: 50%; animation: spin .8s linear infinite; }
@@ -401,6 +405,11 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .crop-selection span { z-index: 1; padding: .3rem .55rem; border-radius: 999px; background: rgb(15 23 42 / 68%); font-size: .78rem; pointer-events: none; }
 .crop-resize-handle { position: absolute; right: -9px; bottom: -9px; z-index: 2; width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #315bd8; cursor: nwse-resize; touch-action: none; }
 .settings-cover-section { display: grid; gap: .65rem; }
+.settings-danger-section { display: grid; gap: .5rem; margin-top: .5rem; padding: .85rem; border: 1px solid #f5c2c0; border-radius: 10px; background: #fff7f6; }
+.settings-danger-section strong { color: #b42318; }
+.settings-danger-section small { font-weight: 400; color: #7a3b36; }
+.settings-danger-section .danger-button { justify-self: start; }
+.danger-button:hover { background: #8f1d14; }
 .wechat-comment-settings { display: grid; gap: .75rem; margin: 0; padding: .85rem; border: 1px solid #e1e7f1; border-radius: 10px; }
 .wechat-comment-settings legend { padding: 0 .35rem; color: #27364f; font-size: .9rem; font-weight: 700; }
 .wechat-comment-settings .checkbox-row { display: flex; align-items: flex-start; gap: .65rem; }

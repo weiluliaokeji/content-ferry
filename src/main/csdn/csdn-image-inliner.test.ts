@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountRepository } from "../accounts/account-repository";
 import { ContentSourceService } from "../content/content-source-service";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
-import { inlineCsdnImages, resolveCsdnImagesForBrowser } from "./csdn-image-inliner";
+import { inlineCsdnImages, resolveCoverToDataUrl, resolveCsdnImagesForBrowser } from "./csdn-image-inliner";
 
 describe("inlineCsdnImages", () => {
   let database: AppDatabase | undefined;
@@ -167,5 +167,73 @@ describe("resolveCsdnImagesForBrowser", () => {
       contentSources
     );
     expect(images).toHaveLength(0);
+  });
+});
+
+describe("resolveCoverToDataUrl", () => {
+  let database: AppDatabase | undefined;
+  let sourceDirectory: string | undefined;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    database?.close();
+    if (sourceDirectory) {
+      try { fs.rmSync(sourceDirectory, { recursive: true, force: true }); }
+      catch { /* ignore */ }
+    }
+    database = undefined;
+    sourceDirectory = undefined;
+  });
+
+  it("returns null for an empty cover source", async () => {
+    expect(await resolveCoverToDataUrl("", "ws", "rel", {} as never)).toBeNull();
+  });
+
+  it("passes a data: URL through unchanged", async () => {
+    const dataUrl = "data:image/png;base64,QUJD";
+    expect(await resolveCoverToDataUrl(dataUrl, "ws", "rel", {} as never)).toBe(dataUrl);
+  });
+
+  it("resolves a local cover asset to a data URL", async () => {
+    database = openInMemoryDatabase();
+    const accounts = new AccountRepository(database.connection);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-csdn-cover-"));
+    const articleDirectory = path.join(sourceDirectory, "posts", "article");
+    fs.mkdirSync(path.join(articleDirectory, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(articleDirectory, "assets", "cover.png"), Buffer.from("cover-bytes", "utf8"));
+    fs.writeFileSync(path.join(articleDirectory, "index.md"), "---\ntitle: 测试\n---\n", "utf8");
+
+    const contentSources = new ContentSourceService(database.connection);
+    contentSources.setSource(workspace.id, sourceDirectory);
+
+    const dataUrl = await resolveCoverToDataUrl("./assets/cover.png", workspace.id, "posts/article/index.md", contentSources);
+    expect(dataUrl).toBe(`data:image/png;base64,${Buffer.from("cover-bytes", "utf8").toString("base64")}`);
+  });
+
+  it("resolves a contentferry-asset:// cover from the asset store", async () => {
+    const bytes = Buffer.from("asset-cover-bytes", "utf8");
+    const assetStore = {
+      readBytes: (_ctx: string, _file: string) => ({ bytes, mimeType: "image/png" })
+    } as unknown as import("../content/local-asset-store").LocalAssetStore;
+    const dataUrl = await resolveCoverToDataUrl(
+      "contentferry-asset://draft-1/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png",
+      "ws",
+      "rel",
+      {} as never,
+      assetStore
+    );
+    expect(dataUrl).toBe(`data:image/png;base64,${bytes.toString("base64")}`);
+  });
+
+  it("returns null for a contentferry-asset:// cover when no asset store is wired", async () => {
+    expect(
+      await resolveCoverToDataUrl(
+        "contentferry-asset://draft-1/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png",
+        "ws",
+        "rel",
+        {} as never
+      )
+    ).toBeNull();
   });
 });

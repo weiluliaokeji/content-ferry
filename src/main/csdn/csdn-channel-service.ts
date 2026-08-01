@@ -5,7 +5,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
-import { resolveCsdnImagesForBrowser } from "./csdn-image-inliner";
+import { resolveCsdnImagesForBrowser, resolveCoverToDataUrl } from "./csdn-image-inliner";
 
 const csdnDraftSchema = {
   type: "object",
@@ -78,7 +78,8 @@ export class CsdnChannelService {
     private readonly db: Database.Database,
     private readonly accounts: AccountRepository,
     private readonly contentSources: ContentSourceService,
-    private readonly modelProvider: ModelProvider
+    private readonly modelProvider: ModelProvider,
+    private readonly assetStore?: LocalAssetStore
   ) {}
 
   capabilities(_accountId: string): PublishCapabilities {
@@ -104,10 +105,26 @@ export class CsdnChannelService {
     const article = this.contentSources.getArticle(account.workspaceId, input.relativePath);
     const sourceHash = digest(article.markdown);
     const generationMode = input.generationMode ?? "rewrite";
+    // 原文设置（作者/摘要/封面）是 CSDN 稿的默认继承来源；提前读取，便于命中已有草稿时回填。
+    const sourceSettings = this.db.prepare("SELECT author, digest, cover_source FROM article_settings WHERE context_key = ?")
+      .get(`source:${article.relativePath}`) as { author: string | null; digest: string | null; cover_source: string | null } | undefined;
     const existing = this.db.prepare(`SELECT * FROM channel_drafts
       WHERE account_id = ? AND source_relative_path = ? AND source_hash = ? AND generation_mode = ? AND status IN ('draft', 'approved')
       ORDER BY updated_at DESC LIMIT 1`).get(account.id, article.relativePath, sourceHash, generationMode) as Record<string, string | null> | undefined;
-    if (existing) return mapDraft(existing);
+    if (existing) {
+      // 草稿态且继承字段为空（多由“继承功能上线前的旧草稿”导致）：从最新原文设置回填，
+      // 避免旧空快照一直显示空作者/空摘要/空封面。已冻结(approved)的内容快照不改动。
+      if (existing.status === "draft" && (!existing.author || !existing.digest || !existing.cover_source)) {
+        const author = existing.author || sourceSettings?.author || "";
+        const sourceDigest = (existing.digest || sourceSettings?.digest || "").slice(0, 200);
+        const coverSource = existing.cover_source || sourceSettings?.cover_source || "";
+        if (author !== existing.author || sourceDigest !== existing.digest || coverSource !== existing.cover_source) {
+          this.db.prepare("UPDATE channel_drafts SET author = ?, digest = ?, cover_source = ?, updated_at = ? WHERE id = ?")
+            .run(author, sourceDigest, coverSource, new Date().toISOString(), existing.id);
+        }
+      }
+      return this.requireDraft(existing.id!);
+    }
 
     const title = (article.title ?? firstHeading(article.markdown) ?? "未命名文章").slice(0, 120);
     const generatedDraft = generationMode === "rewrite"
@@ -129,8 +146,6 @@ export class CsdnChannelService {
       : { title, markdown: article.markdown };
     const markdown = normalizeMarkdown(generatedDraft.markdown, generatedDraft.title);
     assertNoCsdnPromotion(markdown);
-    const sourceSettings = this.db.prepare("SELECT author, digest, cover_source FROM article_settings WHERE context_key = ?")
-      .get(`source:${article.relativePath}`) as { author: string | null; digest: string | null; cover_source: string | null } | undefined;
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";
     const coverSource = sourceSettings?.cover_source ?? "";
@@ -166,11 +181,44 @@ export class CsdnChannelService {
     return ids.length;
   }
 
+  deleteDraft(id: string): number {
+    const row = this.db.prepare("SELECT id FROM channel_drafts WHERE id = ?").get(id) as { id: string } | undefined;
+    if (!row) return 0;
+    // 清理该草稿在本地素材库中的图片上下文（封面/正文插图）。
+    if (this.assetStore) {
+      try { this.assetStore.deleteContext(id); } catch { /* 图片目录可能不存在，忽略 */ }
+    }
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM csdn_publish_job_events WHERE job_id IN (SELECT id FROM csdn_publish_jobs WHERE channel_draft_id = ?)").run(id);
+      this.db.prepare("DELETE FROM csdn_publish_jobs WHERE channel_draft_id = ?").run(id);
+      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+    })();
+    return 1;
+  }
+
   listDrafts(workspaceId: string, accountId?: string): CsdnChannelDraft[] {
     const rows = accountId
       ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
       : this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId);
-    return (rows as Array<Record<string, string | null>>).map(mapDraft);
+    const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
+    // 兼容“继承功能上线前的旧空草稿”：草稿态且作者/摘要/封面任一为空时，从最新原文设置回填，
+    // 保证进入现有草稿即可看到原文封面/摘要/作者（仅在显示层补默认值，不改写已编辑内容）。
+    const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
+    if (needBackfill.length > 0) {
+      const keys = needBackfill.map((d) => `source:${d.sourceRelativePath}`);
+      const placeholders = keys.map(() => "?").join(",");
+      const settings = this.db.prepare(`SELECT context_key, author, digest, cover_source FROM article_settings WHERE context_key IN (${placeholders})`)
+        .all(...keys) as Array<{ context_key: string; author: string | null; digest: string | null; cover_source: string | null }>;
+      const byKey = new Map(settings.map((s) => [s.context_key, s]));
+      for (const d of needBackfill) {
+        const setting = byKey.get(`source:${d.sourceRelativePath}`);
+        if (!setting) continue;
+        d.author = d.author || setting.author || "";
+        d.digest = (d.digest || setting.digest || "").slice(0, 200);
+        d.coverSource = d.coverSource || setting.cover_source || "";
+      }
+    }
+    return drafts;
   }
 
   approveDraft(id: string): CsdnChannelDraft {
@@ -202,9 +250,20 @@ export class CsdnChannelService {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new CsdnChannelError("请先审核并冻结 CSDN 渠道稿，再创建发布任务。");
     const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
-    const idempotencyKey = `csdn:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
+    let idempotencyKey = `csdn:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
     const found = this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
-    if (found) return mapJob(found);
+    if (found) {
+      const foundJob = mapJob(found);
+      // 只有“可重启”的任务才复用，避免把上次卡在终态（提交超时/失败/已发布/取消）的旧任务
+      // 反复返回给用户。否则用户再次点击“发布到 CSDN”会命中这个不可重启的旧任务，
+      // startBrowserAssist 直接抛“任务已结束”，浏览器根本不会打开。终态任务一律新建一个重新开始。
+      const restartable: CsdnPublishJobStatus[] = [
+        "queued", "needs_login", "filling", "ready_for_final_confirmation", "failed_before_submit"
+      ];
+      if (restartable.includes(foundJob.status)) return foundJob;
+      // 终态：放弃复用，改用带 retry 后缀的新幂等键，避免与旧任务的 UNIQUE 约束冲突。
+      idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
@@ -248,15 +307,35 @@ export class CsdnChannelService {
     author: string;
     digest: string;
     images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }>;
+    /** The main article's cover resolved to a data URL, when available. */
+    coverDataUrl?: string;
   }> {
     const draft = this.getDraftForJob(jobId);
     const images = await resolveCsdnImagesForBrowser(draft.markdown, draft.workspaceId, draft.sourceRelativePath, this.contentSources);
+    // Source the summary and cover from the MAIN article (article_settings for
+    // `source:<relativePath>`), falling back to the CSDN channel draft's own
+    // copy. The channel draft only snapshots these at generation time, so if the
+    // main article's summary/cover changed afterwards the copy would be stale or
+    // empty. The user expects the main article's values to be used here.
+    const sourceSettings = this.db.prepare("SELECT digest, cover_source FROM article_settings WHERE context_key = ?")
+      .get(`source:${draft.sourceRelativePath}`) as { digest: string | null; cover_source: string | null } | undefined;
+    const digest = draft.digest || sourceSettings?.digest || "";
+    const coverSource = draft.coverSource || sourceSettings?.cover_source || "";
+    const resolvedCover = coverSource
+      ? await resolveCoverToDataUrl(coverSource, draft.workspaceId, draft.sourceRelativePath, this.contentSources, this.assetStore)
+      : null;
+    // Fallback: if the main article has no dedicated cover, reuse the first body
+    // image so CSDN always receives a valid cover. An empty cover combined with
+    // other required fields can trigger CSDN's "提交的信息不符合要求：填写内容格式不正确"
+    // rejection, and a thumbnail also helps the post render correctly.
+    const coverDataUrl = resolvedCover ?? images[0]?.dataUrl;
     return {
       title: draft.title,
       markdown: draft.markdown,
       author: draft.author,
-      digest: draft.digest,
-      images
+      digest,
+      images,
+      coverDataUrl
     };
   }
 

@@ -264,7 +264,7 @@ export function buildServer(
     )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
-  const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider);
+  const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
@@ -758,6 +758,12 @@ export function buildServer(
     return csdnChannels.saveDraft(params.draftId, csdnChannelDraftSaveInput.parse(request.body));
   });
 
+  server.delete("/api/integrations/csdn/channel-drafts/:draftId", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    csdnChannels.deleteDraft(params.draftId);
+    return reply.code(204).send();
+  });
+
   server.get("/api/integrations/csdn/jobs", async () => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     return { items: csdnChannels.listJobs(workspace.id) };
@@ -807,6 +813,15 @@ export function buildServer(
       return csdnChannels.recordSubmission(params.jobId, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation", reason: "未能自动读取 CSDN 文章链接。" });
     }
     return reply.code(201).send(csdnChannels.recordSubmission(params.jobId, { ...receipt, state: "published" }));
+  });
+
+  server.post("/api/integrations/csdn/jobs/:jobId/record-submission", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      remoteUrl: z.string().url().nullable(),
+      remoteContentId: z.string().nullable()
+    }).parse(request.body);
+    return reply.code(201).send(csdnChannels.recordSubmission(params.jobId, { ...body, state: "published" }));
   });
 
   server.post("/api/integrations/csdn/jobs/:jobId/status", async (request) => {

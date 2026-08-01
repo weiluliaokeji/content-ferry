@@ -1,4 +1,5 @@
 import type { ContentSourceService } from "../content/content-source-service";
+import type { LocalAssetStore } from "../content/local-asset-store";
 
 export interface CsdnImageInliningResult {
   markdown: string;
@@ -193,6 +194,48 @@ export interface ResolvedCsdnImage {
   dataUrl: string;
   mimeType: string;
   filename: string;
+}
+
+/** Resolve a single cover-source reference (the main article's cover, stored as
+ * `contentferry-asset://...`, a `./assets/...` relative path, or an http(s) URL)
+ * into a base64 data URL so the main process can push the bytes into the CSDN
+ * editor's cover uploader. Returns null when the source is empty or unreadable. */
+export async function resolveCoverToDataUrl(
+  coverSource: string,
+  workspaceId: string,
+  sourceRelativePath: string,
+  contentSources: ContentSourceService,
+  assetStore?: LocalAssetStore
+): Promise<string | null> {
+  if (!coverSource) return null;
+  if (coverSource.startsWith("data:")) return coverSource;
+  // Channel-draft covers uploaded via the local "选择本地图片" picker are stored
+  // in the app's LocalAssetStore under a `contentferry-asset://<contextId>/<file>`
+  // URL — NOT in the article source. `resolveImage` only reads article resources,
+  // so we resolve asset-store covers here directly. This is the missing piece that
+  // previously made CSDN covers silently fail (coverDataUrl stayed undefined).
+  if (coverSource.startsWith("contentferry-asset://")) {
+    const match = /^contentferry-asset:\/\/([^/]+)\/(.+)$/.exec(coverSource);
+    if (match && assetStore) {
+      try {
+        const { bytes, mimeType } = assetStore.readBytes(match[1], match[2]);
+        if (bytes && bytes.length > 0) {
+          return `data:${mimeType};base64,${bytes.toString("base64")}`;
+        }
+      } catch {
+        // fall through to null below
+      }
+    }
+    return null;
+  }
+  try {
+    const { buffer, mimeType } = await resolveImage(coverSource, workspaceId, sourceRelativePath, contentSources);
+    if (buffer.length === 0) return null;
+    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+  } catch {
+    // Unresolvable cover: leave it for the user to set manually in CSDN.
+    return null;
+  }
 }
 
 /** Resolve every uploadable image in the Markdown (local files via the article

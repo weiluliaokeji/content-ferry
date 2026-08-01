@@ -71,6 +71,43 @@ publish: false
     expect(service.capabilities(account.id)).toMatchObject({ canCreateRemoteDraft: true, canSubmitAfterConfirmation: true, supportsScheduledPublish: false });
   });
 
+  it("does not reuse a job stuck in a terminal state; creates a fresh one instead", async () => {
+    database = openInMemoryDatabase();
+    const accounts = new AccountRepository(database.connection);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-csdn-"));
+    fs.mkdirSync(path.join(sourceDirectory, "posts", "source", "assets"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDirectory, "posts", "source", "index.md"), `---\ntitle: 主稿标题\n---\n\n# 主稿标题\n\n正文。`, "utf8");
+    const contentSources = new ContentSourceService(database.connection);
+    contentSources.setSource(workspace.id, sourceDirectory);
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "csdn", displayName: "测试 CSDN" });
+    const provider: ModelProvider = {
+      id: "test",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ title: "适配后的 CSDN 标题", markdown: "# 适配后的 CSDN 标题\n\n正文。" }), provider: "test", usage: null };
+      },
+      async webResearch() { throw new Error("not used"); }
+    };
+    const service = new CsdnChannelService(database.connection, accounts, contentSources, provider);
+
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" });
+    service.approveDraft(draft.id);
+    const stuck = service.createPublishJob(draft.id);
+    expect(stuck.status).toBe("queued");
+    // 模拟上次提交超时后进入的终态：filling → 填充成功 → 提交中 → 无法读取回执 → 人工核对
+    service.startBrowserAssist(stuck.id);
+    service.recordFill(stuck.id, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+    service.beginSubmit(stuck.id);
+    service.recordSubmission(stuck.id, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation" });
+    expect(service.getJob(stuck.id).status).toBe("needs_manual_reconciliation");
+
+    // 再次点击“发布到 CSDN”不应命中这个卡死的旧任务，而应新建一个 queued 任务，
+    // 否则 startBrowserAssist 会抛“任务已结束”，浏览器永远打不开。
+    const fresh = service.createPublishJob(draft.id);
+    expect(fresh.id).not.toBe(stuck.id);
+    expect(fresh.status).toBe("queued");
+  });
+
   it("creates a CSDN channel draft directly from the source without calling a model", async () => {
     database = openInMemoryDatabase();
     const accounts = new AccountRepository(database.connection);
