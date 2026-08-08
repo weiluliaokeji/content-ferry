@@ -110,6 +110,9 @@ function shutdownAndExit(exitCode = 0): Promise<void> {
     destroyAuxiliaryWindows();
     if (runtimeShutdown) await runtimeShutdown();
     app.exit(exitCode);
+    // 兜底：若 app.exit() 因同步模态框等遗留消息循环未能真正终结进程，
+    // 2 秒后强制结束，保证"关主窗 = 整组命令行必死"，不再卡住 concurrently。
+    setTimeout(() => process.exit(exitCode), 2000).unref();
   })();
   return shutdownPromise;
 }
@@ -199,6 +202,8 @@ async function createMainWindow(): Promise<void> {
   // BrowserWindow closes, so without this handler the title-bar close button
   // appears to do nothing. Convert it into an explicit desktop confirmation.
   window.webContents.on("will-prevent-unload", (event) => {
+    // 已经在退出流程中：直接放行关闭，绝不再弹同步模态框——否则会卡死原生关闭握手
+    if (shutdownPromise) { event.preventDefault(); return; }
     if (window.isDestroyed()) return;
     const choice = dialog.showMessageBoxSync(window, {
       type: "warning",
