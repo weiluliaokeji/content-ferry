@@ -42,11 +42,29 @@ describe("Wechat article typography", () => {
 });
 
 describe("Wechat code-block rendering", () => {
-  it("keeps source line breaks explicit after WeChat rewrites the draft HTML", () => {
+  it("emits WeChat-native code-block markup so the editor renders a real block", () => {
     const html = markdownToWechatHtml("```ts\nconst first = 1;\nconst second = 2;\n```");
-    expect(html).toContain("white-space:pre-wrap");
-    expect(html).toContain("const first = 1;<br/>const second = 2;");
-    expect(html).toContain("<code style=\"white-space:inherit;\">");
+    // WeChat-native markers — the editor renders these as a styled block
+    // (background, monospace, optional line numbers) rather than plain text.
+    expect(html).toContain('<section class="code-snippet__js">');
+    expect(html).toContain('<pre class="code-snippet__js code-snippet code-snippet_nowrap"');
+    expect(html).toContain("<code>");
+    expect(html).toContain("<span leaf=\"\">");
+    // Each source line must be its own <code><span leaf="">...
+    // so WeChat cannot collapse all lines into one.
+    expect(html).toContain(">const first = 1;</span></code>");
+    expect(html).toContain(">const second = 2;</span></code>");
+    // No fragile inline fenced/pre-wrap simulation that WeChat justifies away.
+    expect(html).not.toContain("<br/>");
+  });
+
+  it("preserves empty lines with a non-breaking space", () => {
+    const html = markdownToWechatHtml("```\nfirst\n\nthird\n```");
+    // An empty source line becomes a non-breaking space inside its own
+    // <code><span leaf=""> so the block keeps its height.
+    expect(html).toContain(">first</span></code>");
+    expect(html).toContain("> </span></code>");
+    expect(html).toContain(">third</span></code>");
   });
 });
 

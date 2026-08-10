@@ -456,15 +456,18 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const html: string[] = [];
   let codeLines: string[] | null = null;
+  let codeLang = "";
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index];
     const line = rawLine.trim();
     if (/^```/.test(line)) {
       if (codeLines) {
-        html.push(renderWechatCodeBlock(codeLines));
+        html.push(renderWechatCodeBlock(codeLines, codeLang));
         codeLines = null;
+        codeLang = "";
       } else {
         codeLines = [];
+        codeLang = line.replace(/^```/, "").trim();
       }
       continue;
     }
@@ -527,18 +530,55 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
       html.push(`<p style="margin:.8em 0;font-size:17px;line-height:1.9;">${inlineMarkdown(line, uploadedImages)}</p>`);
     }
   }
-  if (codeLines) html.push(renderWechatCodeBlock(codeLines));
+  if (codeLines) html.push(renderWechatCodeBlock(codeLines, codeLang));
   return html.join("\n");
 }
 
-function renderWechatCodeBlock(lines: string[]): string {
-  // The WeChat draft editor may normalize text-node newlines while saving a
-  // draft. Keep the semantic pre/code container, but emit explicit <br/> tags
-  // as a second preservation mechanism so a later editor rewrite cannot merge
-  // all source lines into one visual line. `pre-wrap` retains indentation and
-  // still permits narrow mobile screens to wrap long unbroken lines.
-  const content = escapeHtml(lines.join("\n")).replace(/\n/g, "<br/>");
-  return `<pre style="overflow:auto;margin:1em 0;padding:1em;border-radius:6px;background:#f6f8fa;line-height:1.6;white-space:pre-wrap;word-break:break-word;"><code style="white-space:inherit;">${content}</code></pre>`;
+function wechatCodeLang(lang: string): string {
+  const l = lang.toLowerCase().trim();
+  if (l === "js" || l === "javascript" || l === "ts" || l === "typescript" || l === "jsx" || l === "tsx") return "js";
+  if (l === "php") return "php";
+  if (l === "python" || l === "py") return "python";
+  if (l === "java") return "java";
+  if (l === "go" || l === "golang") return "go";
+  if (l === "c" || l === "cpp" || l === "c++" || l === "c#" || l === "cs") return "c";
+  if (l === "bash" || l === "sh" || l === "shell" || l === "zsh") return "bash";
+  if (l === "json") return "json";
+  if (l === "sql") return "sql";
+  if (l === "html" || l === "xml" || l === "vue") return "html";
+  if (l === "css") return "css";
+  if (l === "ruby" || l === "rb") return "ruby";
+  if (l === "rust" || l === "rs") return "rust";
+  // Unknown or no language — fall back to a class WeChat knows so it still
+  // renders a styled block instead of plain justified text.
+  return "js";
+}
+
+function renderWechatCodeBlock(lines: string[], lang: string): string {
+  // WeChat's draft editor only renders a *real* code block when it sees its
+  // own markup: <section class="code-snippet__*"> wrapping a
+  // <pre class="code-snippet code-snippet_nowrap">, with each source line as
+  // its own <code><span leaf="">...</span></code> pair.  Inline-styled
+  // <section>/<p> blocks are accepted, but rendered as ordinary paragraphs —
+  // justified, no background, monospace dropped.  A single <code> with \n
+  // line breaks is accepted too, but WeChat collapses text-node newlines and
+  // the whole block ends up on one line.  So we emit the exact native markup
+  // WeChat itself produces, with one <code> per line so the line break is
+  // structural and cannot be collapsed.
+  const langClass = wechatCodeLang(lang);
+  const lineHtml = lines
+    .map((line) => {
+      const text = line === "" ? " " : escapeHtml(line);
+      return `<code><span leaf="">${text}</span></code>`;
+    })
+    .join("");
+  return (
+    `<section class="code-snippet__${langClass}">` +
+    `<pre class="code-snippet__${langClass} code-snippet code-snippet_nowrap" data-lang="${langClass}" ` +
+    `style="background-color:#f7f7f7;padding:1em;border-radius:4px;font-size:14px;line-height:1.6;color:#333333;white-space:pre-wrap;word-break:break-word;">` +
+    `${lineHtml}` +
+    `</pre></section>`
+  );
 }
 
 export function removeDuplicateLeadingTitle(markdown: string, title: string): string {
