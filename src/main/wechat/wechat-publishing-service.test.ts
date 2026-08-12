@@ -68,6 +68,41 @@ describe("Wechat code-block rendering", () => {
   });
 });
 
+describe("Wechat horizontal-rule rendering", () => {
+  it("converts ---, *** and ___ into a styled separator instead of literal characters", () => {
+    const html = markdownToWechatHtml("第一段\n\n---\n\n第二段\n\n***\n\n第三段\n\n___");
+    expect(html).not.toContain("<p>---</p>");
+    expect(html).not.toContain("<p>***</p>");
+    expect(html).not.toContain("<p>___</p>");
+    expect(html).toContain("border-top:1px solid #d8dee8");
+    // Three separators in total.
+    expect(html.match(/border-top:1px solid #d8dee8/g)).toHaveLength(3);
+  });
+});
+
+describe("Wechat table rendering", () => {
+  it("recognizes delimiters with only two dashes per cell", () => {
+    const html = markdownToWechatHtml([
+      "| 排名 | Server |",
+      "| -- | ---------------------------- |",
+      "| 1  | microsoft/markitdown         |"
+    ].join("\n"));
+    expect(html).toContain("<table");
+    expect(html).toContain("排名");
+    expect(html).toContain("Server");
+    expect(html).toContain("microsoft/markitdown");
+    expect(html).not.toContain("| 排名 |");
+  });
+});
+
+describe("Wechat italic rendering", () => {
+  it("converts single-asterisk emphasis into <em>", () => {
+    const html = markdownToWechatHtml("*文中数据来源：示例。*");
+    expect(html).toContain("<em>文中数据来源：示例。</em>");
+    expect(html).not.toContain("*文中数据来源");
+  });
+});
+
 describe("Wechat ordered-list rendering", () => {
   it("keeps source numbers visible without relying on WeChat ol styling", () => {
     const html = markdownToWechatHtml("1. 注册免费域名\n   访问服务并完成注册\n2. 注册 Cloudflare 账户\n3. 域名迁移到 Cloudflare");

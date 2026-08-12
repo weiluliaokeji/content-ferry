@@ -473,6 +473,12 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
     }
     if (codeLines) { codeLines.push(rawLine); continue; }
     if (!line) continue;
+    // Horizontal rules: `---`, `***` and `___`. Render as a styled separator
+    // because bare <hr/> may be rewritten inconsistently by WeChat.
+    if (/^(?:---+|___+|\*\*\*+)\s*$/.test(line)) {
+      html.push('<section style="border-top:1px solid #d8dee8;margin:1.5em 0;"></section>');
+      continue;
+    }
     if (isTableRow(line) && isTableDelimiter(lines[index + 1]?.trim() ?? "")) {
       const header = splitTableRow(line);
       index += 2;
@@ -611,7 +617,10 @@ function isTableRow(line: string): boolean {
 }
 
 function isTableDelimiter(line: string): boolean {
-  return /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/.test(line);
+  // Some Markdown sources use two dashes (`--`) in the delimiter row.  Keep
+  // the match strict enough to avoid list-item dashes (`- item`) but accept
+  // any delimiter that looks like a real table separator (`--` or more).
+  return /^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?$/.test(line);
 }
 
 function splitTableRow(line: string): string[] {
@@ -628,6 +637,7 @@ function inlineMarkdown(value: string, uploadedImages: Map<string, string>): str
   });
   text = escapeHtml(text)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, '<code style="padding:.15em .35em;background:#f2f3f5;border-radius:3px;">$1</code>')
     .replace(/\[([^\]]+)]\((https?:\/\/[^)]+)\)/g, '<a href="$2">$1</a>');
   return text.replace(/\u0000IMG(\d+)\u0000/g, (_whole, index: string) => images[Number(index)] ?? "");
