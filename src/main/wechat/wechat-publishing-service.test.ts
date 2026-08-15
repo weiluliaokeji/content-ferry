@@ -103,6 +103,20 @@ describe("Wechat italic rendering", () => {
   });
 });
 
+describe("Wechat markdown escape rendering", () => {
+  it("removes backslash escapes from punctuation in normal text", () => {
+    const html = markdownToWechatHtml("## 踩坑：CREDIT\\_REPORT 报错\n\n记录 CREDIT\\_REPORT 错误。");
+    expect(html).toContain("CREDIT_REPORT");
+    expect(html).not.toContain("CREDIT\\_REPORT");
+  });
+
+  it("keeps backslashes inside inline code literal", () => {
+    const html = markdownToWechatHtml("`CREDIT\\_REPORT`");
+    expect(html).toContain("CREDIT\\_REPORT");
+    expect(html).not.toContain("CREDIT_REPORT");
+  });
+});
+
 describe("Wechat ordered-list rendering", () => {
   it("keeps source numbers visible without relying on WeChat ol styling", () => {
     const html = markdownToWechatHtml("1. 注册免费域名\n   访问服务并完成注册\n2. 注册 Cloudflare 账户\n3. 域名迁移到 Cloudflare");

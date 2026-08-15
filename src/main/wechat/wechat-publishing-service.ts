@@ -635,7 +635,7 @@ function inlineMarkdown(value: string, uploadedImages: Map<string, string>): str
     images.push(`<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="display:block;max-width:100%;height:auto;margin:1em auto;" />`);
     return token;
   });
-  text = escapeHtml(text)
+  text = escapeHtml(unescapeMarkdownEscapes(text))
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, '<code style="padding:.15em .35em;background:#f2f3f5;border-radius:3px;">$1</code>')
@@ -645,6 +645,19 @@ function inlineMarkdown(value: string, uploadedImages: Map<string, string>): str
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+}
+
+function unescapeMarkdownEscapes(value: string): string {
+  // Markdown allows a backslash to escape punctuation characters so they are
+  // treated as literal text (e.g. CREDIT\_REPORT). Inline-code spans (text
+  // inside backticks) are literal and must keep their backslashes untouched.
+  const parts = value.split("`");
+  return parts
+    .map((part, index) => {
+      if (index % 2 === 1) return part;
+      return part.replace(/\\([\\`*_{}[\]()#+\-.!~|>"'])/g, "$1");
+    })
+    .join("`");
 }
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<Buffer> {
