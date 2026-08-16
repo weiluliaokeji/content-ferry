@@ -50,7 +50,8 @@ export class CoverGenerationService {
     const connection = this.connections.get("modelscope");
     const token = this.connections.getCredential("modelscope");
     const baseUrl = connection.baseUrl.replace(/\/+$/, "") || "https://api-inference.modelscope.cn";
-    const submitted = await this.requestJson(`${baseUrl}/v1/images/generations`, {
+    const submitUrl = `${baseUrl}/v1/images/generations`;
+    const submitInit: RequestInit = {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -58,7 +59,20 @@ export class CoverGenerationService {
         "x-modelscope-async-mode": "true"
       },
       body: JSON.stringify({ model: connection.modelId || "Qwen/Qwen-Image-2512", prompt, n: 1, size: "1024x576" })
-    }, exchanges) as { task_id?: string };
+    };
+    // ModelScope 在突发调用 / 单分钟限流时会把 429 误报为 insufficient balance。
+    // 首次撞限流时退避重试一次以屏蔽偶发节流；余额真的不足时第二次仍会失败并原样抛出。
+    let submitted: { task_id?: string };
+    try {
+      submitted = await this.requestJson(submitUrl, submitInit, exchanges) as { task_id?: string };
+    } catch (error) {
+      if (error instanceof Error && /HTTP 429/.test(error.message)) {
+        await delay(2000);
+        submitted = await this.requestJson(submitUrl, submitInit, exchanges) as { task_id?: string };
+      } else {
+        throw error;
+      }
+    }
     if (!submitted.task_id) throw new Error("ModelScope 没有返回生图任务 ID。");
 
     let imageUrl = "";
