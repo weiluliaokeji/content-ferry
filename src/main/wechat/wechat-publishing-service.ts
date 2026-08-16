@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { Resvg } from "@resvg/resvg-js";
 import type { AccountRepository } from "../accounts/account-repository";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ContentSourceService } from "../content/content-source-service";
@@ -304,16 +305,18 @@ export class WechatPublishingService {
     for (const match of matches) {
       const source = match[2];
       if (/^https?:\/\//i.test(source)) continue;
-      const local = await resolveLocalImage(source);
+      let local = await resolveLocalImage(source);
       if (!local) {
         throw new WechatApiError(`正文图片“${source}”尚未进入 ContentFerry 素材库，无法上传到微信。`);
       }
+      local = this.ensureWechatCompatibleImage(local);
       const wechatUrl = await this.uploadMultipart(accountId, "/cgi-bin/media/uploadimg", local.bytes, local.mimeType, local.fileName, "url");
       uploaded.set(source, wechatUrl);
     }
     if (!thumbMediaId && coverSource) {
-      const cover = await resolveLocalImage(coverSource);
+      let cover = await resolveLocalImage(coverSource);
       if (!cover) throw new WechatApiError("找不到所选封面图片，请重新选择。");
+      cover = this.ensureWechatCompatibleImage(cover);
       thumbMediaId = await this.uploadMultipart(accountId, "/cgi-bin/material/add_material?type=image", cover.bytes, cover.mimeType, cover.fileName, "media_id");
     }
     if (!thumbMediaId) {
@@ -321,6 +324,18 @@ export class WechatPublishingService {
     }
     const html = markdownToWechatHtml(markdown, uploaded);
     return { html, thumbMediaId };
+  }
+
+  /**
+   * 微信的素材接口仅支持 jpg/jpeg/png/gif/bmp，不接受 SVG。
+   * 当本地图片是 SVG 时，用 resvg 栅格化为 PNG 再上传，保证编辑器里能看到的
+   * 图表在公众号文章里也能正常呈现。
+   */
+  private ensureWechatCompatibleImage(asset: { bytes: Buffer; mimeType: string; fileName: string }): { bytes: Buffer; mimeType: string; fileName: string } {
+    if (asset.mimeType !== "image/svg+xml" && !asset.fileName.toLowerCase().endsWith(".svg")) return asset;
+    const pngBytes = rasterizeSvgToPng(asset.bytes);
+    const pngName = asset.fileName.replace(/\.svg$/i, ".png");
+    return { bytes: pngBytes, mimeType: "image/png", fileName: pngName || "article-image.png" };
   }
 
   private async getAccessToken(accountId: string, forceRefresh = false): Promise<string> {
@@ -450,6 +465,28 @@ function ensureWechatSuccess(response: Response, result: WechatResponse, action:
 function parseContentFerryAsset(source: string): { contextId: string; fileName: string } | null {
   const match = /^contentferry-asset:\/\/([A-Za-z0-9_-]{1,100})\/([A-Fa-f0-9-]{36}\.(?:jpg|png|gif|webp))$/i.exec(source);
   return match ? { contextId: match[1], fileName: match[2] } : null;
+}
+
+/**
+ * Render an SVG to PNG using resvg. WeChat's material/uploadimg endpoints reject
+ * SVG (`invalid file type hint`, errcode 40005), so any inline SVG image must be
+ * rasterized before upload. The output width is taken from the SVG's intrinsic
+ * width/viewBox, capped to avoid accidentally generating enormous images.
+ */
+export function rasterizeSvgToPng(svgBytes: Buffer): Buffer {
+  const svg = svgBytes.toString("utf-8");
+  let width = 1200;
+  const viewBoxMatch = /\bviewBox\s*=\s*["']([^"']+)["']/i.exec(svg);
+  if (viewBoxMatch) {
+    const coords = viewBoxMatch[1].trim().split(/[\s,]+/).map(Number);
+    if (coords.length === 4 && coords[2] > 0) width = Math.round(coords[2]);
+  } else {
+    const widthMatch = /\bwidth\s*=\s*["']([0-9.]+)/i.exec(svg);
+    if (widthMatch) width = Math.round(Number(widthMatch[1]));
+  }
+  width = Math.max(1, Math.min(width, 2000));
+  const resvg = new Resvg(svg, { fitTo: { mode: "width", value: width } });
+  return Buffer.from(resvg.render().asPng());
 }
 
 export function markdownToWechatHtml(markdown: string, uploadedImages: Map<string, string> = new Map()): string {

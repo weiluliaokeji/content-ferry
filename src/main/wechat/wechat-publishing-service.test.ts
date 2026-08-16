@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markdownToWechatHtml, removeDuplicateLeadingTitle } from "./wechat-publishing-service";
+import { markdownToWechatHtml, rasterizeSvgToPng, removeDuplicateLeadingTitle } from "./wechat-publishing-service";
 
 describe("Wechat article title rendering", () => {
   it("removes a matching leading level-one heading from the Wechat body", () => {
@@ -166,5 +166,26 @@ describe("Wechat unordered-list rendering", () => {
     expect(html).not.toContain("<ul");
     expect(html).not.toContain("<li");
     expect(html.match(/>•<\/span>/g)).toHaveLength(4);
+  });
+});
+
+describe("rasterizeSvgToPng", () => {
+  it("converts an SVG with only a viewBox into a valid PNG", () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#00f"/></svg>');
+    const png = rasterizeSvgToPng(svg);
+    expect(png.length).toBeGreaterThan(0);
+    expect(png.toString("binary", 1, 4)).toBe("PNG"); // PNG magic bytes
+  });
+
+  it("respects the SVG intrinsic width when present", () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#0f0"/></svg>');
+    const png = rasterizeSvgToPng(svg);
+    expect(png.length).toBeGreaterThan(0);
+  });
+
+  it("caps oversized SVGs to avoid generating huge images", () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5000 5000"><rect width="5000" height="5000" fill="#f00"/></svg>');
+    const png = rasterizeSvgToPng(svg);
+    expect(png.length).toBeGreaterThan(0);
   });
 });
