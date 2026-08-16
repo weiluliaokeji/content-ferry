@@ -106,6 +106,8 @@ textarea { box-sizing: border-box; width: 100%; min-height: 72px; padding: .65re
 .visual-markdown-editor { position: relative; box-sizing: border-box; overflow: visible; border: 1px solid #ccd5e6; border-radius: 10px; background: #fff; color: #172033; }
 .visual-markdown-editor:focus-within { border-color: #5472d3; box-shadow: 0 0 0 3px rgb(84 114 211 / 12%); }
 .visual-markdown-editor .milkdown { min-height: inherit; }
+.visual-markdown-editor .milkdown-image-inline img,
+.visual-markdown-editor .milkdown-image-block img { max-width: 100%; height: auto; }
 .visual-markdown-editor .milkdown-top-bar { position: sticky; top: 0; z-index: 8; overflow: visible; border: 1px solid #e1e7f1; border-radius: 9px 9px 0 0; background: rgb(255 255 255 / 97%); box-shadow: 0 4px 10px rgb(33 51 89 / 7%); backdrop-filter: blur(8px); }
 .visual-markdown-editor .ProseMirror { box-sizing: border-box; min-height: inherit; padding: .75rem 1rem; font-family: "Microsoft YaHei", system-ui, sans-serif; font-size: 1rem; line-height: 1.8; outline: none; }
 .visual-markdown-editor .ProseMirror h1 { margin: .3rem 0 1rem; font-size: 1.75rem; }

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
@@ -216,7 +217,7 @@ export class ContentSourceService {
     return { stream: fs.createReadStream(assetPath), mimeType };
   }
 
-  readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string): { stream: fs.ReadStream; mimeType: string } {
+  readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string): { stream: NodeJS.ReadableStream; mimeType: string } {
     const articlePath = this.resolveArticlePath(workspaceId, relativePath);
     const rootPath = this.getSource(workspaceId)!;
     const cleanSource = decodeResourcePath(sourceUrl);
@@ -243,6 +244,14 @@ export class ContentSourceService {
       ".avif": "image/avif"
     }[extension];
     if (!mimeType) throw new ContentSourceError("文章引用的文件不是受支持的图片。");
+    if (extension === ".svg") {
+      // SVGs authored with only a viewBox and no width/height attributes collapse to a
+      // zero-size box inside the editor's <img> and in published output. Inject explicit
+      // intrinsic dimensions parsed from the viewBox so they render at a usable size.
+      const raw = fs.readFileSync(resourcePath, "utf-8");
+      const normalized = withSvgIntrinsicSize(raw);
+      return { stream: Readable.from(Buffer.from(normalized, "utf-8")), mimeType };
+    }
     return { stream: fs.createReadStream(resourcePath), mimeType };
   }
 
@@ -266,6 +275,31 @@ export class ContentSourceService {
     try { return fs.statSync(directory); }
     catch { throw new ContentSourceError("找不到文章库路径，或当前用户没有读取权限。"); }
   }
+}
+
+/**
+ * Ensure an `<svg>` root element declares intrinsic `width`/`height`. Many diagram
+ * generators emit only a `viewBox`, which leaves the image without intrinsic dimensions;
+ * inside an `<img>` (editor preview, published articles) that collapses to a zero-size box.
+ * When the dimensions are missing we copy them from the viewBox so the image renders.
+ */
+export function withSvgIntrinsicSize(svg: string): string {
+  const openTagMatch = /<svg\b([^>]*)>/i.exec(svg);
+  if (!openTagMatch) return svg;
+  const attrs = openTagMatch[1];
+  const hasWidth = /\bwidth\s*=/.test(attrs);
+  const hasHeight = /\bheight\s*=/.test(attrs);
+  if (hasWidth && hasHeight) return svg;
+  const viewBoxMatch = /\bviewBox\s*=\s*["']([^"']+)["']/i.exec(attrs);
+  if (!viewBoxMatch) return svg;
+  const coords = viewBoxMatch[1].trim().split(/[\s,]+/).map(Number);
+  const width = coords[2];
+  const height = coords[3];
+  if (!width || !height || Number.isNaN(width) || Number.isNaN(height)) return svg;
+  const additions: string[] = [];
+  if (!hasWidth) additions.push(`width="${Math.round(width)}"`);
+  if (!hasHeight) additions.push(`height="${Math.round(height)}"`);
+  return svg.replace(openTagMatch[0], `<svg${attrs} ${additions.join(" ")}>`);
 }
 
 function normalizeSavedMarkdown(markdown: string): string {
