@@ -470,6 +470,34 @@ describe("local API scaffold", () => {
     expect(otherPlatform.statusCode).toBe(201);
   });
 
+  it("updates and clears a cnblogs account's blog name through the account rename endpoint", async () => {
+    server = createTestServer();
+    const account = await server.inject({ method: "POST", url: "/api/media-accounts", payload: {
+      platform: "cnblogs", displayName: "我的博客园", externalAccountId: "old-blog"
+    } });
+    expect(account.statusCode).toBe(201);
+    expect(account.json().externalAccountId).toBe("old-blog");
+
+    const renamed = await server.inject({ method: "PUT", url: `/api/media-accounts/${account.json().id}`, payload: {
+      displayName: "我的博客园", externalAccountId: "https://www.cnblogs.com/new-blog/"
+    } });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().externalAccountId).toBe("https://www.cnblogs.com/new-blog/");
+
+    const cleared = await server.inject({ method: "PUT", url: `/api/media-accounts/${account.json().id}`, payload: {
+      displayName: "我的博客园", externalAccountId: ""
+    } });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().externalAccountId).toBeNull();
+
+    const renamedOnly = await server.inject({ method: "PUT", url: `/api/media-accounts/${account.json().id}`, payload: {
+      displayName: "博客园改名"
+    } });
+    expect(renamedOnly.statusCode).toBe(200);
+    expect(renamedOnly.json().displayName).toBe("博客园改名");
+    expect(renamedOnly.json().externalAccountId).toBeNull();
+  });
+
   it("saves an account's writing context for later creation workflows", async () => {
     server = createTestServer();
     const account = await server.inject({ method: "POST", url: "/api/media-accounts", payload: {

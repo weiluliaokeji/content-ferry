@@ -525,7 +525,12 @@ export function markdownToWechatHtml(markdown: string, uploadedImages: Map<strin
         index += 1;
       }
       index -= 1;
-      html.push(`<table style="width:100%;border-collapse:collapse;margin:1em 0;font-size:14px;"><thead><tr>${header.map((cell) => `<th style="padding:8px;border:1px solid #d8dee8;background:#f6f8fa;text-align:left;">${inlineMarkdown(cell, uploadedImages)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${header.map((_cell, cellIndex) => `<td style="padding:8px;border:1px solid #d8dee8;vertical-align:top;">${inlineMarkdown(row[cellIndex] ?? "", uploadedImages)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      // WeChat's draft editor only keeps flat table markup: thead/tbody and
+      // other grouping tags are stripped during sanitization, and the DOM
+      // rebuild can drop <a> links nested inside the removed groups. Emit a
+      // flat table > tr > th/td structure with inline styles so cell links
+      // survive in the published article.
+      html.push(`<table style="width:100%;border-collapse:collapse;margin:1em 0;font-size:14px;"><tr>${header.map((cell) => `<th style="padding:8px;border:1px solid #d8dee8;background:#f6f8fa;text-align:left;">${inlineMarkdown(cell, uploadedImages, true)}</th>`).join("")}</tr>${rows.map((row) => `<tr>${header.map((_cell, cellIndex) => `<td style="padding:8px;border:1px solid #d8dee8;vertical-align:top;">${inlineMarkdown(row[cellIndex] ?? "", uploadedImages, true)}</td>`).join("")}</tr>`).join("")}</table>`);
       continue;
     }
     const heading = /^(#{1,4})\s+(.+)$/.exec(line);
@@ -661,10 +666,23 @@ function isTableDelimiter(line: string): boolean {
 }
 
 function splitTableRow(line: string): string[] {
-  return line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+  // A cell may contain a Markdown link whose URL holds a literal pipe
+  // (e.g. query params joined with `|`). Splitting on every bare `|` would
+  // shred the link, so protect `[text](url)` spans before splitting and
+  // restore them afterwards.
+  const links: string[] = [];
+  const protectedLine = line.replace(/\[[^\]]*]\([^)]*\)/g, (match) => {
+    links.push(match);
+    return `\u0000L${links.length - 1}\u0000`;
+  });
+  return protectedLine
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim().replace(/\u0000L(\d+)\u0000/g, (_whole, index: string) => links[Number(index)] ?? ""));
 }
 
-function inlineMarkdown(value: string, uploadedImages: Map<string, string>): string {
+function inlineMarkdown(value: string, uploadedImages: Map<string, string>, inTableCell = false): string {
   const images: string[] = [];
   let text = value.replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (_whole, alt: string, source: string) => {
     const url = uploadedImages.get(source) ?? source;
@@ -676,7 +694,13 @@ function inlineMarkdown(value: string, uploadedImages: Map<string, string>): str
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, '<code style="padding:.15em .35em;background:#f2f3f5;border-radius:3px;">$1</code>')
-    .replace(/\[([^\]]+)]\((https?:\/\/[^)]+)\)/g, '<a href="$2">$1</a>');
+    .replace(/\[([^\]]+)]\((https?:\/\/[^)]+)\)/g, inTableCell
+      // WeChat's editor strips <a> inside table cells (unlike ordinary
+      // paragraphs). Keep the full URL as visible cell text as well, so the
+      // link survives as copyable/clickable text even when the anchor is
+      // removed during draft sanitization.
+      ? '<a href="$2">$1（$2）</a>'
+      : '<a href="$2">$1</a>');
   return text.replace(/\u0000IMG(\d+)\u0000/g, (_whole, index: string) => images[Number(index)] ?? "");
 }
 

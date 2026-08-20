@@ -22,6 +22,7 @@ import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
 import { WechatApiError, WechatPublishingService } from "../wechat/wechat-publishing-service";
 import { CsdnChannelError, CsdnChannelService } from "../csdn/csdn-channel-service";
+import { CnblogsChannelError, CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
 import { WechatCallbackService } from "../wechat/wechat-callback-service";
 import { createDailyLogStream, dailyLogFilePath, listRuntimeLogFiles } from "../logging/daily-log-stream";
 import { AppCredentialRepository } from "../security/app-credential-repository";
@@ -46,11 +47,14 @@ import type {
 } from "../../shared/contracts";
 
 const accountInput = z.object({
-  platform: z.enum(["wechat_official", "csdn"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs"]),
   displayName: z.string().trim().min(1).max(100),
   externalAccountId: z.string().trim().min(1).max(200).optional()
 });
-const accountRenameInput = z.object({ displayName: z.string().trim().min(1).max(100) });
+const accountRenameInput = z.object({
+  displayName: z.string().trim().min(1).max(100),
+  externalAccountId: z.string().trim().max(200).optional().nullable()
+});
 
 const profileInput = z.object({
   positioning: z.string().max(4000).default(""),
@@ -141,6 +145,23 @@ const csdnChannelDraftSaveInput = z.object({
   digest: z.string().trim().max(200).optional(),
   coverSource: z.string().trim().max(2000).optional()
 });
+const cnblogsChannelDraftInput = z.object({
+  accountId: z.string().uuid(),
+  relativePath: z.string().trim().min(1).max(1000),
+  projectId: z.string().uuid().optional(),
+  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+});
+const cnblogsChannelDraftSaveInput = z.object({
+  title: z.string().trim().min(1).max(120),
+  markdown: z.string().trim().min(1).max(100_000),
+  author: z.string().trim().max(16).optional(),
+  digest: z.string().trim().max(200).optional(),
+  coverSource: z.string().trim().max(2000).optional()
+});
+const cnblogsPublishOptionsInput = z.object({
+  categories: z.array(z.string().trim().max(80)).max(10).optional(),
+  tags: z.array(z.string().trim().max(40)).max(20).optional()
+});
 const modelProviderSchema = z.enum(modelProviderIds);
 const modelConnectionInput = z.object({
   displayName: z.string().trim().min(1).max(100),
@@ -161,7 +182,7 @@ const skillInput = z.object({
 const skillFileQuery = z.object({ path: z.string().trim().min(1).max(500) });
 const skillFileInput = z.object({ path: z.string().trim().min(1).max(500), content: z.string().max(200000) });
 const articleSummaryInput = z.object({
-  platform: z.enum(["wechat_official", "csdn"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs"]),
   title: z.string().trim().max(500).default(""),
   markdown: z.string().trim().min(1).max(500000)
 });
@@ -220,6 +241,8 @@ export function buildServer(
     skillsDirectory?: string;
     visibleBrowserSearch?: VisibleBrowserSearch;
     csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
+    /** 可选注入：外部提供博客园渠道稿服务实例（默认由 buildServer 内部构造）。 */
+    cnblogsChannel?: CnblogsChannelService;
   }
 ) {
   const server = Fastify({
@@ -265,6 +288,8 @@ export function buildServer(
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
   const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore);
+  const cnblogsChannels = options?.cnblogsChannel
+    ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
@@ -293,6 +318,9 @@ export function buildServer(
       return reply.code(400).send({ error: error.message, errcode: error.errcode });
     }
     if (error instanceof CsdnChannelError) {
+      return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof CnblogsChannelError) {
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof z.ZodError) {
@@ -833,6 +861,83 @@ export function buildServer(
     return csdnChannels.correctStatus(params.jobId, body.status, body.reason);
   });
 
+  server.get("/api/integrations/cnblogs/capabilities/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const account = accounts.requireAccount(params.accountId);
+    if (account.platform !== "cnblogs") throw new CnblogsChannelError("请选择一个博客园账号。");
+    return cnblogsChannels.capabilities(account.id);
+  });
+
+  server.get("/api/integrations/cnblogs/channel-drafts", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
+    return { items: cnblogsChannels.listDrafts(workspace.id, query.accountId) };
+  });
+
+  server.post("/api/integrations/cnblogs/channel-drafts", async (request, reply) => {
+    const input = cnblogsChannelDraftInput.parse(request.body);
+    return reply.code(201).send(await cnblogsChannels.createFromSource(input));
+  });
+
+  server.post("/api/integrations/cnblogs/channel-drafts/:draftId/approve", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return cnblogsChannels.approveDraft(params.draftId);
+  });
+
+  server.put("/api/integrations/cnblogs/channel-drafts/:draftId", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return cnblogsChannels.saveDraft(params.draftId, cnblogsChannelDraftSaveInput.parse(request.body));
+  });
+
+  server.delete("/api/integrations/cnblogs/channel-drafts/:draftId", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    cnblogsChannels.deleteDraft(params.draftId);
+    return reply.code(204).send();
+  });
+
+  server.get("/api/integrations/cnblogs/jobs", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: cnblogsChannels.listJobs(workspace.id) };
+  });
+
+  server.post("/api/integrations/cnblogs/channel-drafts/:draftId/jobs", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    const options = cnblogsPublishOptionsInput.parse(request.body ?? {});
+    return reply.code(201).send(cnblogsChannels.createPublishJob(params.draftId, options));
+  });
+
+  server.get("/api/integrations/cnblogs/jobs/:jobId", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const job = cnblogsChannels.getJob(params.jobId);
+    const draft = cnblogsChannels.getDraftForJob(params.jobId);
+    return { job, draft };
+  });
+
+  server.post("/api/integrations/cnblogs/jobs/:jobId/confirm", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    return reply.code(201).send(await cnblogsChannels.confirmPublish(params.jobId));
+  });
+
+  server.post("/api/integrations/cnblogs/jobs/:jobId/record-submission", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      remoteUrl: z.string().url().nullable(),
+      remoteContentId: z.string().nullable(),
+      state: z.enum(["published", "needs_manual_reconciliation"]).default("published"),
+      reason: z.string().max(500).optional()
+    }).parse(request.body);
+    return reply.code(201).send(cnblogsChannels.recordSubmission(params.jobId, { ...body, state: body.state }));
+  });
+
+  server.post("/api/integrations/cnblogs/jobs/:jobId/status", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      status: z.enum(["published", "failed", "cancelled"]),
+      reason: z.string().max(500).default("")
+    }).parse(request.body);
+    return cnblogsChannels.correctStatus(params.jobId, body.status, body.reason);
+  });
+
   server.get("/api/content-projects", async () => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     return { items: contentProjects.list(workspace.id) };
@@ -1076,7 +1181,10 @@ export function buildServer(
 
   server.put("/api/media-accounts/:accountId", async (request) => {
     const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
-    return accounts.updateDisplayName(params.accountId, accountRenameInput.parse(request.body).displayName);
+    const input = accountRenameInput.parse(request.body);
+    const updated = accounts.updateDisplayName(params.accountId, input.displayName);
+    if (input.externalAccountId !== undefined) return accounts.updateExternalAccountId(params.accountId, input.externalAccountId);
+    return updated;
   });
 
   server.put("/api/media-accounts/:accountId/profile", async (request) => {
@@ -1302,7 +1410,8 @@ export function buildServer(
     const input = articleSummaryInput.parse(request.body);
     const targets = {
       wechat_official: { maxLength: 120, platformName: "微信公众号" },
-      csdn: { maxLength: 200, platformName: "CSDN" }
+      csdn: { maxLength: 200, platformName: "CSDN" },
+      cnblogs: { maxLength: 120, platformName: "博客园" }
     } as const;
     const target = targets[input.platform];
     const generated = await effectiveModelProvider.generateStructured({

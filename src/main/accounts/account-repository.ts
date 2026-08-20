@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CredentialVault } from "../security/credential-vault";
 
-export type AccountPlatform = "wechat_official" | "csdn";
+export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs";
 
 export interface AccountProfile {
   positioning: string;
@@ -102,6 +102,15 @@ export class AccountRepository {
     return this.requireAccount(accountId);
   }
 
+  /** 更新账号绑定的外部账号标识（如博客园博客名/博客地址）。传空字符串会清空为 null。 */
+  updateExternalAccountId(accountId: string, externalAccountId: string | null): MediaAccount {
+    const value = externalAccountId?.trim() ? externalAccountId.trim() : null;
+    const changed = this.db.prepare("UPDATE media_accounts SET external_account_id = ? WHERE id = ? AND deleted_at IS NULL")
+      .run(value, accountId);
+    if (changed.changes === 0) throw new Error("Account not found.");
+    return this.requireAccount(accountId);
+  }
+
   saveCredential(accountId: string, credentialKind: string, secret: string, vault: CredentialVault): void {
     this.requireAccount(accountId);
     const existing = this.db.prepare("SELECT secret_id FROM account_credentials WHERE account_id = ? AND credential_kind = ?")
@@ -137,7 +146,7 @@ export class AccountRepository {
     return vault.decrypt(row.encrypted_value);
   }
 
-  credentialStatus(accountId: string, vault: CredentialVault): { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean } {
+  credentialStatus(accountId: string, vault: CredentialVault): { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; cnblogsUsername: string; cnblogsApiKeyConfigured: boolean } {
     this.requireAccount(accountId);
     const kinds = this.db.prepare("SELECT credential_kind FROM account_credentials WHERE account_id = ?")
       .all(accountId) as Array<{ credential_kind: string }>;
@@ -145,7 +154,9 @@ export class AccountRepository {
     return {
       appId: configured.has("app_id") ? this.getCredential(accountId, "app_id", vault) : "",
       appSecretConfigured: configured.has("app_secret"),
-      callbackTokenConfigured: configured.has("callback_token")
+      callbackTokenConfigured: configured.has("callback_token"),
+      cnblogsUsername: configured.has("username") ? this.getCredential(accountId, "username", vault) : "",
+      cnblogsApiKeyConfigured: configured.has("api_key")
     };
   }
 

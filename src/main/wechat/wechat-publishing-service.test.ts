@@ -93,6 +93,56 @@ describe("Wechat table rendering", () => {
     expect(html).toContain("microsoft/markitdown");
     expect(html).not.toContain("| 排名 |");
   });
+
+  it("keeps cell links as clickable <a> tags in the flat WeChat-safe table structure", () => {
+    const html = markdownToWechatHtml([
+      "| 产品 | 官方链接 |",
+      "| --- | --- |",
+      "| Coze | [积分规则](https://docs.coze.cn/coze_pro_credits) |",
+      "| 通义 | [官网](https://qwenwork.cn) |"
+    ].join("\n"));
+    expect(html).toContain('<table style="width:100%;border-collapse:collapse;margin:1em 0;font-size:14px;"><tr><th');
+    // Flat structure only: WeChat strips thead/tbody and rebuilding the DOM
+    // can drop <a> links nested inside the removed groups.
+    expect(html).not.toContain("<thead");
+    expect(html).not.toContain("<tbody");
+    // Cell links survive as real anchors with the full URL kept as visible
+    // text: even if WeChat's editor strips the <a>, the URL remains readable
+    // and copyable instead of silently degrading to bare link text.
+    expect(html).toContain('<td style="padding:8px;border:1px solid #d8dee8;vertical-align:top;"><a href="https://docs.coze.cn/coze_pro_credits">积分规则（https://docs.coze.cn/coze_pro_credits）</a></td>');
+    expect(html).toContain('<a href="https://qwenwork.cn">官网（https://qwenwork.cn）</a>');
+    expect(html).not.toContain("](");
+  });
+
+  it("keeps inline formatting alongside links inside table cells", () => {
+    const html = markdownToWechatHtml([
+      "| 名称 | 说明 |",
+      "| --- | --- |",
+      "| **Agent** | 支持 `API` 与 [文档](https://example.com) |"
+    ].join("\n"));
+    expect(html).toContain("<strong>Agent</strong>");
+    expect(html).toContain('<code style="padding:.15em .35em;background:#f2f3f5;border-radius:3px;">API</code>');
+    expect(html).toContain('<a href="https://example.com">文档（https://example.com）</a>');
+  });
+
+  it("keeps ordinary paragraph links as plain <a> tags without visible URL", () => {
+    const html = markdownToWechatHtml("数据来源：[官网](https://example.com)。");
+    expect(html).toContain('<a href="https://example.com">官网</a>');
+    expect(html).not.toContain("官网（https://example.com）");
+  });
+
+  it("keeps cell links intact when the URL contains a pipe character", () => {
+    const html = markdownToWechatHtml([
+      "| 名称 | 链接 |",
+      "| --- | --- |",
+      "| 示例 | [筛选](https://example.com/search?a=1|b=2) |"
+    ].join("\n"));
+    // The pipe character inside the URL must not be treated as a table cell delimiter.
+    // The full URL with pipe should appear inside a single <a> tag.
+    expect(html).toContain('<a href="https://example.com/search?a=1|b=2">筛选（https://example.com/search?a=1|b=2）</a>');
+    // The pipe inside the URL should NOT create extra table cells (no more than 2 data cells).
+    expect(html).not.toContain("<td>|b=2</td>");
+  });
 });
 
 describe("Wechat italic rendering", () => {

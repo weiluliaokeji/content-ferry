@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: ede075e5af8053be83d373b168b03696_d52269019bd511f18cca525400e6dd8f
+    ReservedCode1: 8gkra8gp+S3W1uoLsarx45jzt6z/i7XfQvG6qqPp5jQSExlQnVGI3xipmgeay/xlndbjFJQLgLaJp+K49IUY/r2xCaHxA0CHuI3rB/yszMQPijNQgJs0V1G+mA3+FaqlfumLXUSijE5um/UFts/pBXa2GWl4+vjHbYaui5lnBrQDwPAYmpFtQlNaC4o=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: ede075e5af8053be83d373b168b03696_d52269019bd511f18cca525400e6dd8f
+    ReservedCode2: 8gkra8gp+S3W1uoLsarx45jzt6z/i7XfQvG6qqPp5jQSExlQnVGI3xipmgeay/xlndbjFJQLgLaJp+K49IUY/r2xCaHxA0CHuI3rB/yszMQPijNQgJs0V1G+mA3+FaqlfumLXUSijE5um/UFts/pBXa2GWl4+vjHbYaui5lnBrQDwPAYmpFtQlNaC4o=
+---
+
 # 文渡（ContentFerry）
 
 文渡是一款面向 Windows 的本地 AI 自媒体工作台。它以用户自己的 VitePress Markdown 文章库为正式内容源，把资料整理、AI 辅助创作、自然化改写、AIGC 特征检测、封面处理和微信公众号发布串成可恢复的工作流。
@@ -6,7 +17,7 @@
 
 ## 已实现的主要能力
 
-- 管理多个微信公众号或 CSDN 账号，并保存账号定位、目标读者、写作风格、禁用话题和常用栏目。
+- 管理多个微信公众号、CSDN 或博客园账号，并保存账号定位、目标读者、写作风格、禁用话题和常用栏目。
 - 扫描 VitePress 文章库，新建草稿时直接写入符合现有 Front Matter 和目录规则的 Markdown 文件，仍可使用 Obsidian 等外部编辑器。
 - 从主题、想法和资料生成创作简报、提纲与正文；支持 OpenAI Codex、OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等模型连接，并可配置 Tavily 作为独立的联网检索服务。
 - 使用所见即所得或 Markdown 原文编辑文章，支持图片、表格、手机预览、选区 AI 编辑、修改对比和文章顾问“阿文”。
@@ -14,6 +25,7 @@
 - 自动调用腾讯朱雀或 ContentAny 做 AIGC 特征检测；遇到登录、验证码或网页变化时允许人工接管。
 - 通过微信公众号官方接口创建草稿、普通发布或群发，并接收回调、保留发布记录和支持有理由的人工状态校正；可从发布中心打开目标草稿，辅助处理原创声明、赞赏和合集后由用户最终发布。
 - 已支持从本地文章库生成、编辑和冻结独立的 CSDN 渠道稿；可选择 AI 改写或直接使用主稿，并拦截公众号链接、文末延伸阅读等软引流内容。CSDN 浏览器自动发布仍处于能力验证阶段，暂不会提交内容。
+- 已支持博客园账号接入与纯 API 自动发布：生成并审核博客园渠道稿后，通过官方 MetaWeblog（XML-RPC，用户名 + API Key）两段式发布——先创建草稿展示链接，用户确认后再公开；本地图片自动上传博客园图床、封面置为正文首图并注入 `[Markdown]` 分类，支持人工校正与幂等防重复。
 - 按日保存运行日志，便于排查模型、微信接口、回调和浏览器自动化问题。
 
 完整操作步骤见 [用户使用说明](docs/USER-GUIDE.md)。产品范围和实现状态以 [需求与设计文档](spec/) 为准。
@@ -27,7 +39,7 @@
 | 本地服务 | Fastify 5，仅监听 `127.0.0.1:4317` |
 | 数据 | SQLite；文章正文以 VitePress Markdown 文件为准 |
 | AI | 文渡模型适配层与可编辑技能 |
-| 发布 | 微信公众号官方 API、回调与必要的浏览器自动化 |
+| 发布 | 微信公众号官方 API、回调与必要的浏览器自动化；博客园 MetaWeblog XML-RPC（API Key）直发 |
 | 打包 | electron-builder、NSIS、Portable EXE |
 
 渲染进程不直接访问文件系统、数据库或系统凭据；这些能力由 Electron 主进程和最小化 preload bridge 提供。
@@ -101,3 +113,4 @@ src/shared/      跨进程纯类型与无副作用工具
 - [开发设计](spec/02-development-design.md)
 - [交互设计](spec/05-product-interaction-redesign.md)
 - [微信公众号发布实现](spec/06-wechat-publishing-implementation.md)
+*（内容由AI生成，仅供参考）*

@@ -5,6 +5,7 @@ import wenduLogo from "./assets/wendu-icon.png";
 import { locateMarkdownSelection } from "./markdown-selection";
 import { HelpCenter } from "./components/HelpCenter";
 import { CsdnDraftWorkspace } from "./components/CsdnDraftWorkspace";
+import { CnblogsDraftWorkspace } from "./components/CnblogsDraftWorkspace";
 
 export const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
@@ -108,9 +109,9 @@ async function patchAppSettings(patch: Partial<AppSettingsContract>): Promise<Ap
   return (await response.json()) as AppSettingsContract;
 }
 
-type AccountPlatform = "wechat_official" | "csdn";
+type AccountPlatform = "wechat_official" | "csdn" | "cnblogs";
 type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string };
-type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; credentialsConfigured: boolean; profile: AccountProfile };
+type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile };
 type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null }>; truncated: boolean; warnings: string[] };
 type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
 type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; briefReady: boolean; researchReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
@@ -140,6 +141,22 @@ type CsdnPublishJob = {
   remoteUrl: string | null; remoteContentId: string | null;
   updatedAt: string;
 };
+type CnblogsChannelDraft = {
+  id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
+  generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string;
+};
+type CnblogsPublishJob = {
+  id: string; accountId: string; channelDraftId: string;
+  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  statusNote: string | null; errorMessage: string | null;
+  remoteUrl: string | null; remoteContentId: string | null;
+  updatedAt: string;
+};
+type CnblogsPublishOptions = {
+  categories: string[];
+  tags: string[];
+};
 type ChannelAction =
   | { kind: "enter"; label: string; onClick: () => void }
   | { kind: "generate"; label: string; onClick: () => void }
@@ -151,7 +168,7 @@ type ChannelRow = {
   tone: "neutral" | "info" | "success" | "warning";
   action: ChannelAction;
 };
-type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string };
+type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string; cnblogsUsername?: string; cnblogsApiKeyConfigured?: boolean };
 type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
 type SelectedImage = { fileName: string; mimeType: string; base64: string };
 type ArticleSettings = {
@@ -260,7 +277,7 @@ async function streamGeneration<T>(path: string, signal: AbortSignal, onEvent: (
   }
 }
 
-export const platformName = (platform: AccountPlatform) => platform === "wechat_official" ? "微信公众号" : "CSDN";
+export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园" } as const)[platform];
 const providerName = (provider: ModelProviderId | null) => provider === null ? "无需模型" : ({
   openai_codex: "OpenAI Codex",
   openai: "OpenAI API",
@@ -296,8 +313,10 @@ function App() {
   }, []);
   const [platform, setPlatform] = useState<AccountPlatform>("wechat_official");
   const [displayName, setDisplayName] = useState("");
+  const [platformExternalId, setPlatformExternalId] = useState("");
   const [editing, setEditing] = useState<MediaAccount>();
   const [editingDisplayName, setEditingDisplayName] = useState("");
+  const [editingExternalId, setEditingExternalId] = useState("");
   const [profile, setProfile] = useState<AccountProfile>(emptyProfile);
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [sourcePath, setSourcePath] = useState("");
@@ -379,6 +398,27 @@ function App() {
   const [csdnDrafts, setCsdnDrafts] = useState<CsdnChannelDraft[]>([]);
   const [csdnJobs, setCsdnJobs] = useState<CsdnPublishJob[]>([]);
   const [csdnEntryChoices, setCsdnEntryChoices] = useState<Array<{ draft: CsdnChannelDraft; accountName: string; job?: CsdnPublishJob }> | null>(null);
+  const [cnblogsDrafts, setCnblogsDrafts] = useState<CnblogsChannelDraft[]>([]);
+  const [cnblogsJobs, setCnblogsJobs] = useState<CnblogsPublishJob[]>([]);
+  const [cnblogsDraft, setCnblogsDraft] = useState<CnblogsChannelDraft | undefined>(undefined);
+  const [cnblogsPublishJob, setCnblogsPublishJob] = useState<CnblogsPublishJob | undefined>(undefined);
+  const [cnblogsDraftSource, setCnblogsDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
+  const [cnblogsDraftAccountId, setCnblogsDraftAccountId] = useState("");
+  const [cnblogsDraftGenerationMode, setCnblogsDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [cnblogsDraftSaving, setCnblogsDraftSaving] = useState(false);
+  const [cnblogsEntryChoices, setCnblogsEntryChoices] = useState<Array<{ draft: CnblogsChannelDraft; accountName: string; job?: CnblogsPublishJob }> | null>(null);
+  const [cnblogsCredentialAccount, setCnblogsCredentialAccount] = useState<MediaAccount | undefined>(undefined);
+  const [cnblogsCredentialUsername, setCnblogsCredentialUsername] = useState("");
+  const [cnblogsCredentialApiKey, setCnblogsCredentialApiKey] = useState("");
+  const [cnblogsCredentialBlogUrl, setCnblogsCredentialBlogUrl] = useState("");
+  const [cnblogsCredentialApiKeyConfigured, setCnblogsCredentialApiKeyConfigured] = useState(false);
+  const [cnblogsCredentialSaving, setCnblogsCredentialSaving] = useState(false);
+  const [cnblogsCredentialError, setCnblogsCredentialError] = useState("");
+  const [correctingCnblogsJob, setCorrectingCnblogsJob] = useState<CnblogsPublishJob | undefined>(undefined);
+  const [correctedCnblogsStatus, setCorrectedCnblogsStatus] = useState<"published" | "failed" | "cancelled">("published");
+  const [cnblogsStatusReason, setCnblogsStatusReason] = useState("");
+  const [cnblogsCorrectionSaving, setCnblogsCorrectionSaving] = useState(false);
+  const [cnblogsCorrectionError, setCnblogsCorrectionError] = useState("");
   const [publishProject, setPublishProject] = useState<ContentProject>();
   const [publishSource, setPublishSource] = useState<ContentSourceArticle>();
   const [publishAccountId, setPublishAccountId] = useState("");
@@ -496,6 +536,64 @@ function App() {
       /* 读取失败时不阻塞内容库，按钮仍可作为“生成 CSDN 稿”使用。 */
     }
   };
+  const loadCnblogsChannelDrafts = async () => {
+    try {
+      const [drafts, jobs] = await Promise.all([
+        request<{ items: CnblogsChannelDraft[] }>("/integrations/cnblogs/channel-drafts"),
+        request<{ items: CnblogsPublishJob[] }>("/integrations/cnblogs/jobs")
+      ]);
+      setCnblogsDrafts(drafts.items);
+      setCnblogsJobs(jobs.items);
+    } catch {
+      /* 读取失败时不阻塞内容库，按钮仍可作为“生成博客园稿”使用。 */
+    }
+  };
+  const deleteCnblogsChannelDraft = async (draftId: string) => {
+    await request(`/integrations/cnblogs/channel-drafts/${draftId}`, { method: "DELETE" });
+    // 删除后重新拉起该来源的生成入口，便于从头再试一次。
+    if (cnblogsDraft) await openCnblogsChannelDraft(cnblogsDraft.sourceRelativePath);
+  };
+  const openCnblogsChannelDraft = async (relativePath: string) => {
+    const cnblogsAccounts = accounts.filter((account) => account.platform === "cnblogs");
+    if (cnblogsAccounts.length === 0) {
+      setError("请先在“账号”中添加一个博客园账号，再创建博客园渠道稿。");
+      return;
+    }
+    try {
+      const [article, drafts, jobs] = await Promise.all([
+        request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(relativePath)}`),
+        request<{ items: CnblogsChannelDraft[] }>("/integrations/cnblogs/channel-drafts"),
+        request<{ items: CnblogsPublishJob[] }>("/integrations/cnblogs/jobs")
+      ]);
+      setCnblogsDrafts(drafts.items);
+      setCnblogsJobs(jobs.items);
+      const existing = drafts.items.filter((candidate) => candidate.sourceRelativePath === relativePath);
+      if (existing.length === 0) {
+        setCnblogsDraftSource(article);
+        setCnblogsDraftAccountId(cnblogsAccounts[0].id);
+        setCnblogsDraftGenerationMode("rewrite");
+        setCnblogsDraft(undefined);
+        setCnblogsPublishJob(undefined);
+        setError("");
+        return;
+      }
+      setCnblogsDraftSource(article);
+      setCnblogsEntryChoices(existing.map((draft) => ({
+        draft,
+        accountName: cnblogsAccounts.find((account) => account.id === draft.accountId)?.displayName ?? "博客园账号",
+        job: jobs.items.find((job) => job.channelDraftId === draft.id)
+      })));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开博客园渠道稿。");
+    }
+  };
+  const openExistingCnblogsDraft = (choice: { draft: CnblogsChannelDraft; job?: CnblogsPublishJob }) => {
+    setCnblogsDraft(choice.draft);
+    setCnblogsPublishJob(choice.job);
+    setCnblogsDraftSource(undefined);
+    setCnblogsEntryChoices(null);
+    setError("");
+  };
   const deleteCsdnChannelDraft = async (draftId: string) => {
     await request(`/integrations/csdn/channel-drafts/${draftId}`, { method: "DELETE" });
     // 删除后重新拉起该来源的生成入口，便于从头再试一次。
@@ -586,6 +684,22 @@ function App() {
         rows.push({ platform: "csdn", label: "CSDN", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成 CSDN 稿", onClick: () => void openCsdnChannelDraft(item.relativePath) } });
       }
     }
+    if (accounts.some((account) => account.platform === "cnblogs")) {
+      const cnblogsExisting = cnblogsDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+      if (cnblogsExisting) {
+        const cnblogsJob = cnblogsJobs.find((job) => job.channelDraftId === cnblogsExisting.id);
+        const published = !!cnblogsJob && cnblogsJob.status === "published";
+        const frozen = cnblogsExisting.status === "approved";
+        rows.push({
+          platform: "cnblogs", label: "博客园",
+          statusLabel: published ? "已发布" : frozen ? "已冻结" : "草稿",
+          tone: (published || frozen) ? "success" : "neutral",
+          action: { kind: "enter", label: "进入博客园稿", onClick: () => void openCnblogsChannelDraft(item.relativePath) }
+        });
+      } else {
+        rows.push({ platform: "cnblogs", label: "博客园", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成博客园稿", onClick: () => void openCnblogsChannelDraft(item.relativePath) } });
+      }
+    }
     return rows;
   };
   const generateCsdnChannelDraft = async () => {
@@ -619,6 +733,39 @@ function App() {
       setError(cause instanceof Error ? cause.message : "保存 CSDN 渠道稿失败。");
     } finally {
       setCsdnDraftSaving(false);
+    }
+  };
+  const generateCnblogsChannelDraft = async () => {
+    if (!cnblogsDraftSource || !cnblogsDraftAccountId) return;
+    setCnblogsDraftSaving(true);
+    try {
+      const draft = await request<CnblogsChannelDraft>("/integrations/cnblogs/channel-drafts", {
+        method: "POST",
+        body: JSON.stringify({ accountId: cnblogsDraftAccountId, relativePath: cnblogsDraftSource.relativePath, generationMode: cnblogsDraftGenerationMode })
+      });
+      setCnblogsDraft(draft);
+      setError("");
+      void loadCnblogsChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "生成博客园渠道稿失败。");
+    } finally {
+      setCnblogsDraftSaving(false);
+    }
+  };
+  const saveCnblogsChannelDraft = async () => {
+    if (!cnblogsDraft) return;
+    setCnblogsDraftSaving(true);
+    try {
+      const saved = await request<CnblogsChannelDraft>(`/integrations/cnblogs/channel-drafts/${cnblogsDraft.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title: cnblogsDraft.title, markdown: cnblogsDraft.markdown, author: cnblogsDraft.author, digest: cnblogsDraft.digest, coverSource: cnblogsDraft.coverSource })
+      });
+      setCnblogsDraft(saved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存博客园渠道稿失败。");
+    } finally {
+      setCnblogsDraftSaving(false);
     }
   };
   const startCsdnBrowserAssist = async (jobId: string) => {
@@ -676,6 +823,35 @@ function App() {
       setCsdnDraftSaving(false);
     }
   };
+  const confirmCnblogsPublish = async (jobId: string) => {
+    setCnblogsDraftSaving(true);
+    try {
+      const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/jobs/${jobId}/confirm`, { method: "POST" });
+      if (payload?.job) setCnblogsPublishJob(payload.job);
+      await loadCnblogsChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法确认博客园发布结果。");
+    } finally {
+      setCnblogsDraftSaving(false);
+    }
+  };
+  const correctCnblogsStatus = async (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => {
+    setCnblogsDraftSaving(true);
+    try {
+      const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/jobs/${jobId}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status, reason: reason.trim() })
+      });
+      if (payload?.job) setCnblogsPublishJob(payload.job);
+      await loadCnblogsChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法校正博客园发布状态。");
+    } finally {
+      setCnblogsDraftSaving(false);
+    }
+  };
   // 合并「审核并冻结」+「创建发布任务」为一步：自动保存未存修改 → 冻结（内容快照锁定）→ 建任务。
   // 已处于 approved（冻结）态时仅建任务。冻结不可逆，故从草稿态进入前需在 UI 弹确认框。
   const publishCsdnDraft = async () => {
@@ -727,6 +903,77 @@ function App() {
       if (!confirmed) return;
     }
     void publishCsdnDraft();
+  };
+  const publishCnblogsDraft = async (options?: CnblogsPublishOptions) => {
+    if (!cnblogsDraft) return;
+    setCnblogsDraftSaving(true);
+    try {
+      let current = cnblogsDraft;
+      if (current.status === "draft") {
+        const saved = await request<CnblogsChannelDraft>(`/integrations/cnblogs/channel-drafts/${current.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ title: current.title, markdown: current.markdown, author: current.author, digest: current.digest, coverSource: current.coverSource })
+        });
+        current = saved;
+        setCnblogsDraft(saved);
+      }
+      if (current.status === "draft") {
+        const approved = await request<CnblogsChannelDraft>(`/integrations/cnblogs/channel-drafts/${current.id}/approve`, { method: "POST" });
+        current = approved;
+        setCnblogsDraft(approved);
+      }
+      const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/channel-drafts/${current.id}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({ categories: options?.categories ?? [], tags: options?.tags ?? [] })
+      });
+      if (payload?.job) {
+        setCnblogsPublishJob(payload.job);
+        // 创建任务后进入草稿创建状态；主进程会经 state machine 驱动到 draft_created，
+        // 渲染层通过轮询 refreshCnblogsPublishJob 感知并展示“确认公开”按钮。
+      }
+      setError("");
+      void loadCnblogsChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "发布到博客园失败。");
+    } finally {
+      setCnblogsDraftSaving(false);
+    }
+  };
+  const requestPublishCnblogs = (options?: CnblogsPublishOptions) => {
+    if (!cnblogsDraft) return;
+    if (cnblogsDraft.status === "draft") {
+      const confirmed = window.confirm(
+        "发布会把本博客园渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并在草稿创建成功后由你确认公开。\n\n是否继续？"
+      );
+      if (!confirmed) return;
+    }
+    void publishCnblogsDraft(options);
+  };
+  const openCnblogsStatusCorrection = (job: CnblogsPublishJob) => {
+    setCorrectingCnblogsJob(job);
+    setCorrectedCnblogsStatus("published");
+    setCnblogsStatusReason("已在博客园后台核实");
+    setCnblogsCorrectionError("");
+  };
+  const saveCnblogsStatusCorrection = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!correctingCnblogsJob) {
+      setCnblogsCorrectionError("核实依据不能超过 500 个字。");
+      return;
+    }
+    const action = correctedCnblogsStatus === "published" ? "已发布" : correctedCnblogsStatus === "cancelled" ? "取消发布" : "发布失败";
+    if (!window.confirm(`确定将博客园发布任务人工标记为“${action}”吗？\n\n此操作只校正文渡中的记录，不会调用博客园接口，也不会重新发布。`)) return;
+    setCnblogsCorrectionSaving(true);
+    try {
+      await correctCnblogsStatus(correctingCnblogsJob.id, correctedCnblogsStatus, cnblogsStatusReason);
+      setCorrectingCnblogsJob(undefined);
+      setCnblogsStatusReason("");
+      setCnblogsCorrectionError("");
+    } catch (cause) {
+      setCnblogsCorrectionError(cause instanceof Error ? cause.message : "人工校正博客园发布状态失败。");
+    } finally {
+      setCnblogsCorrectionSaving(false);
+    }
   };
   const openCsdnStatusCorrection = (job: CsdnPublishJob) => {
     setCorrectingCsdnJob(job);
@@ -795,6 +1042,16 @@ function App() {
       /* 轮询失败不阻塞界面 */
     }
   };
+  const refreshCnblogsPublishJob = async () => {
+    if (!cnblogsPublishJob) return;
+    try {
+      // 该路由返回 { job, draft }；解构出 job 更新，避免丢失任务 id。
+      const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/jobs/${cnblogsPublishJob.id}`);
+      if (payload?.job) setCnblogsPublishJob(payload.job);
+    } catch {
+      /* 轮询失败不阻塞界面 */
+    }
+  };
   const loadSkillsAndConnections = async () => {
     try {
       const [skillResult, connectionResult, searchSettingsResult] = await Promise.all([
@@ -830,7 +1087,7 @@ function App() {
   }, []);
   useEffect(() => {
     if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
-    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); }
+    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); void loadCnblogsChannelDrafts(); }
   }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => {
@@ -848,12 +1105,20 @@ function App() {
     const timer = setInterval(() => void refreshCsdnPublishJob(), 3000);
     return () => clearInterval(timer);
   }, [csdnPublishJob?.id, csdnPublishJob?.status]);
+  // 博客园任务进行中时轮询最新状态：draft_creating → draft_created → confirming → published。
+  useEffect(() => {
+    if (!cnblogsPublishJob) return;
+    const active = ["draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(cnblogsPublishJob.status);
+    if (!active) return;
+    const timer = setInterval(() => void refreshCnblogsPublishJob(), 3000);
+    return () => clearInterval(timer);
+  }, [cnblogsPublishJob?.id, cnblogsPublishJob?.status]);
 
   const addAccount = async (event: FormEvent) => {
     event.preventDefault();
     if (!displayName.trim()) { setError("请填写账号名称。"); return; }
     setSaving(true);
-    try { await request<MediaAccount>("/media-accounts", { method: "POST", body: JSON.stringify({ platform, displayName: displayName.trim() }) }); setDisplayName(""); await loadAccounts(); }
+    try { await request<MediaAccount>("/media-accounts", { method: "POST", body: JSON.stringify({ platform, displayName: displayName.trim(), ...(platformExternalId.trim() ? { externalAccountId: platformExternalId.trim() } : {}) }) }); setDisplayName(""); setPlatformExternalId(""); await loadAccounts(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "账号添加失败。"); }
     finally { setSaving(false); }
   };
@@ -864,7 +1129,8 @@ function App() {
     setSaving(true);
     if (!editingDisplayName.trim()) { setError("请填写账号名称。"); setSaving(false); return; }
     try {
-      await request<MediaAccount>(`/media-accounts/${editing.id}`, { method: "PUT", body: JSON.stringify({ displayName: editingDisplayName.trim() }) });
+      const renamePayload = editing.platform === "cnblogs" ? { displayName: editingDisplayName.trim(), externalAccountId: editingExternalId.trim() } : { displayName: editingDisplayName.trim() };
+      await request<MediaAccount>(`/media-accounts/${editing.id}`, { method: "PUT", body: JSON.stringify(renamePayload) });
       await request<MediaAccount>(`/media-accounts/${editing.id}/profile`, { method: "PUT", body: JSON.stringify(profile) });
       setEditing(undefined); await loadAccounts();
     }
@@ -1264,7 +1530,7 @@ function App() {
     finally { setSaving(false); }
   };
 
-  const openProfile = (account: MediaAccount) => { setEditing(account); setEditingDisplayName(account.displayName); setProfile(account.profile); setError(""); };
+  const openProfile = (account: MediaAccount) => { setEditing(account); setEditingDisplayName(account.displayName); setEditingExternalId(account.externalAccountId ?? ""); setProfile(account.profile); setError(""); };
   const changeProfile = (field: keyof AccountProfile, value: string) => setProfile((current) => ({ ...current, [field]: value }));
   const saveWechatConnection = async (event: FormEvent) => {
     event.preventDefault();
@@ -1301,6 +1567,66 @@ function App() {
       setWechatCredentialStatus(status);
       setWechatAppId(status.appId);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取微信连接状态。"); }
+  };
+  const openCnblogsConnection = async (account: MediaAccount) => {
+    setCnblogsCredentialAccount(account);
+    setCnblogsCredentialUsername("");
+    setCnblogsCredentialApiKey("");
+    setCnblogsCredentialApiKeyConfigured(false);
+    setCnblogsCredentialBlogUrl(account.externalAccountId ?? "");
+    setCnblogsCredentialError("");
+    setError("");
+    try {
+      const status = await request<WechatCredentialStatus>(`/media-accounts/${account.id}/credentials/status`);
+      setCnblogsCredentialUsername(status.cnblogsUsername ?? "");
+      setCnblogsCredentialApiKeyConfigured(Boolean(status.cnblogsApiKeyConfigured));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取博客园凭据状态。"); }
+  };
+  const saveCnblogsCredentials = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!cnblogsCredentialAccount) return;
+    if (!cnblogsCredentialUsername.trim()) {
+      setCnblogsCredentialError("请填写博客园用户名。");
+      return;
+    }
+    if (!cnblogsCredentialApiKeyConfigured && !cnblogsCredentialApiKey.trim()) {
+      setCnblogsCredentialError("请填写 API Key；已配置时留空可保留原值。");
+      return;
+    }
+    setCnblogsCredentialSaving(true);
+    try {
+      await request<MediaAccount>(`/media-accounts/${cnblogsCredentialAccount.id}/credentials/username`, {
+        method: "PUT",
+        body: JSON.stringify({ secret: cnblogsCredentialUsername.trim() })
+      });
+      if (cnblogsCredentialApiKey.trim()) {
+        await request<MediaAccount>(`/media-accounts/${cnblogsCredentialAccount.id}/credentials/api_key`, {
+          method: "PUT",
+          body: JSON.stringify({ secret: cnblogsCredentialApiKey.trim() })
+        });
+      }
+      await request<MediaAccount>(`/media-accounts/${cnblogsCredentialAccount.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ displayName: cnblogsCredentialAccount.displayName, externalAccountId: cnblogsCredentialBlogUrl.trim() })
+      });
+      await loadAccounts();
+      setCnblogsCredentialAccount(undefined);
+      setCnblogsCredentialError("");
+    } catch (cause) {
+      setCnblogsCredentialError(cause instanceof Error ? cause.message : "保存博客园凭据失败。");
+    } finally {
+      setCnblogsCredentialSaving(false);
+    }
+  };
+  const openCnblogsCredentialEntry = async (accountId?: string) => {
+    const target = accountId ? accounts.find((item) => item.id === accountId) : undefined;
+    const fallback = target ?? accounts.find((item) => item.platform === "cnblogs");
+    if (!fallback) {
+      setError("请先在“账号”中添加一个博客园账号，再配置用户名和 API Key。");
+      return;
+    }
+    setActiveView("accounts");
+    await openCnblogsConnection(fallback);
   };
   const deleteAccount = async (account: MediaAccount) => {
     if (!window.confirm(`确定删除账号“${account.displayName}”吗？本机保存的该账号凭证也会删除，历史发布记录会保留。`)) return;
@@ -1917,6 +2243,26 @@ function App() {
     />;
   }
 
+  if (cnblogsDraft) {
+    const cnblogsAccount = accounts.find((account) => account.id === cnblogsDraft.accountId);
+    return <CnblogsDraftWorkspace
+      draft={cnblogsDraft}
+      accountDisplay={cnblogsAccount ? `${cnblogsAccount.displayName}` : "博客园账号"}
+      saving={cnblogsDraftSaving}
+      job={cnblogsPublishJob}
+      error={error}
+      onClearError={() => setError("")}
+      onChange={(patch) => setCnblogsDraft((current) => current ? { ...current, ...patch } : current)}
+      onSave={() => void saveCnblogsChannelDraft()}
+      onPublish={(options) => requestPublishCnblogs(options)}
+      onConfirmPublish={(jobId) => void confirmCnblogsPublish(jobId)}
+      onCorrectStatus={(jobId, status, reason) => void correctCnblogsStatus(jobId, status, reason)}
+      onGoToCredentials={() => void openCnblogsCredentialEntry(cnblogsDraft?.accountId)}
+      onDelete={() => cnblogsDraft && void deleteCnblogsChannelDraft(cnblogsDraft.id)}
+      onBack={() => { setCnblogsDraft(undefined); setCnblogsPublishJob(undefined); setCnblogsDraftSource(undefined); setCnblogsEntryChoices(null); }}
+    />;
+  }
+
   if (sourceArticle) {
     return <ArticleWorkspace
       title={sourceArticle.title ?? sourceArticle.relativePath}
@@ -1969,20 +2315,25 @@ function App() {
   const completedWechatJobs = wechatJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   const activeCsdnJobs = csdnJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
   const completedCsdnJobs = csdnJobs.filter((job) => job.status === "published" || job.status === "cancelled");
+  const activeCnblogsJobs = cnblogsJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
+  const completedCnblogsJobs = cnblogsJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   type PublishEntry =
     | { kind: "wechat"; job: WechatPublishJob }
-    | { kind: "csdn"; job: CsdnPublishJob };
+    | { kind: "csdn"; job: CsdnPublishJob }
+    | { kind: "cnblogs"; job: CnblogsPublishJob };
   const byUpdatedAtDesc = (a: PublishEntry, b: PublishEntry) =>
     new Date(b.job.updatedAt).getTime() - new Date(a.job.updatedAt).getTime();
-  // 待处理（置顶）：微信进行中 + CSDN 进行中，按时间倒序。
+  // 待处理（置顶）：微信进行中 + CSDN 进行中 + 博客园进行中，按时间倒序。
   const pendingEntries: PublishEntry[] = [
     ...pendingWechatJobs.map((job) => ({ kind: "wechat" as const, job })),
     ...activeCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
+    ...activeCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
   ].sort(byUpdatedAtDesc);
-  // 发布记录（置底）：微信 + CSDN 已完成，按时间倒序，两类任务交错排列。
+  // 发布记录（置底）：微信 + CSDN + 博客园 已完成，按时间倒序，三类任务交错排列。
   const completedEntries: PublishEntry[] = [
     ...completedWechatJobs.map((job) => ({ kind: "wechat" as const, job })),
     ...completedCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
+    ...completedCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
   ].sort(byUpdatedAtDesc);
   const researchReadOnly = researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false;
   const outlineReadOnly = outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false;
@@ -2084,7 +2435,7 @@ function App() {
       {loading ? <p>正在读取本地账号…</p> : accounts.length === 0 ? <p className="muted">还没有账号。先添加“围炉聊科技”或你的测试公众号。</p> : <ul className="account-list bound-account-list">{accounts.map((account) => <li key={account.id}>
         <span className="bound-account-summary"><strong>{account.displayName}</strong><small>{platformName(account.platform)} · {account.profile.positioning ? "已设置定位" : "待设置定位"}</small></span>
         <em className={`connection-status${account.credentialsConfigured ? " connected" : ""}`}>{account.credentialsConfigured ? "凭据已配置" : "待完成接入"}</em>
-        <span className="account-row-actions">{account.platform === "wechat_official" && <button className="secondary-button compact-action" onClick={() => void openWechatConnection(account)}>连接微信</button>}<button className="secondary-button compact-action" onClick={() => openProfile(account)}>编辑定位</button><button className="text-button danger-text compact-action" onClick={() => void deleteAccount(account)} disabled={saving}>删除</button></span>
+        <span className="account-row-actions">{account.platform === "wechat_official" && <button className="secondary-button compact-action" onClick={() => void openWechatConnection(account)}>连接微信</button>}{account.platform === "cnblogs" && <button className="secondary-button compact-action" onClick={() => void openCnblogsConnection(account)}>配置博客园凭据</button>}<button className="secondary-button compact-action" onClick={() => openProfile(account)}>编辑定位</button><button className="text-button danger-text compact-action" onClick={() => void deleteAccount(account)} disabled={saving}>删除</button></span>
       </li>)}</ul>}
     </section>
     </>}
@@ -2112,7 +2463,7 @@ function App() {
 
     {activeView === "publish" && <>
       <div className="publish-page-actions"><span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span><button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button></div>
-      {wechatJobs.length === 0 && csdnJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
+      {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
         {pendingEntries.length > 0 && <section className="card">
           <div className="section-heading"><h2>待处理</h2></div>
           <ul className="publish-job-list">{pendingEntries.map((entry) => {
@@ -2121,20 +2472,45 @@ function App() {
               const account = accounts.find((item) => item.id === job.accountId);
               return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{wechatJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">{job.status === "draft_ready" && <><button onClick={() => void startWechatBrowserAssist(job)} disabled={saving}>在微信后台完善并发布</button><button className="secondary-button" onClick={() => void openWechatDraftBox()} disabled={saving}>微信草稿箱</button><details className="publish-more-actions"><summary>更多操作</summary><button className="text-button" onClick={() => void submitWechatJob(job, "publish")} disabled={saving}>接口普通发布</button><button className="text-button" onClick={() => void submitWechatJob(job, "mass")} disabled={saving}>接口群发所有关注者</button></details></>}{job.status === "browser_editing" && <><span className="status-badge">等待你在微信后台确认</span><button onClick={() => void startWechatBrowserAssist(job)} disabled={saving}>重新打开微信后台</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>确认结果</button></>}{job.status === "submitted" && <><span className="status-badge">等待微信回执</span><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}{job.status === "failed" && <><button className="secondary-button" onClick={() => void retryWechatJob(job)}>重新设置并同步</button><button className="text-button" onClick={() => openWechatStatusCorrection(job)}>校正状态</button></>}</span></li>;
             }
+            if (entry.kind === "csdn") {
+              const job = entry.job;
+              const account = accounts.find((item) => item.id === job.accountId);
+              const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
+              return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{csdnJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+                {job.status === "ready_for_final_confirmation" && <span className="status-badge">等待你在 CSDN 后台确认</span>}
+                {job.status === "needs_user" && <span className="status-badge">内容未自动填充完整，请手动补齐</span>}
+                {(job.status === "ready_for_final_confirmation" || job.status === "needs_user") && <>
+                  <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>重新打开 CSDN 后台</button>
+                  <button className="secondary-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>确认结果</button>
+                  <details className="publish-more-actions"><summary>更多操作</summary><button className="text-button" onClick={() => void confirmCsdnPublish(job.id)} disabled={csdnDraftSaving}>自动点击发布并读取链接</button></details>
+                </>}
+                {job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && csdnJobCanStart(job) && <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>在浏览器中完成发布</button>}
+                {job.status === "submitting" && <span className="status-badge">正在读取回执</span>}
+                {csdnJobCanCorrect(job) && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && <button className="text-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>校正状态</button>}
+              </span></li>;
+            }
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
-            const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
-            return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{csdnJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
-              {job.status === "ready_for_final_confirmation" && <span className="status-badge">等待你在 CSDN 后台确认</span>}
-              {job.status === "needs_user" && <span className="status-badge">内容未自动填充完整，请手动补齐</span>}
-              {(job.status === "ready_for_final_confirmation" || job.status === "needs_user") && <>
-                <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>重新打开 CSDN 后台</button>
-                <button className="secondary-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>确认结果</button>
-                <details className="publish-more-actions"><summary>更多操作</summary><button className="text-button" onClick={() => void confirmCsdnPublish(job.id)} disabled={csdnDraftSaving}>自动点击发布并读取链接</button></details>
+            const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
+            const cnblogsLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看博客园草稿" : "查看已发布文章";
+            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{cnblogsJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{cnblogsLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+              {job.status === "draft_creating" && <span className="status-badge">正在创建博客园草稿</span>}
+              {(job.status === "draft_created" || job.status === "confirming") && <>
+                <button className="secondary-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>确认公开</button>
+                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
               </>}
-              {job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && csdnJobCanStart(job) && <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>在浏览器中完成发布</button>}
-              {job.status === "submitting" && <span className="status-badge">正在读取回执</span>}
-              {csdnJobCanCorrect(job) && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && <button className="text-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>校正状态</button>}
+              {job.status === "needs_credentials" && <>
+                <button className="secondary-button" onClick={() => void openCnblogsCredentialEntry(job.accountId)}>配置博客园凭据</button>
+                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+              </>}
+              {job.status === "needs_manual_reconciliation" && <>
+                <button className="secondary-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>人工校正</button>
+                <button className="text-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>重试确认公开</button>
+              </>}
+              {job.status === "failed" && <>
+                <button className="secondary-button" onClick={() => { const draft = cnblogsDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingCnblogsDraft({ draft, job }); }} disabled={cnblogsDraftSaving}>重新发布</button>
+                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+              </>}
             </span></li>;
           })}</ul>
         </section>}
@@ -2146,11 +2522,18 @@ function App() {
               const account = accounts.find((item) => item.id === job.accountId);
               return <li key={job.id}><span><strong>{job.title}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{job.status === "cancelled" ? "已取消发布" : job.mode === "mass" ? "已群发" : "已发布"} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && <small className="manual-status-note">人工校正：{job.statusNote}</small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
             }
+            if (entry.kind === "csdn") {
+              const job = entry.job;
+              const account = accounts.find((item) => item.id === job.accountId);
+              const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
+              const label = job.status === "cancelled" ? "已取消发布" : "已发布";
+              return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+            }
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
-            const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
+            const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
             const label = job.status === "cancelled" ? "已取消发布" : "已发布";
-            return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
           })}</ul>
         </section>}
       </>}
@@ -2203,7 +2586,7 @@ function App() {
     </section>}
 
     {activeView === "accounts" && <>
-    <section className="card"><h2>添加账号</h2><form onSubmit={addAccount} className="account-form"><label>平台<select value={platform} onChange={(event) => setPlatform(event.target.value as AccountPlatform)}><option value="wechat_official">微信公众号</option><option value="csdn">CSDN</option></select></label><label>账号名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：围炉聊科技" maxLength={100} /></label><button disabled={saving}>{saving ? "正在保存…" : "添加账号"}</button></form></section>
+    <section className="card"><h2>添加账号</h2><form onSubmit={addAccount} className="account-form"><label>平台<select value={platform} onChange={(event) => setPlatform(event.target.value as AccountPlatform)}><option value="wechat_official">微信公众号</option><option value="csdn">CSDN</option><option value="cnblogs">博客园</option></select></label><label>账号名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：围炉聊科技" maxLength={100} /></label>{platform === "cnblogs" && <label>博客地址/博客名<input value={platformExternalId} onChange={(event) => setPlatformExternalId(event.target.value)} placeholder="例如：https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" maxLength={200} /><small>用于定位博客园博客；建议填写，便于发布前自动校验博客名。</small></label>}<button disabled={saving}>{saving ? "正在保存…" : "添加账号"}</button></form></section>
     </>}
 
     {editingSkill && <Modal onClose={closeSkillEditor} disabled={saving} title={editingSkill.name} eyebrow="技能管理" wide>
@@ -2266,7 +2649,7 @@ function App() {
       </form>
     </Modal>}
 
-    {editing && <Modal onClose={() => setEditing(undefined)} disabled={saving} title={`编辑定位：${editing.displayName}`} eyebrow="账号创作上下文"><p className="hint">这些内容会在后续创作时自动作为默认上下文；不确定的项目可以先留空。</p><form onSubmit={saveProfile} className="profile-form"><label>账号名称<input value={editingDisplayName} maxLength={100} onChange={(event) => setEditingDisplayName(event.target.value)} /></label><ProfileFields profile={profile} onChange={changeProfile} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(undefined)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存定位"}</button></div></form></Modal>}
+    {editing && <Modal onClose={() => setEditing(undefined)} disabled={saving} title={`编辑定位：${editing.displayName}`} eyebrow="账号创作上下文"><p className="hint">这些内容会在后续创作时自动作为默认上下文；不确定的项目可以先留空。</p><form onSubmit={saveProfile} className="profile-form"><label>账号名称<input value={editingDisplayName} maxLength={100} onChange={(event) => setEditingDisplayName(event.target.value)} /></label>{editing.platform === "cnblogs" && <label>博客地址/博客名<input value={editingExternalId} onChange={(event) => setEditingExternalId(event.target.value)} placeholder="例如：https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" maxLength={200} /><small>用于定位博客园博客；发布任务重试时会自动校验。留空会清空已保存的博客名。</small></label>}<ProfileFields profile={profile} onChange={changeProfile} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(undefined)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存定位"}</button></div></form></Modal>}
     {wechatAccount && <Modal onClose={() => setWechatAccount(undefined)} disabled={saving} title={`连接微信：${wechatAccount.displayName}`} eyebrow="微信公众号开发者接口">
       {!wechatCredentialStatus ? <p>正在读取已有配置…</p> : <><p className="hint">AppID 可以回显。出于安全原因，AppSecret 和消息校验 Token 不会把明文返回页面；显示“已配置”时留空即可保留，填写新值才会覆盖。</p>
       <form onSubmit={saveWechatConnection} className="profile-form">
@@ -2280,6 +2663,16 @@ function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setWechatAccount(undefined)}>{wechatTestResult === "success" ? "完成" : "取消"}</button><button disabled={saving}>{saving ? "正在验证连接…" : wechatTestResult === "success" ? "重新测试" : "保存并测试连接"}</button></div>
       </form></>}
     </Modal>}
+    {cnblogsCredentialAccount && <Modal onClose={() => setCnblogsCredentialAccount(undefined)} disabled={cnblogsCredentialSaving} title={`配置博客园凭据：${cnblogsCredentialAccount.displayName}`} eyebrow="博客园 MetaWeblog API">
+      <form onSubmit={saveCnblogsCredentials} className="profile-form">
+        <p className="hint">博客园随笔发布使用 MetaWeblog API。用户名是博客园登录用户名，打开弹窗时会回显已保存的值；API Key 在博客园后台“设置 → MetaWeblog 访问令牌”中生成，出于安全原因不回显明文，已配置时留空即可保留原值。</p>
+        <label>用户名<input autoFocus value={cnblogsCredentialUsername} onChange={(event) => { setCnblogsCredentialUsername(event.target.value); setCnblogsCredentialError(""); }} autoComplete="off" placeholder="博客园登录用户名" /></label>
+        <label>API Key<input type="password" value={cnblogsCredentialApiKey} onChange={(event) => { setCnblogsCredentialApiKey(event.target.value); setCnblogsCredentialError(""); }} autoComplete="new-password" placeholder={cnblogsCredentialApiKeyConfigured ? "已配置；留空不修改" : "MetaWeblog 访问令牌"} /></label>
+        <label>博客地址/博客名<input value={cnblogsCredentialBlogUrl} onChange={(event) => { setCnblogsCredentialBlogUrl(event.target.value); setCnblogsCredentialError(""); }} autoComplete="off" placeholder="https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" /><small>发布校验需要博客名；可填博客地址或博客用户名。留空保存会清空已保存的博客名。</small></label>
+        {cnblogsCredentialError && <p className="error">{cnblogsCredentialError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCnblogsCredentialAccount(undefined)} disabled={cnblogsCredentialSaving}>取消</button><button disabled={cnblogsCredentialSaving}>{cnblogsCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
+      </form>
+    </Modal>}
     {csdnEntryChoices && <Modal onClose={() => { setCsdnEntryChoices(null); setCsdnDraftSource(undefined); }} disabled={csdnDraftSaving} title="已有 CSDN 渠道稿" wide>
       <section className="csdn-entry-choices">
         <p className="hint">这篇文章已经生成过 CSDN 渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
@@ -2289,6 +2682,16 @@ function App() {
     </Modal>}
     {csdnDraftSource && !csdnEntryChoices && <Modal onClose={() => { if (!csdnDraftSaving) { setCsdnDraftSource(undefined); setCsdnDraft(undefined); setCsdnPublishJob(undefined); setCsdnEntryChoices(null); } }} disabled={csdnDraftSaving} title={`CSDN 渠道稿：${csdnDraftSource.title ?? csdnDraftSource.relativePath}`} wide>
       { <section className="csdn-channel-start"><label className="csdn-account-field">目标 CSDN 账号<select value={csdnDraftAccountId} onChange={(event) => setCsdnDraftAccountId(event.target.value)} disabled={csdnDraftSaving}>{accounts.filter((account) => account.platform === "csdn").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={csdnDraftSaving}><legend>生成方式</legend><label className={csdnDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="csdn-generation-mode" checked={csdnDraftGenerationMode === "rewrite"} onChange={() => setCsdnDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为 CSDN 调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={csdnDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="csdn-generation-mode" checked={csdnDraftGenerationMode === "source"} onChange={() => setCsdnDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCsdnDraftSource(undefined)} disabled={csdnDraftSaving}>取消</button><button type="button" onClick={() => void generateCsdnChannelDraft()} disabled={!csdnDraftAccountId || csdnDraftSaving}>{csdnDraftSaving ? (csdnDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : csdnDraftGenerationMode === "rewrite" ? "生成 CSDN 渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
+    </Modal>}
+    {cnblogsDraftSource && cnblogsEntryChoices && <Modal onClose={() => setCnblogsEntryChoices(null)} disabled={cnblogsDraftSaving} title={`博客园渠道稿：${cnblogsDraftSource.title ?? cnblogsDraftSource.relativePath}`}>
+      <section className="csdn-channel-start">
+        <p className="hint">这篇文章已经生成过博客园渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
+        <ul className="csdn-entry-list">{cnblogsEntryChoices.map((choice) => <li key={choice.draft.id}><span><strong>{choice.draft.title || "未命名渠道稿"}</strong><small>{choice.accountName} · {choice.draft.status === "approved" ? "已冻结" : "草稿"} · 更新于 {new Date(choice.draft.updatedAt).toLocaleString()}</small></span><button className="secondary-button" onClick={() => openExistingCnblogsDraft(choice)} disabled={cnblogsDraftSaving}>进入编辑</button></li>)}</ul>
+        <button className="text-button" onClick={() => setCnblogsEntryChoices(null)} disabled={cnblogsDraftSaving}>＋ 新建渠道稿</button>
+      </section>
+    </Modal>}
+    {cnblogsDraftSource && !cnblogsEntryChoices && <Modal onClose={() => { if (!cnblogsDraftSaving) { setCnblogsDraftSource(undefined); setCnblogsDraft(undefined); setCnblogsPublishJob(undefined); setCnblogsEntryChoices(null); } }} disabled={cnblogsDraftSaving} title={`博客园渠道稿：${cnblogsDraftSource.title ?? cnblogsDraftSource.relativePath}`} wide>
+      { <section className="csdn-channel-start"><label className="csdn-account-field">目标博客园账号<select value={cnblogsDraftAccountId} onChange={(event) => setCnblogsDraftAccountId(event.target.value)} disabled={cnblogsDraftSaving}>{accounts.filter((account) => account.platform === "cnblogs").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={cnblogsDraftSaving}><legend>生成方式</legend><label className={cnblogsDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="cnblogs-generation-mode" checked={cnblogsDraftGenerationMode === "rewrite"} onChange={() => setCnblogsDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为博客园调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={cnblogsDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="cnblogs-generation-mode" checked={cnblogsDraftGenerationMode === "source"} onChange={() => setCnblogsDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCnblogsDraftSource(undefined)} disabled={cnblogsDraftSaving}>取消</button><button type="button" onClick={() => void generateCnblogsChannelDraft()} disabled={!cnblogsDraftAccountId || cnblogsDraftSaving}>{cnblogsDraftSaving ? (cnblogsDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : cnblogsDraftGenerationMode === "rewrite" ? "生成博客园渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
     </Modal>}
     {(publishProject || publishSource) && <Modal onClose={() => { setPublishProject(undefined); setPublishSource(undefined); }} disabled={saving || coverGenerating} title={`同步微信草稿：${publishProject?.topic ?? publishSource?.title ?? publishSource?.relativePath}`} eyebrow="第一步只创建草稿" wide>
       <p className="hint">这里仅确认文章设置并同步草稿，不再重复编辑账号、作者、摘要和封面。同步成功后请到公众号草稿箱进行手机预览。</p>
@@ -2331,6 +2734,16 @@ function App() {
         <label>核实依据（可选）<textarea autoFocus value={csdnStatusReason} disabled={csdnCorrectionSaving} onChange={(event) => { setCsdnStatusReason(event.target.value); setCsdnCorrectionError(""); }} maxLength={500} placeholder="例如：在 CSDN 后台“内容管理”确认已发布，文章链接为……" /><small>{csdnStatusReason.length}/500，可留空</small></label>
         {csdnCorrectionError && <p className="error">{csdnCorrectionError}</p>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingCsdnJob(undefined)} disabled={csdnCorrectionSaving}>取消</button><button disabled={csdnCorrectionSaving}>{csdnCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
+      </form>
+    </Modal>}
+    {correctingCnblogsJob && <Modal onClose={() => setCorrectingCnblogsJob(undefined)} disabled={cnblogsCorrectionSaving} title="人工校正博客园状态" eyebrow="回执异常兜底">
+      <form onSubmit={saveCnblogsStatusCorrection} className="profile-form status-correction-modal">
+        <p className="hint">如果你在博客园后台直接发布或取消了发布，核实结果后即可立即校正，无需等待。此操作不会再次调用博客园接口。</p>
+        <div className="status-correction-warning"><strong>请先在博客园后台核实</strong><span>错误标记可能导致后续误判和重复发布。</span></div>
+        <label>最终状态<select value={correctedCnblogsStatus} disabled={cnblogsCorrectionSaving} onChange={(event) => setCorrectedCnblogsStatus(event.target.value as "published" | "failed" | "cancelled")}><option value="published">已发布</option><option value="failed">发布失败</option><option value="cancelled">取消发布</option></select></label>
+        <label>核实依据（可选）<textarea autoFocus value={cnblogsStatusReason} disabled={cnblogsCorrectionSaving} onChange={(event) => { setCnblogsStatusReason(event.target.value); setCnblogsCorrectionError(""); }} maxLength={500} placeholder="例如：在博客园后台“随笔”确认已发布，文章链接为……" /><small>{cnblogsStatusReason.length}/500，可留空</small></label>
+        {cnblogsCorrectionError && <p className="error">{cnblogsCorrectionError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingCnblogsJob(undefined)} disabled={cnblogsCorrectionSaving}>取消</button><button disabled={cnblogsCorrectionSaving}>{cnblogsCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
       </form>
     </Modal>}
     {orphanedWechatJob && <Modal onClose={() => setOrphanedWechatJob(undefined)} disabled={saving} title="找不到本地文章" eyebrow="发布记录需要处理">
@@ -3697,6 +4110,19 @@ function csdnJobCanConfirm(job: CsdnPublishJob): boolean {
 
 function csdnJobCanCorrect(job: CsdnPublishJob): boolean {
   return ["needs_login", "filling", "submitting", "needs_manual_reconciliation", "failed_before_submit", "failed", "cancelled", "published"].includes(job.status);
+}
+
+function cnblogsJobLabel(job: CnblogsPublishJob): string {
+  switch (job.status) {
+    case "draft_creating": return "正在创建博客园草稿";
+    case "draft_created": return "草稿已创建，待确认公开";
+    case "confirming": return "正在公开博客园文章";
+    case "published": return "已发布";
+    case "failed": return "发布失败";
+    case "needs_manual_reconciliation": return "待人工核对发布结果";
+    case "needs_credentials": return "缺少博客园凭据";
+    case "cancelled": return "已取消发布";
+  }
 }
 
 function ProfileFields({ profile, onChange }: { profile: AccountProfile; onChange: (field: keyof AccountProfile, value: string) => void }) {
