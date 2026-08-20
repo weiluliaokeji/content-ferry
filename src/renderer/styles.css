@@ -629,3 +629,24 @@ button:disabled { opacity: .6; cursor: not-allowed; }
   justify-content: flex-start;
   margin-top: -0.4rem;
 }
+
+.toast-notice {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1200;
+  max-width: 22rem;
+  padding: .7rem 1rem;
+  border-radius: 8px;
+  background: #315bdb;
+  color: #fff;
+  font-size: .86rem;
+  line-height: 1.5;
+  box-shadow: 0 6px 18px rgba(23, 32, 51, .18);
+  animation: toast-in .18s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

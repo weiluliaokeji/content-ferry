@@ -903,7 +903,7 @@ export function buildServer(
   server.post("/api/integrations/cnblogs/channel-drafts/:draftId/jobs", async (request, reply) => {
     const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
     const options = cnblogsPublishOptionsInput.parse(request.body ?? {});
-    return reply.code(201).send(cnblogsChannels.createPublishJob(params.draftId, options));
+    return reply.code(201).send({ job: cnblogsChannels.createPublishJob(params.draftId, options) });
   });
 
   server.get("/api/integrations/cnblogs/jobs/:jobId", async (request) => {
@@ -915,7 +915,7 @@ export function buildServer(
 
   server.post("/api/integrations/cnblogs/jobs/:jobId/confirm", async (request, reply) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
-    return reply.code(201).send(await cnblogsChannels.confirmPublish(params.jobId));
+    return reply.code(201).send({ job: await cnblogsChannels.confirmPublish(params.jobId) });
   });
 
   server.post("/api/integrations/cnblogs/jobs/:jobId/record-submission", async (request, reply) => {
@@ -935,7 +935,7 @@ export function buildServer(
       status: z.enum(["published", "failed", "cancelled"]),
       reason: z.string().max(500).default("")
     }).parse(request.body);
-    return cnblogsChannels.correctStatus(params.jobId, body.status, body.reason);
+    return { job: cnblogsChannels.correctStatus(params.jobId, body.status, body.reason) };
   });
 
   server.get("/api/content-projects", async () => {

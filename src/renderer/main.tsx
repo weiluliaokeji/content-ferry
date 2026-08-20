@@ -359,6 +359,8 @@ function App() {
   const [draftGenerating, setDraftGenerating] = useState(false);
   const [draftGenerationStatus, setDraftGenerationStatus] = useState("");
   const draftAbortRef = useRef<AbortController | undefined>(undefined);
+  const cnblogsStatusRef = useRef<CnblogsPublishJob["status"] | null>(null);
+  const [notice, setNotice] = useState("");
   const [reviewProject, setReviewProject] = useState<ContentProject>();
   const [review, setReview] = useState<ContentReview>();
   const [zhuqueReport, setZhuqueReport] = useState<ZhuqueReport>();
@@ -518,7 +520,7 @@ function App() {
   const refreshWechatStatus = async () => {
     setWechatJobsRefreshing(true);
     try {
-      await Promise.all([loadWechatJobs(), loadProjects()]);
+      await Promise.all([loadWechatJobs(), loadProjects(), loadCsdnChannelDrafts(), loadCnblogsChannelDrafts()]);
       setWechatJobsRefreshedAt(new Date());
     } finally {
       setWechatJobsRefreshing(false);
@@ -827,7 +829,20 @@ function App() {
     setCnblogsDraftSaving(true);
     try {
       const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/jobs/${jobId}/confirm`, { method: "POST" });
-      if (payload?.job) setCnblogsPublishJob(payload.job);
+      if (payload?.job) {
+        cnblogsStatusRef.current = payload.job.status;
+        setCnblogsPublishJob(payload.job);
+        if (payload.job.status === "published") {
+          // 发布完成：离开编辑工作区，跳转发布中心并给出成功反馈。
+          setNotice("已成功发布到博客园。");
+          setCnblogsDraft(undefined);
+          setCnblogsDraftSource(undefined);
+          setCnblogsEntryChoices(null);
+          setActiveView("publish");
+        } else {
+          setNotice("已确认公开，正在发布…");
+        }
+      }
       await loadCnblogsChannelDrafts();
       setError("");
     } catch (cause) {
@@ -927,12 +942,17 @@ function App() {
         body: JSON.stringify({ categories: options?.categories ?? [], tags: options?.tags ?? [] })
       });
       if (payload?.job) {
+        cnblogsStatusRef.current = payload.job.status;
         setCnblogsPublishJob(payload.job);
-        // 创建任务后进入草稿创建状态；主进程会经 state machine 驱动到 draft_created，
-        // 渲染层通过轮询 refreshCnblogsPublishJob 感知并展示“确认公开”按钮。
+        setNotice("已创建博客园发布任务，正在创建草稿…");
+        // 跳转到发布中心查看任务进度；清除编辑工作区状态，保持 cnblogsPublishJob 以继续轮询。
+        setCnblogsDraft(undefined);
+        setCnblogsDraftSource(undefined);
+        setCnblogsEntryChoices(null);
+        setActiveView("publish");
+        void loadCnblogsChannelDrafts();
       }
       setError("");
-      void loadCnblogsChannelDrafts();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "发布到博客园失败。");
     } finally {
@@ -943,7 +963,7 @@ function App() {
     if (!cnblogsDraft) return;
     if (cnblogsDraft.status === "draft") {
       const confirmed = window.confirm(
-        "发布会把本博客园渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并在草稿创建成功后由你确认公开。\n\n是否继续？"
+        "发布会把本博客园渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布中心查看进度。\n\n是否继续？"
       );
       if (!confirmed) return;
     }
@@ -1047,7 +1067,27 @@ function App() {
     try {
       // 该路由返回 { job, draft }；解构出 job 更新，避免丢失任务 id。
       const payload = await request<{ job: CnblogsPublishJob }>(`/integrations/cnblogs/jobs/${cnblogsPublishJob.id}`);
-      if (payload?.job) setCnblogsPublishJob(payload.job);
+      if (payload?.job) {
+        const previous = cnblogsStatusRef.current;
+        cnblogsStatusRef.current = payload.job.status;
+        setCnblogsPublishJob(payload.job);
+        void loadCnblogsChannelDrafts();
+        // 状态推进时给出强反馈，避免用户以为发布无响应。
+        if (previous === "draft_creating" && payload.job.status === "draft_created") setNotice("博客园草稿已就绪，请确认公开。");
+        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`博客园草稿创建失败：${payload.job.errorMessage ?? "请查看发布中心"}`);
+        if (previous === "draft_creating" && payload.job.status === "needs_credentials") setNotice("博客园凭据不完整，请前往账号页配置。");
+        if (previous === "confirming" && payload.job.status === "published") {
+          setNotice("已成功发布到博客园。");
+          // 发布完成：若仍停留在编辑工作区，则离开并回到发布中心查看发布记录。
+          if (cnblogsDraft) {
+            setCnblogsDraft(undefined);
+            setCnblogsDraftSource(undefined);
+            setCnblogsEntryChoices(null);
+            setActiveView("publish");
+          }
+        }
+        if (previous === "confirming" && payload.job.status === "needs_manual_reconciliation") setNotice("博客园公开未确认，请人工校正发布结果。");
+      }
     } catch {
       /* 轮询失败不阻塞界面 */
     }
@@ -1085,6 +1125,11 @@ function App() {
       }
     })();
   }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
     if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); void loadCnblogsChannelDrafts(); }
@@ -2357,6 +2402,7 @@ function App() {
     <div className="page-heading"><h1>{pageTitle}</h1>{((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={openProjectCreator}>＋ 新建文章</button>}</div>
     {error && <p className="error">{error}</p>}
     {error && <Modal title="操作未完成" eyebrow="需要你的注意" onClose={() => setError("")} disabled={false} priority><p className="error error-dialog-message">{error}</p><div className="modal-actions"><button type="button" onClick={() => setError("")}>知道了</button></div></Modal>}
+    {notice && <div className="toast-notice" role="status">{notice}</div>}
 
     {activeView === "help" && <HelpCenter onNavigate={setActiveView} />}
 

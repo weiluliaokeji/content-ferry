@@ -93,6 +93,8 @@ export class CnblogsChannelService {
   /** 两段式发布的关键缓存：draft_created 阶段构建的完整 post 对象，公开阶段必须原样复用来避免 editPost 完全替换陷阱。 */
   private readonly payloadCache = new Map<string, CnblogsPostPayload>();
   private readonly publishOptionsCache = new Map<string, CnblogsPublishOptions>();
+  /** 草稿创建并发去重：同一 job 的 createRemoteDraft 只允许一个 in-flight，重复触发复用同一 Promise，避免多次点击重试造成重复 newPost。 */
+  private readonly createRemoteDraftPromises = new Map<string, Promise<CnblogsPublishJob>>();
 
   constructor(
     private readonly db: Database.Database,
@@ -276,13 +278,21 @@ export class CnblogsChannelService {
     let idempotencyKey = `cnblogs:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
     const found = this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
     if (found) {
-      const foundJob = mapJob(found);
+      let foundJob = mapJob(found);
       const restartable: CnblogsPublishJobStatus[] = [
         "draft_creating", "draft_created", "confirming", "needs_credentials", "failed"
       ];
       if (restartable.includes(foundJob.status)) {
         // 上次卡在草稿创建前的可重试态：保存发布选项并重新触发后台草稿创建。
-        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials" || foundJob.status === "failed") {
+        if (foundJob.status === "failed") {
+          // 重试前先落库切回进行中状态：前端轮询 active 列表不含 failed，
+          // 若不先转 draft_creating，前端拿到 failed 不会启动轮询，后台异步成功后 UI 仍停留在失败态。
+          foundJob = this.transitionJob(foundJob, "draft_creating", {
+            statusNote: "正在重新创建博客园草稿。",
+            errorMessage: null
+          });
+        }
+        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
           this.publishOptionsCache.set(foundJob.id, options ?? {});
           void this.createRemoteDraft(foundJob.id).catch(() => {});
         }
@@ -421,8 +431,18 @@ export class CnblogsChannelService {
    * 两段式第一步：newPost(publish=false) 创建博客园草稿。
    * 可重试（draft_creating / needs_credentials / failed）场景下可重复调用；
    * 草稿已创建或已终态时直接返回，幂等安全。
+   * 并发去重：同一 job 的调用共享一个 Promise，避免连点重试造成重复 newPost。
    */
   private async createRemoteDraft(jobId: string): Promise<CnblogsPublishJob> {
+    const existing = this.createRemoteDraftPromises.get(jobId);
+    if (existing) return existing;
+    const promise = this.executeCreateRemoteDraft(jobId);
+    this.createRemoteDraftPromises.set(jobId, promise);
+    promise.finally(() => this.createRemoteDraftPromises.delete(jobId)).catch(() => {});
+    return promise;
+  }
+
+  private async executeCreateRemoteDraft(jobId: string): Promise<CnblogsPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "draft_created" || job.status === "published" || job.status === "needs_manual_reconciliation") return job;
 
