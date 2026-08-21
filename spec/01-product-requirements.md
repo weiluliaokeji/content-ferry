@@ -2,12 +2,14 @@
 AIGC:
     Label: "1"
     ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ede075e5af8053be83d373b168b03696_d2222d649bd511f19bec525400826444
-    ReservedCode1: 7XzOz5WcKPDQCF6prYbJJ87it+bCY5C9MNR69jsW8ECSTBOCPuWmJzH0FnHQwJXkYmBo8XXDIZAvk6tRdlBFkg2s7KqXFsjMUtJtdoc9suTw6OgMBGYpNTQJZm5E8Dy4RC6gqpXsVMMdbYbpvNqko4wXE/yJ6nACrBIHMORM9v/oAM1D0+fwZZJxCSo=
+    ProduceID: ede075e5af8053be83d373b168b03696_495877519d1e11f19046525400287e28
+    ReservedCode1: 2S7dj3F2/kE8UdpfJTSl0bFd12IWXByK4TcjIRHH/mV8PSvP7Mfh6hAB4FaP4SAurxD0Z/Ysbf2R7GENT/NcBf4oJXebHMhAqLhNuqV5UAIzXpOsStVe+kskuaYQa2PcZkUcYDY+1WvdC3reKFyc4XBoX+zLaTmO+RbdXALqFQ4e2FcoBii6rOsIwcY=
     ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ede075e5af8053be83d373b168b03696_d2222d649bd511f19bec525400826444
-    ReservedCode2: 7XzOz5WcKPDQCF6prYbJJ87it+bCY5C9MNR69jsW8ECSTBOCPuWmJzH0FnHQwJXkYmBo8XXDIZAvk6tRdlBFkg2s7KqXFsjMUtJtdoc9suTw6OgMBGYpNTQJZm5E8Dy4RC6gqpXsVMMdbYbpvNqko4wXE/yJ6nACrBIHMORM9v/oAM1D0+fwZZJxCSo=
+    PropagateID: ede075e5af8053be83d373b168b03696_495877519d1e11f19046525400287e28
+    ReservedCode2: 2S7dj3F2/kE8UdpfJTSl0bFd12IWXByK4TcjIRHH/mV8PSvP7Mfh6hAB4FaP4SAurxD0Z/Ysbf2R7GENT/NcBf4oJXebHMhAqLhNuqV5UAIzXpOsStVe+kskuaYQa2PcZkUcYDY+1WvdC3reKFyc4XBoX+zLaTmO+RbdXALqFQ4e2FcoBii6rOsIwcY=
 ---
+
+
 
 # ContentFerry 文渡产品需求文档
 
@@ -136,7 +138,7 @@ ContentFerry 是一个 AI 辅助的自媒体内容生产与运营平台。用户
 10. 人工编辑主稿，可使用系统编辑器或外部 Markdown 编辑器。
 11. 执行质量检查：事实与引用、原创性/重复度、敏感与合规、链接、图片、格式、AI 文本检测等。
 12. 人工处理检测结果并确认主稿。
-13. 针对微信公众号、CSDN、博客园等目标平台生成渠道稿。
+13. 针对微信公众号、CSDN、博客园、掘金等目标平台生成渠道稿。
 14. 人工逐平台预览、修改并批准渠道稿。
 15. 创建远端草稿或打开浏览器填充内容。
 16. 用户选择“发布永久链接（不通知粉丝）”或“群发通知粉丝”，查看群发额度/风险后进行最终确认。
@@ -840,4 +842,5 @@ tags: []
 | 0.3  | 2026-07-17 | 将发布后 AI 辅助运营纳入核心可恢复工作流：知乎候选发现、软植入方案、一期人工审核、浏览器接管、推广回执，以及后续低风险 AI 审核                    |
 | 0.2  | 2026-07-16 | 冻结一期核心边界：Windows 单机交付、微信公众号闭环、可配置审核、朱雀双路径检测、例外发布、Codex CLI、可见浏览器与多平台多账号                     |
 | 0.1  | 2026-07-16 | 根据初始构想形成首版需求讨论稿                                                                                                                    |
+*（内容由AI生成，仅供参考）*
 *（内容由AI生成，仅供参考）*

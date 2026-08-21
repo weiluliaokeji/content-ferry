@@ -23,6 +23,7 @@ import type { HealthResponse, WorkspaceResponse } from "../../shared/contracts";
 import { WechatApiError, WechatPublishingService } from "../wechat/wechat-publishing-service";
 import { CsdnChannelError, CsdnChannelService } from "../csdn/csdn-channel-service";
 import { CnblogsChannelError, CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
+import { JuejinChannelError, JuejinChannelService } from "../juejin/juejin-channel-service";
 import { WechatCallbackService } from "../wechat/wechat-callback-service";
 import { createDailyLogStream, dailyLogFilePath, listRuntimeLogFiles } from "../logging/daily-log-stream";
 import { AppCredentialRepository } from "../security/app-credential-repository";
@@ -47,7 +48,7 @@ import type {
 } from "../../shared/contracts";
 
 const accountInput = z.object({
-  platform: z.enum(["wechat_official", "csdn", "cnblogs"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin"]),
   displayName: z.string().trim().min(1).max(100),
   externalAccountId: z.string().trim().min(1).max(200).optional()
 });
@@ -162,6 +163,23 @@ const cnblogsPublishOptionsInput = z.object({
   categories: z.array(z.string().trim().max(80)).max(10).optional(),
   tags: z.array(z.string().trim().max(40)).max(20).optional()
 });
+const juejinChannelDraftInput = z.object({
+  accountId: z.string().uuid(),
+  relativePath: z.string().trim().min(1).max(1000),
+  projectId: z.string().uuid().optional(),
+  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+});
+const juejinChannelDraftSaveInput = z.object({
+  title: z.string().trim().min(1).max(80),
+  markdown: z.string().trim().min(1).max(100_000),
+  author: z.string().trim().max(16).optional(),
+  digest: z.string().trim().max(200).optional(),
+  coverSource: z.string().trim().max(2000).optional()
+});
+const juejinPublishOptionsInput = z.object({
+  categoryId: z.string().trim().max(80).optional(),
+  tagIds: z.array(z.string().trim().max(80)).max(5).optional()
+});
 const modelProviderSchema = z.enum(modelProviderIds);
 const modelConnectionInput = z.object({
   displayName: z.string().trim().min(1).max(100),
@@ -182,7 +200,7 @@ const skillInput = z.object({
 const skillFileQuery = z.object({ path: z.string().trim().min(1).max(500) });
 const skillFileInput = z.object({ path: z.string().trim().min(1).max(500), content: z.string().max(200000) });
 const articleSummaryInput = z.object({
-  platform: z.enum(["wechat_official", "csdn", "cnblogs"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin"]),
   title: z.string().trim().max(500).default(""),
   markdown: z.string().trim().min(1).max(500000)
 });
@@ -243,6 +261,8 @@ export function buildServer(
     csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
     /** 可选注入：外部提供博客园渠道稿服务实例（默认由 buildServer 内部构造）。 */
     cnblogsChannel?: CnblogsChannelService;
+    /** 可选注入：外部提供掘金渠道稿服务实例（默认由 buildServer 内部构造）。 */
+    juejinChannel?: JuejinChannelService;
   }
 ) {
   const server = Fastify({
@@ -290,6 +310,8 @@ export function buildServer(
   const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore);
   const cnblogsChannels = options?.cnblogsChannel
     ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
+  const juejinChannels = options?.juejinChannel
+    ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
@@ -321,6 +343,9 @@ export function buildServer(
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof CnblogsChannelError) {
+      return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof JuejinChannelError) {
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof z.ZodError) {
@@ -938,6 +963,83 @@ export function buildServer(
     return { job: cnblogsChannels.correctStatus(params.jobId, body.status, body.reason) };
   });
 
+  server.get("/api/integrations/juejin/capabilities/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const account = accounts.requireAccount(params.accountId);
+    if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
+    return juejinChannels.capabilities(account.id);
+  });
+
+  server.get("/api/integrations/juejin/channel-drafts", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
+    return { items: juejinChannels.listDrafts(workspace.id, query.accountId) };
+  });
+
+  server.post("/api/integrations/juejin/channel-drafts", async (request, reply) => {
+    const input = juejinChannelDraftInput.parse(request.body);
+    return reply.code(201).send(await juejinChannels.createFromSource(input));
+  });
+
+  server.post("/api/integrations/juejin/channel-drafts/:draftId/approve", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return juejinChannels.approveDraft(params.draftId);
+  });
+
+  server.put("/api/integrations/juejin/channel-drafts/:draftId", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return juejinChannels.saveDraft(params.draftId, juejinChannelDraftSaveInput.parse(request.body));
+  });
+
+  server.delete("/api/integrations/juejin/channel-drafts/:draftId", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    juejinChannels.deleteDraft(params.draftId);
+    return reply.code(204).send();
+  });
+
+  server.get("/api/integrations/juejin/jobs", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: juejinChannels.listJobs(workspace.id) };
+  });
+
+  server.post("/api/integrations/juejin/channel-drafts/:draftId/jobs", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    const options = juejinPublishOptionsInput.parse(request.body ?? {});
+    return reply.code(201).send({ job: juejinChannels.createPublishJob(params.draftId, options) });
+  });
+
+  server.get("/api/integrations/juejin/jobs/:jobId", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const job = juejinChannels.getJob(params.jobId);
+    const draft = juejinChannels.getDraftForJob(params.jobId);
+    return { job, draft };
+  });
+
+  server.post("/api/integrations/juejin/jobs/:jobId/confirm", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    return reply.code(201).send({ job: await juejinChannels.confirmPublish(params.jobId) });
+  });
+
+  server.post("/api/integrations/juejin/jobs/:jobId/record-submission", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      remoteUrl: z.string().url().nullable(),
+      remoteContentId: z.string().nullable(),
+      state: z.enum(["published", "needs_manual_reconciliation"]).default("published"),
+      reason: z.string().max(500).optional()
+    }).parse(request.body);
+    return reply.code(201).send(juejinChannels.recordSubmission(params.jobId, { ...body, state: body.state }));
+  });
+
+  server.post("/api/integrations/juejin/jobs/:jobId/status", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      status: z.enum(["published", "failed", "cancelled"]),
+      reason: z.string().max(500).default("")
+    }).parse(request.body);
+    return { job: juejinChannels.correctStatus(params.jobId, body.status, body.reason) };
+  });
+
   server.get("/api/content-projects", async () => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     return { items: contentProjects.list(workspace.id) };
@@ -979,6 +1081,8 @@ export function buildServer(
     const staged = contentSources.stageArticleDeletion(project.workspaceId, project.sourceRelativePath);
     try {
       csdnChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
+      cnblogsChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
+      juejinChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
       database.connection.transaction(() => {
         database.connection.prepare("UPDATE wechat_publish_jobs SET project_id = NULL WHERE project_id = ?").run(project.id);
         database.connection.prepare("DELETE FROM article_settings WHERE context_key IN (?, ?)")
@@ -1411,7 +1515,8 @@ export function buildServer(
     const targets = {
       wechat_official: { maxLength: 120, platformName: "微信公众号" },
       csdn: { maxLength: 200, platformName: "CSDN" },
-      cnblogs: { maxLength: 120, platformName: "博客园" }
+      cnblogs: { maxLength: 120, platformName: "博客园" },
+      juejin: { maxLength: 100, platformName: "掘金" }
     } as const;
     const target = targets[input.platform];
     const generated = await effectiveModelProvider.generateStructured({
@@ -1648,9 +1753,10 @@ export async function createServer(
   logFilePath?: string,
   skillsDirectory?: string,
   visibleBrowserSearch?: VisibleBrowserSearch,
-  csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>
+  csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>,
+  juejinChannel?: JuejinChannelService
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

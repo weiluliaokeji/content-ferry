@@ -6,6 +6,7 @@ import { locateMarkdownSelection } from "./markdown-selection";
 import { HelpCenter } from "./components/HelpCenter";
 import { CsdnDraftWorkspace } from "./components/CsdnDraftWorkspace";
 import { CnblogsDraftWorkspace } from "./components/CnblogsDraftWorkspace";
+import { JuejinDraftWorkspace } from "./components/JuejinDraftWorkspace";
 
 export const apiBase = "http://127.0.0.1:4317/api";
 const VisualMarkdownEditor = lazy(() =>
@@ -109,7 +110,7 @@ async function patchAppSettings(patch: Partial<AppSettingsContract>): Promise<Ap
   return (await response.json()) as AppSettingsContract;
 }
 
-type AccountPlatform = "wechat_official" | "csdn" | "cnblogs";
+type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin";
 type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string };
 type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile };
 type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null }>; truncated: boolean; warnings: string[] };
@@ -157,6 +158,22 @@ type CnblogsPublishOptions = {
   categories: string[];
   tags: string[];
 };
+type JuejinChannelDraft = {
+  id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
+  generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string;
+};
+type JuejinPublishJob = {
+  id: string; accountId: string; channelDraftId: string;
+  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  statusNote: string | null; errorMessage: string | null;
+  remoteUrl: string | null; remoteContentId: string | null;
+  updatedAt: string;
+};
+type JuejinPublishOptions = {
+  categoryId: string;
+  tagIds: string[];
+};
 type ChannelAction =
   | { kind: "enter"; label: string; onClick: () => void }
   | { kind: "generate"; label: string; onClick: () => void }
@@ -168,7 +185,7 @@ type ChannelRow = {
   tone: "neutral" | "info" | "success" | "warning";
   action: ChannelAction;
 };
-type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string; cnblogsUsername?: string; cnblogsApiKeyConfigured?: boolean };
+type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string; cnblogsUsername?: string; cnblogsApiKeyConfigured?: boolean; juejinCookieConfigured?: boolean; juejinAidConfigured?: boolean; juejinUuidConfigured?: boolean };
 type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
 type SelectedImage = { fileName: string; mimeType: string; base64: string };
 type ArticleSettings = {
@@ -277,7 +294,7 @@ async function streamGeneration<T>(path: string, signal: AbortSignal, onEvent: (
   }
 }
 
-export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园" } as const)[platform];
+export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园", juejin: "掘金" } as const)[platform];
 const providerName = (provider: ModelProviderId | null) => provider === null ? "无需模型" : ({
   openai_codex: "OpenAI Codex",
   openai: "OpenAI API",
@@ -360,6 +377,7 @@ function App() {
   const [draftGenerationStatus, setDraftGenerationStatus] = useState("");
   const draftAbortRef = useRef<AbortController | undefined>(undefined);
   const cnblogsStatusRef = useRef<CnblogsPublishJob["status"] | null>(null);
+  const juejinStatusRef = useRef<JuejinPublishJob["status"] | null>(null);
   const [notice, setNotice] = useState("");
   const [reviewProject, setReviewProject] = useState<ContentProject>();
   const [review, setReview] = useState<ContentReview>();
@@ -421,6 +439,29 @@ function App() {
   const [cnblogsStatusReason, setCnblogsStatusReason] = useState("");
   const [cnblogsCorrectionSaving, setCnblogsCorrectionSaving] = useState(false);
   const [cnblogsCorrectionError, setCnblogsCorrectionError] = useState("");
+  const [juejinDrafts, setJuejinDrafts] = useState<JuejinChannelDraft[]>([]);
+  const [juejinJobs, setJuejinJobs] = useState<JuejinPublishJob[]>([]);
+  const [juejinDraft, setJuejinDraft] = useState<JuejinChannelDraft | undefined>(undefined);
+  const [juejinPublishJob, setJuejinPublishJob] = useState<JuejinPublishJob | undefined>(undefined);
+  const [juejinDraftSource, setJuejinDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
+  const [juejinDraftAccountId, setJuejinDraftAccountId] = useState("");
+  const [juejinDraftGenerationMode, setJuejinDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [juejinDraftSaving, setJuejinDraftSaving] = useState(false);
+  const [juejinEntryChoices, setJuejinEntryChoices] = useState<Array<{ draft: JuejinChannelDraft; accountName: string; job?: JuejinPublishJob }> | null>(null);
+  const [juejinCredentialAccount, setJuejinCredentialAccount] = useState<MediaAccount | undefined>(undefined);
+  const [juejinCredentialCookie, setJuejinCredentialCookie] = useState("");
+  const [juejinCredentialAid, setJuejinCredentialAid] = useState("");
+  const [juejinCredentialUuid, setJuejinCredentialUuid] = useState("");
+  const [juejinCredentialCookieConfigured, setJuejinCredentialCookieConfigured] = useState(false);
+  const [juejinCredentialAidConfigured, setJuejinCredentialAidConfigured] = useState(false);
+  const [juejinCredentialUuidConfigured, setJuejinCredentialUuidConfigured] = useState(false);
+  const [juejinCredentialSaving, setJuejinCredentialSaving] = useState(false);
+  const [juejinCredentialError, setJuejinCredentialError] = useState("");
+  const [correctingJuejinJob, setCorrectingJuejinJob] = useState<JuejinPublishJob | undefined>(undefined);
+  const [correctedJuejinStatus, setCorrectedJuejinStatus] = useState<"published" | "failed" | "cancelled">("published");
+  const [juejinStatusReason, setJuejinStatusReason] = useState("");
+  const [juejinCorrectionSaving, setJuejinCorrectionSaving] = useState(false);
+  const [juejinCorrectionError, setJuejinCorrectionError] = useState("");
   const [publishProject, setPublishProject] = useState<ContentProject>();
   const [publishSource, setPublishSource] = useState<ContentSourceArticle>();
   const [publishAccountId, setPublishAccountId] = useState("");
@@ -520,7 +561,7 @@ function App() {
   const refreshWechatStatus = async () => {
     setWechatJobsRefreshing(true);
     try {
-      await Promise.all([loadWechatJobs(), loadProjects(), loadCsdnChannelDrafts(), loadCnblogsChannelDrafts()]);
+      await Promise.all([loadWechatJobs(), loadProjects(), loadCsdnChannelDrafts(), loadCnblogsChannelDrafts(), loadJuejinChannelDrafts()]);
       setWechatJobsRefreshedAt(new Date());
     } finally {
       setWechatJobsRefreshing(false);
@@ -548,6 +589,18 @@ function App() {
       setCnblogsJobs(jobs.items);
     } catch {
       /* 读取失败时不阻塞内容库，按钮仍可作为“生成博客园稿”使用。 */
+    }
+  };
+  const loadJuejinChannelDrafts = async () => {
+    try {
+      const [drafts, jobs] = await Promise.all([
+        request<{ items: JuejinChannelDraft[] }>("/integrations/juejin/channel-drafts"),
+        request<{ items: JuejinPublishJob[] }>("/integrations/juejin/jobs")
+      ]);
+      setJuejinDrafts(drafts.items);
+      setJuejinJobs(jobs.items);
+    } catch {
+      /* 读取失败时不阻塞内容库，按钮仍可作为“生成掘金稿”使用。 */
     }
   };
   const deleteCnblogsChannelDraft = async (draftId: string) => {
@@ -594,6 +647,52 @@ function App() {
     setCnblogsPublishJob(choice.job);
     setCnblogsDraftSource(undefined);
     setCnblogsEntryChoices(null);
+    setError("");
+  };
+  const deleteJuejinChannelDraft = async (draftId: string) => {
+    await request(`/integrations/juejin/channel-drafts/${draftId}`, { method: "DELETE" });
+    // 删除后重新拉起该来源的生成入口，便于从头再试一次。
+    if (juejinDraft) await openJuejinChannelDraft(juejinDraft.sourceRelativePath);
+  };
+  const openJuejinChannelDraft = async (relativePath: string) => {
+    const juejinAccounts = accounts.filter((account) => account.platform === "juejin");
+    if (juejinAccounts.length === 0) {
+      setError("请先在“账号”中添加一个掘金账号，再创建掘金渠道稿。");
+      return;
+    }
+    try {
+      const [article, drafts, jobs] = await Promise.all([
+        request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(relativePath)}`),
+        request<{ items: JuejinChannelDraft[] }>("/integrations/juejin/channel-drafts"),
+        request<{ items: JuejinPublishJob[] }>("/integrations/juejin/jobs")
+      ]);
+      setJuejinDrafts(drafts.items);
+      setJuejinJobs(jobs.items);
+      const existing = drafts.items.filter((candidate) => candidate.sourceRelativePath === relativePath);
+      if (existing.length === 0) {
+        setJuejinDraftSource(article);
+        setJuejinDraftAccountId(juejinAccounts[0].id);
+        setJuejinDraftGenerationMode("rewrite");
+        setJuejinDraft(undefined);
+        setJuejinPublishJob(undefined);
+        setError("");
+        return;
+      }
+      setJuejinDraftSource(article);
+      setJuejinEntryChoices(existing.map((draft) => ({
+        draft,
+        accountName: juejinAccounts.find((account) => account.id === draft.accountId)?.displayName ?? "掘金账号",
+        job: jobs.items.find((job) => job.channelDraftId === draft.id)
+      })));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开掘金渠道稿。");
+    }
+  };
+  const openExistingJuejinDraft = (choice: { draft: JuejinChannelDraft; job?: JuejinPublishJob }) => {
+    setJuejinDraft(choice.draft);
+    setJuejinPublishJob(choice.job);
+    setJuejinDraftSource(undefined);
+    setJuejinEntryChoices(null);
     setError("");
   };
   const deleteCsdnChannelDraft = async (draftId: string) => {
@@ -702,6 +801,22 @@ function App() {
         rows.push({ platform: "cnblogs", label: "博客园", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成博客园稿", onClick: () => void openCnblogsChannelDraft(item.relativePath) } });
       }
     }
+    if (accounts.some((account) => account.platform === "juejin")) {
+      const juejinExisting = juejinDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+      if (juejinExisting) {
+        const juejinJob = juejinJobs.find((job) => job.channelDraftId === juejinExisting.id);
+        const published = !!juejinJob && juejinJob.status === "published";
+        const frozen = juejinExisting.status === "approved";
+        rows.push({
+          platform: "juejin", label: "掘金",
+          statusLabel: published ? "已发布" : frozen ? "已冻结" : "草稿",
+          tone: (published || frozen) ? "success" : "neutral",
+          action: { kind: "enter", label: "进入掘金稿", onClick: () => void openJuejinChannelDraft(item.relativePath) }
+        });
+      } else {
+        rows.push({ platform: "juejin", label: "掘金", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成掘金稿", onClick: () => void openJuejinChannelDraft(item.relativePath) } });
+      }
+    }
     return rows;
   };
   const generateCsdnChannelDraft = async () => {
@@ -768,6 +883,39 @@ function App() {
       setError(cause instanceof Error ? cause.message : "保存博客园渠道稿失败。");
     } finally {
       setCnblogsDraftSaving(false);
+    }
+  };
+  const generateJuejinChannelDraft = async () => {
+    if (!juejinDraftSource || !juejinDraftAccountId) return;
+    setJuejinDraftSaving(true);
+    try {
+      const draft = await request<JuejinChannelDraft>("/integrations/juejin/channel-drafts", {
+        method: "POST",
+        body: JSON.stringify({ accountId: juejinDraftAccountId, relativePath: juejinDraftSource.relativePath, generationMode: juejinDraftGenerationMode })
+      });
+      setJuejinDraft(draft);
+      setError("");
+      void loadJuejinChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "生成掘金渠道稿失败。");
+    } finally {
+      setJuejinDraftSaving(false);
+    }
+  };
+  const saveJuejinChannelDraft = async () => {
+    if (!juejinDraft) return;
+    setJuejinDraftSaving(true);
+    try {
+      const saved = await request<JuejinChannelDraft>(`/integrations/juejin/channel-drafts/${juejinDraft.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title: juejinDraft.title, markdown: juejinDraft.markdown, author: juejinDraft.author, digest: juejinDraft.digest, coverSource: juejinDraft.coverSource })
+      });
+      setJuejinDraft(saved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存掘金渠道稿失败。");
+    } finally {
+      setJuejinDraftSaving(false);
     }
   };
   const startCsdnBrowserAssist = async (jobId: string) => {
@@ -865,6 +1013,48 @@ function App() {
       setError(cause instanceof Error ? cause.message : "无法校正博客园发布状态。");
     } finally {
       setCnblogsDraftSaving(false);
+    }
+  };
+  const confirmJuejinPublish = async (jobId: string) => {
+    setJuejinDraftSaving(true);
+    try {
+      const payload = await request<{ job: JuejinPublishJob }>(`/integrations/juejin/jobs/${jobId}/confirm`, { method: "POST" });
+      if (payload?.job) {
+        juejinStatusRef.current = payload.job.status;
+        setJuejinPublishJob(payload.job);
+        if (payload.job.status === "published") {
+          // 发布完成：离开编辑工作区，跳转发布中心并给出成功反馈。
+          setNotice("已成功发布到掘金。");
+          setJuejinDraft(undefined);
+          setJuejinDraftSource(undefined);
+          setJuejinEntryChoices(null);
+          setActiveView("publish");
+        } else {
+          setNotice("已确认公开，正在发布…");
+        }
+      }
+      await loadJuejinChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法确认掘金发布结果。");
+    } finally {
+      setJuejinDraftSaving(false);
+    }
+  };
+  const correctJuejinStatus = async (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => {
+    setJuejinDraftSaving(true);
+    try {
+      const payload = await request<{ job: JuejinPublishJob }>(`/integrations/juejin/jobs/${jobId}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status, reason: reason.trim() })
+      });
+      if (payload?.job) setJuejinPublishJob(payload.job);
+      await loadJuejinChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法校正掘金发布状态。");
+    } finally {
+      setJuejinDraftSaving(false);
     }
   };
   // 合并「审核并冻结」+「创建发布任务」为一步：自动保存未存修改 → 冻结（内容快照锁定）→ 建任务。
@@ -969,6 +1159,56 @@ function App() {
     }
     void publishCnblogsDraft(options);
   };
+  const publishJuejinDraft = async (options?: JuejinPublishOptions) => {
+    if (!juejinDraft) return;
+    setJuejinDraftSaving(true);
+    try {
+      let current = juejinDraft;
+      if (current.status === "draft") {
+        const saved = await request<JuejinChannelDraft>(`/integrations/juejin/channel-drafts/${current.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ title: current.title, markdown: current.markdown, author: current.author, digest: current.digest, coverSource: current.coverSource })
+        });
+        current = saved;
+        setJuejinDraft(saved);
+      }
+      if (current.status === "draft") {
+        const approved = await request<JuejinChannelDraft>(`/integrations/juejin/channel-drafts/${current.id}/approve`, { method: "POST" });
+        current = approved;
+        setJuejinDraft(approved);
+      }
+      const payload = await request<{ job: JuejinPublishJob }>(`/integrations/juejin/channel-drafts/${current.id}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({ categoryId: options?.categoryId ?? "", tagIds: options?.tagIds ?? [] })
+      });
+      if (payload?.job) {
+        juejinStatusRef.current = payload.job.status;
+        setJuejinPublishJob(payload.job);
+        setNotice("已创建掘金发布任务，正在创建草稿…");
+        // 跳转到发布中心查看任务进度；清除编辑工作区状态，保持 juejinPublishJob 以继续轮询。
+        setJuejinDraft(undefined);
+        setJuejinDraftSource(undefined);
+        setJuejinEntryChoices(null);
+        setActiveView("publish");
+        void loadJuejinChannelDrafts();
+      }
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "发布到掘金失败。");
+    } finally {
+      setJuejinDraftSaving(false);
+    }
+  };
+  const requestPublishJuejin = (options?: JuejinPublishOptions) => {
+    if (!juejinDraft) return;
+    if (juejinDraft.status === "draft") {
+      const confirmed = window.confirm(
+        "发布会把本掘金渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布中心查看进度。\n\n是否继续？"
+      );
+      if (!confirmed) return;
+    }
+    void publishJuejinDraft(options);
+  };
   const openCnblogsStatusCorrection = (job: CnblogsPublishJob) => {
     setCorrectingCnblogsJob(job);
     setCorrectedCnblogsStatus("published");
@@ -993,6 +1233,32 @@ function App() {
       setCnblogsCorrectionError(cause instanceof Error ? cause.message : "人工校正博客园发布状态失败。");
     } finally {
       setCnblogsCorrectionSaving(false);
+    }
+  };
+  const openJuejinStatusCorrection = (job: JuejinPublishJob) => {
+    setCorrectingJuejinJob(job);
+    setCorrectedJuejinStatus("published");
+    setJuejinStatusReason("已在掘金后台核实");
+    setJuejinCorrectionError("");
+  };
+  const saveJuejinStatusCorrection = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!correctingJuejinJob) {
+      setJuejinCorrectionError("核实依据不能超过 500 个字。");
+      return;
+    }
+    const action = correctedJuejinStatus === "published" ? "已发布" : correctedJuejinStatus === "cancelled" ? "取消发布" : "发布失败";
+    if (!window.confirm(`确定将掘金发布任务人工标记为“${action}”吗？\n\n此操作只校正文渡中的记录，不会调用掘金接口，也不会重新发布。`)) return;
+    setJuejinCorrectionSaving(true);
+    try {
+      await correctJuejinStatus(correctingJuejinJob.id, correctedJuejinStatus, juejinStatusReason);
+      setCorrectingJuejinJob(undefined);
+      setJuejinStatusReason("");
+      setJuejinCorrectionError("");
+    } catch (cause) {
+      setJuejinCorrectionError(cause instanceof Error ? cause.message : "人工校正掘金发布状态失败。");
+    } finally {
+      setJuejinCorrectionSaving(false);
     }
   };
   const openCsdnStatusCorrection = (job: CsdnPublishJob) => {
@@ -1092,6 +1358,36 @@ function App() {
       /* 轮询失败不阻塞界面 */
     }
   };
+  const refreshJuejinPublishJob = async () => {
+    if (!juejinPublishJob) return;
+    try {
+      // 该路由返回 { job, draft }；解构出 job 更新，避免丢失任务 id。
+      const payload = await request<{ job: JuejinPublishJob }>(`/integrations/juejin/jobs/${juejinPublishJob.id}`);
+      if (payload?.job) {
+        const previous = juejinStatusRef.current;
+        juejinStatusRef.current = payload.job.status;
+        setJuejinPublishJob(payload.job);
+        void loadJuejinChannelDrafts();
+        // 状态推进时给出强反馈，避免用户以为发布无响应。
+        if (previous === "draft_creating" && payload.job.status === "draft_created") setNotice("掘金草稿已就绪，请确认公开。");
+        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`掘金草稿创建失败：${payload.job.errorMessage ?? "请查看发布中心"}`);
+        if (previous === "draft_creating" && payload.job.status === "needs_credentials") setNotice("掘金凭据不完整，请前往账号页配置。");
+        if (previous === "confirming" && payload.job.status === "published") {
+          setNotice("已成功发布到掘金。");
+          // 发布完成：若仍停留在编辑工作区，则离开并回到发布中心查看发布记录。
+          if (juejinDraft) {
+            setJuejinDraft(undefined);
+            setJuejinDraftSource(undefined);
+            setJuejinEntryChoices(null);
+            setActiveView("publish");
+          }
+        }
+        if (previous === "confirming" && payload.job.status === "needs_manual_reconciliation") setNotice("掘金公开未确认，请人工校正发布结果。");
+      }
+    } catch {
+      /* 轮询失败不阻塞界面 */
+    }
+  };
   const loadSkillsAndConnections = async () => {
     try {
       const [skillResult, connectionResult, searchSettingsResult] = await Promise.all([
@@ -1132,7 +1428,7 @@ function App() {
   }, [notice]);
   useEffect(() => {
     if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
-    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); void loadCnblogsChannelDrafts(); }
+    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); void loadCnblogsChannelDrafts(); void loadJuejinChannelDrafts(); }
   }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => {
@@ -1158,6 +1454,14 @@ function App() {
     const timer = setInterval(() => void refreshCnblogsPublishJob(), 3000);
     return () => clearInterval(timer);
   }, [cnblogsPublishJob?.id, cnblogsPublishJob?.status]);
+  // 掘金任务进行中时轮询最新状态：draft_creating → draft_created → confirming → published。
+  useEffect(() => {
+    if (!juejinPublishJob) return;
+    const active = ["draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(juejinPublishJob.status);
+    if (!active) return;
+    const timer = setInterval(() => void refreshJuejinPublishJob(), 3000);
+    return () => clearInterval(timer);
+  }, [juejinPublishJob?.id, juejinPublishJob?.status]);
 
   const addAccount = async (event: FormEvent) => {
     event.preventDefault();
@@ -1672,6 +1976,67 @@ function App() {
     }
     setActiveView("accounts");
     await openCnblogsConnection(fallback);
+  };
+  const openJuejinConnection = async (account: MediaAccount) => {
+    setJuejinCredentialAccount(account);
+    setJuejinCredentialCookie("");
+    setJuejinCredentialAid("");
+    setJuejinCredentialUuid("");
+    setJuejinCredentialCookieConfigured(false);
+    setJuejinCredentialAidConfigured(false);
+    setJuejinCredentialUuidConfigured(false);
+    setJuejinCredentialError("");
+    setError("");
+    try {
+      const status = await request<WechatCredentialStatus>(`/media-accounts/${account.id}/credentials/status`);
+      setJuejinCredentialCookieConfigured(Boolean(status.juejinCookieConfigured));
+      setJuejinCredentialAidConfigured(Boolean(status.juejinAidConfigured));
+      setJuejinCredentialUuidConfigured(Boolean(status.juejinUuidConfigured));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取掘金凭据状态。"); }
+  };
+  const saveJuejinCredentials = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!juejinCredentialAccount) return;
+    if (!juejinCredentialCookie.trim()) {
+      setJuejinCredentialError("请填写 Cookie；已配置时留空可保留原值。");
+      return;
+    }
+    setJuejinCredentialSaving(true);
+    try {
+      await request<MediaAccount>(`/media-accounts/${juejinCredentialAccount.id}/credentials/juejin_cookie`, {
+        method: "PUT",
+        body: JSON.stringify({ secret: juejinCredentialCookie.trim() })
+      });
+      if (juejinCredentialAid.trim()) {
+        await request<MediaAccount>(`/media-accounts/${juejinCredentialAccount.id}/credentials/juejin_aid`, {
+          method: "PUT",
+          body: JSON.stringify({ secret: juejinCredentialAid.trim() })
+        });
+      }
+      if (juejinCredentialUuid.trim()) {
+        await request<MediaAccount>(`/media-accounts/${juejinCredentialAccount.id}/credentials/juejin_uuid`, {
+          method: "PUT",
+          body: JSON.stringify({ secret: juejinCredentialUuid.trim() })
+        });
+      }
+      await loadAccounts();
+      setJuejinCredentialAccount(undefined);
+      setJuejinCredentialError("");
+    } catch (cause) {
+      setJuejinCredentialError(cause instanceof Error ? cause.message : "保存掘金凭据失败。");
+    } finally {
+      setJuejinCredentialSaving(false);
+    }
+  };
+  const openJuejinCredentialEntry = async (accountId?: string) => {
+    const target = accountId ? accounts.find((item) => item.id === accountId) : undefined;
+    const fallback = target ?? accounts.find((item) => item.platform === "juejin");
+    if (!fallback) {
+      setError("请先在“账号”中添加一个掘金账号，再配置 Cookie。");
+      return;
+    }
+    setActiveView("accounts");
+    await openJuejinConnection(fallback);
   };
   const deleteAccount = async (account: MediaAccount) => {
     if (!window.confirm(`确定删除账号“${account.displayName}”吗？本机保存的该账号凭证也会删除，历史发布记录会保留。`)) return;
@@ -2308,6 +2673,26 @@ function App() {
     />;
   }
 
+  if (juejinDraft) {
+    const juejinAccount = accounts.find((account) => account.id === juejinDraft.accountId);
+    return <JuejinDraftWorkspace
+      draft={juejinDraft}
+      accountDisplay={juejinAccount ? `${juejinAccount.displayName}` : "掘金账号"}
+      saving={juejinDraftSaving}
+      job={juejinPublishJob}
+      error={error}
+      onClearError={() => setError("")}
+      onChange={(patch) => setJuejinDraft((current) => current ? { ...current, ...patch } : current)}
+      onSave={() => void saveJuejinChannelDraft()}
+      onPublish={(options) => requestPublishJuejin(options)}
+      onConfirmPublish={(jobId) => void confirmJuejinPublish(jobId)}
+      onCorrectStatus={(jobId, status, reason) => void correctJuejinStatus(jobId, status, reason)}
+      onGoToCredentials={() => void openJuejinCredentialEntry(juejinDraft?.accountId)}
+      onDelete={() => juejinDraft && void deleteJuejinChannelDraft(juejinDraft.id)}
+      onBack={() => { setJuejinDraft(undefined); setJuejinPublishJob(undefined); setJuejinDraftSource(undefined); setJuejinEntryChoices(null); }}
+    />;
+  }
+
   if (sourceArticle) {
     return <ArticleWorkspace
       title={sourceArticle.title ?? sourceArticle.relativePath}
@@ -2362,23 +2747,28 @@ function App() {
   const completedCsdnJobs = csdnJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   const activeCnblogsJobs = cnblogsJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
   const completedCnblogsJobs = cnblogsJobs.filter((job) => job.status === "published" || job.status === "cancelled");
+  const activeJuejinJobs = juejinJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
+  const completedJuejinJobs = juejinJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   type PublishEntry =
     | { kind: "wechat"; job: WechatPublishJob }
     | { kind: "csdn"; job: CsdnPublishJob }
-    | { kind: "cnblogs"; job: CnblogsPublishJob };
+    | { kind: "cnblogs"; job: CnblogsPublishJob }
+    | { kind: "juejin"; job: JuejinPublishJob };
   const byUpdatedAtDesc = (a: PublishEntry, b: PublishEntry) =>
     new Date(b.job.updatedAt).getTime() - new Date(a.job.updatedAt).getTime();
-  // 待处理（置顶）：微信进行中 + CSDN 进行中 + 博客园进行中，按时间倒序。
+  // 待处理（置顶）：微信进行中 + CSDN 进行中 + 博客园进行中 + 掘金进行中，按时间倒序。
   const pendingEntries: PublishEntry[] = [
     ...pendingWechatJobs.map((job) => ({ kind: "wechat" as const, job })),
     ...activeCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
     ...activeCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
+    ...activeJuejinJobs.map((job) => ({ kind: "juejin" as const, job })),
   ].sort(byUpdatedAtDesc);
-  // 发布记录（置底）：微信 + CSDN + 博客园 已完成，按时间倒序，三类任务交错排列。
+  // 发布记录（置底）：微信 + CSDN + 博客园 + 掘金 已完成，按时间倒序，四类任务交错排列。
   const completedEntries: PublishEntry[] = [
     ...completedWechatJobs.map((job) => ({ kind: "wechat" as const, job })),
     ...completedCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
     ...completedCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
+    ...completedJuejinJobs.map((job) => ({ kind: "juejin" as const, job })),
   ].sort(byUpdatedAtDesc);
   const researchReadOnly = researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false;
   const outlineReadOnly = outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false;
@@ -2481,7 +2871,7 @@ function App() {
       {loading ? <p>正在读取本地账号…</p> : accounts.length === 0 ? <p className="muted">还没有账号。先添加“围炉聊科技”或你的测试公众号。</p> : <ul className="account-list bound-account-list">{accounts.map((account) => <li key={account.id}>
         <span className="bound-account-summary"><strong>{account.displayName}</strong><small>{platformName(account.platform)} · {account.profile.positioning ? "已设置定位" : "待设置定位"}</small></span>
         <em className={`connection-status${account.credentialsConfigured ? " connected" : ""}`}>{account.credentialsConfigured ? "凭据已配置" : "待完成接入"}</em>
-        <span className="account-row-actions">{account.platform === "wechat_official" && <button className="secondary-button compact-action" onClick={() => void openWechatConnection(account)}>连接微信</button>}{account.platform === "cnblogs" && <button className="secondary-button compact-action" onClick={() => void openCnblogsConnection(account)}>配置博客园凭据</button>}<button className="secondary-button compact-action" onClick={() => openProfile(account)}>编辑定位</button><button className="text-button danger-text compact-action" onClick={() => void deleteAccount(account)} disabled={saving}>删除</button></span>
+        <span className="account-row-actions">{account.platform === "wechat_official" && <button className="secondary-button compact-action" onClick={() => void openWechatConnection(account)}>连接微信</button>}{account.platform === "cnblogs" && <button className="secondary-button compact-action" onClick={() => void openCnblogsConnection(account)}>配置博客园凭据</button>}{account.platform === "juejin" && <button className="secondary-button compact-action" onClick={() => void openJuejinConnection(account)}>配置掘金凭据</button>}<button className="secondary-button compact-action" onClick={() => openProfile(account)}>编辑定位</button><button className="text-button danger-text compact-action" onClick={() => void deleteAccount(account)} disabled={saving}>删除</button></span>
       </li>)}</ul>}
     </section>
     </>}
@@ -2509,7 +2899,7 @@ function App() {
 
     {activeView === "publish" && <>
       <div className="publish-page-actions"><span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span><button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button></div>
-      {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
+      {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
         {pendingEntries.length > 0 && <section className="card">
           <div className="section-heading"><h2>待处理</h2></div>
           <ul className="publish-job-list">{pendingEntries.map((entry) => {
@@ -2535,27 +2925,52 @@ function App() {
                 {csdnJobCanCorrect(job) && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && <button className="text-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>校正状态</button>}
               </span></li>;
             }
+            if (entry.kind === "cnblogs") {
+              const job = entry.job;
+              const account = accounts.find((item) => item.id === job.accountId);
+              const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
+              const cnblogsLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看博客园草稿" : "查看已发布文章";
+              return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{cnblogsJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{cnblogsLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+                {job.status === "draft_creating" && <span className="status-badge">正在创建博客园草稿</span>}
+                {(job.status === "draft_created" || job.status === "confirming") && <>
+                  <button className="secondary-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>确认公开</button>
+                  <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                </>}
+                {job.status === "needs_credentials" && <>
+                  <button className="secondary-button" onClick={() => void openCnblogsCredentialEntry(job.accountId)}>配置博客园凭据</button>
+                  <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                </>}
+                {job.status === "needs_manual_reconciliation" && <>
+                  <button className="secondary-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>人工校正</button>
+                  <button className="text-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>重试确认公开</button>
+                </>}
+                {job.status === "failed" && <>
+                  <button className="secondary-button" onClick={() => { const draft = cnblogsDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingCnblogsDraft({ draft, job }); }} disabled={cnblogsDraftSaving}>重新发布</button>
+                  <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                </>}
+              </span></li>;
+            }
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
-            const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
-            const cnblogsLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看博客园草稿" : "查看已发布文章";
-            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{cnblogsJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{cnblogsLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
-              {job.status === "draft_creating" && <span className="status-badge">正在创建博客园草稿</span>}
+            const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
+            const juejinLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看掘金草稿" : "查看已发布文章";
+            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{juejinJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{juejinLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+              {job.status === "draft_creating" && <span className="status-badge">正在创建掘金草稿</span>}
               {(job.status === "draft_created" || job.status === "confirming") && <>
-                <button className="secondary-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>确认公开</button>
-                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                <button className="secondary-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>确认公开</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
               </>}
               {job.status === "needs_credentials" && <>
-                <button className="secondary-button" onClick={() => void openCnblogsCredentialEntry(job.accountId)}>配置博客园凭据</button>
-                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                <button className="secondary-button" onClick={() => void openJuejinCredentialEntry(job.accountId)}>配置掘金凭据</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
               </>}
               {job.status === "needs_manual_reconciliation" && <>
-                <button className="secondary-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>人工校正</button>
-                <button className="text-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>重试确认公开</button>
+                <button className="secondary-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>人工校正</button>
+                <button className="text-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>重试确认公开</button>
               </>}
               {job.status === "failed" && <>
-                <button className="secondary-button" onClick={() => { const draft = cnblogsDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingCnblogsDraft({ draft, job }); }} disabled={cnblogsDraftSaving}>重新发布</button>
-                <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
+                <button className="secondary-button" onClick={() => { const draft = juejinDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingJuejinDraft({ draft, job }); }} disabled={juejinDraftSaving}>重新发布</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
               </>}
             </span></li>;
           })}</ul>
@@ -2575,11 +2990,18 @@ function App() {
               const label = job.status === "cancelled" ? "已取消发布" : "已发布";
               return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
             }
+            if (entry.kind === "cnblogs") {
+              const job = entry.job;
+              const account = accounts.find((item) => item.id === job.accountId);
+              const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
+              const label = job.status === "cancelled" ? "已取消发布" : "已发布";
+              return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+            }
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
-            const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
+            const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
             const label = job.status === "cancelled" ? "已取消发布" : "已发布";
-            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
           })}</ul>
         </section>}
       </>}
@@ -2632,7 +3054,7 @@ function App() {
     </section>}
 
     {activeView === "accounts" && <>
-    <section className="card"><h2>添加账号</h2><form onSubmit={addAccount} className="account-form"><label>平台<select value={platform} onChange={(event) => setPlatform(event.target.value as AccountPlatform)}><option value="wechat_official">微信公众号</option><option value="csdn">CSDN</option><option value="cnblogs">博客园</option></select></label><label>账号名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：围炉聊科技" maxLength={100} /></label>{platform === "cnblogs" && <label>博客地址/博客名<input value={platformExternalId} onChange={(event) => setPlatformExternalId(event.target.value)} placeholder="例如：https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" maxLength={200} /><small>用于定位博客园博客；建议填写，便于发布前自动校验博客名。</small></label>}<button disabled={saving}>{saving ? "正在保存…" : "添加账号"}</button></form></section>
+    <section className="card"><h2>添加账号</h2><form onSubmit={addAccount} className="account-form"><label>平台<select value={platform} onChange={(event) => setPlatform(event.target.value as AccountPlatform)}><option value="wechat_official">微信公众号</option><option value="csdn">CSDN</option><option value="cnblogs">博客园</option><option value="juejin">掘金</option></select></label><label>账号名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：围炉聊科技" maxLength={100} /></label>{platform === "cnblogs" && <label>博客地址/博客名<input value={platformExternalId} onChange={(event) => setPlatformExternalId(event.target.value)} placeholder="例如：https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" maxLength={200} /><small>用于定位博客园博客；建议填写，便于发布前自动校验博客名。</small></label>}<button disabled={saving}>{saving ? "正在保存…" : "添加账号"}</button></form></section>
     </>}
 
     {editingSkill && <Modal onClose={closeSkillEditor} disabled={saving} title={editingSkill.name} eyebrow="技能管理" wide>
@@ -2719,6 +3141,16 @@ function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCnblogsCredentialAccount(undefined)} disabled={cnblogsCredentialSaving}>取消</button><button disabled={cnblogsCredentialSaving}>{cnblogsCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
       </form>
     </Modal>}
+    {juejinCredentialAccount && <Modal onClose={() => setJuejinCredentialAccount(undefined)} disabled={juejinCredentialSaving} title={`配置掘金凭据：${juejinCredentialAccount.displayName}`} eyebrow="掘金 Cookie + aid + uuid">
+      <form onSubmit={saveJuejinCredentials} className="profile-form">
+        <p className="hint">掘金发布使用登录后的 Cookie 会话。Cookie 为登录掘金网页版后浏览器开发者工具中请求的完整 Cookie 值；aid 与 uuid 可留空，留空时使用掘金默认值（aid=2608）。出于安全原因均不回显明文，已配置时留空即可保留原值。</p>
+        <label>Cookie<input autoFocus value={juejinCredentialCookie} onChange={(event) => { setJuejinCredentialCookie(event.target.value); setJuejinCredentialError(""); }} autoComplete="off" placeholder="登录掘金后复制请求 Cookie（含 sessionid）" /></label>
+        <label>aid<input value={juejinCredentialAid} onChange={(event) => { setJuejinCredentialAid(event.target.value); setJuejinCredentialError(""); }} autoComplete="off" placeholder={juejinCredentialAidConfigured ? "已配置；留空不修改" : "默认 2608"} /></label>
+        <label>uuid<input value={juejinCredentialUuid} onChange={(event) => { setJuejinCredentialUuid(event.target.value); setJuejinCredentialError(""); }} autoComplete="off" placeholder={juejinCredentialUuidConfigured ? "已配置；留空不修改" : "掘金生成的访客标识，可留空"} /></label>
+        {juejinCredentialError && <p className="error">{juejinCredentialError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setJuejinCredentialAccount(undefined)} disabled={juejinCredentialSaving}>取消</button><button disabled={juejinCredentialSaving}>{juejinCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
+      </form>
+    </Modal>}
     {csdnEntryChoices && <Modal onClose={() => { setCsdnEntryChoices(null); setCsdnDraftSource(undefined); }} disabled={csdnDraftSaving} title="已有 CSDN 渠道稿" wide>
       <section className="csdn-entry-choices">
         <p className="hint">这篇文章已经生成过 CSDN 渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
@@ -2738,6 +3170,16 @@ function App() {
     </Modal>}
     {cnblogsDraftSource && !cnblogsEntryChoices && <Modal onClose={() => { if (!cnblogsDraftSaving) { setCnblogsDraftSource(undefined); setCnblogsDraft(undefined); setCnblogsPublishJob(undefined); setCnblogsEntryChoices(null); } }} disabled={cnblogsDraftSaving} title={`博客园渠道稿：${cnblogsDraftSource.title ?? cnblogsDraftSource.relativePath}`} wide>
       { <section className="csdn-channel-start"><label className="csdn-account-field">目标博客园账号<select value={cnblogsDraftAccountId} onChange={(event) => setCnblogsDraftAccountId(event.target.value)} disabled={cnblogsDraftSaving}>{accounts.filter((account) => account.platform === "cnblogs").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={cnblogsDraftSaving}><legend>生成方式</legend><label className={cnblogsDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="cnblogs-generation-mode" checked={cnblogsDraftGenerationMode === "rewrite"} onChange={() => setCnblogsDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为博客园调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={cnblogsDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="cnblogs-generation-mode" checked={cnblogsDraftGenerationMode === "source"} onChange={() => setCnblogsDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCnblogsDraftSource(undefined)} disabled={cnblogsDraftSaving}>取消</button><button type="button" onClick={() => void generateCnblogsChannelDraft()} disabled={!cnblogsDraftAccountId || cnblogsDraftSaving}>{cnblogsDraftSaving ? (cnblogsDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : cnblogsDraftGenerationMode === "rewrite" ? "生成博客园渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
+    </Modal>}
+    {juejinDraftSource && juejinEntryChoices && <Modal onClose={() => setJuejinEntryChoices(null)} disabled={juejinDraftSaving} title={`掘金渠道稿：${juejinDraftSource.title ?? juejinDraftSource.relativePath}`}>
+      <section className="csdn-channel-start">
+        <p className="hint">这篇文章已经生成过掘金渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
+        <ul className="csdn-entry-list">{juejinEntryChoices.map((choice) => <li key={choice.draft.id}><span><strong>{choice.draft.title || "未命名渠道稿"}</strong><small>{choice.accountName} · {choice.draft.status === "approved" ? "已冻结" : "草稿"} · 更新于 {new Date(choice.draft.updatedAt).toLocaleString()}</small></span><button className="secondary-button" onClick={() => openExistingJuejinDraft(choice)} disabled={juejinDraftSaving}>进入编辑</button></li>)}</ul>
+        <button className="text-button" onClick={() => setJuejinEntryChoices(null)} disabled={juejinDraftSaving}>＋ 新建渠道稿</button>
+      </section>
+    </Modal>}
+    {juejinDraftSource && !juejinEntryChoices && <Modal onClose={() => { if (!juejinDraftSaving) { setJuejinDraftSource(undefined); setJuejinDraft(undefined); setJuejinPublishJob(undefined); setJuejinEntryChoices(null); } }} disabled={juejinDraftSaving} title={`掘金渠道稿：${juejinDraftSource.title ?? juejinDraftSource.relativePath}`} wide>
+      { <section className="csdn-channel-start"><label className="csdn-account-field">目标掘金账号<select value={juejinDraftAccountId} onChange={(event) => setJuejinDraftAccountId(event.target.value)} disabled={juejinDraftSaving}>{accounts.filter((account) => account.platform === "juejin").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={juejinDraftSaving}><legend>生成方式</legend><label className={juejinDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="juejin-generation-mode" checked={juejinDraftGenerationMode === "rewrite"} onChange={() => setJuejinDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为掘金调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={juejinDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="juejin-generation-mode" checked={juejinDraftGenerationMode === "source"} onChange={() => setJuejinDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setJuejinDraftSource(undefined)} disabled={juejinDraftSaving}>取消</button><button type="button" onClick={() => void generateJuejinChannelDraft()} disabled={!juejinDraftAccountId || juejinDraftSaving}>{juejinDraftSaving ? (juejinDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : juejinDraftGenerationMode === "rewrite" ? "生成掘金渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
     </Modal>}
     {(publishProject || publishSource) && <Modal onClose={() => { setPublishProject(undefined); setPublishSource(undefined); }} disabled={saving || coverGenerating} title={`同步微信草稿：${publishProject?.topic ?? publishSource?.title ?? publishSource?.relativePath}`} eyebrow="第一步只创建草稿" wide>
       <p className="hint">这里仅确认文章设置并同步草稿，不再重复编辑账号、作者、摘要和封面。同步成功后请到公众号草稿箱进行手机预览。</p>
@@ -4167,6 +4609,19 @@ function cnblogsJobLabel(job: CnblogsPublishJob): string {
     case "failed": return "发布失败";
     case "needs_manual_reconciliation": return "待人工核对发布结果";
     case "needs_credentials": return "缺少博客园凭据";
+    case "cancelled": return "已取消发布";
+  }
+}
+
+function juejinJobLabel(job: JuejinPublishJob): string {
+  switch (job.status) {
+    case "draft_creating": return "正在创建掘金草稿";
+    case "draft_created": return "草稿已创建，待确认公开";
+    case "confirming": return "正在公开掘金文章";
+    case "published": return "已发布";
+    case "failed": return "发布失败";
+    case "needs_manual_reconciliation": return "待人工核对发布结果";
+    case "needs_credentials": return "缺少掘金凭据";
     case "cancelled": return "已取消发布";
   }
 }

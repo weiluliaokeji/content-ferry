@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: ede075e5af8053be83d373b168b03696_487d762f9d1e11f1b930525400e6dd8f
+    ReservedCode1: pvv/9Hsd661IwzOiveFJxDr2weXEYfwPs7Rxh6c4hNiyCQRHxFjAg+hJtjhoa85oG4VQ1paBTyFSiv9k/MI1vdPw6InpSw0gCGdq4jkWxBmEbTn+PtFoDUEtFfjkGa7eto8Vee21gh3YaBVMFi9U2ww33fMFNTynWV7wWnUi2tWxjVmjKc0gO29dhek=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: ede075e5af8053be83d373b168b03696_487d762f9d1e11f1b930525400e6dd8f
+    ReservedCode2: pvv/9Hsd661IwzOiveFJxDr2weXEYfwPs7Rxh6c4hNiyCQRHxFjAg+hJtjhoa85oG4VQ1paBTyFSiv9k/MI1vdPw6InpSw0gCGdq4jkWxBmEbTn+PtFoDUEtFfjkGa7eto8Vee21gh3YaBVMFi9U2ww33fMFNTynWV7wWnUi2tWxjVmjKc0gO29dhek=
+---
+
 # ContentFerry 一期开发设计
 
 > 状态：工程脚手架已建立 0.3
@@ -328,7 +339,7 @@ CSDN 渠道稿由主稿派生，但与主稿、微信公众号稿保持独立版
 - 发布连接器只接收已冻结的渠道稿；生成、改写和审核不属于发布执行步骤。版本变化后任务失效，必须重新审核并创建任务。
 - 浏览器会话按账号隔离并持久化在本机。登录、验证码、风控、页面变化、素材失败或回读不确定时停止自动步骤并保留窗口交由用户接管。
 - 只有能力验证通过后才可展示“自动发布”；否则降级为渠道稿、复制/导出和打开 CSDN 创作页。
-- 一期 CSDN 不支持定时发布、无人值守批量发布或自动重复提交。知乎、掘金使用同一连接器契约，但列为二期。
+- 一期 CSDN 不支持定时发布、无人值守批量发布或自动重复提交。掘金已按同一连接器契约实现纯 API 直发（见 `spec/08-juejin-publishing-implementation.md`），知乎使用同一连接器契约，但列为二期。
 
 ## 11. 一期关键界面与人工决策
 
@@ -503,3 +514,4 @@ CSDN 渠道稿由主稿派生，但与主稿、微信公众号稿保持独立版
 | 0.3 | 2026-07-19 | 建立 Electron + React + Fastify + SQLite 工程脚手架，增加本地 API 回归测试并完成类型检查与生产构建验证 |
 | 0.2 | 2026-07-19 | 设计评审补全运行时约束、数据一致性、素材渲染、Agent 契约、回调安全、失败恢复、关键界面、可观测性和验收追溯 |
 | 0.1 | 2026-07-18 | 初版一期开发设计 |
+*（内容由AI生成，仅供参考）*

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CredentialVault } from "../security/credential-vault";
 
-export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs";
+export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin";
 
 export interface AccountProfile {
   positioning: string;
@@ -146,7 +146,7 @@ export class AccountRepository {
     return vault.decrypt(row.encrypted_value);
   }
 
-  credentialStatus(accountId: string, vault: CredentialVault): { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; cnblogsUsername: string; cnblogsApiKeyConfigured: boolean } {
+  credentialStatus(accountId: string, vault: CredentialVault): { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; cnblogsUsername: string; cnblogsApiKeyConfigured: boolean; juejinCookieConfigured: boolean; juejinAidConfigured: boolean; juejinUuidConfigured: boolean } {
     this.requireAccount(accountId);
     const kinds = this.db.prepare("SELECT credential_kind FROM account_credentials WHERE account_id = ?")
       .all(accountId) as Array<{ credential_kind: string }>;
@@ -156,7 +156,10 @@ export class AccountRepository {
       appSecretConfigured: configured.has("app_secret"),
       callbackTokenConfigured: configured.has("callback_token"),
       cnblogsUsername: configured.has("username") ? this.getCredential(accountId, "username", vault) : "",
-      cnblogsApiKeyConfigured: configured.has("api_key")
+      cnblogsApiKeyConfigured: configured.has("api_key"),
+      juejinCookieConfigured: configured.has("juejin_cookie"),
+      juejinAidConfigured: configured.has("juejin_aid"),
+      juejinUuidConfigured: configured.has("juejin_uuid")
     };
   }
 

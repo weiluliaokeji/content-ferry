@@ -1,0 +1,654 @@
+/**
+ * Juejin (掘金) channel service — two-stage publish via content_api.
+ *
+ * Stage 1: createDraft → article_draft/create (draft_creating → draft_created)
+ * Stage 2: publish → article/publish (confirming → published)
+ *
+ * Images use external-link strategy (掘金 accepts external image URLs), so no
+ * upload step is needed. The credentials are cookie + aid + uuid, stored via
+ * CredentialVault.
+ */
+import { createHash, randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
+import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
+import type { CredentialVault } from "../security/credential-vault";
+import type { ContentSourceService } from "../content/content-source-service";
+import type { LocalAssetStore } from "../content/local-asset-store";
+import type { ModelProvider } from "../ai/model-provider";
+import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
+import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
+
+const juejinDraftSchema = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    markdown: { type: "string" }
+  },
+  required: ["title", "markdown"],
+  additionalProperties: false
+} as const;
+
+export class JuejinChannelError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JuejinChannelError";
+  }
+}
+
+/** 配置类错误（凭据缺失/无效），由调用方转为 needs_credentials 状态。 */
+class JuejinCredentialsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JuejinCredentialsError";
+  }
+}
+
+export type JuejinChannelDraftStatus = "draft" | "approved" | "superseded";
+export type JuejinChannelDraftGenerationMode = "rewrite" | "source";
+export type JuejinPublishJobStatus =
+  | "draft_creating"
+  | "draft_created"
+  | "confirming"
+  | "published"
+  | "failed"
+  | "needs_manual_reconciliation"
+  | "cancelled"
+  | "needs_credentials";
+
+export interface JuejinChannelDraft {
+  id: string;
+  workspaceId: string;
+  accountId: string;
+  projectId: string | null;
+  sourceRelativePath: string;
+  sourceHash: string;
+  generationMode: JuejinChannelDraftGenerationMode;
+  title: string;
+  markdown: string;
+  author: string;
+  digest: string;
+  coverSource: string;
+  status: JuejinChannelDraftStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JuejinPublishJob {
+  id: string;
+  workspaceId: string;
+  accountId: string;
+  channelDraftId: string;
+  renderedPackageHash: string;
+  idempotencyKey: string;
+  status: JuejinPublishJobStatus;
+  remoteUrl: string | null;
+  remoteContentId: string | null;
+  statusNote: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type FetchLike = typeof fetch;
+
+export class JuejinChannelService {
+  /** 缓存分类 ID 和 tag IDs 以避免重复 lookup。 */
+  private readonly publishOptionsCache = new Map<string, { categoryId: string; tagIds: string[] }>();
+  /** 草稿创建并发去重。 */
+  private readonly createRemoteDraftPromises = new Map<string, Promise<JuejinPublishJob>>();
+
+  constructor(
+    private readonly db: Database.Database,
+    private readonly accounts: AccountRepository,
+    private readonly vault: CredentialVault,
+    private readonly contentSources: ContentSourceService,
+    private readonly modelProvider: ModelProvider,
+    private readonly assetStore?: LocalAssetStore,
+    private readonly fetcher: FetchLike = fetch
+  ) {}
+
+  /** 掘金走纯 API 直发，不需要浏览器辅助。 */
+  capabilities(_accountId: string): PublishCapabilities {
+    return {
+      canCreateRemoteDraft: true,
+      canSubmitAfterConfirmation: true,
+      canReadRemoteReceipt: true,
+      supportsExternalLink: "allowed",
+      supportsScheduledPublish: false
+    };
+  }
+
+  async createFromSource(input: {
+    accountId: string;
+    relativePath: string;
+    projectId?: string;
+    generationMode?: JuejinChannelDraftGenerationMode;
+  }): Promise<JuejinChannelDraft> {
+    const account = this.accounts.requireAccount(input.accountId);
+    if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号创建渠道稿。");
+    const article = this.contentSources.getArticle(account.workspaceId, input.relativePath);
+    const sourceHash = digest(article.markdown);
+    const generationMode = input.generationMode ?? "rewrite";
+    const sourceSettings = this.db.prepare("SELECT author, digest, cover_source FROM article_settings WHERE context_key = ?")
+      .get(`source:${article.relativePath}`) as { author: string | null; digest: string | null; cover_source: string | null } | undefined;
+    const existing = this.db.prepare(`SELECT * FROM channel_drafts
+      WHERE account_id = ? AND source_relative_path = ? AND source_hash = ? AND generation_mode = ? AND status IN ('draft', 'approved')
+      ORDER BY updated_at DESC LIMIT 1`).get(account.id, article.relativePath, sourceHash, generationMode) as Record<string, string | null> | undefined;
+    if (existing) {
+      if (existing.status === "draft" && (!existing.author || !existing.digest || !existing.cover_source)) {
+        const author = existing.author || sourceSettings?.author || "";
+        const sourceDigest = (existing.digest || sourceSettings?.digest || "").slice(0, 200);
+        const coverSource = existing.cover_source || sourceSettings?.cover_source || "";
+        if (author !== existing.author || sourceDigest !== existing.digest || coverSource !== existing.cover_source) {
+          this.db.prepare("UPDATE channel_drafts SET author = ?, digest = ?, cover_source = ?, updated_at = ? WHERE id = ?")
+            .run(author, sourceDigest, coverSource, new Date().toISOString(), existing.id);
+        }
+      }
+      return this.requireDraft(existing.id!);
+    }
+
+    const title = (article.title ?? firstHeading(article.markdown) ?? "未命名文章").slice(0, 80);
+    const generatedDraft = generationMode === "rewrite"
+      ? (await this.modelProvider.generateStructured({
+          task: "revision",
+          skillId: "platform-rewrite",
+          prompt: buildJuejinRewritePrompt({
+            title,
+            markdown: article.markdown,
+            positioning: account.profile.positioning,
+            audience: account.profile.targetAudience,
+            writingStyle: account.profile.writingStyle,
+            prohibitedTopics: account.profile.prohibitedTopics
+          }),
+          outputSchema: juejinDraftSchema,
+          timeoutMs: 240_000,
+          parse: (value) => parseGeneratedDraft(value)
+        })).value
+      : { title, markdown: article.markdown };
+    const markdown = normalizeMarkdown(generatedDraft.markdown, generatedDraft.title);
+    assertNoJuejinPromotion(markdown);
+    const author = sourceSettings?.author ?? "";
+    const sourceDigest = sourceSettings?.digest ?? "";
+    const coverSource = sourceSettings?.cover_source ?? "";
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ?
+        WHERE account_id = ? AND source_relative_path = ? AND status IN ('draft', 'approved')`).run(now, account.id, article.relativePath);
+      this.db.prepare(`INSERT INTO channel_drafts
+        (id, workspace_id, account_id, project_id, source_relative_path, source_hash, generation_mode, title, markdown, author, digest, cover_source, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`)
+        .run(id, account.workspaceId, account.id, input.projectId ?? null, article.relativePath, sourceHash, generationMode,
+          generatedDraft.title.trim().slice(0, 80), markdown, author, sourceDigest.slice(0, 200), coverSource, now, now);
+    })();
+    return this.requireDraft(id);
+  }
+
+  deleteDraftsBySource(workspaceId: string, relativePath: string, assetStore?: LocalAssetStore): number {
+    const rows = this.db.prepare("SELECT id FROM channel_drafts WHERE workspace_id = ? AND source_relative_path = ?")
+      .all(workspaceId, relativePath) as Array<{ id: string }>;
+    for (const { id } of rows) {
+      if (!assetStore) continue;
+      try { assetStore.deleteContext(id); } catch { /* ignore */ }
+    }
+    if (rows.length === 0) return 0;
+    const ids = rows.map((row) => row.id);
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM juejin_publish_job_events WHERE job_id IN (SELECT id FROM juejin_publish_jobs WHERE channel_draft_id IN (${placeholders}))`).run(...ids);
+      this.db.prepare(`DELETE FROM juejin_publish_jobs WHERE channel_draft_id IN (${placeholders})`).run(...ids);
+      this.db.prepare(`DELETE FROM channel_drafts WHERE id IN (${placeholders})`).run(...ids);
+    })();
+    return ids.length;
+  }
+
+  deleteDraft(id: string): number {
+    const row = this.db.prepare("SELECT id FROM channel_drafts WHERE id = ?").get(id) as { id: string } | undefined;
+    if (!row) return 0;
+    if (this.assetStore) {
+      try { this.assetStore.deleteContext(id); } catch { /* ignore */ }
+    }
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM juejin_publish_job_events WHERE job_id IN (SELECT id FROM juejin_publish_jobs WHERE channel_draft_id = ?)").run(id);
+      this.db.prepare("DELETE FROM juejin_publish_jobs WHERE channel_draft_id = ?").run(id);
+      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+    })();
+    return 1;
+  }
+
+  listDrafts(workspaceId: string, accountId?: string): JuejinChannelDraft[] {
+    const rows = accountId
+      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
+      : this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId);
+    const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
+    const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
+    if (needBackfill.length > 0) {
+      const keys = needBackfill.map((d) => `source:${d.sourceRelativePath}`);
+      const placeholders = keys.map(() => "?").join(",");
+      const settings = this.db.prepare(`SELECT context_key, author, digest, cover_source FROM article_settings WHERE context_key IN (${placeholders})`)
+        .all(...keys) as Array<{ context_key: string; author: string | null; digest: string | null; cover_source: string | null }>;
+      const byKey = new Map(settings.map((s) => [s.context_key, s]));
+      for (const d of needBackfill) {
+        const setting = byKey.get(`source:${d.sourceRelativePath}`);
+        if (!setting) continue;
+        d.author = d.author || setting.author || "";
+        d.digest = (d.digest || setting.digest || "").slice(0, 200);
+        d.coverSource = d.coverSource || setting.cover_source || "";
+      }
+    }
+    return drafts;
+  }
+
+  approveDraft(id: string): JuejinChannelDraft {
+    const draft = this.requireDraft(id);
+    if (draft.status !== "draft") throw new JuejinChannelError("只有待审核的掘金渠道稿可以冻结发布。");
+    assertNoJuejinPromotion(draft.markdown);
+    this.db.prepare("UPDATE channel_drafts SET status = 'approved', updated_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), id);
+    return this.requireDraft(id);
+  }
+
+  saveDraft(id: string, input: { title: string; markdown: string; author?: string; digest?: string; coverSource?: string }): JuejinChannelDraft {
+    const draft = this.requireDraft(id);
+    if (draft.status !== "draft") throw new JuejinChannelError("已冻结的掘金渠道稿不能直接修改；请基于最新主稿重新生成。");
+    const title = input.title.trim();
+    if (!title || title.length > 80) throw new JuejinChannelError("掘金渠道稿标题不能为空且不能超过 80 个字符。");
+    if (!input.markdown.trim() || input.markdown.length > 100_000) throw new JuejinChannelError("掘金渠道稿正文不能为空且不能超过 100000 个字符。");
+    const markdown = normalizeMarkdown(input.markdown, title);
+    assertNoJuejinPromotion(markdown);
+    const author = (input.author ?? "").slice(0, 16);
+    const digestText = (input.digest ?? "").slice(0, 200);
+    const coverSource = input.coverSource ?? "";
+    this.db.prepare("UPDATE channel_drafts SET title = ?, markdown = ?, author = ?, digest = ?, cover_source = ?, updated_at = ? WHERE id = ?")
+      .run(title, markdown, author, digestText, coverSource, new Date().toISOString(), id);
+    return this.requireDraft(id);
+  }
+
+  /**
+   * 创建发布任务（幂等）。任务创建后立即在后台执行两段式第一步：
+   * article_draft/create 创建掘金草稿。
+   */
+  createPublishJob(channelDraftId: string, options?: { categoryId?: string; tagIds?: string[] }): JuejinPublishJob {
+    const draft = this.requireDraft(channelDraftId);
+    if (draft.status !== "approved") throw new JuejinChannelError("请先审核并冻结掘金渠道稿，再创建发布任务。");
+    const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
+    let idempotencyKey = `juejin:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
+    const found = this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    if (found) {
+      let foundJob = mapJob(found);
+      const restartable: JuejinPublishJobStatus[] = [
+        "draft_creating", "draft_created", "confirming", "needs_credentials", "failed"
+      ];
+      if (restartable.includes(foundJob.status)) {
+        if (foundJob.status === "failed") {
+          foundJob = this.transitionJob(foundJob, "draft_creating", {
+            statusNote: "正在重新创建掘金草稿。",
+            errorMessage: null
+          });
+        }
+        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
+          this.publishOptionsCache.set(foundJob.id, { categoryId: options?.categoryId ?? "", tagIds: options?.tagIds ?? [] });
+          void this.createRemoteDraft(foundJob.id).catch(() => {});
+        }
+        return foundJob;
+      }
+      idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO juejin_publish_jobs
+        (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?)`)
+        .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
+          "已创建掘金发布任务，正在创建掘金草稿。", now, now);
+      this.db.prepare(`INSERT INTO juejin_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
+        .run(randomUUID(), id, now);
+    })();
+    this.publishOptionsCache.set(id, { categoryId: options?.categoryId ?? "", tagIds: options?.tagIds ?? [] });
+    void this.createRemoteDraft(id).catch(() => {});
+    return this.requireJob(id);
+  }
+
+  listJobs(workspaceId: string): JuejinPublishJob[] {
+    return (this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
+      .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+  }
+
+  getJob(jobId: string): JuejinPublishJob {
+    return this.requireJob(jobId);
+  }
+
+  getDraftForJob(jobId: string): JuejinChannelDraft {
+    const job = this.requireJob(jobId);
+    return this.requireDraft(job.channelDraftId);
+  }
+
+  /**
+   * 用户确认公开：完成两段式第二步 publish。
+   * 若草稿尚未创建成功，先补齐草稿；草稿就绪后进入 confirming，调用 article/publish 公开。
+   */
+  async confirmPublish(jobId: string): Promise<JuejinPublishJob> {
+    let job = this.requireJob(jobId);
+    if (job.status === "published") throw new JuejinChannelError("该掘金任务已发布，请勿重复提交。");
+    if (job.status === "cancelled") throw new JuejinChannelError("该掘金任务已取消，无法确认公开。");
+    if (job.status === "needs_manual_reconciliation") throw new JuejinChannelError("该掘金任务已进入人工校正，请先通过校正表单处理。");
+    if (job.status === "confirming") throw new JuejinChannelError("该掘金任务正在确认公开，请稍候。");
+
+    if (job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
+      job = await this.createRemoteDraft(job.id);
+      if (job.status !== "draft_created") return job;
+    }
+    if (job.status !== "draft_created") throw new JuejinChannelError("当前任务状态不允许确认公开。");
+
+    job = this.transitionJob(job, "confirming", {
+      statusNote: "正在将掘金草稿公开为正式文章。",
+      errorMessage: null
+    });
+    try {
+      return await this.publishRemotePost(job.id);
+    } catch (error) {
+      const reason = messageOf(error);
+      return this.transitionJob(this.requireJob(job.id), "needs_manual_reconciliation", {
+        statusNote: `草稿已创建，但公开失败：${reason}`,
+        errorMessage: reason
+      });
+    }
+  }
+
+  recordSubmission(jobId: string, input: {
+    remoteUrl: string | null;
+    remoteContentId: string | null;
+    state: "published" | "needs_manual_reconciliation";
+    reason?: string;
+  }): JuejinPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "draft_created" && job.status !== "confirming" && job.status !== "needs_manual_reconciliation") {
+      throw new JuejinChannelError("当前任务状态不允许保存发布回执。");
+    }
+    const reason = (input.reason ?? "").trim().slice(0, 500);
+    if (input.state === "published") {
+      return this.transitionJob(job, "published", {
+        remoteUrl: input.remoteUrl,
+        remoteContentId: input.remoteContentId,
+        statusNote: input.remoteUrl ? `已发布：${input.remoteUrl}` : "已发布（未填文章链接）。",
+        errorMessage: null
+      });
+    }
+    return this.transitionJob(job, "needs_manual_reconciliation", {
+      statusNote: reason || "未能核实掘金发布结果，请人工核对。",
+      errorMessage: null
+    });
+  }
+
+  correctStatus(jobId: string, status: "published" | "failed" | "cancelled", reason: string): JuejinPublishJob {
+    const job = this.requireJob(jobId);
+    const correctable: JuejinPublishJobStatus[] = [
+      "draft_creating", "draft_created", "confirming",
+      "needs_manual_reconciliation", "failed", "needs_credentials"
+    ];
+    if (!correctable.includes(job.status)) {
+      throw new JuejinChannelError("该掘金发布任务状态不可人工校正。");
+    }
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length > 500) throw new JuejinChannelError("核实依据不能超过 500 个字。");
+    const now = new Date().toISOString();
+    const note = status === "failed"
+      ? `人工确认发布失败：${normalizedReason || "未填写依据"}`
+      : status === "cancelled"
+        ? `人工确认取消发布：${normalizedReason || "未填写依据"}`
+        : null;
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE juejin_publish_jobs
+        SET status = ?, error_message = ?, status_source = 'manual', status_note = ?, updated_at = ?
+        WHERE id = ?`)
+        .run(status, status === "failed" ? note : null, note, now, jobId);
+      this.db.prepare(`INSERT INTO juejin_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
+        .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
+    })();
+    return this.requireJob(jobId);
+  }
+
+  /** 两段式第一步：article_draft/create 创建掘金草稿。 */
+  private async createRemoteDraft(jobId: string): Promise<JuejinPublishJob> {
+    const existing = this.createRemoteDraftPromises.get(jobId);
+    if (existing) return existing;
+    const promise = this.executeCreateRemoteDraft(jobId);
+    this.createRemoteDraftPromises.set(jobId, promise);
+    promise.finally(() => this.createRemoteDraftPromises.delete(jobId)).catch(() => {});
+    return promise;
+  }
+
+  private async executeCreateRemoteDraft(jobId: string): Promise<JuejinPublishJob> {
+    let job = this.requireJob(jobId);
+    if (job.status === "draft_created" || job.status === "published" || job.status === "needs_manual_reconciliation") return job;
+
+    const account = this.accounts.requireAccount(job.accountId);
+    if (account.platform !== "juejin") {
+      return this.transitionJob(job, "failed", {
+        statusNote: "所选账号不是掘金账号。",
+        errorMessage: "所选账号不是掘金账号。"
+      });
+    }
+
+    let client: JuejinClient;
+    try {
+      client = this.buildClient(account);
+    } catch (error) {
+      const reason = messageOf(error);
+      return this.transitionJob(job, "needs_credentials", {
+        statusNote: reason,
+        errorMessage: reason
+      });
+    }
+
+    try {
+      const draft = this.requireDraft(job.channelDraftId);
+      const options = this.publishOptionsCache.get(job.id) ?? { categoryId: "", tagIds: [] };
+
+      // 构建摘要：取 digest 字段，若为空则用 markdown 前 100 个字符
+      const briefContent = (draft.digest || draft.markdown.replace(/#{1,6}\s+.*\n?/g, "").replace(/[#*`\n]/g, " ").trim().slice(0, 100)).slice(0, 100);
+
+      const payload: JuejinDraftPayload = {
+        title: draft.title.slice(0, 80),
+        markContent: draft.markdown,
+        briefContent,
+        categoryId: options.categoryId || "6809637769959178254", // 默认"后端"分类
+        tagIds: options.tagIds.length > 0 ? options.tagIds : [],
+        coverImage: draft.coverSource || "",
+        editType: 10
+      };
+
+      const result = await client.createDraft(payload);
+      const postUrl = result.linkUrl || `https://juejin.cn/post/${result.articleId}`;
+      return this.transitionJob(job, "draft_created", {
+        remoteContentId: result.draftId,
+        remoteUrl: postUrl,
+        statusNote: "掘金草稿已创建，请检查后点击「确认公开」。",
+        errorMessage: null
+      });
+    } catch (error) {
+      const reason = messageOf(error);
+      if (error instanceof JuejinCredentialsError) {
+        return this.transitionJob(job, "needs_credentials", {
+          statusNote: `掘金凭据校验失败：${reason}`,
+          errorMessage: reason
+        });
+      }
+      return this.transitionJob(job, "failed", {
+        statusNote: `创建掘金草稿失败：${reason}`,
+        errorMessage: reason
+      });
+    }
+  }
+
+  /** 两段式第二步：article/publish 公开草稿。 */
+  private async publishRemotePost(jobId: string): Promise<JuejinPublishJob> {
+    const job = this.requireJob(jobId);
+    const account = this.accounts.requireAccount(job.accountId);
+    const client = this.buildClient(account);
+    const draftId = job.remoteContentId;
+    if (!draftId) throw new JuejinChannelError("缺少掘金草稿的 draft id，无法公开。");
+    const result = await client.publish(draftId);
+    const articleId = result.articleId;
+    const linkUrl = articleId ? `https://juejin.cn/post/${articleId}` : null;
+    return this.transitionJob(job, "published", {
+      remoteUrl: linkUrl,
+      remoteContentId: draftId,
+      statusNote: linkUrl ? `已发布：${linkUrl}` : "掘金文章已发布。",
+      errorMessage: null
+    });
+  }
+
+  /** 读取并解密掘金凭据（cookie + aid + uuid）。 */
+  private loadCredentials(account: MediaAccount): { cookie: string; aid: string; uuid: string } {
+    let cookie = "";
+    let aid = "";
+    let uuid = "";
+    try {
+      cookie = this.accounts.getCredential(account.id, "juejin_cookie", this.vault).trim();
+      aid = this.accounts.getCredential(account.id, "juejin_aid", this.vault).trim();
+      uuid = this.accounts.getCredential(account.id, "juejin_uuid", this.vault).trim();
+    } catch {
+      throw new JuejinCredentialsError("掘金账号尚未配置 Cookie、AID 或 UUID，请先到账号页完成配置。");
+    }
+    if (!cookie || !aid) {
+      throw new JuejinCredentialsError("掘金账号尚未配置 Cookie 或 AID，请先到账号页完成配置。");
+    }
+    return { cookie, aid, uuid };
+  }
+
+  private buildClient(account: MediaAccount): JuejinClient {
+    const { cookie, aid, uuid } = this.loadCredentials(account);
+    return new JuejinClient(cookie, aid, uuid, this.fetcher);
+  }
+
+  private transitionJob(
+    job: JuejinPublishJob,
+    nextStatus: JuejinPublishJobStatus,
+    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
+  ): JuejinPublishJob {
+    const now = new Date().toISOString();
+    const statusNote = patch.statusNote !== undefined ? patch.statusNote : job.statusNote;
+    const errorMessage = patch.errorMessage !== undefined ? patch.errorMessage : job.errorMessage;
+    const remoteUrl = patch.remoteUrl !== undefined ? patch.remoteUrl : job.remoteUrl;
+    const remoteContentId = patch.remoteContentId !== undefined ? patch.remoteContentId : job.remoteContentId;
+    this.db.transaction(() => {
+      this.db.prepare(`UPDATE juejin_publish_jobs
+        SET status = ?, status_note = ?, error_message = ?, remote_url = ?, remote_content_id = ?, updated_at = ?
+        WHERE id = ?`)
+        .run(nextStatus, statusNote, errorMessage, remoteUrl, remoteContentId, now, job.id);
+      this.db.prepare(`INSERT INTO juejin_publish_job_events
+        (id, job_id, previous_status, new_status, source, reason, created_at)
+        VALUES (?, ?, ?, ?, 'system', ?, ?)`)
+        .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
+    })();
+    return this.requireJob(job.id);
+  }
+
+  private requireDraft(id: string): JuejinChannelDraft {
+    const row = this.db.prepare("SELECT * FROM channel_drafts WHERE id = ?").get(id) as Record<string, string | null> | undefined;
+    if (!row) throw new JuejinChannelError("找不到对应的掘金渠道稿。");
+    return mapDraft(row);
+  }
+
+  private requireJob(id: string): JuejinPublishJob {
+    const row = this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
+    if (!row) throw new JuejinChannelError("找不到对应的掘金发布任务。");
+    return mapJob(row);
+  }
+}
+
+function parseGeneratedDraft(value: unknown): { title: string; markdown: string } {
+  if (!value || typeof value !== "object") throw new JuejinChannelError("模型没有返回可用的掘金渠道稿。");
+  const record = value as Record<string, unknown>;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  const markdown = typeof record.markdown === "string" ? record.markdown.trim() : "";
+  if (!title || title.length > 80 || !markdown || markdown.length > 100_000) {
+    throw new JuejinChannelError("模型返回的掘金渠道稿不完整，请重新生成。");
+  }
+  return { title, markdown };
+}
+
+function normalizeMarkdown(markdown: string, title: string): string {
+  const withoutFrontMatter = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
+  const withoutLeadingTitle = withoutFrontMatter.replace(/^#\s+.+\n+/, "").trim();
+  return `# ${title}\n\n${withoutLeadingTitle}`;
+}
+
+function assertNoJuejinPromotion(markdown: string): void {
+  const forbidden = [
+    /https?:\/\/mp\.weixin\.qq\.com\//i,
+    /公众号原文/,
+    /延伸阅读/,
+    /关注(?:我的|本)?公众号/,
+    /扫描(?:下方|文末)?二维码/
+  ];
+  if (forbidden.some((pattern) => pattern.test(markdown))) {
+    throw new JuejinChannelError("生成的掘金渠道稿包含被禁用的公众号引流内容，请重新生成。");
+  }
+}
+
+function buildJuejinRewritePrompt(input: {
+  title: string;
+  markdown: string;
+  positioning: string;
+  audience: string;
+  writingStyle: string;
+  prohibitedTopics: string;
+}): string {
+  return `你是专业的技术内容编辑。请把下面主稿改写成一篇适合掘金技术读者独立阅读的中文文章。
+
+硬性要求：
+- 文章必须是独立内容，允许大幅调整标题、结构、段落顺序和表达，但不能编造事实、数据、经历、引用或来源。
+- 保留可验证的代码、命令、链接与事实；对不确定信息保持原文的限定，而不是补造结论。
+- 彻底去除公众号软引流：不得出现微信公众号原文链接、公众号引导、正文引用链接、文末延伸阅读、二维码、评论区引流或"关注公众号"等措辞。
+- 标题不超过 80 个字符，摘要不超过 100 个字符。
+- 用自然、具体、面向开发者的表达，避免模板化 AI 腔和空泛总结。
+- 输出 JSON：title 为不超过 80 字的标题；markdown 为完整 Markdown 正文。markdown 的第一行必须是 "# {title}"。
+
+账号定位：${input.positioning || "未设置"}
+目标读者：${input.audience || "掘金技术读者"}
+写作风格：${input.writingStyle || "清晰、具体、自然"}
+禁用话题/表达：${input.prohibitedTopics || "无"}
+
+主稿标题：${input.title}
+
+主稿正文：
+${input.markdown}`;
+}
+
+function firstHeading(markdown: string): string | null {
+  return /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim() ?? null;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function mapDraft(row: Record<string, string | null>): JuejinChannelDraft {
+  return {
+    id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, projectId: row.project_id,
+    sourceRelativePath: row.source_relative_path!, sourceHash: row.source_hash!,
+    generationMode: row.generation_mode === "source" ? "source" : "rewrite", title: row.title!, markdown: row.markdown!,
+    author: row.author ?? "", digest: row.digest ?? "", coverSource: row.cover_source ?? "",
+    status: row.status as JuejinChannelDraftStatus, createdAt: row.created_at!, updatedAt: row.updated_at!
+  };
+}
+
+function mapJob(row: Record<string, string | null>): JuejinPublishJob {
+  return {
+    id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
+    renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
+    status: row.status as JuejinPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
+    statusNote: row.status_note, errorMessage: row.error_message, createdAt: row.created_at!, updatedAt: row.updated_at!
+  };
+}
