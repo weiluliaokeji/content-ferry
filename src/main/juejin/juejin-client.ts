@@ -44,6 +44,8 @@ export interface JuejinDraft {
   coverImage: string;
   markContent: string;
   linkUrl: string;
+  /** 掘金草稿编辑页 URL（草稿未公开前可访问）。 */
+  draftUrl: string;
 }
 
 export interface JuejinPublishResult {
@@ -95,7 +97,8 @@ export class JuejinClient {
       tagIds: payload.tagIds.map(String),
       coverImage: payload.coverImage,
       markContent: payload.markContent,
-      linkUrl: data.article_id ? `https://juejin.cn/post/${data.article_id}` : ""
+      linkUrl: data.article_id ? `https://juejin.cn/post/${data.article_id}` : "",
+      draftUrl: data.id ? `https://juejin.cn/editor/drafts?id=${data.id}` : ""
     };
   }
 
@@ -124,7 +127,8 @@ export class JuejinClient {
       tagIds: payload.tagIds.map(String),
       coverImage: payload.coverImage,
       markContent: payload.markContent,
-      linkUrl: data.article_id ? `https://juejin.cn/post/${data.article_id}` : ""
+      linkUrl: data.article_id ? `https://juejin.cn/post/${data.article_id}` : "",
+      draftUrl: data.id ? `https://juejin.cn/editor/drafts?id=${data.id}` : `https://juejin.cn/editor/drafts?id=${draftId}`
     };
   }
 
@@ -164,7 +168,8 @@ export class JuejinClient {
         : [],
       coverImage: String(articleInfo.cover_image ?? ""),
       markContent: String(articleInfo.mark_content ?? ""),
-      linkUrl: articleId ? `https://juejin.cn/post/${articleId}` : ""
+      linkUrl: articleId ? `https://juejin.cn/post/${articleId}` : "",
+      draftUrl: `https://juejin.cn/editor/drafts?id=${draftId}`
     };
   }
 

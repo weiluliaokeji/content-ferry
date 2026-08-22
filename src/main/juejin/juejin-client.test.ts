@@ -119,6 +119,7 @@ describe("JuejinClient response parsing", () => {
     expect(draft.draftId).toBe("draft-42");
     expect(draft.articleId).toBe("article-42");
     expect(draft.linkUrl).toBe("https://juejin.cn/post/article-42");
+    expect(draft.draftUrl).toBe("https://juejin.cn/editor/drafts?id=draft-42");
   });
 
   it("parses publish into article id and link url", async () => {
