@@ -199,7 +199,7 @@ export class CsdnChannelService {
   listDrafts(workspaceId: string, accountId?: string): CsdnChannelDraft[] {
     const rows = accountId
       ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId);
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'csdn' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     // 兼容“继承功能上线前的旧空草稿”：草稿态且作者/摘要/封面任一为空时，从最新原文设置回填，
     // 保证进入现有草稿即可看到原文封面/摘要/作者（仅在显示层补默认值，不改写已编辑内容）。
