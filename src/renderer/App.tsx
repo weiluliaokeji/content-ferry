@@ -471,7 +471,7 @@ export function App() {
             rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "待微信后台确认", tone: "info", action: { kind: "enter", label: "查看进度", onClick: () => setActiveView("publish") } });
             break;
           case "published":
-            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "已发布", tone: "success", action: { kind: "enter", label: "查看", onClick: () => setActiveView("publish") } });
+            rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "已发布", tone: "success", action: { kind: "none" } });
             break;
           case "cancelled":
             rows.push({ platform: "wechat_official", label: "微信公众号", statusLabel: "已取消发布", tone: "warning", action: { kind: "generate", label: "重新设置并发布", onClick: () => void openSourceArticle(item.relativePath, "settings") } });
@@ -2680,6 +2680,7 @@ export function App() {
     <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${libraryPageSize} 篇）` : ""}。</p><ul className="content-library-list">
         {libraryPageItems.map((item) => {
           const rows = channelRowsFor(item);
+          const actionableRows = rows.filter((row) => row.action.kind !== "none");
           return (
             <li key={item.relativePath}>
               <span className="article-primary">
@@ -2692,16 +2693,18 @@ export function App() {
                     <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
                   </span>
                 ))}
+                {actionableRows.length > 0 && (
                 <span className="channel-actions-wrap">
                   <button className={"secondary-button channel-actions-toggle" + (expandedLibraryActions === item.relativePath ? " active" : "")} onClick={() => setExpandedLibraryActions(expandedLibraryActions === item.relativePath ? null : item.relativePath)}>{expandedLibraryActions === item.relativePath ? "收起" : "操作"}</button>
                   {expandedLibraryActions === item.relativePath && (
                     <span className="channel-actions-popover">
-                      {rows.map((row) => (
+                      {actionableRows.map((row) => (
                         <button key={row.platform} className={row.action.kind === "continue" ? "secondary-button" : "text-button"} onClick={() => { setExpandedLibraryActions(null); row.action.onClick(); }}>{row.action.label}</button>
                       ))}
                     </span>
                   )}
                 </span>
+                )}
               </span>
             </li>
           );

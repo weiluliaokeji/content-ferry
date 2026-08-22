@@ -82,7 +82,8 @@ export type JuejinPublishOptions = {
 export type ChannelAction =
   | { kind: "enter"; label: string; onClick: () => void }
   | { kind: "generate"; label: string; onClick: () => void }
-  | { kind: "continue"; label: string; onClick: () => void };
+  | { kind: "continue"; label: string; onClick: () => void }
+  | { kind: "none" };
 export type ChannelRow = {
   platform: AccountPlatform;
   label: string;
