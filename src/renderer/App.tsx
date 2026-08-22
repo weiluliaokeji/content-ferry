@@ -43,6 +43,11 @@ export function App() {
   const [sourcePath, setSourcePath] = useState("");
   const [sourcePreview, setSourcePreview] = useState<ContentSourcePreview>();
   const [libraryPage, setLibraryPage] = useState(1);
+  const [publishPendingPage, setPublishPendingPage] = useState(1);
+  const [publishCompletedPage, setPublishCompletedPage] = useState(1);
+  const [libraryPageSize, setLibraryPageSize] = useState(5);
+  const [publishPendingPageSize, setPublishPendingPageSize] = useState(5);
+  const [publishCompletedPageSize, setPublishCompletedPageSize] = useState(5);
   const [sourceArticle, setSourceArticle] = useState<ContentSourceArticle>();
   const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "preview" | "settings">("assistant");
   const [projectModalOpen, setProjectModalOpen] = useState(false);
@@ -2552,11 +2557,20 @@ export function App() {
   const researchReadOnly = researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false;
   const outlineReadOnly = outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false;
 
-  // 内容库分页：每页 20 篇文章；扫描结果变化时自动收敛页码。
-  const LIBRARY_PAGE_SIZE = 20;
-  const libraryTotalPages = sourcePreview ? Math.max(1, Math.ceil(sourcePreview.items.length / LIBRARY_PAGE_SIZE)) : 1;
+  // 分页通用配置：每页条数选项；切换条数时页码重置到第 1 页。
+  const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
+  // 内容库分页：默认每页 5 条；扫描结果变化时自动收敛页码。
+  const libraryTotalPages = sourcePreview ? Math.max(1, Math.ceil(sourcePreview.items.length / libraryPageSize)) : 1;
   const librarySafePage = Math.min(libraryPage, libraryTotalPages);
-  const libraryPageItems = sourcePreview ? sourcePreview.items.slice((librarySafePage - 1) * LIBRARY_PAGE_SIZE, librarySafePage * LIBRARY_PAGE_SIZE) : [];
+  const libraryPageItems = sourcePreview ? sourcePreview.items.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize) : [];
+
+  // 发布中心分页：待处理与发布记录各一页，默认每页 5 条，页码超出时自动收敛。
+  const pendingTotalPages = Math.max(1, Math.ceil(pendingEntries.length / publishPendingPageSize));
+  const pendingSafePage = Math.min(publishPendingPage, pendingTotalPages);
+  const pendingPageItems = pendingEntries.slice((pendingSafePage - 1) * publishPendingPageSize, pendingSafePage * publishPendingPageSize);
+  const completedTotalPages = Math.max(1, Math.ceil(completedEntries.length / publishCompletedPageSize));
+  const completedSafePage = Math.min(publishCompletedPage, completedTotalPages);
+  const completedPageItems = completedEntries.slice((completedSafePage - 1) * publishCompletedPageSize, completedSafePage * publishCompletedPageSize);
 
   return <div className="app-shell">
     <aside className="app-sidebar">
@@ -2662,7 +2676,7 @@ export function App() {
     </>}
 
     {activeView === "library" && <>
-    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${LIBRARY_PAGE_SIZE} 篇）` : ""}。</p><ul className="content-library-list">
+    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${libraryPageSize} 篇）` : ""}。</p><ul className="content-library-list">
         {libraryPageItems.map((item) => (
           <li key={item.relativePath}>
             <span className="article-primary">
@@ -2680,7 +2694,7 @@ export function App() {
           </li>
         ))}
       </ul>
-      {libraryTotalPages > 1 && <div className="library-pagination"><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => setLibraryPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => setLibraryPage((page) => Math.min(libraryTotalPages, page + 1))}>下一页</button></div>}
+      <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => setLibraryPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => setLibraryPage((page) => Math.min(libraryTotalPages, page + 1))}>下一页</button></>}</div>
       </>}</section>
     </>}
 
@@ -2689,7 +2703,7 @@ export function App() {
       {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
         {pendingEntries.length > 0 && <section className="card">
           <div className="section-heading"><h2>待处理</h2></div>
-          <ul className="publish-job-list">{pendingEntries.map((entry) => {
+          <ul className="publish-job-list">{pendingPageItems.map((entry) => {
             if (entry.kind === "wechat") {
               const job = entry.job;
               const account = accounts.find((item) => item.id === job.accountId);
@@ -2761,10 +2775,11 @@ export function App() {
               </>}
             </span></li>;
           })}</ul>
+          <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={publishPendingPageSize} onChange={(event) => { setPublishPendingPage(1); setPublishPendingPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{pendingTotalPages > 1 && <><button className="secondary-button" disabled={pendingSafePage <= 1} onClick={() => setPublishPendingPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{pendingSafePage} / {pendingTotalPages}</span><button className="secondary-button" disabled={pendingSafePage >= pendingTotalPages} onClick={() => setPublishPendingPage((page) => Math.min(pendingTotalPages, page + 1))}>下一页</button></>}</div>
         </section>}
         {completedEntries.length > 0 && <section className="card">
           <div className="section-heading"><h2>发布记录</h2></div>
-          <ul className="publish-job-list">{completedEntries.map((entry) => {
+          <ul className="publish-job-list">{completedPageItems.map((entry) => {
             if (entry.kind === "wechat") {
               const job = entry.job;
               const account = accounts.find((item) => item.id === job.accountId);
@@ -2790,6 +2805,7 @@ export function App() {
             const label = job.status === "cancelled" ? "已取消发布" : "已发布";
             return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
           })}</ul>
+          <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={publishCompletedPageSize} onChange={(event) => { setPublishCompletedPage(1); setPublishCompletedPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{completedTotalPages > 1 && <><button className="secondary-button" disabled={completedSafePage <= 1} onClick={() => setPublishCompletedPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{completedSafePage} / {completedTotalPages}</span><button className="secondary-button" disabled={completedSafePage >= completedTotalPages} onClick={() => setPublishCompletedPage((page) => Math.min(completedTotalPages, page + 1))}>下一页</button></>}</div>
         </section>}
       </>}
     </>}

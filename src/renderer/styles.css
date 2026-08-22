@@ -199,6 +199,8 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .channel-name { font-weight: 600; min-width: 5.5rem; color: #334155; text-align: right; }
 .library-pagination { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; margin-top: .9rem; }
 .library-pagination-info { color: #516078; font-size: .875rem; }
+.pagination-size-label { display: inline-flex; align-items: center; gap: .35rem; color: #516078; font-size: .85rem; }
+.pagination-size { padding: .2rem .4rem; border: 1px solid #d7deeb; border-radius: .375rem; background: #fff; color: #334155; font-size: .85rem; cursor: pointer; }
 .juejin-tag-options { display: flex; flex-wrap: wrap; gap: .45rem; margin: .5rem 0 .35rem; }
 .juejin-tag-options button { padding: .28rem .7rem; border: 1px solid #d7deeb; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; font-size: .85rem; }
 .juejin-tag-options button:hover:not(:disabled) { border-color: #2b5fd0; color: #2b5fd0; }
