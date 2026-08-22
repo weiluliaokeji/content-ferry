@@ -178,7 +178,7 @@ describe("JuejinChannelService", () => {
 
     const job = await waitForJob(service, first.id, "draft_created");
     expect(job.remoteContentId).toBe("draft-123");
-    expect(job.remoteUrl).toContain("https://juejin.cn/post/article-123");
+    expect(job.remoteUrl).toContain("https://juejin.cn/editor/drafts?id=draft-123");
     expect(job.errorMessage).toBeNull();
 
     // 幂等：后台只调用了一次 article_draft/create（没有重复创建掘金草稿）。
@@ -395,5 +395,50 @@ describe("JuejinChannelService", () => {
     expect(body.cover_image).toBe("https://img.example.com/cover.png");
     // 掘金写端点不需要签名，也不调用任何上传端点。
     expect(calls.some((call) => /upload|image/i.test(call.endpoint))).toBe(false);
+  });
+
+  it("inlines local asset images to data URIs before creating the draft", async () => {
+    const { account, service, calls, sourceDirectory } = setupHarness();
+    const assetsDir = path.join(sourceDirectory, "posts", "source", "assets");
+    fs.writeFileSync(path.join(assetsDir, "local.png"), Buffer.from("local-png-bytes", "utf8"));
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const saved = service.saveDraft(draft.id, {
+      title: "本地图测试",
+      markdown: "# 本地图测试\n\n![本地图](./assets/local.png)\n",
+      coverSource: ""
+    });
+    const approved = service.approveDraft(saved.id);
+    const job = service.createPublishJob(approved.id);
+    await waitForJob(service, job.id, "draft_created");
+
+    const create = calls.find((call) => call.endpoint === "article_draft/create")!;
+    const body = JSON.parse(create.body) as Record<string, unknown>;
+    expect(body.mark_content).toContain("data:image/png;base64,");
+    expect(body.mark_content).toContain(Buffer.from("local-png-bytes", "utf8").toString("base64"));
+    expect(body.mark_content).not.toContain("./assets/local.png");
+    // 仍不调用任何上传端点（本地图直接内联，不上传图床）。
+    expect(calls.some((call) => /upload|image/i.test(call.endpoint))).toBe(false);
+  });
+
+  it("moves the job to failed when the inlined markdown exceeds the content length limit", async () => {
+    const { account, service, calls } = setupHarness();
+    const assetsDir = path.join(sourceDirectory!, "posts", "source", "assets");
+    fs.writeFileSync(path.join(assetsDir, "local.png"), Buffer.from("local-png-bytes", "utf8"));
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    // 正文接近本地上限（100000），内联一张本地图后必然超过掘金字数限制。
+    const longBody = `${"内容".repeat(49_980)}\n\n![本地图](./assets/local.png)\n`;
+    const saved = service.saveDraft(draft.id, {
+      title: "超长正文测试",
+      markdown: longBody,
+      coverSource: ""
+    });
+    const approved = service.approveDraft(saved.id);
+
+    const job = service.createPublishJob(approved.id);
+    const failed = await waitForJob(service, job.id, "failed");
+    expect(failed.errorMessage).toContain("超过掘金最大字数限制");
+    expect(failed.errorMessage).toContain("本地图片已内联");
+    // 本地侧拦截，不应向掘金发起 create 请求。
+    expect(calls.some((call) => call.endpoint === "article_draft/create")).toBe(false);
   });
 });

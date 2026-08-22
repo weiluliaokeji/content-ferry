@@ -17,6 +17,7 @@ import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
+import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 
 const juejinDraftSchema = {
   type: "object",
@@ -42,6 +43,9 @@ class JuejinCredentialsError extends Error {
     this.name = "JuejinCredentialsError";
   }
 }
+
+/** 掘金正文（markContent）最大字符数，与 saveDraft 本地校验保持一致。 */
+export const JUJIN_MAX_MARK_CONTENT_CHARS = 100_000;
 
 export type JuejinChannelDraftStatus = "draft" | "approved" | "superseded";
 export type JuejinChannelDraftGenerationMode = "rewrite" | "source";
@@ -219,7 +223,7 @@ export class JuejinChannelService {
   listDrafts(workspaceId: string, accountId?: string): JuejinChannelDraft[] {
     const rows = accountId
       ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId);
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'juejin' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
     if (needBackfill.length > 0) {
@@ -450,12 +454,43 @@ export class JuejinChannelService {
       const draft = this.requireDraft(job.channelDraftId);
       const options = this.publishOptionsCache.get(job.id) ?? { categoryId: "", tagIds: [] };
 
+      // 掘金图片上传接口需 msToken+a_bogus 反爬签名，普通 fetch 拿不到，
+      // 因此渠道采用外链直用策略。但用户文章中的本地相对路径图片（如
+      // ./assets/foo.png）掘金无法访问，必须先把本地图片转成 base64 data URI
+      // 内联；远程 http(s) 图片保持原样由掘金外链渲染。
+      const inlineResult = await inlineJuejinLocalImages(
+        draft.markdown,
+        draft.workspaceId,
+        draft.sourceRelativePath,
+        this.contentSources
+      );
+      if (inlineResult.inlinedCount > 0 || inlineResult.failed.length > 0) {
+        const noteParts: string[] = [];
+        if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
+        if (inlineResult.failed.length > 0) noteParts.push(`本地图片内联失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+        this.db.prepare(`UPDATE juejin_publish_jobs SET status_note = ? WHERE id = ?`)
+          .run(noteParts.join("；"), job.id);
+      }
+
       // 构建摘要：取 digest 字段，若为空则用 markdown 前 100 个字符
       const briefContent = (draft.digest || draft.markdown.replace(/#{1,6}\s+.*\n?/g, "").replace(/[#*`\n]/g, " ").trim().slice(0, 100)).slice(0, 100);
 
+      // 兜底：内联后正文仍超过掘金最大字数限制时，本地直接转 failed 并给出
+      // 明确提示，避免请求打到掘金被服务端拒绝（只留下不可见错误）。
+      if (inlineResult.markdown.length > JUJIN_MAX_MARK_CONTENT_CHARS) {
+        const noteParts: string[] = [];
+        if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
+        if (inlineResult.failed.length > 0) noteParts.push(`本地图片内联失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+        const reason = `正文经本地图片内联后为 ${inlineResult.markdown.length} 字符，超过掘金最大字数限制（${JUJIN_MAX_MARK_CONTENT_CHARS}）。${noteParts.join("；")}请删除过大的本地图片，或将文章拆分后重新生成渠道稿再发布。`;
+        return this.transitionJob(job, "failed", {
+          statusNote: reason,
+          errorMessage: reason
+        });
+      }
+
       const payload: JuejinDraftPayload = {
         title: draft.title.slice(0, 80),
-        markContent: draft.markdown,
+        markContent: inlineResult.markdown,
         briefContent,
         categoryId: options.categoryId || "6809637769959178254", // 默认"后端"分类
         tagIds: options.tagIds.length > 0 ? options.tagIds : [],
@@ -464,7 +499,9 @@ export class JuejinChannelService {
       };
 
       const result = await client.createDraft(payload);
-      const postUrl = result.linkUrl || `https://juejin.cn/post/${result.articleId}`;
+      // 草稿阶段展示掘金草稿编辑页（draftUrl），不要用 /post/{article_id}
+      // （该页只有公开后才存在，草稿阶段打开会 404/空白）。
+      const postUrl = result.draftUrl || result.linkUrl || `https://juejin.cn/editor/drafts?id=${result.draftId}`;
       return this.transitionJob(job, "draft_created", {
         remoteContentId: result.draftId,
         remoteUrl: postUrl,
