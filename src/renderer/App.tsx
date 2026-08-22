@@ -43,6 +43,7 @@ export function App() {
   const [sourcePath, setSourcePath] = useState("");
   const [sourcePreview, setSourcePreview] = useState<ContentSourcePreview>();
   const [libraryPage, setLibraryPage] = useState(1);
+  const [expandedLibraryActions, setExpandedLibraryActions] = useState<string | null>(null);
   const [publishPendingPage, setPublishPendingPage] = useState(1);
   const [publishCompletedPage, setPublishCompletedPage] = useState(1);
   const [libraryPageSize, setLibraryPageSize] = useState(5);
@@ -2677,24 +2678,36 @@ export function App() {
 
     {activeView === "library" && <>
     <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${libraryPageSize} 篇）` : ""}。</p><ul className="content-library-list">
-        {libraryPageItems.map((item) => (
-          <li key={item.relativePath}>
-            <span className="article-primary">
-              <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
-            </span>
-            <span className="channel-distribution">
-              {channelRowsFor(item).map((row) => (
-                <span className="channel-row" key={row.platform}>
-                  <span className="channel-name">{row.label}</span>
-                  <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
-                  <button className={row.action.kind === "continue" ? "secondary-button" : "text-button"} onClick={row.action.onClick}>{row.action.label}</button>
+        {libraryPageItems.map((item) => {
+          const rows = channelRowsFor(item);
+          return (
+            <li key={item.relativePath}>
+              <span className="article-primary">
+                <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+              </span>
+              <span className="channel-strip">
+                {rows.map((row) => (
+                  <span className="channel-chip" key={row.platform} title={`${row.label}：${row.statusLabel}`}>
+                    <span className="channel-chip-name">{row.label}</span>
+                    <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
+                  </span>
+                ))}
+                <span className="channel-actions-wrap">
+                  <button className={"secondary-button channel-actions-toggle" + (expandedLibraryActions === item.relativePath ? " active" : "")} onClick={() => setExpandedLibraryActions(expandedLibraryActions === item.relativePath ? null : item.relativePath)}>{expandedLibraryActions === item.relativePath ? "收起" : "操作"}</button>
+                  {expandedLibraryActions === item.relativePath && (
+                    <span className="channel-actions-popover">
+                      {rows.map((row) => (
+                        <button key={row.platform} className={row.action.kind === "continue" ? "secondary-button" : "text-button"} onClick={() => { setExpandedLibraryActions(null); row.action.onClick(); }}>{row.action.label}</button>
+                      ))}
+                    </span>
+                  )}
                 </span>
-              ))}
-            </span>
-          </li>
-        ))}
+              </span>
+            </li>
+          );
+        })}
       </ul>
-      <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => setLibraryPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => setLibraryPage((page) => Math.min(libraryTotalPages, page + 1))}>下一页</button></>}</div>
+      <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); setExpandedLibraryActions(null); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => { setLibraryPage((page) => Math.max(1, page - 1)); setExpandedLibraryActions(null); }}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => { setLibraryPage((page) => Math.min(libraryTotalPages, page + 1)); setExpandedLibraryActions(null); }}>下一页</button></>}</div>
       </>}</section>
     </>}
 
