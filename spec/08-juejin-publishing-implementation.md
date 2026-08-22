@@ -97,6 +97,7 @@ AIGC:
   - `credential_kind = "juejin_aid"` → AID
   - `credential_kind = "juejin_uuid"` → UUID（可选）
 - 凭据一次性接收、永不回显；列表只暴露 `juejinCookieConfigured` / `juejinAidConfigured` / `juejinUuidConfigured` 布尔。
+- 凭据获取：账号页支持「自动获取 Cookie」（应用内弹出掘金登录窗口，登录后自动抓取 Cookie/AID/UUID 并回填保存），设计见 `spec/09-juejin-cookie-grabber-design.md`。
 
 ### 4.2 发布任务表
 

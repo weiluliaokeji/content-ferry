@@ -83,6 +83,15 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <p>先添加一个 CSDN 账号，再到“内容库”对任一文章点击“生成 CSDN 稿”。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流。冻结后创建发布任务，再点「在浏览器中完成发布」：文渡会打开 CSDN 编辑器自动填充标题与正文，你在浏览器核对后点文渡的「我已在 CSDN 发布」，文渡会点击 CSDN 的发布按钮并读回链接；读不到链接时可在后台核实后「校正状态」。文渡不会绕过你的确认自动发布。</p>
           <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
         </details>
+        <details>
+          <summary>怎样配置掘金账号的 Cookie？</summary>
+          <p>在「账号」页添加掘金账号后，点击「配置掘金凭据」。推荐点击「自动获取 Cookie」：文渡会弹出掘金登录窗口，用扫码或手机号验证码完成登录后，会自动抓取 Cookie、AID（默认 2608）和 UUID 并回填保存，还会调用掘金接口验证登录态；验证未通过时凭据仍会保存，但界面会提示检查登录态。也可以手动从浏览器开发者工具复制含 sessionid 的 Cookie 粘贴保存。凭据加密保存在本机，不会回显。</p>
+        </details>
+        <details>
+          <summary>怎样创建掘金渠道稿？</summary>
+          <p>先添加一个掘金账号并配置凭据，再到「内容库」对任一文章点击「生成掘金稿」。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。冻结后创建掘金发布任务，文渡会先创建掘金草稿并展示草稿链接，确认无误后点击「确认公开」才会正式发布。掘金稿不会包含公众号链接、文末延伸阅读等软引流内容。</p>
+          <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
+        </details>
 
         <h2>常见问题</h2>
         <details>
