@@ -4,9 +4,10 @@
  * Stage 1: createDraft → article_draft/create (draft_creating → draft_created)
  * Stage 2: publish → article/publish (confirming → published)
  *
- * Images use external-link strategy (掘金 accepts external image URLs), so no
- * upload step is needed. The credentials are cookie + aid + uuid, stored via
- * CredentialVault.
+ * Images use ImageX upload strategy: local asset images are uploaded to Juejin's
+ * image CDN and replaced with CDN URLs; remote http(s) images stay as external
+ * links; upload failures fall back to base64 data URI inlining. The credentials
+ * are cookie + aid + uuid, stored via CredentialVault.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -18,6 +19,7 @@ import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
+import { JuejinImageUploader } from "./juejin-image-uploader";
 
 const juejinDraftSchema = {
   type: "object",
@@ -120,6 +122,17 @@ export class JuejinChannelService {
       supportsExternalLink: "allowed",
       supportsScheduledPublish: false
     };
+  }
+
+  /**
+   * 查询掘金官方标签选项，供发布草稿前强制选择标签使用
+   * （掘金 article_draft/create 要求至少 1 个标签，且标签须为官方 tag_id）。
+   */
+  async listTags(accountId: string): Promise<Array<{ id: string; name: string }>> {
+    const account = this.accounts.requireAccount(accountId);
+    if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
+    const { client } = this.buildClient(account);
+    return client.listTags();
   }
 
   async createFromSource(input: {
@@ -440,8 +453,11 @@ export class JuejinChannelService {
     }
 
     let client: JuejinClient;
+    let cookie = "";
     try {
-      client = this.buildClient(account);
+      const built = this.buildClient(account);
+      client = built.client;
+      cookie = built.cookie;
     } catch (error) {
       const reason = messageOf(error);
       return this.transitionJob(job, "needs_credentials", {
@@ -454,20 +470,23 @@ export class JuejinChannelService {
       const draft = this.requireDraft(job.channelDraftId);
       const options = this.publishOptionsCache.get(job.id) ?? { categoryId: "", tagIds: [] };
 
-      // 掘金图片上传接口需 msToken+a_bogus 反爬签名，普通 fetch 拿不到，
-      // 因此渠道采用外链直用策略。但用户文章中的本地相对路径图片（如
-      // ./assets/foo.png）掘金无法访问，必须先把本地图片转成 base64 data URI
-      // 内联；远程 http(s) 图片保持原样由掘金外链渲染。
+      // 掘金支持 ImageX 图片上传（5 步：gen_token → ApplyImageUpload → 直传 →
+      // CommitImageUpload → get_img_url），本地相对路径图片（如 ./assets/foo.png）
+      // 优先上传到掘金图床替换为 CDN URL；上传失败（含超 10MiB、无凭据等）时
+      // 回退为 base64 data URI 内联。远程 http(s) 图片保持原样由掘金外链渲染。
+      const uploader = new JuejinImageUploader({ cookie, fetcher: this.fetcher });
       const inlineResult = await inlineJuejinLocalImages(
         draft.markdown,
         draft.workspaceId,
         draft.sourceRelativePath,
-        this.contentSources
+        this.contentSources,
+        { uploader }
       );
-      if (inlineResult.inlinedCount > 0 || inlineResult.failed.length > 0) {
+      if (inlineResult.uploadedCount > 0 || inlineResult.inlinedCount > 0 || inlineResult.failed.length > 0) {
         const noteParts: string[] = [];
+        if (inlineResult.uploadedCount > 0) noteParts.push(`本地图片已上传 ${inlineResult.uploadedCount} 张`);
         if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
-        if (inlineResult.failed.length > 0) noteParts.push(`本地图片内联失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+        if (inlineResult.failed.length > 0) noteParts.push(`本地图片处理失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
         this.db.prepare(`UPDATE juejin_publish_jobs SET status_note = ? WHERE id = ?`)
           .run(noteParts.join("；"), job.id);
       }
@@ -479,9 +498,10 @@ export class JuejinChannelService {
       // 明确提示，避免请求打到掘金被服务端拒绝（只留下不可见错误）。
       if (inlineResult.markdown.length > JUJIN_MAX_MARK_CONTENT_CHARS) {
         const noteParts: string[] = [];
+        if (inlineResult.uploadedCount > 0) noteParts.push(`本地图片已上传 ${inlineResult.uploadedCount} 张`);
         if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
-        if (inlineResult.failed.length > 0) noteParts.push(`本地图片内联失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
-        const reason = `正文经本地图片内联后为 ${inlineResult.markdown.length} 字符，超过掘金最大字数限制（${JUJIN_MAX_MARK_CONTENT_CHARS}）。${noteParts.join("；")}请删除过大的本地图片，或将文章拆分后重新生成渠道稿再发布。`;
+        if (inlineResult.failed.length > 0) noteParts.push(`本地图片处理失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+        const reason = `正文经本地图片处理后为 ${inlineResult.markdown.length} 字符，超过掘金最大字数限制（${JUJIN_MAX_MARK_CONTENT_CHARS}）。${noteParts.join("；")}请删除过大的本地图片，或将文章拆分后重新生成渠道稿再发布。`;
         return this.transitionJob(job, "failed", {
           statusNote: reason,
           errorMessage: reason
@@ -527,7 +547,7 @@ export class JuejinChannelService {
   private async publishRemotePost(jobId: string): Promise<JuejinPublishJob> {
     const job = this.requireJob(jobId);
     const account = this.accounts.requireAccount(job.accountId);
-    const client = this.buildClient(account);
+    const { client } = this.buildClient(account);
     const draftId = job.remoteContentId;
     if (!draftId) throw new JuejinChannelError("缺少掘金草稿的 draft id，无法公开。");
     const result = await client.publish(draftId);
@@ -559,9 +579,9 @@ export class JuejinChannelService {
     return { cookie, aid, uuid };
   }
 
-  private buildClient(account: MediaAccount): JuejinClient {
+  private buildClient(account: MediaAccount): { client: JuejinClient; cookie: string } {
     const { cookie, aid, uuid } = this.loadCredentials(account);
-    return new JuejinClient(cookie, aid, uuid, this.fetcher);
+    return { client: new JuejinClient(cookie, aid, uuid, this.fetcher), cookie };
   }
 
   private transitionJob(

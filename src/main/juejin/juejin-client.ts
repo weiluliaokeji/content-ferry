@@ -201,8 +201,29 @@ export class JuejinClient {
     return null;
   }
 
-  private async call<T>(endpoint: string, body: unknown): Promise<T> {
-    const url = new URL(`${CONTENT_API}/${endpoint}`);
+  /**
+   * 查询掘金官方标签列表（tag_api/v1/query_tag_list）。
+   * 用于发布前让用户从官方选项中选择标签，避免手工填写导致接口拒绝。
+   */
+  async listTags(keyword = "", limit = 60): Promise<Array<{ id: string; name: string }>> {
+    const data = await this.call<Array<Record<string, unknown>>>(
+      "tag_api/v1/query_tag_list",
+      { key_word: keyword, cursor: "0", limit, sort_type: 1 },
+      API_BASE
+    );
+    if (!Array.isArray(data)) return [];
+    const tags: Array<{ id: string; name: string }> = [];
+    for (const entry of data) {
+      const tag = (entry.tag ?? {}) as Record<string, unknown>;
+      const id = String(tag.tag_id ?? "");
+      const name = String(tag.tag_name ?? "");
+      if (id && name) tags.push({ id, name });
+    }
+    return tags;
+  }
+
+  private async call<T>(endpoint: string, body: unknown, base = CONTENT_API): Promise<T> {
+    const url = new URL(`${base}/${endpoint}`);
     url.searchParams.set("aid", this.aid);
     if (this.uuid) url.searchParams.set("uuid", this.uuid);
     url.searchParams.set("spider", "0");

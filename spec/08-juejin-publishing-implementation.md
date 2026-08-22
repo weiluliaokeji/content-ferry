@@ -31,7 +31,7 @@ AIGC:
 | 操作范围 | 仅发布新文章；编辑/更新已发布文章列为二期 |
 | 入口形态 | 完整渠道稿工作台（对齐 CSDN / 博客园） |
 | 凭据 | Cookie + AID + UUID（Cookie 从掘金编辑器页登录态获取） |
-| 图片策略 | 外链直用（掘金接受外部图片 URL），无需上传图床 |
+| 图片策略 | 本地图片经 ImageX 上传接口传至掘金图床并替换为 CDN URL；远程图片外链直用 |
 
 ## 2. 需求范围
 
@@ -172,7 +172,7 @@ createPublishJob → draft_creating
 
 ## 6. 图片处理
 
-- 掘金接受外部图片 URL：本地图片引用**保持外链策略**，不做上传，无需图床上传步骤（与博客园 newMediaObject 方案不同）。
+- 掘金接受外部图片 URL：远程 http(s) 图片保持外链；本地相对路径图片先上传到掘金 ImageX 图床（STS 凭证 + AWS SigV4 五步流程），替换为 CDN URL（`main_url`）。上传失败或单张超过 10M 时回退为 base64 data URI 内联；内联后正文超过 100k 字符本地转 failed 并提示。
 - 封面：`coverSource` 直接写入 `cover_image` 字段；空则留空。
 
 ## 7. 分类与标签映射

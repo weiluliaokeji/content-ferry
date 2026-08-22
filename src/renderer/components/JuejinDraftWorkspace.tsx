@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { VisualMarkdownEditor } from "./VisualMarkdownEditor";
 import type { VisualMarkdownSelection } from "./VisualMarkdownEditor";
 import { request, apiBase, renderPhonePreview, resolveArticleImageUrl, extractMarkdownImages } from "../main";
@@ -104,14 +104,6 @@ const SELECTION_ACTIONS: Array<{ value: "humanize" | "rewrite" | "expand" | "sho
   { value: "example", label: "补充案例" }
 ];
 
-function splitCommaList(value: string): string[] {
-  return value.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
-}
-
-function resolveJuejinTagIds(tokens: string[]): string[] {
-  return tokens.map((token) => JUEJIN_KNOWN_TAGS[token] ?? token);
-}
-
 export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack }: JuejinDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("preview");
@@ -123,7 +115,11 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [publishCategory, setPublishCategory] = useState("");
-  const [publishTags, setPublishTags] = useState("");
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [availableTags, setAvailableTags] = useState<Array<{ id: string; name: string }>>([]);
+  const [tagsLoading, setTagsLoading] = useState(true);
+  const [tagsError, setTagsError] = useState("");
+  const [tagSearch, setTagSearch] = useState("");
   const [correcting, setCorrecting] = useState(false);
   const [correctionStatus, setCorrectionStatus] = useState<"published" | "failed" | "cancelled">("published");
   const [correctionReason, setCorrectionReason] = useState("已在掘金后台核实");
@@ -214,7 +210,11 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
 
   const handlePublish = () => {
     if (!publishCategory) return;
-    onPublish({ categoryId: publishCategory, tagIds: resolveJuejinTagIds(splitCommaList(publishTags)) });
+    if (selectedTagIds.length === 0) {
+      setTagsError("请至少选择一个掘金标签后再发布。");
+      return;
+    }
+    onPublish({ categoryId: publishCategory, tagIds: selectedTagIds });
   };
 
   const handleConfirmPublish = async () => {
@@ -263,6 +263,39 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
 
   const isDraft = draft.status === "draft";
   const jobStatus = job?.status;
+
+  // 分类/标签可编辑条件：草稿始终可编辑；已冻结稿只有在尚未创建任务、
+  // 或任务已取消/失败（可重新发布）时才允许重新选择分类与标签。
+  const canEditPublishOptions = isDraft || !job || jobStatus === "cancelled" || jobStatus === "failed";
+
+  // 加载掘金官方标签选项（掘金要求至少 1 个标签，且必须是官方 tag_id）。
+  useEffect(() => {
+    let cancelled = false;
+    setTagsLoading(true);
+    setTagsError("");
+    request<{ items: Array<{ id: string; name: string }> }>(`/integrations/juejin/tags/${draft.accountId}`)
+      .then((payload) => {
+        if (cancelled) return;
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (items.length === 0) throw new Error("掘金标签列表为空。");
+        setAvailableTags(items);
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        setTagsError(cause instanceof Error ? cause.message : "无法加载掘金标签。");
+        setAvailableTags(Object.entries(JUEJIN_KNOWN_TAGS).map(([name, id]) => ({ id, name })));
+      })
+      .finally(() => { if (!cancelled) setTagsLoading(false); });
+    return () => { cancelled = true; };
+  }, [draft.accountId]);
+
+  const toggleTag = (id: string) => {
+    setSelectedTagIds((current) =>
+      current.includes(id)
+        ? current.filter((tagId) => tagId !== id)
+        : current.length >= 5 ? current : [...current, id]
+    );
+  };
 
   const switchToMarkdown = () => {
     setEditorMode("markdown");
@@ -399,7 +432,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
         <span>{saving ? "正在保存…" : dirty ? "有未保存修改" : "已保存"}</span>
         {job && <span className="hint cnblogs-inline-status">{juejinJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
-        {!job && <button onClick={handlePublish} disabled={saving || !publishCategory}>发布到掘金</button>}
+        {!job && <button onClick={handlePublish} disabled={saving || !publishCategory || selectedTagIds.length === 0}>发布到掘金</button>}
         {jobStatus === "draft_creating" && <span className="status-badge neutral">正在创建掘金草稿…</span>}
         {jobStatus === "draft_created" && <>
           {job?.remoteUrl && <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="secondary-button">查看掘金草稿</a>}
@@ -467,8 +500,8 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
           <h3>发布设置</h3>
           {assistantError && <p className="error editor-inline-error">{assistantError}</p>}
           {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">掘金账号尚未配置 Cookie / aid / uuid，请先前往账号管理补凭据后重试。</div>}
-          {jobStatus === "failed" && job?.errorMessage && <div className="cnblogs-publish-error" role="alert"><strong>发布失败</strong><span>{job.errorMessage}</span><small>可点击顶部「重试发布」再次尝试；如仍失败，可在掘金后台核对后使用人工校正。</small></div>}
-          {jobStatus === "cancelled" && <p className="hint">本次发布任务已取消。可点击顶部「重新发布」重新创建任务。</p>}
+          {jobStatus === "failed" && job?.errorMessage && <div className="cnblogs-publish-error" role="alert"><strong>发布失败</strong><span>{job.errorMessage}</span><small>可重新选择分类与标签后点击顶部「重试发布」再次尝试；如仍失败，可在掘金后台核对后使用人工校正。</small></div>}
+          {jobStatus === "cancelled" && <p className="hint">本次发布任务已取消。可重新选择分类与标签后，点击顶部「重新发布」创建新任务。</p>}
           {showReconciliationForm && <div className="cnblogs-reconcile-form">
             {!correcting ? <p className="hint">发布结果无法自动确认（回执缺失或异常）。请到掘金后台核对草稿/文章实际状态后人工校正。</p> : <>
               <label>最终状态<select value={correctionStatus} onChange={(event) => setCorrectionStatus(event.target.value as "published" | "failed" | "cancelled")}><option value="published">已发布</option><option value="failed">发布失败</option><option value="cancelled">取消发布</option></select></label>
@@ -484,8 +517,18 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
             <small>{draft.digest.length}/100 字{draft.digest ? "" : " · 默认沿用主稿摘要，也可让 AI 重新生成"}</small>
             <button type="button" className="secondary-button" onClick={() => void generateSummary()} disabled={!isDraft || saving || summaryBusy}>{summaryBusy ? "AI 正在提炼摘要…" : draft.digest ? "AI 重新生成摘要" : "AI 生成适配摘要"}</button>
           </label>
-          <label>分类（必选）<select value={publishCategory} disabled={!!job || !isDraft} onChange={(event) => setPublishCategory(event.target.value)}><option value="">请选择分类…</option>{JUEJIN_CATEGORIES.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select><small>掘金要求必选一个分类；草稿已创建后不可修改。</small></label>
-          <label>标签（可选，最多 5 个）<input value={publishTags} disabled={!!job || !isDraft} onChange={(event) => setPublishTags(event.target.value)} placeholder="如：AI编程、OpenAI；多个用逗号分隔" /><small>已知标签名（AI编程/OpenAI/AIGC）自动映射为 ID，其余按标签 ID 原文透传；草稿已创建后不可修改。</small></label>
+          <label>分类（必选）<select value={publishCategory} disabled={!canEditPublishOptions} onChange={(event) => setPublishCategory(event.target.value)}><option value="">请选择分类…</option>{JUEJIN_CATEGORIES.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select><small>掘金要求必选一个分类；草稿已创建且任务进行中时不可修改。</small></label>
+          <label>标签（必选 1~5 个）
+            {tagsLoading ? <p className="hint">正在加载掘金官方标签…</p> : <>
+              <input value={tagSearch} disabled={!canEditPublishOptions} onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索掘金标签…" />
+              <div className="juejin-tag-options">
+                {availableTags.filter((tag) => tag.name.includes(tagSearch.trim())).map((tag) => (
+                  <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)}>{tag.name}</button>
+                ))}
+              </div>
+              <small>已选 {selectedTagIds.length}/5 个 · 选项来自掘金官方标签{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。</small>
+            </>}
+          </label>
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>1. 点击「发布到掘金」，渠道稿冻结为快照并创建掘金草稿；2. 草稿创建完成后可先到掘金草稿箱预览；3. 点击「确认公开」后文章正式对外可见。</small></div>
           <div className="settings-cover-section">
             <strong>封面</strong>

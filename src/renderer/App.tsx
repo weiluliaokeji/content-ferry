@@ -42,6 +42,7 @@ export function App() {
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [sourcePath, setSourcePath] = useState("");
   const [sourcePreview, setSourcePreview] = useState<ContentSourcePreview>();
+  const [libraryPage, setLibraryPage] = useState(1);
   const [sourceArticle, setSourceArticle] = useState<ContentSourceArticle>();
   const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "preview" | "settings">("assistant");
   const [projectModalOpen, setProjectModalOpen] = useState(false);
@@ -244,6 +245,7 @@ export function App() {
     const source = await request<{ rootPath: string | null }>("/content-source");
     if (!source.rootPath) { setSourcePreview(undefined); return; }
     setSourcePath(source.rootPath);
+    setLibraryPage(1);
     setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
   };
   const loadWechatJobs = async () => {
@@ -2550,6 +2552,12 @@ export function App() {
   const researchReadOnly = researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false;
   const outlineReadOnly = outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false;
 
+  // 内容库分页：每页 20 篇文章；扫描结果变化时自动收敛页码。
+  const LIBRARY_PAGE_SIZE = 20;
+  const libraryTotalPages = sourcePreview ? Math.max(1, Math.ceil(sourcePreview.items.length / LIBRARY_PAGE_SIZE)) : 1;
+  const librarySafePage = Math.min(libraryPage, libraryTotalPages);
+  const libraryPageItems = sourcePreview ? sourcePreview.items.slice((librarySafePage - 1) * LIBRARY_PAGE_SIZE, librarySafePage * LIBRARY_PAGE_SIZE) : [];
+
   return <div className="app-shell">
     <aside className="app-sidebar">
       <div className="app-brand"><img src={wenduLogo} alt="" /><strong>文渡<small>ContentFerry</small></strong></div>
@@ -2654,8 +2662,8 @@ export function App() {
     </>}
 
     {activeView === "library" && <>
-    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章。</p><ul className="content-library-list">
-        {sourcePreview.items.map((item) => (
+    <section className="card"><div className="section-heading"><div><h2>VitePress 文章库</h2><p className="hint compact-hint">这里的 Markdown 文件是正式内容源，可同时用 Obsidian 编辑，也可以发布到已接入的平台。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>{sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${LIBRARY_PAGE_SIZE} 篇）` : ""}。</p><ul className="content-library-list">
+        {libraryPageItems.map((item) => (
           <li key={item.relativePath}>
             <span className="article-primary">
               <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
@@ -2671,7 +2679,9 @@ export function App() {
             </span>
           </li>
         ))}
-      </ul></>}</section>
+      </ul>
+      {libraryTotalPages > 1 && <div className="library-pagination"><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => setLibraryPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => setLibraryPage((page) => Math.min(libraryTotalPages, page + 1))}>下一页</button></div>}
+      </>}</section>
     </>}
 
     {activeView === "publish" && <>

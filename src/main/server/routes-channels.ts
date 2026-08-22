@@ -200,6 +200,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
     return juejinChannels.capabilities(account.id);
   });
 
+  server.get("/api/integrations/juejin/tags/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const account = accounts.requireAccount(params.accountId);
+    if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
+    return { items: await juejinChannels.listTags(account.id) };
+  });
+
   server.get("/api/integrations/juejin/channel-drafts", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);

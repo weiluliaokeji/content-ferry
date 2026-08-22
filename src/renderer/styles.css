@@ -197,6 +197,13 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .channel-distribution { display: grid; gap: .4rem; justify-items: end; }
 .channel-row { display: flex; align-items: center; gap: .6rem; }
 .channel-name { font-weight: 600; min-width: 5.5rem; color: #334155; text-align: right; }
+.library-pagination { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; margin-top: .9rem; }
+.library-pagination-info { color: #516078; font-size: .875rem; }
+.juejin-tag-options { display: flex; flex-wrap: wrap; gap: .45rem; margin: .5rem 0 .35rem; }
+.juejin-tag-options button { padding: .28rem .7rem; border: 1px solid #d7deeb; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; font-size: .85rem; }
+.juejin-tag-options button:hover:not(:disabled) { border-color: #2b5fd0; color: #2b5fd0; }
+.juejin-tag-options button.active { background: #2b5fd0; border-color: #2b5fd0; color: #fff; }
+.juejin-tag-options button:disabled { opacity: .55; cursor: not-allowed; }
 .status-badge.info { background: #e7effd; color: #2b5fd0; }
 .editor-workspace { height: 100vh; overflow: hidden; background: #eef2f8; color: #172033; }
 .editor-topbar { box-sizing: border-box; height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .4rem 1rem; border-bottom: 1px solid #dfe5f0; background: #fff; }
