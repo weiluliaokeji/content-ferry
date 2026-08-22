@@ -1,8 +1,10 @@
 import type { ContentSourceService } from "../content/content-source-service";
+import type { JuejinImageUploader } from "./juejin-image-uploader";
 
 export interface JuejinImageInliningResult {
   markdown: string;
   inlinedCount: number;
+  uploadedCount: number;
   failed: Array<{ source: string; reason: string }>;
 }
 
@@ -10,8 +12,12 @@ export interface JuejinImageInliningResult {
  * 内联预算上限（字符）。掘金正文 mark_content 有服务端长度限制（本地校验为
  * 100000），base64 会把图片放大到原体积的 4/3 倍，若全部内联很容易超限。
  * 默认预算留出余量：内联后 markdown 总长不会逼近 100000。
+ * 仅在上传失败回退内联时生效。
  */
 export const DEFAULT_MAX_INLINE_TOTAL_CHARS = 90_000;
+
+/** 单张图片超过该字节数（10 MiB）时跳过上传，直接回退 data URI 内联。 */
+export const DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 interface ImageMatch {
   start: number;
@@ -22,25 +28,40 @@ interface ImageMatch {
 
 const imagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
 
+export interface InlineJuejinLocalImagesOptions {
+  /** 回退内联时的总字符预算（默认 DEFAULT_MAX_INLINE_TOTAL_CHARS）。 */
+  maxTotalInlineChars?: number;
+  /** 图片上传器。提供时本地图片优先走掘金 ImageX 上传，失败回退内联；缺省时全部内联。 */
+  uploader?: JuejinImageUploader;
+  /** 单张图片上传大小上限（默认 10 MiB），超过则跳过上传直接内联。 */
+  maxUploadBytes?: number;
+}
+
 /**
- * Inline local article images as base64 data URIs before submitting a Juejin
- * draft. Juejin's image upload endpoint requires msToken + a_bogus anti-crawl
- * signatures that a plain fetch cannot obtain, so the channel relies on
- * external-link references instead. Remote http(s) images stay untouched
- * (Juejin renders external URLs), and local relative paths (e.g.
- * `./assets/foo.png`) — which Juejin can never resolve — are converted to
- * inline data URIs so they render inside the draft.
+ * 将文章中的本地图片转换为掘金可访问的 URL。
+ *
+ * 掘金图片上传接口现已支持（ImageX 5 步流程），因此本地相对路径图片（如
+ * `./assets/foo.png`）优先通过上传器上传到掘金图床，替换为 CDN URL；上传失败
+ * （含超时、超大小上限、无上传器）时回退为 base64 data URI 内联，保证正文可渲染。
+ * 远程 http(s) 图片保持原样（掘金外链渲染），data URI 与代码块内语法不动。
  */
 export async function inlineJuejinLocalImages(
   markdown: string,
   workspaceId: string,
   sourceRelativePath: string,
   contentSources: ContentSourceService,
-  maxTotalInlineChars = DEFAULT_MAX_INLINE_TOTAL_CHARS
+  options: InlineJuejinLocalImagesOptions | number = {}
 ): Promise<JuejinImageInliningResult> {
+  const opts: InlineJuejinLocalImagesOptions =
+    typeof options === "number" ? { maxTotalInlineChars: options } : options;
+  const maxTotalInlineChars = opts.maxTotalInlineChars ?? DEFAULT_MAX_INLINE_TOTAL_CHARS;
+  const uploader = opts.uploader;
+  const maxUploadBytes = opts.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES;
+
   const matches = collectJuejinImageMatches(markdown);
   // Replace from end to start so earlier indices stay valid after each splice.
   let result = markdown;
+  let uploadedCount = 0;
   let inlinedCount = 0;
   let inlinedTotalChars = 0;
   const failed: Array<{ source: string; reason: string }> = [];
@@ -62,6 +83,22 @@ export async function inlineJuejinLocalImages(
         failed.push({ source, reason: "图片内容为空。" });
         continue;
       }
+
+      // 优先上传到掘金图床；仅当没有上传器、图片超过大小上限或上传失败时回退内联。
+      if (uploader && buffer.length <= maxUploadBytes) {
+        try {
+          const { url } = await uploader.uploadImage(buffer);
+          result = result.slice(0, start) + `![${alt}](${url})` + result.slice(end);
+          uploadedCount++;
+          continue;
+        } catch (error) {
+          failed.push({
+            source,
+            reason: `图片上传失败，已回退内联：${error instanceof Error ? error.message : String(error)}`
+          });
+        }
+      }
+
       const dataUrl = `data:${resource.mimeType};base64,${buffer.toString("base64")}`;
       // 内联预算保护：base64 会把图片放大 4/3 倍，全部内联可能撑爆掘金正文
       // 长度限制。超出预算的图片保留原路径并记录失败原因，由用户侧处理。
@@ -77,7 +114,7 @@ export async function inlineJuejinLocalImages(
     }
   }
 
-  return { markdown: result, inlinedCount, failed };
+  return { markdown: result, inlinedCount, uploadedCount, failed };
 }
 
 export function collectJuejinImageMatches(markdown: string): ImageMatch[] {

@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountRepository } from "../accounts/account-repository";
 import { ContentSourceService } from "../content/content-source-service";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
-import { inlineJuejinLocalImages } from "./juejin-image-inliner";
+import { inlineJuejinLocalImages, DEFAULT_MAX_UPLOAD_BYTES } from "./juejin-image-inliner";
+import type { JuejinImageUploader } from "./juejin-image-uploader";
 
 describe("inlineJuejinLocalImages", () => {
   let database: AppDatabase | undefined;
@@ -117,5 +118,57 @@ describe("inlineJuejinLocalImages", () => {
     expect(result.markdown).toContain("data:image/png;base64,");
     expect(result.markdown).toContain("![大图](./assets/big.png)");
     expect(result.failed.some((f) => f.source === "./assets/big.png" && f.reason.includes("预算"))).toBe(true);
+  });
+
+  it("uploads a local image to ImageX and replaces it with the CDN URL when an uploader is provided", async () => {
+    const { workspaceId, relativePath, contentSources } = setupArticle();
+    const uploader = {
+      uploadImage: vi.fn(async () => ({ url: "https://p1-juejin.byteimg.com/tos-cn-i-test/up.png~tplv-k3u1fbpfcp-watermark.image", storeUri: "tos-cn-i-test/up.png" }))
+    } as unknown as JuejinImageUploader;
+    const markdown = "# 测试\n\n![示意图](./assets/diagram.png)\n";
+    const result = await inlineJuejinLocalImages(markdown, workspaceId, relativePath, contentSources, { uploader });
+
+    expect(result.uploadedCount).toBe(1);
+    expect(result.inlinedCount).toBe(0);
+    expect(result.failed).toHaveLength(0);
+    expect(result.markdown).toContain("https://p1-juejin.byteimg.com/tos-cn-i-test/up.png");
+    expect(result.markdown).not.toContain("data:image/png;base64,");
+    expect(result.markdown).not.toContain("./assets/diagram.png");
+    expect(uploader.uploadImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to data URI inlining when the ImageX upload fails", async () => {
+    const { workspaceId, relativePath, contentSources } = setupArticle();
+    const uploader = {
+      uploadImage: vi.fn(async () => { throw new Error("HTTP 403"); })
+    } as unknown as JuejinImageUploader;
+    const markdown = "# 测试\n\n![示意图](./assets/diagram.png)\n";
+    const result = await inlineJuejinLocalImages(markdown, workspaceId, relativePath, contentSources, { uploader });
+
+    expect(result.uploadedCount).toBe(0);
+    expect(result.inlinedCount).toBe(1);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].source).toBe("./assets/diagram.png");
+    expect(result.failed[0].reason).toContain("上传失败，已回退内联");
+    expect(result.markdown).toContain("data:image/png;base64,");
+  });
+
+  it("skips upload and inlines directly when a single image exceeds the upload size limit", async () => {
+    const { workspaceId, relativePath, contentSources } = setupArticle();
+    const articleDirectory = path.join(sourceDirectory!, "posts", "article");
+    fs.writeFileSync(path.join(articleDirectory, "assets", "big.png"), Buffer.alloc(DEFAULT_MAX_UPLOAD_BYTES + 1, 0x61));
+    const uploader = {
+      uploadImage: vi.fn(async () => ({ url: "https://p1-juejin.byteimg.com/tos-cn-i-test/up.png", storeUri: "tos-cn-i-test/up.png" }))
+    } as unknown as JuejinImageUploader;
+    const markdown = "# 测试\n\n![大图](./assets/big.png)\n";
+    // 图片超过 10 MiB 上传上限，不调用上传器，直接回退内联（10 MiB base64 后约 14M 字符，会超过默认 90k 预算，
+    // 因此最终应记录预算失败并保留原路径）。
+    const result = await inlineJuejinLocalImages(markdown, workspaceId, relativePath, contentSources, { uploader });
+
+    expect(uploader.uploadImage).not.toHaveBeenCalled();
+    expect(result.uploadedCount).toBe(0);
+    expect(result.inlinedCount).toBe(0);
+    expect(result.failed.some((f) => f.source === "./assets/big.png" && f.reason.includes("预算"))).toBe(true);
+    expect(result.markdown).toContain("![大图](./assets/big.png)");
   });
 });
