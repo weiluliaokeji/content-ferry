@@ -258,7 +258,9 @@ describe("JuejinChannelService", () => {
     const create = calls.find((call) => call.endpoint === "article_draft/create")!;
     const body = JSON.parse(create.body) as Record<string, unknown>;
     expect(body.title).toBe("掘金分类测试");
-    expect(body.mark_content).toContain("掘金分类测试");
+    // 掘金 title 已单独提交，正文不再重复携带首行 "# 标题"。
+    expect(body.mark_content).not.toContain("掘金分类测试");
+    expect(body.mark_content).toContain("正文");
     expect(body.brief_content).toBe("掘金摘要");
     expect(body.category_id).toBe("6809637771511070734");
     expect(body.tag_ids).toEqual(["7467857238494020000", "6809641073527226000"]);

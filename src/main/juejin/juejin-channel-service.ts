@@ -508,9 +508,13 @@ export class JuejinChannelService {
         });
       }
 
+      // 掘金 title 字段已单独提交文章标题，正文首行的 "# {title}"（本地预览
+      // 需要）会在页内再渲染一次大标题，形成双标题，发布时剥离开头标题。
+      const markContent = stripLeadingTitleHeading(inlineResult.markdown);
+
       const payload: JuejinDraftPayload = {
         title: draft.title.slice(0, 80),
-        markContent: inlineResult.markdown,
+        markContent,
         briefContent,
         categoryId: options.categoryId || "6809637769959178254", // 默认"后端"分类
         tagIds: options.tagIds.length > 0 ? options.tagIds : [],
@@ -635,6 +639,11 @@ function normalizeMarkdown(markdown: string, title: string): string {
   const withoutFrontMatter = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
   const withoutLeadingTitle = withoutFrontMatter.replace(/^#\s+.+\n+/, "").trim();
   return `# ${title}\n\n${withoutLeadingTitle}`;
+}
+
+/** 剥离开头的一级标题行（如发布时避免与文章标题重复渲染）。 */
+function stripLeadingTitleHeading(markdown: string): string {
+  return markdown.replace(/^#\s+.+\n+/, "").trim();
 }
 
 function assertNoJuejinPromotion(markdown: string): void {
