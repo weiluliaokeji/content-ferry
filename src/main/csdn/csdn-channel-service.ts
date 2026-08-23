@@ -6,6 +6,7 @@ import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { resolveCsdnImagesForBrowser, resolveCoverToDataUrl } from "./csdn-image-inliner";
+import { appendArticleSignature } from "../publishing/article-signature";
 
 const csdnDraftSchema = {
   type: "object",
@@ -144,7 +145,7 @@ export class CsdnChannelService {
           parse: (value) => parseGeneratedDraft(value)
         })).value
       : { title, markdown: article.markdown };
-    const markdown = normalizeMarkdown(generatedDraft.markdown, generatedDraft.title);
+    const markdown = appendArticleSignature(normalizeMarkdown(generatedDraft.markdown, generatedDraft.title), account.profile.articleSignature);
     assertNoCsdnPromotion(markdown);
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";

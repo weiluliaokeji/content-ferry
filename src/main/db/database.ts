@@ -66,6 +66,7 @@ export function initialiseDatabase(db: Database.Database): void {
       prohibited_topics TEXT NOT NULL DEFAULT '',
       writing_style TEXT NOT NULL DEFAULT '',
       regular_columns TEXT NOT NULL DEFAULT '',
+      article_signature TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
 
@@ -442,6 +443,11 @@ export function initialiseDatabase(db: Database.Database): void {
   const accountColumns = db.prepare("PRAGMA table_info(media_accounts)").all() as Array<{ name: string }>;
   if (!accountColumns.some((column) => column.name === "deleted_at")) {
     db.exec("ALTER TABLE media_accounts ADD COLUMN deleted_at TEXT");
+  }
+
+  const accountProfileColumns = db.prepare("PRAGMA table_info(account_profiles)").all() as Array<{ name: string }>;
+  if (!accountProfileColumns.some((column) => column.name === "article_signature")) {
+    db.exec("ALTER TABLE account_profiles ADD COLUMN article_signature TEXT NOT NULL DEFAULT ''");
   }
 
   const projectColumns = db.prepare("PRAGMA table_info(content_projects)").all() as Array<{ name: string }>;

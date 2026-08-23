@@ -17,6 +17,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
+import { appendArticleSignature } from "../publishing/article-signature";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
@@ -182,7 +183,7 @@ export class JuejinChannelService {
           parse: (value) => parseGeneratedDraft(value)
         })).value
       : { title, markdown: article.markdown };
-    const markdown = normalizeMarkdown(generatedDraft.markdown, generatedDraft.title);
+    const markdown = appendArticleSignature(normalizeMarkdown(generatedDraft.markdown, generatedDraft.title), account.profile.articleSignature);
     assertNoJuejinPromotion(markdown);
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";

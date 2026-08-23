@@ -6,6 +6,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
+import { appendArticleSignature } from "../publishing/article-signature";
 import { CnblogsApiError, CnblogsClient, type CnblogsBlogInfo, type CnblogsPostPayload } from "./cnblogs-client";
 import { uploadCnblogsImages } from "./cnblogs-image-uploader";
 
@@ -166,7 +167,7 @@ export class CnblogsChannelService {
           parse: (value) => parseGeneratedDraft(value)
         })).value
       : { title, markdown: article.markdown };
-    const markdown = normalizeMarkdown(generatedDraft.markdown, generatedDraft.title);
+    const markdown = appendArticleSignature(normalizeMarkdown(generatedDraft.markdown, generatedDraft.title), account.profile.articleSignature);
     assertNoCnblogsPromotion(markdown);
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";

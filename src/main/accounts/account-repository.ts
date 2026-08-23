@@ -10,6 +10,7 @@ export interface AccountProfile {
   prohibitedTopics: string;
   writingStyle: string;
   regularColumns: string;
+  articleSignature: string;
 }
 
 export interface MediaAccount {
@@ -35,7 +36,8 @@ const emptyProfile: AccountProfile = {
   targetAudience: "",
   prohibitedTopics: "",
   writingStyle: "",
-  regularColumns: ""
+  regularColumns: "",
+  articleSignature: ""
 };
 
 export class AccountRepository {
@@ -57,7 +59,7 @@ export class AccountRepository {
     const rows = this.db.prepare(`
       SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
              EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
-             p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns
+             p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature
       FROM media_accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
       WHERE a.workspace_id = ? AND a.deleted_at IS NULL ORDER BY a.created_at
     `).all(workspaceId) as Array<Record<string, string | null>>;
@@ -84,8 +86,8 @@ export class AccountRepository {
   updateProfile(accountId: string, profile: AccountProfile): MediaAccount {
     const now = new Date().toISOString();
     const changed = this.db.prepare(`UPDATE account_profiles SET positioning = ?, target_audience = ?, prohibited_topics = ?,
-      writing_style = ?, regular_columns = ?, updated_at = ? WHERE account_id = ?`)
-      .run(profile.positioning, profile.targetAudience, profile.prohibitedTopics, profile.writingStyle, profile.regularColumns, now, accountId);
+      writing_style = ?, regular_columns = ?, article_signature = ?, updated_at = ? WHERE account_id = ?`)
+      .run(profile.positioning, profile.targetAudience, profile.prohibitedTopics, profile.writingStyle, profile.regularColumns, profile.articleSignature, now, accountId);
     if (changed.changes === 0) throw new Error("Account not found.");
     return this.requireAccount(accountId);
   }
@@ -130,7 +132,7 @@ export class AccountRepository {
   requireAccount(id: string): MediaAccount {
     const row = this.db.prepare(`SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
       EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
-      p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns
+      p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature
       FROM media_accounts a JOIN account_profiles p ON p.account_id = a.id WHERE a.id = ? AND a.deleted_at IS NULL`).get(id) as Record<string, string | null> | undefined;
     if (!row) throw new Error("Account not found.");
     return this.mapAccount(row);
@@ -181,7 +183,8 @@ export class AccountRepository {
       capabilityLevel: row.capability_level as string, credentialsConfigured: Boolean(row.credentials_configured),
       profile: { positioning: row.positioning ?? emptyProfile.positioning, targetAudience: row.target_audience ?? emptyProfile.targetAudience,
         prohibitedTopics: row.prohibited_topics ?? emptyProfile.prohibitedTopics, writingStyle: row.writing_style ?? emptyProfile.writingStyle,
-        regularColumns: row.regular_columns ?? emptyProfile.regularColumns }
+        regularColumns: row.regular_columns ?? emptyProfile.regularColumns,
+        articleSignature: row.article_signature ?? emptyProfile.articleSignature }
     };
   }
 }

@@ -1,7 +1,7 @@
 import type { AccountProfile, ManagedSkill, ModelProviderId, SelectedImage, ZhuqueReport } from "./types";
 
 // 纯工具函数（自 main.tsx 拆分）
-export const emptyProfile: AccountProfile = { positioning: "", targetAudience: "", prohibitedTopics: "", writingStyle: "", regularColumns: "" };
+export const emptyProfile: AccountProfile = { positioning: "", targetAudience: "", prohibitedTopics: "", writingStyle: "", regularColumns: "", articleSignature: "" };
 
 export const providerName = (provider: ModelProviderId | null) => provider === null ? "无需模型" : ({
   openai_codex: "OpenAI Codex",

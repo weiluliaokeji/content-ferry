@@ -16,7 +16,7 @@ export type RootState =
   | { status: "ready"; settings: AppSettingsContract };
 
 export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin";
-export type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string };
+export type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string; articleSignature: string };
 export type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile };
 export type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null }>; truncated: boolean; warnings: string[] };
 export type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };

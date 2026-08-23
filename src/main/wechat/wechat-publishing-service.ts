@@ -5,6 +5,7 @@ import type { AccountRepository } from "../accounts/account-repository";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ContentSourceService } from "../content/content-source-service";
 import type { CredentialVault } from "../security/credential-vault";
+import { appendArticleSignature } from "../publishing/article-signature";
 
 type FetchLike = typeof fetch;
 type PublishMode = "publish" | "mass";
@@ -74,7 +75,7 @@ export class WechatPublishingService {
     const sourceArticle = row.source_relative_path && this.contentSources
       ? this.contentSources.getArticle(row.workspace_id, row.source_relative_path)
       : undefined;
-    const articleMarkdown = removeDuplicateLeadingTitle(sourceArticle?.markdown ?? row.markdown, row.topic);
+    const articleMarkdown = appendArticleSignature(removeDuplicateLeadingTitle(sourceArticle?.markdown ?? row.markdown, row.topic), account.profile.articleSignature);
     const prepared = await this.prepareWechatArticle(input.accountId, articleMarkdown, input.thumbMediaId, input.coverSource, async (source) => {
       const local = parseContentFerryAsset(source);
       if (local && this.assets) {
@@ -132,7 +133,7 @@ export class WechatPublishingService {
     if (!this.contentSources) throw new WechatApiError("VitePress 文章库尚未启用。");
     const article = this.contentSources.getArticle(account.workspaceId, input.relativePath);
     const fullTitle = article.title || article.relativePath.split("/").at(-2) || "未命名文章";
-    const prepared = await this.prepareWechatArticle(input.accountId, removeDuplicateLeadingTitle(article.markdown, fullTitle), input.thumbMediaId, input.coverSource, async (source) => {
+    const prepared = await this.prepareWechatArticle(input.accountId, appendArticleSignature(removeDuplicateLeadingTitle(article.markdown, fullTitle), account.profile.articleSignature), input.thumbMediaId, input.coverSource, async (source) => {
       if (/^https?:\/\//i.test(source)) return null;
       const asset = this.contentSources!.readArticleResource(account.workspaceId, article.relativePath, source);
       return {

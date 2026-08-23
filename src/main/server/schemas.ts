@@ -16,7 +16,8 @@ export const profileInput = z.object({
   targetAudience: z.string().max(4000).default(""),
   prohibitedTopics: z.string().max(4000).default(""),
   writingStyle: z.string().max(4000).default(""),
-  regularColumns: z.string().max(4000).default("")
+  regularColumns: z.string().max(4000).default(""),
+  articleSignature: z.string().max(4000).default("")
 });
 
 export const credentialInput = z.object({ secret: z.string().min(1).max(10000) });
