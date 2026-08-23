@@ -13,10 +13,15 @@ let stopping = false;
 
 function startDesktop() {
   restartRequested = false;
+  // Electron 必须以自身运行时启动；若环境中残留 ELECTRON_RUN_AS_NODE=1，
+  // 会让 electron.exe 退化为纯 Node 模式，导致 require('electron').app 为
+  // undefined、主进程崩溃、"程序启动不起来"。启动前显式清除该变量。
+  const desktopEnv = { ...process.env };
+  delete desktopEnv.ELECTRON_RUN_AS_NODE;
   desktop = spawn(electronExecutable, ["."], {
     cwd: projectRoot,
     env: {
-      ...process.env,
+      ...desktopEnv,
       CONTENTFERRY_DEV_SERVER_URL: "http://127.0.0.1:5175"
     },
     stdio: "inherit",
