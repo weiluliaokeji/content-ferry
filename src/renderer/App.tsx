@@ -1007,12 +1007,10 @@ export function App() {
         <button className={activeView === "dashboard" ? "active" : ""} onClick={() => setActiveView("dashboard")}>工作台</button>
         <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")}>内容库</button>
         <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")}>发布</button>
-        <button disabled>素材库 <small>即将开放</small></button>
         <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")}>技能与模型</button>
         <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")}>账号</button>
         <button className={activeView === "logs" ? "active" : ""} onClick={() => setActiveView("logs")}>运行日志</button>
         <button className={activeView === "help" ? "active" : ""} onClick={() => setActiveView("help")}>使用帮助</button>
-        <button disabled>数据 <small>即将开放</small></button>
       </nav>
     </aside>
     <main className="app-main">

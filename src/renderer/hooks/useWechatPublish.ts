@@ -289,12 +289,12 @@ export function useWechatPublish(params: UseWechatPublishParams) {
     if (!publishCoverSource && !publishThumbMediaId) { setError("请先返回文章编辑页，在“发布设置”中选择封面。"); return; }
     const qualityContextKey = publishSource ? `source:${publishSource.relativePath}` : `project:${publishProject!.id}`;
     const highAiRisk = isHighAiDetectionResult(publishAiCheckResult, publishZhuqueReport);
-    if (!publishAiCheckResult && publishAiOverrideReason.trim().length < 5) {
-      setError("请先完成腾讯朱雀或 ContentAny 任一项 AIGC 特征检测；如检测暂时无法完成，请填写至少 5 个字的例外发布理由。");
+    if (!publishAiCheckResult && publishAiOverrideReason.length < 1) {
+      setError("请先完成腾讯朱雀或 ContentAny 任一项 AIGC 特征检测；如检测暂时无法完成，请填写至少 1 个字的例外发布理由。");
       return;
     }
-    if (highAiRisk && publishAiOverrideReason.trim().length < 5) {
-      setError("检测结果显示 AI 特征偏高。仍需发布时，请填写至少 5 个字的例外发布理由。");
+    if (highAiRisk && publishAiOverrideReason.length < 1) {
+      setError("检测结果显示 AI 特征偏高。仍需发布时，请填写至少 1 个字的例外发布理由。");
       return;
     }
     setSaving(true);
