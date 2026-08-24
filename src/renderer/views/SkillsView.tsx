@@ -71,7 +71,7 @@ export function SkillsView(props: SkillsViewProps) {
                 <button type="button" className="skill-card-body" onClick={() => openSkillEditor(skill)}>
                   <span><em>{skill.category}</em><strong>{skill.name}</strong></span>
                   <p>{skill.description}</p>
-                  <small>{skill.enabled ? `已启用 · ${skillModelStatus(skill)}` : "已停用"}</small>
+                  <small>{skill.enabled ? `已启用 · ${skillModelStatus(skill, modelConnections)}` : "已停用"}</small>
                 </button>
               </div>
             ))}</div>

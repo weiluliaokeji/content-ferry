@@ -1,4 +1,4 @@
-import type { AccountProfile, ManagedSkill, ModelProviderId, SelectedImage, ZhuqueReport } from "./types";
+import type { AccountProfile, ManagedSkill, ModelConnection, ModelProviderId, SelectedImage, ZhuqueReport } from "./types";
 
 // 纯工具函数（自 main.tsx 拆分）
 export const emptyProfile: AccountProfile = { positioning: "", targetAudience: "", prohibitedTopics: "", writingStyle: "", regularColumns: "", articleSignature: "" };
@@ -10,12 +10,15 @@ export const providerName = (provider: ModelProviderId | null) => provider === n
 } as Record<ModelProviderId, string>)[provider];
 
 /** Returns the model status label shown on a skill card. Detection skills genuinely
- *  need no model; every other category requires one, so null means "not selected". */
-
-export const skillModelStatus = (skill: ManagedSkill) => {
+ *  need no model; every other category requires one, so null means "not selected".
+ *  For custom providers (e.g. OpenRouter), falls back to the connection displayName. */
+export const skillModelStatus = (skill: ManagedSkill, modelConnections?: ModelConnection[]) => {
   if (skill.category === "检测") return providerName(null);
   if (skill.provider === null) return "未选择模型";
-  return providerName(skill.provider);
+  const builtIn = providerName(skill.provider);
+  if (builtIn) return builtIn;
+  const connection = modelConnections?.find((c) => c.provider === skill.provider);
+  return connection?.displayName ?? skill.provider;
 };
 
 export function markdownTitle(markdown: string): string | undefined {
