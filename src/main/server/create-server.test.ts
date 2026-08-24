@@ -7,14 +7,51 @@ import type { FastifyInstance } from "fastify";
 import { buildServer } from "./create-server";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
-import type { GenerateStructuredRequest, ModelProvider } from "../ai/model-provider";
+import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, WebResearchOptions } from "../ai/model-provider";
+import type { ResearchCard, WebResearchContext } from "../ai/research-prompts";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { stageDirectoryDeletion } from "../content/content-source-service";
+
+// Under `ELECTRON_RUN_AS_NODE=1` the real electron `app` is not initialised,
+// so `app.getPath("userData")` is undefined and any code path that reads app
+// settings during a test would throw. Provide a minimal stand-in so the local
+// API tests can construct the server. This only affects the test process;
+// production still uses the real electron module.
+vi.mock("electron", async (importOriginal) => {
+  const nodeFs = await import("node:fs");
+  const nodeOs = await import("node:os");
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  const originalApp = (actual.app ?? {}) as Record<string, unknown>;
+  const tmp = process.env.CONTENTFERRY_TEST_USERDATA ?? `${nodeOs.tmpdir()}/contentferry-test-userdata`;
+  nodeFs.mkdirSync(tmp, { recursive: true });
+  const originalGetPath = originalApp.getPath as ((name: string) => string) | undefined;
+  return {
+    ...actual,
+    app: {
+      ...originalApp,
+      getPath: (name: string) => (name === "userData" ? tmp : (originalGetPath ? originalGetPath(name) : tmp)),
+      getAppPath: () => tmp
+    }
+  } as Record<string, unknown>;
+});
 
 const testVault: CredentialVault = {
   encrypt: (value) => Buffer.from(`encrypted:${value}`),
   decrypt: (value) => value.toString().replace("encrypted:", "")
 };
+
+// The research generation endpoints stream Server-Sent Events. Extract the
+// final `complete` event payload so assertions can read the structured result.
+function parseSseCompleteEvent(body: string): Record<string, unknown> {
+  for (const block of body.split("\n\n")) {
+    const eventMatch = /^event: (.+)$/m.exec(block);
+    const dataMatch = /^data: (.+)$/ms.exec(block);
+    if (eventMatch?.[1] === "complete" && dataMatch) {
+      return JSON.parse(dataMatch[1]) as Record<string, unknown>;
+    }
+  }
+  throw new Error(`SSE stream did not contain a 'complete' event. Body head: ${body.slice(0, 600)}`);
+}
 
 describe("local API scaffold", () => {
   let server: FastifyInstance | undefined;
@@ -704,17 +741,6 @@ describe("local API scaffold", () => {
       id: "test-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         prompts.push(request.prompt);
-        if (request.task === "research") {
-          return {
-            value: request.parse({
-              planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。",
-              sources: [{
-                title: "示例官方文档", url: "https://example.com/docs", excerpt: "用于验证资料卡持久化。",
-                keyClaims: ["提供了可核对的接入说明"], sourceType: "official"
-              }]
-            }), provider: "test-ai", model: null, usage: null
-          };
-        }
         const markdown = request.task === "outline"
           ? "# AI 提纲\n\n## 真实问题\n\n- 读者在采用 AI 工具时最容易忽略的边界"
           : "# AI 正文\n\n这是一份由测试模型生成的正文。";
@@ -723,6 +749,20 @@ describe("local API scaffold", () => {
           provider: "test-ai",
           model: "test-model",
           usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 2 }
+        };
+      },
+      async webResearch(_context: WebResearchContext): Promise<GenerateStructuredResult<ResearchCard>> {
+        return {
+          value: {
+            planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。",
+            sources: [{
+              title: "示例官方文档", url: "https://example.com/docs", excerpt: "用于验证资料卡持久化。",
+              keyClaims: ["提供了可核对的接入说明"], sourceType: "official"
+            }]
+          },
+          provider: "test-ai",
+          model: null,
+          usage: null
         };
       }
     };
@@ -743,8 +783,12 @@ describe("local API scaffold", () => {
 
     const research = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/generate` });
     expect(research.statusCode).toBe(200);
-    expect(research.json()).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: true }] });
-    const researchSourceId = research.json().sources[0].id as string;
+    const researchResult = parseSseCompleteEvent(research.body) as {
+      planMarkdown: string;
+      sources: Array<{ id: string; title: string; selected: boolean }>;
+    };
+    expect(researchResult).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: true }] });
+    const researchSourceId = researchResult.sources[0].id;
     const deselected = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { selected: false } });
     expect(deselected.statusCode).toBe(200);
     expect(deselected.json().sources[0]).toMatchObject({ id: researchSourceId, selected: false });
@@ -759,17 +803,28 @@ describe("local API scaffold", () => {
     const draft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
     expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI Agent 如何改变开发流程\n\n这是一份由测试模型生成的正文。" });
     expect(prompts[0]).toContain("账号定位：帮助技术从业者理解 AI 工具");
-    expect(prompts[1]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
-    expect(prompts[2]).toContain("已确认提纲");
+    expect(prompts[0]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
+    expect(prompts[1]).toContain("已确认提纲");
   });
 
   it("appends follow-up research and records it in the article's Awen conversation", async () => {
     const fakeProvider: ModelProvider = {
       id: "test-research-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
-        const isFollowUp = request.prompt.includes("第二轮增量联网补研");
+        const markdown = request.task === "outline"
+          ? "# AI 提纲\n\n## 真实问题\n\n- 读者在采用 AI 工具时最容易忽略的边界"
+          : "# AI 正文\n\n这是一份由测试模型生成的正文。";
         return {
-          value: request.parse({
+          value: request.parse({ markdown }),
+          provider: "test-research-ai",
+          model: "test-model",
+          usage: null
+        };
+      },
+      async webResearch(_context: WebResearchContext, _onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+        const isFollowUp = options?.instruction !== undefined;
+        return {
+          value: {
             planMarkdown: isFollowUp ? "## 本轮补研结论\n\n- 已补充调用限额。" : "## 本次补研结论\n\n- 已确认基础接入方式。",
             sources: [{
               title: isFollowUp ? "调用限额官方说明" : "接入官方说明",
@@ -778,7 +833,7 @@ describe("local API scaffold", () => {
               keyClaims: ["该页面说明了当前适用的限制。"],
               sourceType: "official"
             }]
-          }),
+          },
           provider: "test-research-ai",
           model: "test-model",
           usage: null
@@ -797,14 +852,18 @@ describe("local API scaffold", () => {
       payload: { message: "请继续核查调用限额，只使用官方文档。" }
     });
     expect(followUp.statusCode).toBe(200);
-    expect(followUp.json()).toMatchObject({
+    const followUpResult = parseSseCompleteEvent(followUp.body) as {
+      planMarkdown: string;
+      sources: Array<{ url: string }>;
+    };
+    expect(followUpResult).toMatchObject({
       sources: expect.arrayContaining([
         expect.objectContaining({ url: "https://example.com/getting-started" }),
         expect.objectContaining({ url: "https://example.com/limits" })
       ])
     });
-    expect(followUp.json().planMarkdown).toContain("本次补研结论");
-    expect(followUp.json().planMarkdown).toContain("本轮补研结论");
+    expect(followUpResult.planMarkdown).toContain("本次补研结论");
+    expect(followUpResult.planMarkdown).toContain("本轮补研结论");
 
     const conversation = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(`source:${sourceRelativePath}`)}` });
     expect(conversation.statusCode).toBe(200);
