@@ -608,7 +608,8 @@ export function App() {
       setWebSearchSettings(searchSettingsResult);
       setResearchProxyUrl(searchSettingsResult.researchProxyUrl ?? "");
       const coverSkill = skillResult.items.find((skill) => skill.id === "cover-generation");
-      if (coverSkill?.provider === "modelscope" || coverSkill?.provider === "agnes") setCoverProvider(coverSkill.provider);
+      const coverProvider = coverSkill?.provider;
+      if (coverProvider === "modelscope" || coverProvider === "agnes") setCoverProvider(coverProvider as "modelscope" | "agnes");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法读取技能和模型连接。");
     }
@@ -638,6 +639,8 @@ export function App() {
     setEditingConnection,
     connectionCredential,
     setConnectionCredential,
+    connectionCreating,
+    setConnectionCreating,
     tavilyModalOpen,
     setTavilyModalOpen,
     tavilyApiKey,
@@ -667,6 +670,9 @@ export function App() {
     toggleGroupSelection,
     applyBatchModel,
     saveModelConnection,
+    openCreateConnection,
+    closeConnectionModal,
+    deleteModelConnection,
     openTavilySettings,
     testTavilyConnection,
     saveTavilySettings,
@@ -1042,6 +1048,8 @@ export function App() {
       openResearchProxySettings={openResearchProxySettings}
       setEditingConnection={setEditingConnection}
       setConnectionCredential={setConnectionCredential}
+      openCreateConnection={openCreateConnection}
+      deleteModelConnection={deleteModelConnection}
       setError={setError}
     />}
 
@@ -1164,7 +1172,7 @@ export function App() {
         <p className="hint">{editingSkill.description}</p>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={editingSkill.enabled} onChange={(event) => setEditingSkill((current) => current ? { ...current, enabled: event.target.checked } : current)} />启用此技能</label>
-          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "agnes" : connection.provider === "openai_codex" || connection.provider === "openai" || connection.provider === "openrouter" || connection.provider === "nous" || connection.provider === "nvidia_build" || connection.provider === "github_copilot").map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
+          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "agnes" : connection.provider === "openai_codex" || connection.custom).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
         </div>
         <div className="skill-file-workspace">
           <aside><strong>技能文件</strong>{editingSkill.files.map((file) => <button type="button" className={editingSkillFile?.relativePath === file.relativePath ? "active" : ""} onClick={() => void chooseSkillFile(file.relativePath)} key={file.relativePath}><span>{file.relativePath}</span><small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small></button>)}</aside>
@@ -1174,22 +1182,22 @@ export function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeSkillEditor}>取消</button><button disabled={saving || !editingSkillFile}>{saving ? "正在保存…" : `保存 ${editingSkillFile?.relativePath ?? "技能文件"}`}</button></div>
       </form>
     </Modal>}
-    {editingConnection && <Modal onClose={() => setEditingConnection(undefined)} disabled={saving} title={`配置 ${editingConnection.displayName}`} eyebrow="模型连接">
+    {(editingConnection || connectionCreating) && <Modal onClose={closeConnectionModal} disabled={saving} title={connectionCreating ? "添加模型连接" : `配置 ${editingConnection?.displayName}`} eyebrow="模型连接">
       <form onSubmit={saveModelConnection} className="profile-form">
-        <label>显示名称<input value={editingConnection.displayName} onChange={(event) => setEditingConnection((current) => current ? { ...current, displayName: event.target.value } : current)} /></label>
-        <label>模型名称<input value={editingConnection.modelId} onChange={(event) => setEditingConnection((current) => current ? { ...current, modelId: event.target.value } : current)} placeholder="留空时使用服务默认模型" /></label>
-        {editingConnection.provider !== "openai_codex" && <label>{editingConnection.provider === "github_copilot" ? "GitHub Token" : "API Key"}<input type="password" value={connectionCredential} onChange={(event) => setConnectionCredential(event.target.value)} autoComplete="new-password" placeholder={editingConnection.credentialConfigured ? "已配置；留空不修改" : "请输入访问凭证"} /></label>}
-        {editingConnection.provider !== "openai_codex" && editingConnection.provider !== "github_copilot" && <label>服务地址<input value={editingConnection.baseUrl} onChange={(event) => setEditingConnection((current) => current ? { ...current, baseUrl: event.target.value } : current)} /></label>}
-        {editingConnection.provider !== "openai_codex" && <label>代理地址（可选）<input value={editingConnection.proxyUrl} onChange={(event) => setEditingConnection((current) => current ? { ...current, proxyUrl: event.target.value } : current)} placeholder="例如：http://127.0.0.1:7890" /><small>留空表示直连。需要代理才能访问的模型（如 Nous / OpenRouter / OpenAI）请填写；格式 http://127.0.0.1:7890。代理不可用时请求会明确报错，不会静默切换。</small></label>}
-        {editingConnection.provider === "openai_codex" && <p className="hint">OpenAI Codex 使用本机 ChatGPT/Codex 登录状态，不需要 API Key。安装包会携带 SDK 所需运行组件，不要求安装 Hermes Agent。</p>}
-        {editingConnection.provider === "openai_codex" && (
+        {connectionCreating && <p className="hint">添加一个 OpenAI 兼容文本接口连接（连接名称 + 服务地址 + API Key），可用于自建 vLLM、网关或任意兼容 Responses API 的服务。</p>}
+        <label>显示名称<input value={editingConnection?.displayName ?? ""} onChange={(event) => setEditingConnection((current) => current ? { ...current, displayName: event.target.value } : current)} /></label>
+        <label>模型名称<input value={editingConnection?.modelId ?? ""} onChange={(event) => setEditingConnection((current) => current ? { ...current, modelId: event.target.value } : current)} placeholder="留空时使用服务默认模型" /></label>
+        {(connectionCreating || editingConnection?.custom || editingConnection?.provider !== "openai_codex") && <label>API Key<input type="password" value={connectionCredential} onChange={(event) => setConnectionCredential(event.target.value)} autoComplete="new-password" placeholder={editingConnection?.credentialConfigured ? "已配置；留空不修改" : "请输入访问凭证"} /></label>}
+        {(connectionCreating || editingConnection?.custom) && <label>服务地址<input value={editingConnection?.baseUrl ?? ""} onChange={(event) => setEditingConnection((current) => current ? { ...current, baseUrl: event.target.value } : current)} placeholder="例如：https://api.openai.com/v1" /></label>}
+        {(connectionCreating || editingConnection?.custom || editingConnection?.provider !== "openai_codex") && <label>代理地址（可选）<input value={editingConnection?.proxyUrl ?? ""} onChange={(event) => setEditingConnection((current) => current ? { ...current, proxyUrl: event.target.value } : current)} placeholder="例如：http://127.0.0.1:7890" /><small>留空表示直连。需要代理才能访问的模型（如 Nous / OpenRouter / OpenAI）请填写；格式 http://127.0.0.1:7890。代理不可用时请求会明确报错，不会静默切换。</small></label>}
+        {!connectionCreating && !editingConnection?.custom && editingConnection?.provider === "openai_codex" && <p className="hint">OpenAI Codex 使用本机 ChatGPT/Codex 登录状态，不需要 API Key。安装包会携带 SDK 所需运行组件，不要求安装 Hermes Agent。</p>}
+        {!connectionCreating && !editingConnection?.custom && editingConnection?.provider === "openai_codex" && (
           <label className="checkbox-row">
             <input type="checkbox" checked={editingConnection.builtInSearch} onChange={(event) => setEditingConnection((current) => current ? { ...current, builtInSearch: event.target.checked } : current)} />
             <span>联网补研使用 Codex 内置搜索<small>开启时由 Codex SDK 直接联网检索并综合资料卡，开箱即用、质量更好。关闭时改用应用的 Tavily / DuckDuckGo 检索链（资料 URL 由系统真实抓取、可追溯，且走全局检索代理）。默认开启。</small></span>
           </label>
         )}
-        {editingConnection.provider === "github_copilot" && <p className="hint">支持 GitHub Copilot Token。后续还会补充浏览器设备授权入口；现在也可使用本机已有的 GitHub/Copilot 登录环境。</p>}
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditingConnection(undefined)}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存连接"}</button></div>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeConnectionModal}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存连接"}</button></div>
       </form>
     </Modal>}
     {tavilyModalOpen && <Modal onClose={() => setTavilyModalOpen(false)} disabled={tavilySaving || tavilyTesting} title="配置 Tavily" eyebrow="联网检索服务">

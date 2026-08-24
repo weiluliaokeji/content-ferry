@@ -25,6 +25,8 @@ export interface SkillsViewProps {
   openResearchProxySettings: () => void;
   setEditingConnection: Dispatch<SetStateAction<ModelConnection | undefined>>;
   setConnectionCredential: Dispatch<SetStateAction<string>>;
+  openCreateConnection: () => void;
+  deleteModelConnection: (provider: string) => void | Promise<void>;
   setError: Dispatch<SetStateAction<string>>;
 }
 
@@ -33,7 +35,8 @@ export function SkillsView(props: SkillsViewProps) {
     skills, batchModelByGroup, setBatchModelByGroup, batchSaving, selectedSkillIds, setSelectedSkillIds,
     modelConnections, settings, setSettings, webSearchSettings, researchProxyUrl, auditDir,
     toggleGroupSelection, applyBatchModel, openSkillEditor, loadSkillsAndConnections,
-    openTavilySettings, openResearchProxySettings, setEditingConnection, setConnectionCredential, setError,
+    openTavilySettings, openResearchProxySettings, setEditingConnection, setConnectionCredential,
+    openCreateConnection, deleteModelConnection, setError,
   } = props;
 
   return <>
@@ -55,7 +58,7 @@ export function SkillsView(props: SkillsViewProps) {
                 </div>
                 <select value={selected ?? ""} onChange={(event) => setBatchModelByGroup((current) => ({ ...current, [group.key]: (event.target.value || null) as ModelProviderId | null }))} aria-label={`${group.title}批量模型`}>
                   <option value="">选择目标模型…</option>
-                  {modelConnections.filter((connection) => group.providers!.includes(connection.provider)).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}
+                  {modelConnections.filter((connection) => group.providers!.includes(connection.provider) || (group.key === "text" && connection.custom)).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}
                 </select>
                 <button type="button" className="secondary-button" disabled={!selected || batchSaving || selectedInGroup.length === 0} onClick={() => void applyBatchModel(group.key)}>{batchSaving ? "正在应用…" : selectedInGroup.length > 0 ? `应用到选中的 ${selectedInGroup.length} 个技能` : "请先勾选技能"}</button>
               </div>}
@@ -77,8 +80,8 @@ export function SkillsView(props: SkillsViewProps) {
       })}
     </section>
     <section className="card">
-      <div className="section-heading"><div><h2>模型连接</h2><p className="hint compact-hint">凭证加密保存在本机，页面只显示是否已配置，不回显明文。</p></div></div>
-      <ul className="account-list">{modelConnections.map((connection) => <li key={connection.provider}><span><strong>{connection.displayName}</strong><small>{connection.modelId || "使用服务默认模型"}{connection.proxyUrl ? ` · 代理 ${connection.proxyUrl}` : ""}</small></span><span className="account-actions"><em>{connection.provider === "openai_codex" ? "使用 ChatGPT 登录" : connection.credentialConfigured ? "凭证已配置" : "待配置凭证"}</em><button className="text-button" onClick={() => { setEditingConnection(connection); setConnectionCredential(""); setError(""); }}>配置</button></span></li>)}</ul>
+      <div className="section-heading"><div><h2>模型连接</h2><p className="hint compact-hint">凭证加密保存在本机，页面只显示是否已配置，不回显明文。内置项为预置模板可编辑；自定义连接可删除。</p></div><button className="text-button" onClick={openCreateConnection}>添加连接</button></div>
+      <ul className="account-list">{modelConnections.map((connection) => <li key={connection.provider}><span><strong>{connection.displayName}</strong><small>{connection.custom ? "自定义连接" : "预置模板"}{connection.modelId ? ` · ${connection.modelId}` : " · 使用服务默认模型"}{connection.proxyUrl ? ` · 代理 ${connection.proxyUrl}` : ""}</small></span><span className="account-actions"><em>{connection.provider === "openai_codex" ? "使用 ChatGPT 登录" : connection.credentialConfigured ? "凭证已配置" : "待配置凭证"}</em><button className="text-button" onClick={() => { setEditingConnection(connection); setConnectionCredential(""); setError(""); }}>配置</button>{connection.custom && <button className="text-button" onClick={() => void deleteModelConnection(connection.provider)}>删除</button>}</span></li>)}</ul>
     </section>
     <section className="card">
       <div className="section-heading"><div><h2>联网检索服务</h2><p className="hint compact-hint">用于阿文补充公开资料，不属于任何一个模型连接。默认使用免配置搜索源；Tavily 可提升稳定性。</p></div></div>

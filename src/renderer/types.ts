@@ -106,10 +106,10 @@ export type ArticleSettings = {
   enableReward: boolean;
   collectionName: string;
 };
-export type ModelProviderId = "openai_codex" | "openai" | "openrouter" | "nous" | "nvidia_build" | "github_copilot" | "modelscope" | "agnes";
+export type ModelProviderId = "openai_codex" | "modelscope" | "agnes" | (string & {});
 export type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
-  enabled: boolean; builtInSearch: boolean; credentialConfigured: boolean;
+  enabled: boolean; builtInSearch: boolean; custom: boolean; credentialConfigured: boolean;
 };
 export type WebSearchSettings = {
   tavilyConfigured: boolean;

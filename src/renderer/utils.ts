@@ -5,11 +5,6 @@ export const emptyProfile: AccountProfile = { positioning: "", targetAudience: "
 
 export const providerName = (provider: ModelProviderId | null) => provider === null ? "无需模型" : ({
   openai_codex: "OpenAI Codex",
-  openai: "OpenAI API",
-  openrouter: "OpenRouter",
-  nous: "Nous Research Portal",
-  nvidia_build: "NVIDIA Build",
-  github_copilot: "GitHub Copilot",
   modelscope: "ModelScope",
   agnes: "Agnes AI"
 } as Record<ModelProviderId, string>)[provider];

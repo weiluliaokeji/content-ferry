@@ -3,7 +3,7 @@ import { z } from "zod";
 import { TavilyProvider } from "../ai/web-search";
 import { loadAppSettings, saveAppSettings } from "../config/first-run";
 import {
-  credentialInput, modelConnectionInput, modelProviderSchema, skillFileInput,
+  credentialInput, modelConnectionInput, modelCustomConnectionInput, modelProviderSchema, skillFileInput,
   skillFileQuery, skillInput, tavilySettingsInput, tavilyTestInput
 } from "./schemas";
 import type { ServerContext } from "./server-context";
@@ -99,6 +99,21 @@ export function registerSettingsRoutes(ctx: ServerContext): void {
     const params = z.object({ provider: modelProviderSchema }).parse(request.params);
     const input = modelConnectionInput.parse(request.body);
     return modelConnections.save({ provider: params.provider, ...input });
+  });
+
+  server.post("/api/model-connections", async (request) => {
+    const input = modelCustomConnectionInput.parse(request.body);
+    return modelConnections.createCustom(input);
+  });
+
+  server.delete("/api/model-connections/:provider", async (request, reply) => {
+    const params = z.object({ provider: modelProviderSchema }).parse(request.params);
+    try {
+      modelConnections.deleteCustom(params.provider);
+      return reply.code(204).send();
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   server.get("/api/skills", async (_request, reply) => {

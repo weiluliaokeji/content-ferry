@@ -230,8 +230,9 @@ ${input.markdown}`,
     if (provider !== "modelscope" && provider !== "agnes") {
       return reply.code(400).send({ error: "请在技能设置中选择 ModelScope 或 Agnes AI。" });
     }
+    const coverProvider = provider as "modelscope" | "agnes";
     try {
-      return await coverGenerator.generate({ workspaceId: workspace.id, ...input, provider });
+      return await coverGenerator.generate({ workspaceId: workspace.id, ...input, provider: coverProvider });
     } catch (error) {
       request.log.warn({ err: error, provider }, "Cover generation failed");
       return reply.code(400).send({ error: error instanceof Error ? error.message : "封面生成失败。" });

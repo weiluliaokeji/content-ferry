@@ -26,6 +26,7 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
   const [savedSkillFileContent, setSavedSkillFileContent] = useState("");
   const [editingConnection, setEditingConnection] = useState<ModelConnection>();
   const [connectionCredential, setConnectionCredential] = useState("");
+  const [connectionCreating, setConnectionCreating] = useState(false);
   const [tavilyModalOpen, setTavilyModalOpen] = useState(false);
   const [tavilyApiKey, setTavilyApiKey] = useState("");
   const [tavilySaving, setTavilySaving] = useState(false);
@@ -133,29 +134,68 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
       setBatchSaving(false);
     }
   };
+  const openCreateConnection = () => {
+    setEditingConnection({
+      provider: "",
+      displayName: "",
+      modelId: "",
+      baseUrl: "",
+      proxyUrl: "",
+      enabled: true,
+      builtInSearch: true,
+      custom: true,
+      credentialConfigured: false
+    });
+    setConnectionCredential("");
+    setError("");
+    setConnectionCreating(true);
+  };
+  const closeConnectionModal = () => {
+    setEditingConnection(undefined);
+    setConnectionCredential("");
+    setConnectionCreating(false);
+  };
   const saveModelConnection = async (event: FormEvent) => {
     event.preventDefault();
     if (!editingConnection) return;
     setSaving(true);
     try {
-      const saved = await request<ModelConnection>(`/model-connections/${editingConnection.provider}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          displayName: editingConnection.displayName,
-          modelId: editingConnection.modelId,
-          baseUrl: editingConnection.baseUrl,
-          proxyUrl: editingConnection.proxyUrl,
-          enabled: editingConnection.enabled,
-          builtInSearch: editingConnection.builtInSearch,
-          ...(connectionCredential.trim() ? { credential: connectionCredential.trim() } : {})
-        })
-      });
+      const body = {
+        displayName: editingConnection.displayName,
+        modelId: editingConnection.modelId,
+        baseUrl: editingConnection.baseUrl,
+        proxyUrl: editingConnection.proxyUrl,
+        enabled: editingConnection.enabled,
+        builtInSearch: editingConnection.builtInSearch,
+        ...(connectionCredential.trim() ? { credential: connectionCredential.trim() } : {})
+      };
+      const saved = connectionCreating
+        ? await request<ModelConnection>("/model-connections", { method: "POST", body: JSON.stringify(body) })
+        : await request<ModelConnection>(`/model-connections/${editingConnection.provider}`, {
+          method: "PUT",
+          body: JSON.stringify(body)
+        });
       setEditingConnection(saved);
       setConnectionCredential("");
+      setConnectionCreating(false);
       setError("");
       await loadSkillsAndConnections();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "模型连接保存失败。");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteModelConnection = async (provider: string) => {
+    if (!window.confirm("确定删除该自定义模型连接吗？删除后不可恢复；已绑定此连接的技能将无法再使用该模型。")) return;
+    setSaving(true);
+    try {
+      await request<void>(`/model-connections/${encodeURIComponent(provider)}`, { method: "DELETE" });
+      setError("");
+      if (editingConnection?.provider === provider) closeConnectionModal();
+      await loadSkillsAndConnections();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "模型连接删除失败。");
     } finally {
       setSaving(false);
     }
@@ -280,6 +320,8 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
     setEditingConnection,
     connectionCredential,
     setConnectionCredential,
+    connectionCreating,
+    setConnectionCreating,
     tavilyModalOpen,
     setTavilyModalOpen,
     tavilyApiKey,
@@ -309,6 +351,9 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
     toggleGroupSelection,
     applyBatchModel,
     saveModelConnection,
+    openCreateConnection,
+    closeConnectionModal,
+    deleteModelConnection,
     openTavilySettings,
     testTavilyConnection,
     saveTavilySettings,

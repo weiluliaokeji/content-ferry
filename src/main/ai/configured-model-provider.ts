@@ -1,4 +1,4 @@
-import type { ModelConnection, ModelConnectionRepository, ModelProviderId } from "./model-connection-repository";
+import { CUSTOM_PROVIDER_PREFIX, type ModelConnection, type ModelConnectionRepository } from "./model-connection-repository";
 import {
   ModelProviderUnavailableError,
   type GenerateStructuredRequest,
@@ -24,9 +24,6 @@ import {
   RESEARCH_SCHEMA,
   researchOutput
 } from "./research-prompts";
-
-type CopilotSdk = typeof import("@github/copilot-sdk");
-const importEsm = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<CopilotSdk>;
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
@@ -277,7 +274,7 @@ export class ConfiguredModelProvider implements ModelProvider {
   }
 
   private providerSupportsTools(provider: string): boolean {
-    return ["openai", "openrouter", "nous", "nvidia_build"].includes(provider);
+    return provider.startsWith(CUSTOM_PROVIDER_PREFIX);
   }
 
   /** OpenAI-compatible tool loop: runs until the model stops emitting tool
@@ -293,9 +290,9 @@ export class ConfiguredModelProvider implements ModelProvider {
       onStatus: (message: string) => void;
     }
   ): Promise<{ finalText: string }> {
-    const connection = this.connections.get(provider as ModelProviderId);
+    const connection = this.connections.get(provider);
     if (!connection.enabled) throw new WebSearchError(`${connection.displayName} 连接已停用。`);
-    const apiKey = this.connections.getCredential(provider as ModelProviderId);
+    const apiKey = this.connections.getCredential(provider);
     const messages: Array<Record<string, unknown>> = [
       { role: "system", content: params.system },
       { role: "user", content: params.user }
@@ -349,10 +346,9 @@ export class ConfiguredModelProvider implements ModelProvider {
     if (provider === "openai_codex") {
       return this.codexProvider.generateStructured({ ...enriched, modelId: this.connections.get("openai_codex").modelId, onStatus: request.onStatus });
     }
-    if (provider === "openai" || provider === "openrouter" || provider === "nous" || provider === "nvidia_build") {
+    if (provider.startsWith(CUSTOM_PROVIDER_PREFIX)) {
       return this.generateOpenAiCompatible(provider, enriched);
     }
-    if (provider === "github_copilot") return this.generateWithCopilot(enriched);
     throw new ModelProviderUnavailableError(`当前选择的 ${provider} 不能用于文本生成。`);
   }
 
@@ -414,16 +410,11 @@ export class ConfiguredModelProvider implements ModelProvider {
   /** Resolves the configured model id for a provider so the audit log can show
    *  which model was targeted even when the call fails before reaching the API. */
   private modelIdFor(provider: string): string {
-    const known: ModelProviderId[] = [
-      "openai_codex", "openai", "openrouter", "nous", "nvidia_build", "github_copilot"
-    ];
-    return known.includes(provider as ModelProviderId)
-      ? this.connections.get(provider as ModelProviderId).modelId || ""
-      : "";
+    return this.connections.get(provider).modelId || "";
   }
 
   private async generateOpenAiCompatible<T>(
-    provider: "openai" | "openrouter" | "nous" | "nvidia_build",
+    provider: string,
     request: GenerateStructuredRequest<T>
   ): Promise<GenerateStructuredResult<T>> {
     const connection = this.connections.get(provider);
@@ -452,11 +443,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       // instead of returning a useful 4xx response when their default output
       // budget is exceeded.
       max_tokens: maxTokensForTask(request.task),
-      // Step 3.7 Flash may spend the completion budget on reasoning before it
-      // emits the requested JSON. Research needs concise extraction rather
-      // than deep chain-of-thought, so request its lowest supported effort.
-      ...(provider === "nous" ? { reasoning_effort: "low" } : {}),
-      ...(withSchema && provider !== "nvidia_build" ? {
+      ...(withSchema ? {
         response_format: {
           type: "json_schema",
           json_schema: { name: `contentferry_${request.task}`, strict: true, schema: request.outputSchema }
@@ -468,11 +455,7 @@ export class ConfiguredModelProvider implements ModelProvider {
         method: "POST",
         headers: {
           authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json",
-          ...(provider === "openrouter" ? {
-            "HTTP-Referer": "https://contentferry.local",
-            "X-Title": "ContentFerry"
-          } : {})
+          "content-type": "application/json"
         },
         body: buildBody(withSchema, compactRetry),
         signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
@@ -480,15 +463,11 @@ export class ConfiguredModelProvider implements ModelProvider {
       return { response, text: await response.text() };
     };
 
-    // Nous accepts the OpenAI message format, but its free endpoint does not
-    // reliably keep a connection open for native `json_schema` requests. The
-    // prompt already asks for JSON and the response is validated locally.
-    const useNativeSchema = provider !== "nvidia_build" && provider !== "nous";
-    let { response, text } = await post(useNativeSchema);
-    // Some OpenAI-compatible models (e.g. open-weights behind OpenRouter/Nous)
+    let { response, text } = await post(true);
+    // Some OpenAI-compatible models (e.g. open-weights behind gateways)
     // do not support structured outputs. When the API says so, retry once
     // without response_format — the JSON instruction is already in the prompt.
-    if (!response.ok && useNativeSchema && isStructuredOutputUnsupported(response.status, text)) {
+    if (!response.ok && isStructuredOutputUnsupported(response.status, text)) {
       const retried = await post(false);
       response = retried.response;
       text = retried.text;
@@ -504,7 +483,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       // A reasoning model occasionally reaches its output boundary after it has
       // started a JSON string. Retry once with a deliberately smaller contract
       // rather than making the user repeat the full research workflow.
-      if (provider !== "nous" || !isIncompleteJson(error)) throw error;
+      if (!isIncompleteJson(error)) throw error;
       const retried = await post(false, true);
       if (!retried.response.ok) {
         throw new ModelProviderUnavailableError(`${connection.displayName} 紧凑重试失败（HTTP ${retried.response.status}）：${retried.text.slice(0, 300)}`);
@@ -523,49 +502,6 @@ export class ConfiguredModelProvider implements ModelProvider {
         reasoningOutputTokens: 0
       } : null
     };
-  }
-
-  private async generateWithCopilot<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
-    const connection = this.connections.get("github_copilot");
-    if (!connection.enabled) throw new ModelProviderUnavailableError("GitHub Copilot 连接已停用。");
-    const token = connection.credentialConfigured
-      ? this.connections.getCredential("github_copilot")
-      : undefined;
-    const { CopilotClient } = await importEsm("@github/copilot-sdk");
-    const client = new CopilotClient({
-      ...(token ? { gitHubToken: token, useLoggedInUser: false } : { useLoggedInUser: true }),
-      logLevel: "error"
-    });
-    try {
-      await client.start();
-      const session = await client.createSession({
-        model: connection.modelId || "gpt-5",
-        systemMessage: {
-          mode: "replace",
-          content: "你是 ContentFerry 的内容工作流模型。不要调用工具。严格返回符合用户提供 JSON Schema 的 JSON，不要使用 Markdown 代码块。"
-        }
-      });
-      try {
-        const result = await session.sendAndWait({
-          prompt: `${request.prompt}\n\n返回值必须符合此 JSON Schema：\n${JSON.stringify(request.outputSchema)}`
-        }, request.timeoutMs ?? 180_000);
-        const content = result?.data.content;
-        if (!content) throw new ModelProviderUnavailableError("GitHub Copilot 没有返回可用内容。");
-        return {
-          value: parseStructured(content, request.parse),
-          provider: "github_copilot",
-          model: connection.modelId || null,
-          usage: null
-        };
-      } finally {
-        await session.disconnect();
-      }
-    } catch (error) {
-      if (error instanceof ModelProviderUnavailableError) throw error;
-      throw new ModelProviderUnavailableError(`GitHub Copilot 生成失败：${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      await client.stop().catch(() => []);
-    }
   }
 }
 

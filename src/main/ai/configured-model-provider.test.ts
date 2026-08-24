@@ -164,7 +164,7 @@ describe("ConfiguredModelProvider audit", () => {
 function openrouterConnections() {
   return {
     get: (provider: string) =>
-      provider === "openrouter"
+      provider === "custom:test-openrouter"
         ? { modelId: "openai/gpt-5-mini", enabled: true, credentialConfigured: true, displayName: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", proxyUrl: "" }
         : { modelId: "", enabled: false, credentialConfigured: false, displayName: "x", baseUrl: "", proxyUrl: "" },
     getCredential: () => "test-key"
@@ -173,7 +173,7 @@ function openrouterConnections() {
 
 function openrouterSkills() {
   return {
-    get: () => ({ enabled: true, name: "测试技能", provider: "openrouter" }),
+    get: () => ({ enabled: true, name: "测试技能", provider: "custom:test-openrouter" }),
     instructionsFor: () => "RULES"
   } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
 }
@@ -238,14 +238,14 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
         timeoutMs: 1000
       });
       const call = record.mock.calls[0][0];
-      expect(call.provider).toBe("openrouter");
+      expect(call.provider).toBe("custom:test-openrouter");
       expect(call.model).toBe("openai/gpt-5-mini");
     } finally {
       globalThis.fetch = original;
     }
   });
 
-  it("uses the portable JSON path and an explicit output limit for Nous", async () => {
+  it("sends a json_schema contract and an explicit output limit for a custom connection", async () => {
     const bodies: string[] = [];
     const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
       bodies.push(init?.body ?? "");
@@ -258,11 +258,11 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
       const connections = {
-        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        get: () => ({ provider: "custom:test-nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "测试自定义", baseUrl: "https://example.test/v1", proxyUrl: "" }),
         getCredential: () => "test-key"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
       const skills = {
-        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        get: () => ({ enabled: true, name: "测试技能", provider: "custom:test-nous" }),
         instructionsFor: () => "RULES"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
       const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());
@@ -275,9 +275,9 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
         timeoutMs: 1000
       });
       const body = JSON.parse(bodies[0]) as { response_format?: unknown; max_tokens?: number; reasoning_effort?: string };
-      expect(body.response_format).toBeUndefined();
+      expect(body.response_format).toBeDefined();
       expect(body.max_tokens).toBe(8192);
-      expect(body.reasoning_effort).toBe("low");
+      expect(body.reasoning_effort).toBeUndefined();
     } finally {
       globalThis.fetch = original;
     }
@@ -295,11 +295,11 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
       const connections = {
-        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        get: () => ({ provider: "custom:test-gateway", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "测试网关", baseUrl: "https://example.test/v1", proxyUrl: "" }),
         getCredential: () => "test-key"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
       const skills = {
-        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        get: () => ({ enabled: true, name: "测试技能", provider: "custom:test-gateway" }),
         instructionsFor: () => "RULES"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
       const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());
@@ -317,7 +317,7 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
     }
   });
 
-  it("retries a truncated Nous JSON response with a compact contract", async () => {
+  it("retries a truncated custom JSON response with a compact contract", async () => {
     const bodies: string[] = [];
     const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
       bodies.push(init?.body ?? "");
@@ -331,11 +331,11 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
       const connections = {
-        get: () => ({ provider: "nous", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "Nous", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        get: () => ({ provider: "custom:test-truncated", modelId: "stepfun/step-3.7-flash:free", enabled: true, credentialConfigured: true, displayName: "测试截断", baseUrl: "https://example.test/v1", proxyUrl: "" }),
         getCredential: () => "test-key"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
       const skills = {
-        get: () => ({ enabled: true, name: "测试技能", provider: "nous" }),
+        get: () => ({ enabled: true, name: "测试技能", provider: "custom:test-truncated" }),
         instructionsFor: () => "RULES"
       } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
       const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }), undefined, stubWebSearch());

@@ -68,10 +68,16 @@ describe("local API scaffold", () => {
     expect(connections.statusCode).toBe(200);
     expect(connections.json().items).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        provider: "nvidia_build",
-        displayName: "NVIDIA Build",
-        modelId: "z-ai/glm-5.2",
-        baseUrl: "https://integrate.api.nvidia.com/v1"
+        provider: "openai_codex",
+        displayName: "OpenAI Codex"
+      }),
+      expect.objectContaining({
+        provider: "modelscope",
+        displayName: "ModelScope"
+      }),
+      expect.objectContaining({
+        provider: "agnes",
+        displayName: "Agnes AI"
       })
     ]));
     const humanize = listed.json().items.find((item: { id: string }) => item.id === "humanize-selection");

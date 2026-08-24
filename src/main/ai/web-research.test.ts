@@ -53,7 +53,7 @@ function codexSkills() {
 function openaiConnections() {
   return {
     get: (provider: string) =>
-      provider === "openai"
+      provider === "custom:test-openai"
         ? { modelId: "gpt-4o", enabled: true, credentialConfigured: true, displayName: "OpenAI", baseUrl: "https://api.openai.com/v1", proxyUrl: "" }
         : { modelId: "", enabled: false, credentialConfigured: false, displayName: "x", baseUrl: "", proxyUrl: "" },
     getCredential: () => "test-key"
@@ -62,7 +62,7 @@ function openaiConnections() {
 
 function openaiSkills() {
   return {
-    get: () => ({ enabled: true, name: "联网资料补研", provider: "openai" }),
+    get: () => ({ enabled: true, name: "联网资料补研", provider: "custom:test-openai" }),
     instructionsFor: () => "RULES"
   } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
 }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { ModelProviderId } from "../ai/model-connection-repository";
+import type { ModelProviderKey } from "../ai/model-connection-repository";
 
 export interface ManagedSkill {
   id: string;
@@ -10,7 +10,7 @@ export interface ManagedSkill {
   description: string;
   category: "创作" | "改写" | "检测" | "图片" | "研究";
   enabled: boolean;
-  provider: ModelProviderId | null;
+  provider: ModelProviderKey | null;
   markdown: string;
   filePath: string;
   files: SkillFileSummary[];
@@ -22,7 +22,7 @@ export interface SkillFileSummary {
 }
 
 type BuiltInSkillDefinition = Omit<ManagedSkill, "enabled" | "provider" | "filePath" | "files"> & {
-  defaultProvider: ModelProviderId | null;
+  defaultProvider: ModelProviderKey | null;
   references?: Record<string, string>;
   legacyMarkdown?: string[];
 };
@@ -34,7 +34,7 @@ type BuiltInSkillManifest = {
     name: string;
     description: string;
     category: ManagedSkill["category"];
-    defaultProvider: ModelProviderId | null;
+    defaultProvider: ModelProviderKey | null;
     legacyFiles?: string[];
   }>;
 };
@@ -136,7 +136,7 @@ export class SkillRegistry {
     const definition = builtIns.find((item) => item.id === skillId);
     if (!definition) throw new Error("找不到这个技能。");
     const setting = this.db.prepare("SELECT enabled, provider FROM skill_settings WHERE skill_id = ?")
-      .get(skillId) as { enabled: number; provider: ModelProviderId | null } | undefined;
+      .get(skillId) as { enabled: number; provider: ModelProviderKey | null } | undefined;
     const filePath = this.filePath(skillId);
     return {
       id: definition.id,
@@ -189,7 +189,7 @@ export class SkillRegistry {
     return [skill.markdown.trim(), ...references].join("\n\n") + "\n";
   }
 
-  save(skillId: string, input: { markdown: string; enabled: boolean; provider: ModelProviderId | null }): ManagedSkill {
+  save(skillId: string, input: { markdown: string; enabled: boolean; provider: ModelProviderKey | null }): ManagedSkill {
     this.get(skillId);
     if (input.markdown.length > 100_000) throw new Error("SKILL.md 不能超过 100 KB。");
     const normalized = input.markdown.replace(/\r\n/g, "\n").trimEnd() + "\n";

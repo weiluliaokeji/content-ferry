@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { modelProviderIds } from "../ai/model-connection-repository";
 
 export const accountInput = z.object({
   platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin"]),
@@ -135,7 +134,7 @@ export const juejinPublishOptionsInput = z.object({
   categoryId: z.string().trim().max(80).optional(),
   tagIds: z.array(z.string().trim().max(80)).max(5).optional()
 });
-export const modelProviderSchema = z.enum(modelProviderIds);
+export const modelProviderSchema = z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/);
 export const modelConnectionInput = z.object({
   displayName: z.string().trim().min(1).max(100),
   modelId: z.string().trim().max(200).default(""),
@@ -143,6 +142,13 @@ export const modelConnectionInput = z.object({
   proxyUrl: z.string().trim().max(1000).default(""),
   enabled: z.boolean().default(true),
   builtInSearch: z.boolean().default(true),
+  credential: z.string().max(10000).optional()
+});
+export const modelCustomConnectionInput = z.object({
+  displayName: z.string().trim().min(1).max(100),
+  modelId: z.string().trim().max(200).default(""),
+  baseUrl: z.string().trim().min(1).max(1000),
+  proxyUrl: z.string().trim().max(1000).default(""),
   credential: z.string().max(10000).optional()
 });
 export const tavilySettingsInput = z.object({ apiKey: z.string().trim().min(1).max(10000) });
