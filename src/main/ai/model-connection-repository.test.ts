@@ -8,7 +8,8 @@ function stubDb(overrides: Record<string, { proxy_url: string }> = {}) {
   return {
     prepare: (_sql: string) => ({
       run: () => ({}),
-      get: (provider: string) => overrides[provider] ?? undefined
+      get: (provider: string) => overrides[provider] ?? undefined,
+      all: () => []
     })
   } as any;
 }
