@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ede075e5af8053be83d373b168b03696_d52269019bd511f18cca525400e6dd8f
-    ReservedCode1: 8gkra8gp+S3W1uoLsarx45jzt6z/i7XfQvG6qqPp5jQSExlQnVGI3xipmgeay/xlndbjFJQLgLaJp+K49IUY/r2xCaHxA0CHuI3rB/yszMQPijNQgJs0V1G+mA3+FaqlfumLXUSijE5um/UFts/pBXa2GWl4+vjHbYaui5lnBrQDwPAYmpFtQlNaC4o=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ede075e5af8053be83d373b168b03696_d52269019bd511f18cca525400e6dd8f
-    ReservedCode2: 8gkra8gp+S3W1uoLsarx45jzt6z/i7XfQvG6qqPp5jQSExlQnVGI3xipmgeay/xlndbjFJQLgLaJp+K49IUY/r2xCaHxA0CHuI3rB/yszMQPijNQgJs0V1G+mA3+FaqlfumLXUSijE5um/UFts/pBXa2GWl4+vjHbYaui5lnBrQDwPAYmpFtQlNaC4o=
----
-
 # 文渡（ContentFerry）
 
 文渡是一款面向 Windows 的本地 AI 自媒体工作台。它以用户自己的 VitePress Markdown 文章库为正式内容源，把资料整理、AI 辅助创作、自然化改写、AIGC 特征检测、封面处理和微信公众号发布串成可恢复的工作流。
@@ -75,12 +64,17 @@ npm run verify:installer
 
 详细的安装包、签名、代理和故障排查说明见 [Windows 构建与分发](docs/BUILDING.md)。
 
+## 平台支持
+
+当前以 **Windows 10/11 为首要支持平台**：提供 NSIS 安装包与 Portable EXE，并由 `docs/BUILDING.md` 覆盖完整构建、签名与分发流程。
+
+`package.json` 的 `build.mac` / `build.linux` 配置仅用于交叉编译验证（`npm run pack` 生成未压缩应用目录），**不提供官方 macOS / Linux 安装包**；在其他平台上运行属于自行验证范围。
+
 ## 仓库结构
 
 ```text
 assets/skills/   内置技能，每个技能拥有独立 SKILL.md 和 references/
 docs/            用户与开发者使用文档
-research/        竞品和技术调研材料
 scripts/         构建、安装包和验证脚本
 spec/            产品需求、开发设计与专题实现文档
 src/main/        Electron 主进程、本地服务、数据库和平台集成

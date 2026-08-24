@@ -24,3 +24,4 @@ data/
 Thumbs.db
 .workbuddy/
 build/
+!build/installer.nsh

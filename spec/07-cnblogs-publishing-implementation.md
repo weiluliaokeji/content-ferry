@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ede075e5af8053be83d373b168b03696_928fd8e09baa11f1a98a525400f8a581
-    ReservedCode1: aGCSJLRnxR87YLRMnFehiEruRhsE02Ip4BdO6Z2qJdeicIbl1nx0IOozeGaRIrIt+iab6zkSPhgce0tPCXt/FDzdtZ0+WCwtqX2b/OHvAz9Y/W7uL/Wj4kor65FnhIGC6IDzGisJRUeNT4aImkaIiMWphkWz8oxag2SQ0ktR4dedxYwR7ddni0/QknM=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ede075e5af8053be83d373b168b03696_928fd8e09baa11f1a98a525400f8a581
-    ReservedCode2: aGCSJLRnxR87YLRMnFehiEruRhsE02Ip4BdO6Z2qJdeicIbl1nx0IOozeGaRIrIt+iab6zkSPhgce0tPCXt/FDzdtZ0+WCwtqX2b/OHvAz9Y/W7uL/Wj4kor65FnhIGC6IDzGisJRUeNT4aImkaIiMWphkWz8oxag2SQ0ktR4dedxYwR7ddni0/QknM=
----
-
 # 博客园（Cnblogs）发布实现设计
 
 > 状态：已确认待实现

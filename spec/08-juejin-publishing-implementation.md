@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ede075e5af8053be83d373b168b03696_4722890c9d1e11f19155525400826444
-    ReservedCode1: LrYCnuCZ2HNJ3pn/CpLXewTK9hsCr6D8BiTws2E30l9qVFjosdaaGWDYp5jvRtBi5JXVeUE43/1Dvccvw/vr563t/JpnTZNMPk4F3rxwcaDhZdFen8JOztLKsbrXSPdNgcnUN2kAEjdnkTgO7E85wuSW3b0fNPdyxiSezjRNudfXbUkENsiMqyrAD7c=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ede075e5af8053be83d373b168b03696_4722890c9d1e11f19155525400826444
-    ReservedCode2: LrYCnuCZ2HNJ3pn/CpLXewTK9hsCr6D8BiTws2E30l9qVFjosdaaGWDYp5jvRtBi5JXVeUE43/1Dvccvw/vr563t/JpnTZNMPk4F3rxwcaDhZdFen8JOztLKsbrXSPdNgcnUN2kAEjdnkTgO7E85wuSW3b0fNPdyxiSezjRNudfXbUkENsiMqyrAD7c=
----
-
 # 掘金（Juejin）发布实现设计
 
 > 状态：已实现待真实验证

@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ede075e5af8053be83d373b168b03696_487d762f9d1e11f1b930525400e6dd8f
-    ReservedCode1: pvv/9Hsd661IwzOiveFJxDr2weXEYfwPs7Rxh6c4hNiyCQRHxFjAg+hJtjhoa85oG4VQ1paBTyFSiv9k/MI1vdPw6InpSw0gCGdq4jkWxBmEbTn+PtFoDUEtFfjkGa7eto8Vee21gh3YaBVMFi9U2ww33fMFNTynWV7wWnUi2tWxjVmjKc0gO29dhek=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ede075e5af8053be83d373b168b03696_487d762f9d1e11f1b930525400e6dd8f
-    ReservedCode2: pvv/9Hsd661IwzOiveFJxDr2weXEYfwPs7Rxh6c4hNiyCQRHxFjAg+hJtjhoa85oG4VQ1paBTyFSiv9k/MI1vdPw6InpSw0gCGdq4jkWxBmEbTn+PtFoDUEtFfjkGa7eto8Vee21gh3YaBVMFi9U2ww33fMFNTynWV7wWnUi2tWxjVmjKc0gO29dhek=
----
-
 # ContentFerry 一期开发设计
 
 > 状态：工程脚手架已建立 0.3
