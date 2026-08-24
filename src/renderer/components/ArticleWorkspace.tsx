@@ -63,8 +63,8 @@ export function ArticleWorkspace({
     accountId: "",
     needOpenComment: true,
     onlyFansCanComment: false,
-    declareOriginal: false,
-    enableReward: false,
+    declareOriginal: true,
+    enableReward: true,
     collectionName: ""
   });
   const [authorHistory, setAuthorHistory] = useState<string[]>([]);
@@ -109,8 +109,8 @@ export function ArticleWorkspace({
     accountId: "",
     needOpenComment: true,
     onlyFansCanComment: false,
-    declareOriginal: false,
-    enableReward: false,
+    declareOriginal: true,
+    enableReward: true,
     collectionName: ""
   });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
@@ -190,9 +190,12 @@ export function ArticleWorkspace({
       request<ArticleSettings>(`/article-settings?contextKey=${encodeURIComponent(contextKey)}`),
       request<{ items: string[] }>("/article-settings/authors")
     ]).then(([settings, authors]) => {
-      setArticleSettings(settings);
+      // 微信文章发布设置默认选好作者：未保存过作者时填最近使用过的作者，
+      // 让“申请原创声明 / 开启赞赏”之外，作者也默认就位。
+      const defaultAuthor = settings.author || authors.items[0] || "";
+      setArticleSettings((prev) => ({ ...settings, author: defaultAuthor }));
       setSettingsCoverPrompt(settings.coverPrompt);
-      setSavedSettings(settings);
+      setSavedSettings((prev) => ({ ...settings, author: defaultAuthor }));
       setAuthorHistory(authors.items);
     }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"));
   }, [contextKey]);

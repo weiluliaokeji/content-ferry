@@ -42,8 +42,8 @@ export function useWechatPublish(params: UseWechatPublishParams) {
   const [publishDigest, setPublishDigest] = useState("");
   const [publishNeedOpenComment, setPublishNeedOpenComment] = useState(true);
   const [publishOnlyFansCanComment, setPublishOnlyFansCanComment] = useState(false);
-  const [publishDeclareOriginal, setPublishDeclareOriginal] = useState(false);
-  const [publishEnableReward, setPublishEnableReward] = useState(false);
+  const [publishDeclareOriginal, setPublishDeclareOriginal] = useState(true);
+  const [publishEnableReward, setPublishEnableReward] = useState(true);
   const [publishCollectionName, setPublishCollectionName] = useState("");
   const [publishThumbMediaId, setPublishThumbMediaId] = useState("");
   const [publishCoverSource, setPublishCoverSource] = useState("");

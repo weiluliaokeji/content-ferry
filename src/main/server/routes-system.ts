@@ -138,8 +138,8 @@ export function registerSystemRoutes(ctx: ServerContext): void {
       accountId: project?.target_account_id ?? row?.account_id ?? "",
       needOpenComment: row ? row.need_open_comment === 1 : true,
       onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false,
-      declareOriginal: row ? row.declare_original === 1 : false,
-      enableReward: row ? row.enable_reward === 1 : false,
+      declareOriginal: row ? row.declare_original === 1 : true,
+      enableReward: row ? row.enable_reward === 1 : true,
       collectionName: row?.collection_name ?? ""
     };
   });
