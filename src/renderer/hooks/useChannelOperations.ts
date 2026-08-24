@@ -600,10 +600,17 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     }
     setCsdnDraftSaving(true);
     try {
-      const assistedJob = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/browser-assist`, { method: "POST" });
-      setCsdnPublishJob(assistedJob);
+    // 已是“已填充 / 待用户补齐”的任务：窗口多半还活着，主进程会走轻量“重新打开”
+    // （仅提到前台 + 重启对话框轮询），不必再打 browser-assist 接口、刷新草稿列表，
+    // 否则会额外触发一次网络往返，体验上像“又重新加载了一遍”。
+    const knownJob = csdnJobs.find((entry) => entry.id === jobId);
+    const alreadyPrepared = knownJob?.status === "ready_for_final_confirmation" || knownJob?.status === "needs_user";
+      if (!alreadyPrepared) {
+        const assistedJob = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/browser-assist`, { method: "POST" });
+        setCsdnPublishJob(assistedJob);
+      }
       await window.contentFerry.openCsdnPublisher(jobId);
-      await loadCsdnChannelDrafts();
+      if (!alreadyPrepared) await loadCsdnChannelDrafts();
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法启动 CSDN 浏览器发布流程。");

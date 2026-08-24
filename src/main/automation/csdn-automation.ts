@@ -39,7 +39,28 @@ async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
   state.csdnWindow = window;
   window.on("closed", () => {
     if (state.csdnWindow === window) state.csdnWindow = undefined;
+    // 窗口销毁后其内容不再载在内存中的编辑器里，清空标记以便下次“重新打开”
+    // 走完整流程重新填充（CSDN 编辑器窗口全局只有一个，无需判断“另一个窗口”）。
+    state.csdnWindowJobId = undefined;
     stopCsdnDialogPoller();
+  });
+  // CSDN 编辑器页面自身注册了 beforeunload（未保存内容拦截）。若不加处理器，
+  // Electron 会静默尊重页面的 beforeunload、取消关闭——标题栏 × 点了没反应。
+  // 逻辑与主窗口一致：退出流程中直接放行；否则弹确认框，选“放弃”才强制卸载。
+  window.webContents.on("will-prevent-unload", (event) => {
+    if (state.shutdownPromise) { event.preventDefault(); return; }
+    if (window.isDestroyed()) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: "warning",
+      title: "文渡 · CSDN 编辑器",
+      message: "CSDN 编辑器中有未发布的内容",
+      detail: "关闭此窗口会丢失当前编辑器中的内容（文渡侧的发布任务记录保留）。你可以返回文渡继续发布，或放弃此窗口。",
+      buttons: ["返回继续发布", "放弃并关闭"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (choice === 1) event.preventDefault();
   });
   // 与检索浏览器一致：若用户在“联网检索服务”里配置了检索代理，CSDN 编辑器也走同一代理。
   // 否则在需要代理才能访问外网的环境里，窗口会静默加载失败（白屏）。
@@ -221,6 +242,28 @@ function rewriteMarkdownImages(markdown: string, replaced: Map<string, string>):
   return result;
 }
 
+type CsdnBrowserDraft = {
+  title: string;
+  markdown: string;
+  author: string;
+  digest: string;
+  images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }>;
+  coverDataUrl?: string;
+};
+
+// 读取发布任务状态与渠道稿内容（图片为 dataUrl，真正上传到 CSDN 图床发生在已登录的
+// 编辑器页面内）。网络或校验失败时返回 null，由调用方决定如何提示，而不是抛错打断流程。
+async function fetchCsdnJobAndDraft(jobId: string): Promise<{ status: string; draft: CsdnBrowserDraft } | null> {
+  try {
+    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}`);
+    if (!response.ok) return null;
+    const payload = await response.json() as { job: { status: string }; draft: CsdnBrowserDraft };
+    return { status: payload.job.status, draft: payload.draft };
+  } catch {
+    return null;
+  }
+}
+
 export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   resetCsdnDiagnostics();
   let window: BrowserWindow;
@@ -233,6 +276,30 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   }
   window.show();
   window.focus();
+
+  // 轻量“重新打开”路径：同一份发布任务仍载在存活的编辑器窗口里（标题/正文已填好、
+  // 图片也已传过 CSDN 图床）。此时只把窗口提到前台、重启发布对话框轮询即可，
+  // 不要再抓稿、重传图片、重填编辑器——否则每次点“重新打开”都会重复上传一份草稿，
+  // 并可能覆盖用户在编辑器里的手动修改。窗口被关闭后 csdnWindowJobId 会被清空，
+  // 那时再点“重新打开”会走下面的完整流程重新填充。
+  if (state.csdnWindow && !state.csdnWindow.isDestroyed() && state.csdnWindowJobId === jobId) {
+    logCsdnBrowserAssist("reopen-skip-refill", { jobId });
+    showCsdnAssistStatus(window, [
+      "已切回 CSDN 编辑器窗口。",
+      "内容已在窗口中，请直接点击 CSDN 编辑器的“发布文章”按钮；发布设置框弹出后文渡会自动填充。"
+    ]);
+    const loaded = await fetchCsdnJobAndDraft(jobId);
+    // 仅当内容已填充（ready / needs_user）才重启对话框轮询；needs_login 等状态下
+    // 编辑器尚未就绪，轮询只会产生无用的扫描循环。
+    if (loaded && (loaded.status === "ready_for_final_confirmation" || loaded.status === "needs_user")) {
+      startCsdnPublishDialogPoller(jobId, loaded.draft.digest, loaded.draft.coverDataUrl, window);
+    }
+    return;
+  }
+
+  // 完整流程：窗口是新建的（或载着别的任务），需要重新抓稿、上传图片、填充编辑器。
+  // 注意：csdnWindowJobId 在填充成功/needs_user/needs_login 时才写入，不在开头写——
+  // 否则一次失败的全流程会让下次“重新打开”误判为轻量路径而跳过重填。
   // 第一时间给出可见进度：窗口刚打开后到图片上传完成前会有几秒"空白期"
   // （等待编辑器加载、登录预检、上传正文图片），右下角黑色状态框先提示，避免像"卡住"。
   showCsdnAssistStatus(window, [
@@ -246,10 +313,9 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
       cookieCount: cookies.length,
       hasLoginCookie: cookies.some((c) => /^(UserName|UserToken|ssxin|csdn_user|uid)$/.test(c.name))
     });
-    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json() as { draft: { title: string; markdown: string; author: string; digest: string; images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }>; coverDataUrl?: string } };
-    draft = payload.draft;
+    const fetched = await fetchCsdnJobAndDraft(jobId);
+    if (!fetched) throw new Error("无法读取 CSDN 渠道稿内容。");
+    draft = fetched.draft;
     logCsdnBrowserAssist("draft-fetched", {
       title: draft.title,
       markdownLength: draft.markdown.length,
@@ -283,18 +349,44 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   if (loginState === "login") {
     logCsdnBrowserAssist("needs-login", {});
     await persistCsdnFill(jobId, { verifiedFields: [], state: "needs_login", reason: "CSDN 编辑器未登录，请先在浏览器登录后再发起发布。" });
+    // 窗口载着该任务（停在登录页），标记后“重新打开”只提到前台，不再重跑。
+    state.csdnWindowJobId = jobId;
     showCsdnAssistStatus(window, ["CSDN 编辑器尚未登录。", "请在打开的浏览器中登录 CSDN，然后回到文渡重新点击“在浏览器中完成发布”。"]);
     return;
   }
 
   // 上传图片到 CSDN 图床：在已登录的编辑器页面内调用 CSDN 自带的
   // window.csdn.upload.uploadImg（同域、自带 cookie，无需反向工程私有接口）。
-  const imageUpload = await uploadCsdnImagesInPage(window, draft.images, (done, total) => {
+  // 若之前已为该任务上传过、且本次稿件的图片 source 与缓存完全一致，则直接复用
+  // 已传的 CSDN URL，跳过图床重传——这是“关闭窗口后再重新打开”不再重复上传草稿的关键。
+  const cachedUrls = state.csdnImageUrlCache.get(jobId);
+  const reuseFromCache =
+    !!cachedUrls && draft.images.length > 0 && draft.images.every((img) => cachedUrls.has(img.source));
+  let imageUpload: PageUploadOutcome;
+  if (reuseFromCache) {
+    const replaced = new Map<string, string>();
+    for (const img of draft.images) {
+      const url = cachedUrls!.get(img.source);
+      if (url) replaced.set(img.source, url);
+    }
+    imageUpload = { replaced, failures: [] };
+    logCsdnBrowserAssist("images-reused-from-cache", { count: replaced.size });
     showCsdnAssistStatus(window, [
-      `正在上传文章图片到 CSDN 图床（${done}/${total}）…`,
-      "请勿关闭此窗口，上传完成后会自动填充标题与正文。"
+      `复用上次已上传的 ${replaced.size} 张 CSDN 图片，跳过图床重传。`,
+      "正在填充标题与正文…"
     ]);
-  });
+  } else {
+    imageUpload = await uploadCsdnImagesInPage(window, draft.images, (done, total) => {
+      showCsdnAssistStatus(window, [
+        `正在上传文章图片到 CSDN 图床（${done}/${total}）…`,
+        "请勿关闭此窗口，上传完成后会自动填充标题与正文。"
+      ]);
+    });
+  }
+  // 把本次成功上传的 source → URL 映射写入缓存，供下次“重新打开”复用。
+  if (imageUpload.replaced.size > 0) {
+    state.csdnImageUrlCache.set(jobId, new Map(imageUpload.replaced));
+  }
   const finalMarkdown = rewriteMarkdownImages(draft.markdown, imageUpload.replaced);
   logCsdnBrowserAssist("images-uploaded", {
     total: draft.images.length,
@@ -328,6 +420,10 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
       state: fill.title || fill.content ? "needs_user" : "failed_before_submit",
       reason: "未能可靠填充标题或正文；请在浏览器中手动补齐，再回到文渡点击“确认结果”。"
     });
+    // needs_user：窗口确实载着该任务（只是没填全），标记后“重新打开”只提到前台，
+    // 不再重填，避免覆盖用户在编辑器里的手动补齐。failed_before_submit 不标记，
+    // 因为内容基本是空的，下次应走完整流程重填。
+    if (fill.title || fill.content) state.csdnWindowJobId = jobId;
     showCsdnAssistStatus(window, [
       "已打开 CSDN 编辑器，但标题或正文未能自动填充。",
       "请在浏览器中手动补齐内容；确认无误后，回到文渡点击“确认结果”。"
@@ -336,6 +432,10 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   }
 
   await persistCsdnFill(jobId, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+  // 成功填充后标记窗口载着该任务：下次点“重新打开”走轻量路径（仅提到前台 + 重启轮询），
+  // 不再抓稿/重传图片/重填编辑器。必须用持久化成功作为标记时机，避免一次失败的全流程
+  // 让下次“重新打开”误判为轻量路径而跳过重填。
+  state.csdnWindowJobId = jobId;
   const statusLines = [
     "已填充标题与正文。",
     imageUpload.replaced.size > 0 ? `已将 ${imageUpload.replaced.size} 张图片上传到 CSDN 图床并替换正文链接。` : (draft.images.length === 0 ? "" : "本文没有需要上传的本地图片。")
