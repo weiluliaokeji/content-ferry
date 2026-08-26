@@ -214,7 +214,7 @@ createPublishJob → draft_creating
   - 发布设置：分类下拉（固定分类映射）+ 标签输入（已知映射透传）。
   - 发布流程：点"发布到掘金" → 冻结确认 → 创建任务 → 轮询至 `draft_created` → 展示**掘金草稿链接** + "确认公开"按钮 → 确认 → `published` 展示文章链接。
   - 异常状态展示：`needs_credentials` 引导补凭据；`needs_manual_reconciliation` 提供人工校正表单。
-- `src/renderer/main.tsx`：平台枚举增加 juejin、内容库入口行"生成掘金稿/进入掘金稿"、账号列表掘金凭据按钮、掘金凭据弹窗（Cookie/AID/UUID）、发布中心 pending/completed 分支、`juejinJobLabel` 状态文案、任务轮询（活跃状态每 3s 刷新）。
+- `src/renderer/main.tsx`：平台枚举增加 juejin、内容库入口行"生成掘金稿/进入掘金稿"、账号列表掘金凭据按钮、掘金凭据弹窗（Cookie/AID/UUID）、发布记录 pending/completed 分支、`juejinJobLabel` 状态文案、任务轮询（活跃状态每 3s 刷新）。
 - 无新增 preload/IPC 方法（纯 API 型，无浏览器驱动）。
 
 ## 10. 错误处理
@@ -257,7 +257,7 @@ createPublishJob → draft_creating
 | `src/main/juejin/juejin-channel-service.ts` | 新建：渠道稿服务 + 状态机 |
 | `src/main/server/create-server.ts` | 修改：新增 12 条路由 + 依赖注入 + 平台枚举 |
 | `src/renderer/components/JuejinDraftWorkspace.tsx` | 新建：渠道稿工作台 |
-| `src/renderer/main.tsx` | 修改：平台枚举 + 入口行 + 凭据弹窗 + 发布中心 + 轮询 |
+| `src/renderer/main.tsx` | 修改：平台枚举 + 入口行 + 凭据弹窗 + 发布记录 + 轮询 |
 | `src/main/juejin/juejin-client.test.ts` | 新建：客户端单测（15 tests） |
 | `src/main/juejin/juejin-channel-service.test.ts` | 新建：渠道服务单测（14 tests） |
 | `spec/02-development-design.md` | 修改：第 10 章掘金列为二期的表述更新为已实现 |

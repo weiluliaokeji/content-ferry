@@ -655,7 +655,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         cnblogsStatusRef.current = payload.job.status;
         setCnblogsPublishJob(payload.job);
         if (payload.job.status === "published") {
-          // 发布完成：离开编辑工作区，跳转发布中心并给出成功反馈。
+          // 发布完成：离开编辑工作区，跳转发布记录并给出成功反馈。
           setNotice("已成功发布到博客园。");
           setCnblogsDraft(undefined);
           setCnblogsDraftSource(undefined);
@@ -697,7 +697,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         juejinStatusRef.current = payload.job.status;
         setJuejinPublishJob(payload.job);
         if (payload.job.status === "published") {
-          // 发布完成：离开编辑工作区，跳转发布中心并给出成功反馈。
+          // 发布完成：离开编辑工作区，跳转发布记录并给出成功反馈。
           setNotice("已成功发布到掘金。");
           setJuejinDraft(undefined);
           setJuejinDraftSource(undefined);
@@ -807,7 +807,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         cnblogsStatusRef.current = payload.job.status;
         setCnblogsPublishJob(payload.job);
         setNotice("已创建博客园发布任务，正在创建草稿…");
-        // 跳转到发布中心查看任务进度；清除编辑工作区状态，保持 cnblogsPublishJob 以继续轮询。
+        // 跳转到发布记录查看任务进度；清除编辑工作区状态，保持 cnblogsPublishJob 以继续轮询。
         setCnblogsDraft(undefined);
         setCnblogsDraftSource(undefined);
         setCnblogsEntryChoices(null);
@@ -825,7 +825,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     if (!cnblogsDraft) return;
     if (cnblogsDraft.status === "draft") {
       const confirmed = window.confirm(
-        "发布会把本博客园渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布中心查看进度。\n\n是否继续？"
+        "发布会把本博客园渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布记录查看进度。\n\n是否继续？"
       );
       if (!confirmed) return;
     }
@@ -857,7 +857,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         juejinStatusRef.current = payload.job.status;
         setJuejinPublishJob(payload.job);
         setNotice("已创建掘金发布任务，正在创建草稿…");
-        // 跳转到发布中心查看任务进度；清除编辑工作区状态，保持 juejinPublishJob 以继续轮询。
+        // 跳转到发布记录查看任务进度；清除编辑工作区状态，保持 juejinPublishJob 以继续轮询。
         setJuejinDraft(undefined);
         setJuejinDraftSource(undefined);
         setJuejinEntryChoices(null);
@@ -875,7 +875,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     if (!juejinDraft) return;
     if (juejinDraft.status === "draft") {
       const confirmed = window.confirm(
-        "发布会把本掘金渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布中心查看进度。\n\n是否继续？"
+        "发布会把本掘金渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布记录查看进度。\n\n是否继续？"
       );
       if (!confirmed) return;
     }
@@ -1012,11 +1012,11 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         void loadCnblogsChannelDrafts();
         // 状态推进时给出强反馈，避免用户以为发布无响应。
         if (previous === "draft_creating" && payload.job.status === "draft_created") setNotice("博客园草稿已就绪，请确认公开。");
-        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`博客园草稿创建失败：${payload.job.errorMessage ?? "请查看发布中心"}`);
+        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`博客园草稿创建失败：${payload.job.errorMessage ?? "请查看发布记录"}`);
         if (previous === "draft_creating" && payload.job.status === "needs_credentials") setNotice("博客园凭据不完整，请前往账号页配置。");
         if (previous === "confirming" && payload.job.status === "published") {
           setNotice("已成功发布到博客园。");
-          // 发布完成：若仍停留在编辑工作区，则离开并回到发布中心查看发布记录。
+          // 发布完成：若仍停留在编辑工作区，则离开并回到发布记录查看发布记录。
           if (cnblogsDraft) {
             setCnblogsDraft(undefined);
             setCnblogsDraftSource(undefined);
@@ -1042,11 +1042,11 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         void loadJuejinChannelDrafts();
         // 状态推进时给出强反馈，避免用户以为发布无响应。
         if (previous === "draft_creating" && payload.job.status === "draft_created") setNotice("掘金草稿已就绪，请确认公开。");
-        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`掘金草稿创建失败：${payload.job.errorMessage ?? "请查看发布中心"}`);
+        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`掘金草稿创建失败：${payload.job.errorMessage ?? "请查看发布记录"}`);
         if (previous === "draft_creating" && payload.job.status === "needs_credentials") setNotice("掘金凭据不完整，请前往账号页配置。");
         if (previous === "confirming" && payload.job.status === "published") {
           setNotice("已成功发布到掘金。");
-          // 发布完成：若仍停留在编辑工作区，则离开并回到发布中心查看发布记录。
+          // 发布完成：若仍停留在编辑工作区，则离开并回到发布记录查看发布记录。
           if (juejinDraft) {
             setJuejinDraft(undefined);
             setJuejinDraftSource(undefined);

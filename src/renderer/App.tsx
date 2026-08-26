@@ -1012,7 +1012,7 @@ export function App() {
       <nav>
         <button className={activeView === "dashboard" ? "active" : ""} onClick={() => setActiveView("dashboard")}>工作台</button>
         <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")}>内容库</button>
-        <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")}>发布</button>
+        <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")}>发布记录</button>
         <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")}>技能与模型</button>
         <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")}>账号</button>
         <button className={activeView === "logs" ? "active" : ""} onClick={() => setActiveView("logs")}>运行日志</button>
@@ -1020,7 +1020,17 @@ export function App() {
       </nav>
     </aside>
     <main className="app-main">
-    <div className="page-heading"><h1>{pageTitle}</h1>{((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={openProjectCreator}>＋ 新建文章</button>}</div>
+    <div className="page-heading">
+      <h1>{pageTitle}</h1>
+      {activeView === "publish" ? (
+        <div className="refresh-actions">
+          <span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span>
+          <button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button>
+        </div>
+      ) : (
+        ((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={openProjectCreator}>＋ 新建文章</button>
+      )}
+    </div>
     {error && <p className="error">{error}</p>}
     {error && <Modal title="操作未完成" eyebrow="需要你的注意" onClose={() => setError("")} disabled={false} priority><p className="error error-dialog-message">{error}</p><div className="modal-actions"><button type="button" onClick={() => setError("")}>知道了</button></div></Modal>}
     {notice && <div className="toast-notice" role="status">{notice}</div>}

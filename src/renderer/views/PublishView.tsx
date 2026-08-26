@@ -73,7 +73,6 @@ export function PublishView(props: PublishViewProps) {
   } = props;
 
   return <>
-    <div className="publish-page-actions"><span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span><button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button></div>
     {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
       {pendingPageItems.length > 0 && <section className="card">
         <div className="section-heading"><h2>待处理</h2></div>
@@ -152,7 +151,6 @@ export function PublishView(props: PublishViewProps) {
         {pendingTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={publishPendingPageSize} onChange={(event) => { setPublishPendingPage(1); setPublishPendingPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{pendingTotalPages > 1 && <><button className="secondary-button" disabled={pendingSafePage <= 1} onClick={() => setPublishPendingPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{pendingSafePage} / {pendingTotalPages}</span><button className="secondary-button" disabled={pendingSafePage >= pendingTotalPages} onClick={() => setPublishPendingPage((page) => Math.min(pendingTotalPages, page + 1))}>下一页</button></>}</div>}
       </section>}
       {completedPageItems.length > 0 && <section className="card">
-        <div className="section-heading"><h2>发布记录</h2></div>
         <ul className="publish-job-list">{completedPageItems.map((entry) => {
           if (entry.kind === "wechat") {
             const job = entry.job;

@@ -16,6 +16,6 @@ export const getPageTitle = (
   activeView === "dashboard"
     ? projectsCount === 0 ? "开始创作" : "工作台"
     : activeView === "library" ? "内容库"
-      : activeView === "publish" ? "发布中心"
+      : activeView === "publish" ? "发布记录"
         : activeView === "skills" ? "技能与模型"
-          : activeView === "accounts" ? "账号与连接" : activeView === "help" ? "使用帮助" : "运行日志";
+          : activeView === "accounts" ? "账号" : activeView === "help" ? "使用帮助" : "运行日志";
