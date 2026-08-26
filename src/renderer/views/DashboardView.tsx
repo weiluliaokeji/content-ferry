@@ -45,6 +45,7 @@ function PlatformIcon({ platform }: { platform: ChannelRow["platform"] }) {
 }
 
 function StatusIcon({ row }: { row: ChannelRow }) {
+  if (row.action.kind === "generate") return null;
   const glyph = row.statusLabel === "已发布" ? "✓" : row.statusLabel === "已冻结" ? "冻" : /草稿|待发布/.test(row.statusLabel) ? "稿" : /处理中|确认中/.test(row.statusLabel) ? "⏳" : /失败|取消/.test(row.statusLabel) ? "✕" : "○";
   return <span className={`status-icon status-${row.tone}`} aria-label={`${row.label}：${row.statusLabel}`} title={`${row.label}：${row.statusLabel}`}>{glyph}</span>;
 }
@@ -96,9 +97,16 @@ function ProjectRow({
   const archivablePath = project.sourceRelativePath;
   return <li key={project.id}>
     <span className="dashboard-row-primary">
-      {archivablePath && <input type="checkbox" className="dashboard-row-checkbox" checked={selected} onChange={onToggle} aria-label="选择此文章" />}
-      {project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span>
-      <span className="account-actions">
+      <span className="dashboard-row-title-block">
+        <span className="dashboard-row-title-line">
+          {archivablePath && <input type="checkbox" className="dashboard-row-checkbox" checked={selected} onChange={onToggle} aria-label="选择此文章" />}
+          {project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}
+        </span>
+        <small>{nextText}</small>
+      </span>
+      {channelRows.length > 0 && <ChannelStrip rows={channelRows} />}
+    </span>
+    <span className="account-actions">
       <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
       {canEditBrief && <button className="secondary-button" onClick={() => void openBrief(project)}>编辑创作方向</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
@@ -107,7 +115,6 @@ function ProjectRow({
       {project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}
       <button className="text-button danger-text" onClick={() => void deleteProjectDraft(project)} disabled={saving}>{job ? "删除本地文章" : "删除草稿"}</button>
     </span>
-    {channelRows.length > 0 && <div className="dashboard-channel-row"><ChannelStrip rows={channelRows} /></div>}
   </li>;
 }
 
@@ -189,10 +196,14 @@ export function DashboardView(props: DashboardViewProps) {
         ) : (
           <li key={item.relativePath}>
             <span className="dashboard-row-primary">
-              <input type="checkbox" className="dashboard-row-checkbox" checked={selectedPaths.has(item.relativePath)} onChange={() => togglePath(item.relativePath)} aria-label="选择此文章" />
-              <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+              <span className="dashboard-row-title-block">
+                <span className="dashboard-row-title-line">
+                  <input type="checkbox" className="dashboard-row-checkbox" checked={selectedPaths.has(item.relativePath)} onChange={() => togglePath(item.relativePath)} aria-label="选择此文章" />
+                  <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+                </span>
+              </span>
+              <ChannelStrip rows={channelRowsFor(item)} />
             </span>
-            <div className="dashboard-channel-row"><ChannelStrip rows={channelRowsFor(item)} /></div>
           </li>
         ))}</ul>
         <Pagination
