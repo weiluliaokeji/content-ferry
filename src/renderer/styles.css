@@ -38,7 +38,10 @@ h2 { margin: 0; font-size: 1.15rem; }
 .account-row-actions { display: flex !important; flex-flow: row wrap; align-items: center; justify-content: flex-start; gap: .45rem !important; }
 .compact-action { width: auto; padding: .48rem .7rem; white-space: nowrap; }
 .project-list, .publish-job-list { padding: 0; margin: 1rem 0 0; list-style: none; }
-.project-list li, .publish-job-list li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; border-top: 1px solid #edf0f6; }
+.project-list li, .publish-job-list li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; border-top: 1px solid #edf0f6; flex-wrap: wrap; }
+.dashboard-heading-actions { display: flex; align-items: center; gap: .65rem; }
+.dashboard-channel-row { width: 100%; margin-top: .35rem; }
+.external-articles-heading { margin: 1.5rem 0 .25rem; font-size: 1rem; color: #44516a; }
 .project-list li > span:first-child, .publish-job-list li > span:first-child { display: grid; gap: .3rem; min-width: 0; }
 .article-title-button { width: fit-content; max-width: 100%; padding: 0; border: 0; background: transparent; color: #18233c; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
 .article-title-button:hover { color: #315bdd; text-decoration: underline; }

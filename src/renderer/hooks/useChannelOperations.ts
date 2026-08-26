@@ -504,6 +504,10 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     }
     return false;
   };
+  const isFullyPublished = (item: { relativePath: string; title?: string | null }): boolean => {
+    const rows = channelRowsFor(item);
+    return rows.length > 0 && rows.every((row) => row.statusLabel === "已发布");
+  };
   const generateCsdnChannelDraft = async () => {
     if (!csdnDraftSource || !csdnDraftAccountId) return;
     setCsdnDraftSaving(true);
@@ -1199,6 +1203,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     openExistingCsdnDraft,
     channelRowsFor,
     isPublished,
+    isFullyPublished,
     generateCsdnChannelDraft,
     saveCsdnChannelDraft,
     generateCnblogsChannelDraft,

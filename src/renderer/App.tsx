@@ -349,6 +349,7 @@ export function App() {
     openExistingCsdnDraft,
     channelRowsFor,
     isPublished,
+    isFullyPublished,
     generateCsdnChannelDraft,
     saveCsdnChannelDraft,
     generateCnblogsChannelDraft,
@@ -992,10 +993,18 @@ export function App() {
   const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
   // 内容库 = 已发布/归档集合：只展示至少在一个渠道已发布的文章。
   const publishedLibraryItems = sourcePreview ? sourcePreview.items.filter((item) => isPublished(item)) : [];
-  // 工作台 = 未发布/进行中集合：应用内 project（去掉已发布）+ 外部直写且未发布的文章。
-  const dashboardProjects = projects.filter((project) => !isPublished({ relativePath: project.sourceRelativePath ?? "", title: project.topic }));
+  // 工作台 = 未发布/进行中集合：应用内 project（去掉全平台已发布）+ 外部直写且未全平台发布的文章；均按创建时间倒序。
+  const dashboardProjects = projects
+    .filter((project) => !isFullyPublished({ relativePath: project.sourceRelativePath ?? "", title: project.topic }))
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   const externalArticles = sourcePreview
-    ? sourcePreview.items.filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath) && !isPublished(item))
+    ? sourcePreview.items
+      .filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath) && !isFullyPublished(item))
+      .sort((left, right) => {
+        const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+        const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+        return rightTime - leftTime;
+      })
     : [];
   // 内容库分页：默认每页 5 条；扫描结果变化时自动收敛页码。
   const libraryTotalPages = publishedLibraryItems.length > 0 ? Math.max(1, Math.ceil(publishedLibraryItems.length / libraryPageSize)) : 1;
@@ -1031,9 +1040,12 @@ export function App() {
           <span>{wechatJobsRefreshedAt && `已更新 ${wechatJobsRefreshedAt.toLocaleTimeString()}`}</span>
           <button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button>
         </div>
-      ) : (
-        ((activeView === "dashboard" && projects.length > 0)) && <button onClick={openProjectCreator}>＋ 新建文章</button>
-      )}
+      ) : activeView === "dashboard" ? (
+        <div className="dashboard-heading-actions">
+          <button className="secondary-button" onClick={() => void refreshSourcePreview()}>重新加载文章</button>
+          <button onClick={openProjectCreator}>＋ 新建文章</button>
+        </div>
+      ) : null}
     </div>
     {error && <p className="error">{error}</p>}
     {error && <Modal title="操作未完成" eyebrow="需要你的注意" onClose={() => setError("")} disabled={false} priority><p className="error error-dialog-message">{error}</p><div className="modal-actions"><button type="button" onClick={() => setError("")}>知道了</button></div></Modal>}
@@ -1166,7 +1178,7 @@ export function App() {
       externalArticles={externalArticles}
       publishedCount={publishedLibraryItems.length}
       openSourceArticle={openSourceArticle}
-      scanExternalArticles={refreshSourcePreview}
+      channelRowsFor={channelRowsFor}
     />}
 
     {activeView === "logs" && <LogsView

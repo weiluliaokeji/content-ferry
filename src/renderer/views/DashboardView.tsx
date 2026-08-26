@@ -1,6 +1,6 @@
-import { bestWechatJob, wechatJobLabel } from "../publish-labels";
+import { bestWechatJob } from "../publish-labels";
 import { platformName } from "../api";
-import type { ContentProject, MediaAccount, ContentSourcePreview } from "../types";
+import type { ContentProject, MediaAccount, ContentSourcePreview, ChannelRow, ChannelAction } from "../types";
 
 export interface DashboardViewProps {
   projects: ContentProject[];
@@ -17,15 +17,32 @@ export interface DashboardViewProps {
   externalArticles: ContentSourcePreview["items"];
   publishedCount: number;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
-  scanExternalArticles: () => void;
+  channelRowsFor: (item: { relativePath: string; title?: string | null }) => ChannelRow[];
+}
+
+function ChannelActionButton({ action }: { action: ChannelAction }) {
+  if (action.kind === "none") return null;
+  return <button className="text-button" onClick={() => action.onClick()}>{action.label}</button>;
+}
+
+function ChannelStrip({ rows }: { rows: ChannelRow[] }) {
+  return <span className="channel-strip">
+    {rows.map((row) => (
+      <span className="channel-chip" key={row.platform} title={`${row.label}：${row.statusLabel}`}>
+        <span className="channel-chip-name">{row.label}</span>
+        <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
+        <ChannelActionButton action={row.action} />
+      </span>
+    ))}
+  </span>;
 }
 
 export function DashboardView(props: DashboardViewProps) {
-  const { projects, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, externalArticles, publishedCount, openSourceArticle, scanExternalArticles } = props;
+  const { projects, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, externalArticles, publishedCount, openSourceArticle, channelRowsFor } = props;
 
   return <section className={`card${projects.length === 0 && externalArticles.length === 0 ? " dashboard-empty-card" : ""}`}>
     {projects.length === 0 && externalArticles.length === 0 ? (
-      <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p>{publishedCount > 0 && <p className="hint compact-hint">你已发布的 {publishedCount} 篇文章都在「内容库」，可去那里查阅或重新发布。</p>}<button onClick={openProjectCreator}>＋ 新建文章</button></div>
+      <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p>{publishedCount > 0 && <p className="hint compact-hint">你已完成全平台发布的 {publishedCount} 篇文章都在「内容库」，可去那里查阅或重新发布。</p>}<button onClick={openProjectCreator}>＋ 新建文章</button></div>
     ) : (
       <>
         {projects.length > 0 && <ul className="project-list">{projects.map((project) => {
@@ -36,6 +53,7 @@ export function DashboardView(props: DashboardViewProps) {
           const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined;
           const canPrepare = !job || job.status === "failed" || job.status === "cancelled";
           const canEditBrief = project.briefReady && !project.outlineReady && !project.draftReady;
+          const channelRows = channelRowsFor({ relativePath: project.sourceRelativePath ?? "", title: project.topic });
           return <li key={project.id}>
             <span>{project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span>
               <span className="account-actions">
@@ -45,23 +63,18 @@ export function DashboardView(props: DashboardViewProps) {
               {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}
               {!project.draftReady && <button onClick={action}>{label}</button>}
               {project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}
-              {job?.status === "draft_ready" && <span className="status-badge">草稿已同步</span>}
-              {job?.status === "submitted" && <span className="status-badge">微信处理中</span>}
-              {job?.status === "published" && <span className="status-badge success">已发布</span>}
-              {job?.status === "cancelled" && <span className="status-badge warning">已取消发布</span>}
               <button className="text-button danger-text" onClick={() => void deleteProjectDraft(project)} disabled={saving}>{job ? "删除本地文章" : "删除草稿"}</button>
             </span>
+            {channelRows.length > 0 && <div className="dashboard-channel-row"><ChannelStrip rows={channelRows} /></div>}
           </li>;
         })}</ul>}
         {externalArticles.length > 0 && (
           <div className="external-articles">
-            <div className="section-heading"><div><h2>外部文章</h2><p className="hint compact-hint">直接写入 VitePress 目录、未由文渡新建的文章，可在此继续编辑与发布。</p></div><button onClick={() => void scanExternalArticles()}>扫描外部文章</button></div>
+            <h2 className="external-articles-heading">外部文章</h2>
             <ul className="project-list">{externalArticles.map((item) => (
               <li key={item.relativePath}>
                 <span><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button></span>
-                <span className="account-actions">
-                  <button className="secondary-button" onClick={() => void openSourceArticle(item.relativePath, "settings")}>打开并发布</button>
-                </span>
+                <div className="dashboard-channel-row"><ChannelStrip rows={channelRowsFor(item)} /></div>
               </li>
             ))}</ul>
           </div>
