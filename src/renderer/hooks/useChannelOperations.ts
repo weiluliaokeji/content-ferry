@@ -484,6 +484,26 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     }
     return rows;
   };
+  const isPublished = (item: { relativePath: string; title?: string | null }): boolean => {
+    const wechatJob = bestWechatJob(wechatJobs, (entry) => entry.sourceRelativePath === item.relativePath || entry.title === item.title);
+    if (wechatJob?.status === "published") return true;
+    const csdnExisting = csdnDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+    if (csdnExisting) {
+      const csdnJob = csdnJobs.find((job) => job.channelDraftId === csdnExisting.id);
+      if (csdnJob?.status === "published") return true;
+    }
+    const cnblogsExisting = cnblogsDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+    if (cnblogsExisting) {
+      const cnblogsJob = cnblogsJobs.find((job) => job.channelDraftId === cnblogsExisting.id);
+      if (cnblogsJob?.status === "published") return true;
+    }
+    const juejinExisting = juejinDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+    if (juejinExisting) {
+      const juejinJob = juejinJobs.find((job) => job.channelDraftId === juejinExisting.id);
+      if (juejinJob?.status === "published") return true;
+    }
+    return false;
+  };
   const generateCsdnChannelDraft = async () => {
     if (!csdnDraftSource || !csdnDraftAccountId) return;
     setCsdnDraftSaving(true);
@@ -1178,6 +1198,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     openCsdnChannelDraft,
     openExistingCsdnDraft,
     channelRowsFor,
+    isPublished,
     generateCsdnChannelDraft,
     saveCsdnChannelDraft,
     generateCnblogsChannelDraft,

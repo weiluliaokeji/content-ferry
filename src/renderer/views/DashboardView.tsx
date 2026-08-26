@@ -15,16 +15,17 @@ export interface DashboardViewProps {
   openPublishPreparation: (project: ContentProject) => void;
   deleteProjectDraft: (project: ContentProject) => Promise<void> | void;
   externalArticles: ContentSourcePreview["items"];
+  publishedCount: number;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
   scanExternalArticles: () => void;
 }
 
 export function DashboardView(props: DashboardViewProps) {
-  const { projects, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, externalArticles, openSourceArticle, scanExternalArticles } = props;
+  const { projects, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, externalArticles, publishedCount, openSourceArticle, scanExternalArticles } = props;
 
   return <section className={`card${projects.length === 0 && externalArticles.length === 0 ? " dashboard-empty-card" : ""}`}>
     {projects.length === 0 && externalArticles.length === 0 ? (
-      <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p><button onClick={openProjectCreator}>＋ 新建文章</button></div>
+      <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p>{publishedCount > 0 && <p className="hint compact-hint">你已发布的 {publishedCount} 篇文章都在「内容库」，可去那里查阅或重新发布。</p>}<button onClick={openProjectCreator}>＋ 新建文章</button></div>
     ) : (
       <>
         {projects.length > 0 && <ul className="project-list">{projects.map((project) => {

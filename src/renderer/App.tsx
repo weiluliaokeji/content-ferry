@@ -348,6 +348,7 @@ export function App() {
     openCsdnChannelDraft,
     openExistingCsdnDraft,
     channelRowsFor,
+    isPublished,
     generateCsdnChannelDraft,
     saveCsdnChannelDraft,
     generateCnblogsChannelDraft,
@@ -989,11 +990,17 @@ export function App() {
 
   // 分页通用配置：每页条数选项；切换条数时页码重置到第 1 页。
   const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
+  // 内容库 = 已发布/归档集合：只展示至少在一个渠道已发布的文章。
+  const publishedLibraryItems = sourcePreview ? sourcePreview.items.filter((item) => isPublished(item)) : [];
+  // 工作台 = 未发布/进行中集合：应用内 project（去掉已发布）+ 外部直写且未发布的文章。
+  const dashboardProjects = projects.filter((project) => !isPublished({ relativePath: project.sourceRelativePath ?? "", title: project.topic }));
+  const externalArticles = sourcePreview
+    ? sourcePreview.items.filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath) && !isPublished(item))
+    : [];
   // 内容库分页：默认每页 5 条；扫描结果变化时自动收敛页码。
-  const libraryTotalPages = sourcePreview ? Math.max(1, Math.ceil(sourcePreview.items.length / libraryPageSize)) : 1;
+  const libraryTotalPages = publishedLibraryItems.length > 0 ? Math.max(1, Math.ceil(publishedLibraryItems.length / libraryPageSize)) : 1;
   const librarySafePage = Math.min(libraryPage, libraryTotalPages);
-  const libraryPageItems = sourcePreview ? sourcePreview.items.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize) : [];
-  const externalArticles = sourcePreview ? sourcePreview.items.filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath)) : [];
+  const libraryPageItems = publishedLibraryItems.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize);
 
   // 发布中心分页：待处理与发布记录各一页，默认每页 5 条，页码超出时自动收敛。
   const pendingTotalPages = Math.max(1, Math.ceil(pendingEntries.length / publishPendingPageSize));
@@ -1088,6 +1095,7 @@ export function App() {
       librarySafePage={librarySafePage}
       setLibraryPage={setLibraryPage}
       PAGE_SIZE_OPTIONS={PAGE_SIZE_OPTIONS}
+      publishedCount={publishedLibraryItems.length}
       openSource={openSource}
       openSourceArticle={openSourceArticle}
       channelRowsFor={channelRowsFor}
@@ -1144,7 +1152,7 @@ export function App() {
     />}
 
     {activeView === "dashboard" && <DashboardView
-            projects={projects}
+            projects={dashboardProjects}
       accounts={accounts}
       wechatJobs={wechatJobs}
       saving={saving}
@@ -1156,6 +1164,7 @@ export function App() {
       openPublishPreparation={openPublishPreparation}
       deleteProjectDraft={deleteProjectDraft}
       externalArticles={externalArticles}
+      publishedCount={publishedLibraryItems.length}
       openSourceArticle={openSourceArticle}
       scanExternalArticles={refreshSourcePreview}
     />}
