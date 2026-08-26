@@ -49,6 +49,11 @@ export interface AppSettings {
    * 留空表示直连。格式 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。
    */
   researchProxyUrl: string;
+  /**
+   * 一次性存量归档迁移是否已完成。false/undefined 时，应用启动会自动把
+   * 2026-08-11 之前创建且未归档的文章标记为 archived，然后置为 true。
+   */
+  legacyArchiveMigrationDone?: boolean;
   createdAt: string;
   updatedAt: string;
 }

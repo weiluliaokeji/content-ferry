@@ -1,7 +1,7 @@
 import path from "node:path";
 import { z } from "zod";
 import {
-  contentAssetInput, contentSourceArchiveBeforeInput, contentSourceArchiveInput, contentSourceArticleInput, contentSourceArticleQuery,
+  contentAssetInput, contentSourceArchiveInput, contentSourceArticleInput, contentSourceArticleQuery,
   contentSourceAssetInput, contentSourceInput, remoteImageImportInput
 } from "./schemas";
 import type { ServerContext } from "./server-context";
@@ -66,12 +66,6 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentSourceArchiveInput.parse(request.body);
     return contentSources.setArchived(workspace.id, input.path, input.archived);
-  });
-
-  server.post("/api/content-source/archive-before", async (request) => {
-    const workspace = accounts.getOrCreateDefaultWorkspace();
-    const input = contentSourceArchiveBeforeInput.parse(request.body);
-    return contentSources.archiveArticlesBefore(workspace.id, input.cutoff);
   });
 
   server.post("/api/content-source/article-asset", async (request, reply) => {

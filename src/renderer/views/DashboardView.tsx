@@ -1,6 +1,8 @@
+import { useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { bestWechatJob } from "../publish-labels";
 import { platformName } from "../api";
+import { Pagination } from "../components/Pagination";
 import type { ContentProject, MediaAccount, ChannelRow, ChannelAction } from "../types";
 
 export interface DashboardViewProps {
@@ -18,6 +20,7 @@ export interface DashboardViewProps {
   deleteProjectDraft: (project: ContentProject) => Promise<void> | void;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
   channelRowsFor: (item: { relativePath: string; title?: string | null }) => ChannelRow[];
+  onBatchArchive?: (relativePaths: string[]) => Promise<void> | void;
   page: number;
   totalPages: number;
   pageSize: number;
@@ -46,9 +49,11 @@ function StatusIcon({ row }: { row: ChannelRow }) {
   return <span className={`status-icon status-${row.tone}`} aria-label={`${row.label}：${row.statusLabel}`} title={`${row.label}：${row.statusLabel}`}>{glyph}</span>;
 }
 
-function ChannelActionButton({ action }: { action: ChannelAction }) {
+function ChannelActionIcon({ action }: { action: ChannelAction }) {
   if (action.kind === "none") return null;
-  return <button className="text-button" onClick={() => action.onClick()}>{action.label}</button>;
+  const glyph = action.kind === "generate" ? "＋" : "✎";
+  const title = action.kind === "generate" ? "新建渠道稿" : "编辑/继续";
+  return <button className="channel-action-icon" onClick={() => action.onClick()} aria-label={title} title={title}>{glyph}</button>;
 }
 
 function ChannelStrip({ rows }: { rows: ChannelRow[] }) {
@@ -57,14 +62,14 @@ function ChannelStrip({ rows }: { rows: ChannelRow[] }) {
       <span className="channel-chip" key={row.platform}>
         <PlatformIcon platform={row.platform} />
         <StatusIcon row={row} />
-        <ChannelActionButton action={row.action} />
+        <ChannelActionIcon action={row.action} />
       </span>
     ))}
   </span>;
 }
 
 function ProjectRow({
-  project, accounts, wechatJobs, saving, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, channelRowsFor
+  project, accounts, wechatJobs, saving, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, channelRowsFor, selected, onToggle
 }: {
   project: ContentProject;
   accounts: MediaAccount[];
@@ -77,6 +82,8 @@ function ProjectRow({
   openPublishPreparation: DashboardViewProps["openPublishPreparation"];
   deleteProjectDraft: DashboardViewProps["deleteProjectDraft"];
   channelRowsFor: DashboardViewProps["channelRowsFor"];
+  selected: boolean;
+  onToggle: () => void;
 }) {
   const job = bestWechatJob(wechatJobs, (item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
   const nextText = job?.status === "published" ? "微信公众号已确认发布完成" : job?.status === "cancelled" ? "发布任务已人工取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，正在等待最终回执" : job?.status === "draft_ready" ? "已同步微信草稿箱，等待预览和发布" : project.draftReady ? "正文已保存，可继续编辑或准备发布" : project.outlineReady ? "提纲已确认，下一步生成正文" : project.researchReady ? "资料已补充，下一步生成提纲" : project.briefReady ? "创作方向已整理，下一步联网补研" : "下一步整理创作方向和资料";
@@ -86,8 +93,11 @@ function ProjectRow({
   const canPrepare = !job || job.status === "failed" || job.status === "cancelled";
   const canEditBrief = project.briefReady && !project.outlineReady && !project.draftReady;
   const channelRows = channelRowsFor({ relativePath: project.sourceRelativePath ?? "", title: project.topic });
+  const archivablePath = project.sourceRelativePath;
   return <li key={project.id}>
-    <span>{project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span>
+    <span className="dashboard-row-primary">
+      {archivablePath && <input type="checkbox" className="dashboard-row-checkbox" checked={selected} onChange={onToggle} aria-label="选择此文章" />}
+      {project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small>{nextText}</small></span>
       <span className="account-actions">
       <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
       {canEditBrief && <button className="secondary-button" onClick={() => void openBrief(project)}>编辑创作方向</button>}
@@ -102,13 +112,63 @@ function ProjectRow({
 }
 
 export function DashboardView(props: DashboardViewProps) {
-  const { items, totalItems, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, openSourceArticle, channelRowsFor, page, totalPages, pageSize, setPage, setPageSize, PAGE_SIZE_OPTIONS } = props;
+  const { items, totalItems, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, openSourceArticle, channelRowsFor, onBatchArchive, page, totalPages, pageSize, setPage, setPageSize, PAGE_SIZE_OPTIONS } = props;
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [archiving, setArchiving] = useState(false);
+
+  const selectablePaths = useMemo(() => new Set(items.map((item) => item.relativePath).filter((path): path is string => !!path)), [items]);
+
+  const allPageSelected = selectablePaths.size > 0 && [...selectablePaths].every((path) => selectedPaths.has(path));
+
+  const togglePath = (path: string) => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const togglePage = () => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        for (const path of selectablePaths) next.delete(path);
+      } else {
+        for (const path of selectablePaths) next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchArchive = async () => {
+    if (!onBatchArchive || selectedPaths.size === 0) return;
+    setArchiving(true);
+    try {
+      await onBatchArchive([...selectedPaths]);
+      setSelectedPaths(new Set());
+    } finally {
+      setArchiving(false);
+    }
+  };
 
   return <section className={`card${items.length === 0 ? " dashboard-empty-card" : ""}`}>
     {items.length === 0 ? (
       <div className="dashboard-empty"><h2>写下一个主题，开始第一篇文章</h2><p>文渡会创建草稿，并结合账号定位辅助整理方向、提纲和正文。</p><button onClick={openProjectCreator}>＋ 新建文章</button></div>
     ) : (
       <>
+        {onBatchArchive && selectablePaths.size > 0 && (
+          <div className="dashboard-batch-bar">
+            <label className="dashboard-batch-select-all">
+              <input type="checkbox" checked={allPageSelected} onChange={togglePage} />
+              <span>全选本页</span>
+            </label>
+            <span className="dashboard-batch-count">已选 {selectedPaths.size} 篇</span>
+            <button className="secondary-button" onClick={() => void handleBatchArchive()} disabled={archiving || selectedPaths.size === 0}>
+              {archiving ? "归档中…" : "批量归档"}
+            </button>
+          </div>
+        )}
         <ul className="project-list">{items.map((item) => item.kind === "project" ? (
           <ProjectRow
             key={item.id}
@@ -123,21 +183,27 @@ export function DashboardView(props: DashboardViewProps) {
             openPublishPreparation={openPublishPreparation}
             deleteProjectDraft={deleteProjectDraft}
             channelRowsFor={channelRowsFor}
+            selected={!!item.relativePath && selectedPaths.has(item.relativePath)}
+            onToggle={() => item.relativePath && togglePath(item.relativePath)}
           />
         ) : (
           <li key={item.relativePath}>
-            <span><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button></span>
+            <span className="dashboard-row-primary">
+              <input type="checkbox" className="dashboard-row-checkbox" checked={selectedPaths.has(item.relativePath)} onChange={() => togglePath(item.relativePath)} aria-label="选择此文章" />
+              <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+            </span>
             <div className="dashboard-channel-row"><ChannelStrip rows={channelRowsFor(item)} /></div>
           </li>
         ))}</ul>
-        {totalPages > 1 && <div className="library-pagination">
-          <label className="pagination-size-label">每页
-            <select className="pagination-size" value={pageSize} onChange={(event) => { setPage(1); setPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select>
-          </label>
-          <button className="secondary-button" disabled={page <= 1} onClick={() => { setPage((p) => Math.max(1, p - 1)); }}>上一页</button>
-          <span className="library-pagination-info">{page} / {totalPages}</span>
-          <button className="secondary-button" disabled={page >= totalPages} onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); }}>下一页</button>
-        </div>}
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalItems={totalItems}
+          setPage={setPage}
+          setPageSize={setPageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+        />
       </>
     )}
   </section>;

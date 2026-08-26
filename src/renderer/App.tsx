@@ -66,7 +66,8 @@ export function App() {
   const [runtimeLogSearch, setRuntimeLogSearch] = useState("");
   const [runtimeLogMeta, setRuntimeLogMeta] = useState<Pick<RuntimeLogResponse, "totalMatched" | "hasMore" | "sourceTruncated" | "readWindowBytes">>({ totalMatched: 0, hasMore: false, sourceTruncated: false, readWindowBytes: 0 });
   const [dashboardPage, setDashboardPage] = useState(1);
-  const [dashboardPageSize, setDashboardPageSize] = useState(10);
+  const [dashboardPageSize, setDashboardPageSize] = useState(5);
+  const [sourcePreviewRefreshing, setSourcePreviewRefreshing] = useState(false);
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -78,12 +79,14 @@ export function App() {
     try { setProjects((await request<{ items: ContentProject[] }>("/content-projects")).items); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取内容项目。"); }
   };
-  const refreshSourcePreview = async () => {
+  const refreshSourcePreview = async (): Promise<ContentSourcePreview | undefined> => {
     const source = await request<{ rootPath: string | null }>("/content-source");
-    if (!source.rootPath) { setSourcePreview(undefined); return; }
+    if (!source.rootPath) { setSourcePreview(undefined); return undefined; }
     setSourcePath(source.rootPath);
     setLibraryPage(1);
-    setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
+    const preview = await request<ContentSourcePreview>("/content-source/preview");
+    setSourcePreview(preview);
+    return preview;
   };
 
   // ── 工作台业务域（拆分自 App.tsx） ──
@@ -200,7 +203,6 @@ export function App() {
     openSourceArticle,
     saveSourceArticle,
     setArticleArchived,
-    archiveArticlesBefore,
     createProject,
     deleteProjectDraft,
     openBrief,
@@ -498,10 +500,9 @@ export function App() {
       openProjectCreator,
       closeBrief,
       openSourceArticle,
-      saveSourceArticle,
-      setArticleArchived,
-      archiveArticlesBefore,
-      createProject,
+    saveSourceArticle,
+    setArticleArchived,
+    createProject,
       deleteProjectDraft,
       openBrief,
       saveBrief,
@@ -1014,7 +1015,7 @@ export function App() {
       .filter((item) => !item.archived && !projects.some((project) => project.sourceRelativePath === item.relativePath))
       .map((item) => ({ kind: "external" as const, id: item.relativePath, title: item.title ?? "未命名文章", createdAt: item.createdAt ?? new Date().toISOString(), relativePath: item.relativePath }))
   ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
-  // 工作台分页：默认每页 10 条；条目数变化时自动收敛页码。
+  // 工作台分页：默认每页 5 条；条目数变化时自动收敛页码。
   const dashboardTotalPages = dashboardItems.length > 0 ? Math.max(1, Math.ceil(dashboardItems.length / dashboardPageSize)) : 1;
   const dashboardSafePage = Math.min(dashboardPage, dashboardTotalPages);
   const dashboardPageItems = dashboardItems.slice((dashboardSafePage - 1) * dashboardPageSize, dashboardSafePage * dashboardPageSize);
@@ -1054,7 +1055,19 @@ export function App() {
         </div>
       ) : activeView === "dashboard" ? (
         <div className="dashboard-heading-actions">
-          <button className="secondary-button" onClick={() => void refreshSourcePreview()}>重新加载文章</button>
+          <button className="secondary-button" onClick={async () => {
+            if (sourcePreviewRefreshing) return;
+            setSourcePreviewRefreshing(true);
+            try {
+              const preview = await refreshSourcePreview();
+              const count = preview?.items.length ?? 0;
+              setNotice(`已重新加载文章，共 ${count} 篇。`);
+            } catch {
+              setNotice("重新加载失败，请检查文章库路径是否可用。");
+            } finally {
+              setSourcePreviewRefreshing(false);
+            }
+          }} disabled={sourcePreviewRefreshing}>{sourcePreviewRefreshing ? "重新加载中…" : "重新加载文章"}</button>
           <button onClick={openProjectCreator}>＋ 新建文章</button>
         </div>
       ) : null}
@@ -1123,7 +1136,6 @@ export function App() {
       openSource={openSource}
       openSourceArticle={openSourceArticle}
       channelRowsFor={channelRowsFor}
-      archiveArticlesBefore={archiveArticlesBefore}
     />}
 
     {activeView === "publish" && <PublishView
@@ -1133,12 +1145,14 @@ export function App() {
       juejinJobs={juejinJobs}
       accounts={accounts}
       pendingPageItems={pendingPageItems}
+      pendingTotalItems={pendingEntries.length}
       pendingTotalPages={pendingTotalPages}
       pendingSafePage={pendingSafePage}
       setPublishPendingPage={setPublishPendingPage}
       publishPendingPageSize={publishPendingPageSize}
       setPublishPendingPageSize={setPublishPendingPageSize}
       completedPageItems={completedPageItems}
+      completedTotalItems={completedEntries.length}
       completedTotalPages={completedTotalPages}
       completedSafePage={completedSafePage}
       setPublishCompletedPage={setPublishCompletedPage}
@@ -1191,6 +1205,12 @@ export function App() {
       deleteProjectDraft={deleteProjectDraft}
       openSourceArticle={openSourceArticle}
       channelRowsFor={channelRowsFor}
+      onBatchArchive={async (relativePaths) => {
+        for (const path of relativePaths) {
+          await setArticleArchived(path, true);
+        }
+        setNotice(`${relativePaths.length} 篇文章已归档。`);
+      }}
       page={dashboardSafePage}
       totalPages={dashboardTotalPages}
       pageSize={dashboardPageSize}

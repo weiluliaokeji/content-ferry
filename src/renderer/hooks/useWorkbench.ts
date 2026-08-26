@@ -14,7 +14,7 @@ export interface UseWorkbenchParams {
   wechatJobs: WechatPublishJob[];
   loadAccounts: () => Promise<void>;
   loadProjects: () => Promise<void>;
-  refreshSourcePreview: () => Promise<void>;
+  refreshSourcePreview: () => Promise<ContentSourcePreview | undefined>;
   platform: AccountPlatform;
   setPlatform: (value: AccountPlatform) => void;
   displayName: string;
@@ -206,19 +206,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
       });
       setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "归档状态更新失败。"); }
-  };
-  const archiveArticlesBefore = async (cutoff: string): Promise<number> => {
-    try {
-      const result = await request<{ archivedCount: number }>("/content-source/archive-before", {
-        method: "POST",
-        body: JSON.stringify({ cutoff })
-      });
-      setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
-      return result.archivedCount;
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "批量归档失败。");
-      return 0;
-    }
   };
   const createProject = async (event: FormEvent) => {
     event.preventDefault();
@@ -644,7 +631,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
     openSourceArticle,
     saveSourceArticle,
     setArticleArchived,
-    archiveArticlesBefore,
     createProject,
     deleteProjectDraft,
     openBrief,

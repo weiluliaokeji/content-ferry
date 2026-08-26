@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { ChannelRow } from "../types";
 import type { ContentSourcePreview } from "../types";
-import { platformName } from "../api";
+import { Pagination } from "../components/Pagination";
 
 export interface LibraryViewProps {
   sourcePreview: ContentSourcePreview | undefined;
@@ -16,11 +16,10 @@ export interface LibraryViewProps {
   openSource: () => void;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
   channelRowsFor: (item: ContentSourcePreview["items"][number]) => ChannelRow[];
-  archiveArticlesBefore: (cutoff: string) => Promise<number>;
 }
 
 function PlatformIcon({ platform }: { platform: ChannelRow["platform"] }) {
-  const label = platformName(platform);
+  const label = platform === "wechat_official" ? "微信公众号" : platform === "csdn" ? "CSDN" : platform === "cnblogs" ? "博客园" : "掘金";
   const initials: Record<ChannelRow["platform"], string> = {
     wechat_official: "微",
     csdn: "C",
@@ -50,23 +49,16 @@ export function LibraryView(props: LibraryViewProps) {
   const {
     sourcePreview, libraryPageItems, libraryPageSize, setLibraryPageSize, libraryTotalPages,
     librarySafePage, setLibraryPage,
-    PAGE_SIZE_OPTIONS, archivedCount, openSource, openSourceArticle, channelRowsFor, archiveArticlesBefore,
+    PAGE_SIZE_OPTIONS, archivedCount, openSource, openSourceArticle, channelRowsFor,
   } = props;
-
-  const handleArchiveBefore = async () => {
-    if (!window.confirm("将把 2026-08-11 之前创建的所有文章标记为已归档。归档后的文章只会在「归档库」显示，工作台不再展示。\n\n此操作会修改 VitePress 源文件的 front matter，是否继续？")) return;
-    const count = await archiveArticlesBefore("2026-08-11 00:00:00");
-    if (count > 0) alert(`已归档 ${count} 篇文章。`);
-  };
 
   return <section className="card">
     <div className="section-heading"><div><h2>VitePress 归档库</h2><p className="hint compact-hint">已归档的文章只供查阅，不再出现在工作台。可通过「重新发布」在工作台重新打开发布流程。</p></div><button onClick={() => void openSource()}>配置并扫描</button></div>
     {sourcePreview && (libraryPageItems.length === 0 ? (
-      <div className="empty-guidance"><strong>还没有归档文章</strong><p>在工作台完成全平台发布后，文章会自动归档到这里；也可以一次性归档历史文章。</p><button className="secondary-button" onClick={() => void handleArchiveBefore()}>归档 2026-08-11 之前的文章</button></div>
+      <div className="empty-guidance"><strong>还没有归档文章</strong><p>在工作台完成全平台发布后，文章会自动归档到这里。</p></div>
     ) : (
       <>
-        <p className="library-summary">已连接 {sourcePreview.rootPath}，已归档 {archivedCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${libraryPageSize} 篇）` : ""}。</p>
-        <div className="library-actions-bar"><button className="secondary-button" onClick={() => void handleArchiveBefore()}>归档 2026-08-11 之前的文章</button></div>
+        <p className="library-summary">已连接 {sourcePreview.rootPath}。</p>
         <ul className="content-library-list">
           {libraryPageItems.map((item) => {
             const rows = channelRowsFor(item);
@@ -85,7 +77,15 @@ export function LibraryView(props: LibraryViewProps) {
             );
           })}
         </ul>
-        {libraryTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => { setLibraryPage((page) => Math.max(1, page - 1)); }}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => { setLibraryPage((page) => Math.min(libraryTotalPages, page + 1)); }}>下一页</button></>}</div>}
+        <Pagination
+          page={librarySafePage}
+          totalPages={libraryTotalPages}
+          pageSize={libraryPageSize}
+          totalItems={archivedCount}
+          setPage={setLibraryPage}
+          setPageSize={setLibraryPageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+        />
       </>
     ))}
   </section>;

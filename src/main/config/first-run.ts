@@ -39,6 +39,7 @@ function defaultSettings(): AppSettings {
     codexBinaryPath: null,
     auditAiCalls: false,
     researchProxyUrl: "",
+    legacyArchiveMigrationDone: false,
     createdAt: now,
     updatedAt: now
   };

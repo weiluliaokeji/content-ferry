@@ -1,6 +1,7 @@
 import { platformName } from "../api";
 import { csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel } from "../publish-labels";
 import type { Dispatch, SetStateAction } from "react";
+import { Pagination } from "../components/Pagination";
 import type { PublishEntry } from "../app-helpers";
 import type {
   CnblogsChannelDraft, CnblogsPublishJob, CsdnChannelDraft, CsdnPublishJob,
@@ -14,12 +15,14 @@ export interface PublishViewProps {
   juejinJobs: JuejinPublishJob[];
   accounts: MediaAccount[];
   pendingPageItems: PublishEntry[];
+  pendingTotalItems: number;
   pendingTotalPages: number;
   pendingSafePage: number;
   setPublishPendingPage: Dispatch<SetStateAction<number>>;
   publishPendingPageSize: number;
   setPublishPendingPageSize: Dispatch<SetStateAction<number>>;
   completedPageItems: PublishEntry[];
+  completedTotalItems: number;
   completedTotalPages: number;
   completedSafePage: number;
   setPublishCompletedPage: Dispatch<SetStateAction<number>>;
@@ -59,9 +62,9 @@ export interface PublishViewProps {
 
 export function PublishView(props: PublishViewProps) {
   const {
-    wechatJobs, csdnJobs, cnblogsJobs, juejinJobs, accounts, pendingPageItems, pendingTotalPages,
+    wechatJobs, csdnJobs, cnblogsJobs, juejinJobs, accounts, pendingPageItems, pendingTotalItems, pendingTotalPages,
     pendingSafePage, setPublishPendingPage, publishPendingPageSize, setPublishPendingPageSize,
-    completedPageItems, completedTotalPages, completedSafePage, setPublishCompletedPage,
+    completedPageItems, completedTotalItems, completedTotalPages, completedSafePage, setPublishCompletedPage,
     publishCompletedPageSize, setPublishCompletedPageSize, PAGE_SIZE_OPTIONS, saving,
     wechatJobsRefreshedAt, wechatJobsRefreshing, csdnDraftSaving, cnblogsDraftSaving, juejinDraftSaving,
     csdnDrafts, cnblogsDrafts, juejinDrafts, setActiveView, refreshWechatStatus,
@@ -148,7 +151,15 @@ export function PublishView(props: PublishViewProps) {
             </>}
           </span></li>;
         })}</ul>
-        {pendingTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={publishPendingPageSize} onChange={(event) => { setPublishPendingPage(1); setPublishPendingPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{pendingTotalPages > 1 && <><button className="secondary-button" disabled={pendingSafePage <= 1} onClick={() => setPublishPendingPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{pendingSafePage} / {pendingTotalPages}</span><button className="secondary-button" disabled={pendingSafePage >= pendingTotalPages} onClick={() => setPublishPendingPage((page) => Math.min(pendingTotalPages, page + 1))}>下一页</button></>}</div>}
+        <Pagination
+          page={pendingSafePage}
+          totalPages={pendingTotalPages}
+          pageSize={publishPendingPageSize}
+          totalItems={pendingTotalItems}
+          setPage={setPublishPendingPage}
+          setPageSize={setPublishPendingPageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+        />
       </section>}
       {completedPageItems.length > 0 && <section className="card">
         <ul className="publish-job-list">{completedPageItems.map((entry) => {
@@ -177,7 +188,15 @@ export function PublishView(props: PublishViewProps) {
           const label = job.status === "cancelled" ? "已取消发布" : "已发布";
           return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{label} · {new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
         })}</ul>
-        {completedTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={publishCompletedPageSize} onChange={(event) => { setPublishCompletedPage(1); setPublishCompletedPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{completedTotalPages > 1 && <><button className="secondary-button" disabled={completedSafePage <= 1} onClick={() => setPublishCompletedPage((page) => Math.max(1, page - 1))}>上一页</button><span className="library-pagination-info">{completedSafePage} / {completedTotalPages}</span><button className="secondary-button" disabled={completedSafePage >= completedTotalPages} onClick={() => setPublishCompletedPage((page) => Math.min(completedTotalPages, page + 1))}>下一页</button></>}</div>}
+        <Pagination
+          page={completedSafePage}
+          totalPages={completedTotalPages}
+          pageSize={publishCompletedPageSize}
+          totalItems={completedTotalItems}
+          setPage={setPublishCompletedPage}
+          setPageSize={setPublishCompletedPageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+        />
       </section>}
     </>}
   </>;

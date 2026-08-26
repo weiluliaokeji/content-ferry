@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger } from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
 import path from "node:path";
@@ -57,6 +57,32 @@ import { registerSettingsRoutes } from "./routes-settings";
 import { registerChatRoutes } from "./routes-chat";
 import { registerWechatRoutes } from "./routes-wechat";
 
+const LEGACY_ARCHIVE_CUTOFF = "2026-08-11 00:00:00";
+
+function runLegacyArchiveMigration(
+  contentSources: ContentSourceService,
+  accounts: AccountRepository,
+  log: FastifyBaseLogger
+): void {
+  const settings = loadAppSettings();
+  if (settings.legacyArchiveMigrationDone) return;
+  try {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const rootPath = contentSources.getSource(workspace.id);
+    if (!rootPath) {
+      log.info("Legacy archive migration skipped: no content source configured yet");
+      return;
+    }
+    const result = contentSources.archiveArticlesBefore(workspace.id, LEGACY_ARCHIVE_CUTOFF);
+    log.info(
+      { archivedCount: result.archivedCount, cutoff: LEGACY_ARCHIVE_CUTOFF },
+      "Legacy archive migration completed"
+    );
+    saveAppSettings({ legacyArchiveMigrationDone: true });
+  } catch (error) {
+    log.warn({ err: error }, "Legacy archive migration failed; will retry on next launch");
+  }
+}
 
 export function buildServer(
   startedAt: string,
@@ -73,6 +99,8 @@ export function buildServer(
     cnblogsChannel?: CnblogsChannelService;
     /** 可选注入：外部提供掘金渠道稿服务实例（默认由 buildServer 内部构造）。 */
     juejinChannel?: JuejinChannelService;
+    /** 是否执行一次性存量数据迁移（应用启动时启用，测试默认关闭）。 */
+    runMigrations?: boolean;
   }
 ) {
   const server = Fastify({
@@ -303,6 +331,10 @@ export function buildServer(
   registerChatRoutes(ctx);
   registerWechatRoutes(ctx);
 
+  if (options?.runMigrations) {
+    runLegacyArchiveMigration(contentSources, accounts, server.log);
+  }
+
   return server;
 }
 
@@ -318,7 +350,7 @@ export async function createServer(
   csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>,
   juejinChannel?: JuejinChannelService
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel, runMigrations: true });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

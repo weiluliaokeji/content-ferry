@@ -11,7 +11,7 @@ export interface UseChannelOperationsParams {
   setAccounts: (value: MediaAccount[]) => void;
   loadAccounts: () => Promise<void>;
   loadProjects: () => Promise<void>;
-  refreshSourcePreview: () => Promise<void>;
+  refreshSourcePreview: () => Promise<import("../types").ContentSourcePreview | undefined>;
   saving: boolean;
   setError: (value: string) => void;
   setNotice: (value: string) => void;
