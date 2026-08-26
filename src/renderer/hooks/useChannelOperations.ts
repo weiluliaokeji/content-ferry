@@ -36,8 +36,6 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     setSourcePreview,
     libraryPage,
     setLibraryPage,
-    expandedLibraryActions,
-    setExpandedLibraryActions,
     publishPendingPage,
     setPublishPendingPage,
     publishCompletedPage,

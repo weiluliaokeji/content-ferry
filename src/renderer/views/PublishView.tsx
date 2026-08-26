@@ -73,7 +73,7 @@ export function PublishView(props: PublishViewProps) {
   } = props;
 
   return <>
-    {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在内容库中选择文章并发起发布。</p><button onClick={() => setActiveView("library")}>前往内容库</button></div></section> : <>
+    {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在工作台选择文章并发起发布。</p><button onClick={() => setActiveView("dashboard")}>前往工作台</button></div></section> : <>
       {pendingPageItems.length > 0 && <section className="card">
         <div className="section-heading"><h2>待处理</h2></div>
         <ul className="publish-job-list">{pendingPageItems.map((entry) => {

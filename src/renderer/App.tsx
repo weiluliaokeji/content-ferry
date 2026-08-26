@@ -94,8 +94,6 @@ export function App() {
     setSourcePreview,
     libraryPage,
     setLibraryPage,
-    expandedLibraryActions,
-    setExpandedLibraryActions,
     publishPendingPage,
     setPublishPendingPage,
     publishCompletedPage,
@@ -392,8 +390,6 @@ export function App() {
       setSourcePreview,
       libraryPage,
       setLibraryPage,
-      expandedLibraryActions,
-      setExpandedLibraryActions,
       publishPendingPage,
       setPublishPendingPage,
       publishCompletedPage,
@@ -997,6 +993,7 @@ export function App() {
   const libraryTotalPages = sourcePreview ? Math.max(1, Math.ceil(sourcePreview.items.length / libraryPageSize)) : 1;
   const librarySafePage = Math.min(libraryPage, libraryTotalPages);
   const libraryPageItems = sourcePreview ? sourcePreview.items.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize) : [];
+  const externalArticles = sourcePreview ? sourcePreview.items.filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath)) : [];
 
   // 发布中心分页：待处理与发布记录各一页，默认每页 5 条，页码超出时自动收敛。
   const pendingTotalPages = Math.max(1, Math.ceil(pendingEntries.length / publishPendingPageSize));
@@ -1028,7 +1025,7 @@ export function App() {
           <button className="text-button" onClick={() => void refreshWechatStatus()} disabled={wechatJobsRefreshing}>{wechatJobsRefreshing ? "正在刷新…" : "刷新状态"}</button>
         </div>
       ) : (
-        ((activeView === "dashboard" && projects.length > 0) || activeView === "library") && <button onClick={openProjectCreator}>＋ 新建文章</button>
+        ((activeView === "dashboard" && projects.length > 0)) && <button onClick={openProjectCreator}>＋ 新建文章</button>
       )}
     </div>
     {error && <p className="error">{error}</p>}
@@ -1090,8 +1087,6 @@ export function App() {
       libraryTotalPages={libraryTotalPages}
       librarySafePage={librarySafePage}
       setLibraryPage={setLibraryPage}
-      expandedLibraryActions={expandedLibraryActions}
-      setExpandedLibraryActions={setExpandedLibraryActions}
       PAGE_SIZE_OPTIONS={PAGE_SIZE_OPTIONS}
       openSource={openSource}
       openSourceArticle={openSourceArticle}
@@ -1160,6 +1155,9 @@ export function App() {
       openDraft={openDraft}
       openPublishPreparation={openPublishPreparation}
       deleteProjectDraft={deleteProjectDraft}
+      externalArticles={externalArticles}
+      openSourceArticle={openSourceArticle}
+      scanExternalArticles={refreshSourcePreview}
     />}
 
     {activeView === "logs" && <LogsView

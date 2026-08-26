@@ -10,8 +10,6 @@ export interface LibraryViewProps {
   libraryTotalPages: number;
   librarySafePage: number;
   setLibraryPage: Dispatch<SetStateAction<number>>;
-  expandedLibraryActions: string | null;
-  setExpandedLibraryActions: Dispatch<SetStateAction<string | null>>;
   PAGE_SIZE_OPTIONS: number[];
   openSource: () => void;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
@@ -21,7 +19,7 @@ export interface LibraryViewProps {
 export function LibraryView(props: LibraryViewProps) {
   const {
     sourcePreview, libraryPageItems, libraryPageSize, setLibraryPageSize, libraryTotalPages,
-    librarySafePage, setLibraryPage, expandedLibraryActions, setExpandedLibraryActions,
+    librarySafePage, setLibraryPage,
     PAGE_SIZE_OPTIONS, openSource, openSourceArticle, channelRowsFor,
   } = props;
 
@@ -30,7 +28,6 @@ export function LibraryView(props: LibraryViewProps) {
     {sourcePreview && <><p className="library-summary">已连接 {sourcePreview.rootPath}，发现 {sourcePreview.articleCount} 篇文章{libraryTotalPages > 1 ? ` · 第 ${librarySafePage} / ${libraryTotalPages} 页（每页 ${libraryPageSize} 篇）` : ""}。</p><ul className="content-library-list">
       {libraryPageItems.map((item) => {
         const rows = channelRowsFor(item);
-        const actionableRows = rows.filter((row) => row.action.kind !== "none");
         return (
           <li key={item.relativePath}>
             <span className="article-primary">
@@ -43,26 +40,15 @@ export function LibraryView(props: LibraryViewProps) {
                   <span className={"status-badge " + row.tone}>{row.statusLabel}</span>
                 </span>
               ))}
-              {actionableRows.length > 0 && (
               <span className="channel-actions-wrap">
-                <button className={"secondary-button channel-actions-toggle" + (expandedLibraryActions === item.relativePath ? " active" : "")} onClick={() => setExpandedLibraryActions(expandedLibraryActions === item.relativePath ? null : item.relativePath)}>{expandedLibraryActions === item.relativePath ? "收起" : "操作"}</button>
-                {expandedLibraryActions === item.relativePath && (
-                  <span className="channel-actions-popover">
-                    {actionableRows.map((row) => {
-                      const action = row.action;
-                      if (action.kind === "none") return null;
-                      return <button key={row.platform} className={action.kind === "continue" ? "secondary-button" : "text-button"} onClick={() => { setExpandedLibraryActions(null); action.onClick(); }}>{action.label}</button>;
-                    })}
-                  </span>
-                )}
+                <button className="secondary-button" onClick={() => void openSourceArticle(item.relativePath, "settings")}>重新发布</button>
               </span>
-              )}
             </span>
           </li>
         );
       })}
     </ul>
-    {libraryTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); setExpandedLibraryActions(null); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => { setLibraryPage((page) => Math.max(1, page - 1)); setExpandedLibraryActions(null); }}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => { setLibraryPage((page) => Math.min(libraryTotalPages, page + 1)); setExpandedLibraryActions(null); }}>下一页</button></>}</div>}
+    {libraryTotalPages > 1 && <div className="library-pagination"><label className="pagination-size-label">每页<select className="pagination-size" value={libraryPageSize} onChange={(event) => { setLibraryPage(1); setLibraryPageSize(Number(event.target.value)); }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size} 条</option>)}</select></label>{libraryTotalPages > 1 && <><button className="secondary-button" disabled={librarySafePage <= 1} onClick={() => { setLibraryPage((page) => Math.max(1, page - 1)); }}>上一页</button><span className="library-pagination-info">{librarySafePage} / {libraryTotalPages}</span><button className="secondary-button" disabled={librarySafePage >= libraryTotalPages} onClick={() => { setLibraryPage((page) => Math.min(libraryTotalPages, page + 1)); }}>下一页</button></>}</div>}
     </>}
   </section>;
 }

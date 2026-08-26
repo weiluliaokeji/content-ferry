@@ -45,7 +45,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [sourcePath, setSourcePath] = useState("");
   const [sourcePreview, setSourcePreview] = useState<ContentSourcePreview>();
   const [libraryPage, setLibraryPage] = useState(1);
-  const [expandedLibraryActions, setExpandedLibraryActions] = useState<string | null>(null);
   const [publishPendingPage, setPublishPendingPage] = useState(1);
   const [publishCompletedPage, setPublishCompletedPage] = useState(1);
   const [libraryPageSize, setLibraryPageSize] = useState(5);
@@ -519,8 +518,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setSourcePreview,
     libraryPage,
     setLibraryPage,
-    expandedLibraryActions,
-    setExpandedLibraryActions,
     publishPendingPage,
     setPublishPendingPage,
     publishCompletedPage,
