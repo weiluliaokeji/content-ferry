@@ -65,6 +65,8 @@ export function App() {
   const [runtimeLogFilter, setRuntimeLogFilter] = useState<"all" | "errors" | "wechat" | "callbacks">("all");
   const [runtimeLogSearch, setRuntimeLogSearch] = useState("");
   const [runtimeLogMeta, setRuntimeLogMeta] = useState<Pick<RuntimeLogResponse, "totalMatched" | "hasMore" | "sourceTruncated" | "readWindowBytes">>({ totalMatched: 0, hasMore: false, sourceTruncated: false, readWindowBytes: 0 });
+  const [dashboardPage, setDashboardPage] = useState(1);
+  const [dashboardPageSize, setDashboardPageSize] = useState(10);
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -197,6 +199,8 @@ export function App() {
     closeBrief,
     openSourceArticle,
     saveSourceArticle,
+    setArticleArchived,
+    archiveArticlesBefore,
     createProject,
     deleteProjectDraft,
     openBrief,
@@ -495,6 +499,8 @@ export function App() {
       closeBrief,
       openSourceArticle,
       saveSourceArticle,
+      setArticleArchived,
+      archiveArticlesBefore,
       createProject,
       deleteProjectDraft,
       openBrief,
@@ -991,25 +997,31 @@ export function App() {
 
   // 分页通用配置：每页条数选项；切换条数时页码重置到第 1 页。
   const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
-  // 内容库 = 已发布/归档集合：只展示至少在一个渠道已发布的文章。
-  const publishedLibraryItems = sourcePreview ? sourcePreview.items.filter((item) => isPublished(item)) : [];
-  // 工作台 = 未发布/进行中集合：应用内 project（去掉全平台已发布）+ 外部直写且未全平台发布的文章；均按创建时间倒序。
-  const dashboardProjects = projects
-    .filter((project) => !isFullyPublished({ relativePath: project.sourceRelativePath ?? "", title: project.topic }))
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
-  const externalArticles = sourcePreview
-    ? sourcePreview.items
-      .filter((item) => !projects.some((project) => project.sourceRelativePath === item.relativePath) && !isFullyPublished(item))
-      .sort((left, right) => {
-        const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
-        const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+  // 归档库 = 已归档集合（front matter archived: true）。
+  const archivedLibraryItems = sourcePreview
+    ? sourcePreview.items.filter((item) => item.archived).sort((left, right) => {
+        const rightTime = right.createdAt ? Date.parse(right.createdAt) : 0;
+        const leftTime = left.createdAt ? Date.parse(left.createdAt) : 0;
         return rightTime - leftTime;
       })
     : [];
-  // 内容库分页：默认每页 5 条；扫描结果变化时自动收敛页码。
-  const libraryTotalPages = publishedLibraryItems.length > 0 ? Math.max(1, Math.ceil(publishedLibraryItems.length / libraryPageSize)) : 1;
+  // 工作台 = 未归档集合：本应用 project + 外部直写 VitePress 文章；均按创建时间倒序。
+  const dashboardItems = [
+    ...projects
+      .filter((project) => !sourcePreview?.items.find((item) => item.relativePath === project.sourceRelativePath)?.archived)
+      .map((project) => ({ kind: "project" as const, id: project.id, title: project.topic, createdAt: project.createdAt, relativePath: project.sourceRelativePath, project })),
+    ...(sourcePreview?.items ?? [])
+      .filter((item) => !item.archived && !projects.some((project) => project.sourceRelativePath === item.relativePath))
+      .map((item) => ({ kind: "external" as const, id: item.relativePath, title: item.title ?? "未命名文章", createdAt: item.createdAt ?? new Date().toISOString(), relativePath: item.relativePath }))
+  ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+  // 工作台分页：默认每页 10 条；条目数变化时自动收敛页码。
+  const dashboardTotalPages = dashboardItems.length > 0 ? Math.max(1, Math.ceil(dashboardItems.length / dashboardPageSize)) : 1;
+  const dashboardSafePage = Math.min(dashboardPage, dashboardTotalPages);
+  const dashboardPageItems = dashboardItems.slice((dashboardSafePage - 1) * dashboardPageSize, dashboardSafePage * dashboardPageSize);
+  // 归档库分页：默认每页 5 条；扫描结果变化时自动收敛页码。
+  const libraryTotalPages = archivedLibraryItems.length > 0 ? Math.max(1, Math.ceil(archivedLibraryItems.length / libraryPageSize)) : 1;
   const librarySafePage = Math.min(libraryPage, libraryTotalPages);
-  const libraryPageItems = publishedLibraryItems.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize);
+  const libraryPageItems = archivedLibraryItems.slice((librarySafePage - 1) * libraryPageSize, librarySafePage * libraryPageSize);
 
   // 发布中心分页：待处理与发布记录各一页，默认每页 5 条，页码超出时自动收敛。
   const pendingTotalPages = Math.max(1, Math.ceil(pendingEntries.length / publishPendingPageSize));
@@ -1024,7 +1036,7 @@ export function App() {
       <div className="app-brand"><img src={wenduLogo} alt="" /><strong>文渡<small>ContentFerry</small></strong></div>
       <nav>
         <button className={activeView === "dashboard" ? "active" : ""} onClick={() => setActiveView("dashboard")}>工作台</button>
-        <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")}>内容库</button>
+        <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")}>归档库</button>
         <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")}>发布记录</button>
         <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")}>技能与模型</button>
         <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")}>账号</button>
@@ -1107,10 +1119,11 @@ export function App() {
       librarySafePage={librarySafePage}
       setLibraryPage={setLibraryPage}
       PAGE_SIZE_OPTIONS={PAGE_SIZE_OPTIONS}
-      publishedCount={publishedLibraryItems.length}
+      archivedCount={archivedLibraryItems.length}
       openSource={openSource}
       openSourceArticle={openSourceArticle}
       channelRowsFor={channelRowsFor}
+      archiveArticlesBefore={archiveArticlesBefore}
     />}
 
     {activeView === "publish" && <PublishView
@@ -1164,7 +1177,8 @@ export function App() {
     />}
 
     {activeView === "dashboard" && <DashboardView
-            projects={dashboardProjects}
+            items={dashboardPageItems}
+      totalItems={dashboardItems.length}
       accounts={accounts}
       wechatJobs={wechatJobs}
       saving={saving}
@@ -1175,10 +1189,14 @@ export function App() {
       openDraft={openDraft}
       openPublishPreparation={openPublishPreparation}
       deleteProjectDraft={deleteProjectDraft}
-      externalArticles={externalArticles}
-      publishedCount={publishedLibraryItems.length}
       openSourceArticle={openSourceArticle}
       channelRowsFor={channelRowsFor}
+      page={dashboardSafePage}
+      totalPages={dashboardTotalPages}
+      pageSize={dashboardPageSize}
+      setPage={setDashboardPage}
+      setPageSize={setDashboardPageSize}
+      PAGE_SIZE_OPTIONS={PAGE_SIZE_OPTIONS}
     />}
 
     {activeView === "logs" && <LogsView

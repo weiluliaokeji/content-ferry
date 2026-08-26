@@ -198,6 +198,28 @@ export function useWorkbench(params: UseWorkbenchParams) {
     } catch (cause) { const message = cause instanceof Error ? cause.message : "文章保存失败。"; setError(message); return { success: false, error: message }; }
     finally { setSaving(false); }
   };
+  const setArticleArchived = async (relativePath: string, archived: boolean) => {
+    try {
+      await request<ContentSourceArticle>("/content-source/article/archive", {
+        method: "PUT",
+        body: JSON.stringify({ path: relativePath, archived })
+      });
+      setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "归档状态更新失败。"); }
+  };
+  const archiveArticlesBefore = async (cutoff: string): Promise<number> => {
+    try {
+      const result = await request<{ archivedCount: number }>("/content-source/archive-before", {
+        method: "POST",
+        body: JSON.stringify({ cutoff })
+      });
+      setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
+      return result.archivedCount;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "批量归档失败。");
+      return 0;
+    }
+  };
   const createProject = async (event: FormEvent) => {
     event.preventDefault();
     const topic = projectTopic.trim();
@@ -621,6 +643,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     closeBrief,
     openSourceArticle,
     saveSourceArticle,
+    setArticleArchived,
+    archiveArticlesBefore,
     createProject,
     deleteProjectDraft,
     openBrief,

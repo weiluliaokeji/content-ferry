@@ -226,7 +226,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
   const images = useMemo(() => extractMarkdownImages(draft.markdown), [draft.markdown]);
 
   const leaveWorkspace = () => {
-    if (dirty && !window.confirm("掘金渠道稿还有未保存的修改。确定放弃这些修改并返回内容库吗？")) return;
+    if (dirty && !window.confirm("掘金渠道稿还有未保存的修改。确定放弃这些修改并返回归档库吗？")) return;
     onBack();
   };
 
@@ -505,7 +505,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
       <button type="button" className="text-button" onClick={() => onClearError?.()}>知道了</button>
     </div>}
     <header className="editor-topbar">
-      <button className="secondary-button" onClick={leaveWorkspace}>← 返回内容库</button>
+      <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
       <div className="editor-document-title"><strong>{draft.title || "未命名掘金渠道稿"}</strong><small>掘金渠道稿 · {accountDisplay}</small></div>
       <div className="editor-top-actions">
         <span>{saving ? "正在保存…" : dirty ? "有未保存修改" : "已保存"}</span>

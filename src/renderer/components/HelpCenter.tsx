@@ -44,7 +44,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <span>2</span>
           <h3>选择文章库</h3>
           <p>选择 VitePress 的 <code>docs</code> 目录，不要只选择 <code>docs/posts</code>。草稿会直接写入文章库。</p>
-          <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
+          <button className="text-button" onClick={() => onNavigate("library")}>去归档库</button>
         </article>
         <article>
           <span>3</span>
@@ -80,8 +80,8 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         </details>
         <details>
           <summary>怎样创建 CSDN 渠道稿？</summary>
-          <p>先添加一个 CSDN 账号，再到“内容库”对任一文章点击“生成 CSDN 稿”。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流。冻结后创建发布任务，再点「在浏览器中完成发布」：文渡会打开 CSDN 编辑器自动填充标题与正文，你在浏览器核对后点文渡的「我已在 CSDN 发布」，文渡会点击 CSDN 的发布按钮并读回链接；读不到链接时可在后台核实后「校正状态」。文渡不会绕过你的确认自动发布。</p>
-          <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
+          <p>先添加一个 CSDN 账号，再到「工作台」对未归档文章点击 CSDN 平台按钮（已归档文章可在「归档库」点击「重新发布」）。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。CSDN 稿不会包含公众号链接、文末延伸阅读或其他软引流。冻结后创建发布任务，再点「在浏览器中完成发布」：文渡会打开 CSDN 编辑器自动填充标题与正文，你在浏览器核对后点文渡的「我已在 CSDN 发布」，文渡会点击 CSDN 的发布按钮并读回链接；读不到链接时可在后台核实后「校正状态」。文渡不会绕过你的确认自动发布。</p>
+          <button className="text-button" onClick={() => onNavigate("dashboard")}>去工作台</button>
         </details>
         <details>
           <summary>怎样配置掘金账号的 Cookie？</summary>
@@ -89,8 +89,8 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         </details>
         <details>
           <summary>怎样创建掘金渠道稿？</summary>
-          <p>先添加一个掘金账号并配置凭据，再到「内容库」对任一文章点击「生成掘金稿」。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。冻结后创建掘金发布任务，文渡会先创建掘金草稿并展示草稿链接，确认无误后点击「确认公开」才会正式发布。掘金稿不会包含公众号链接、文末延伸阅读等软引流内容。</p>
-          <button className="text-button" onClick={() => onNavigate("library")}>去内容库</button>
+          <p>先添加一个掘金账号并配置凭据，再到「工作台」对未归档文章点击掘金平台按钮（已归档文章可在「归档库」点击「重新发布」）。可让阿文生成独立适配稿，也可直接使用主稿而不调用模型；之后可编辑并冻结版本。冻结后创建掘金发布任务，文渡会先创建掘金草稿并展示草稿链接，确认无误后点击「确认公开」才会正式发布。掘金稿不会包含公众号链接、文末延伸阅读等软引流内容。</p>
+          <button className="text-button" onClick={() => onNavigate("dashboard")}>去工作台</button>
         </details>
 
         <h2>常见问题</h2>

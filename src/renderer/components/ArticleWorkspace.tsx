@@ -573,12 +573,12 @@ export function ArticleWorkspace({
     return () => window.removeEventListener("keydown", saveWithShortcut);
   }, [hasUnsavedChanges, editorBusy, generating, markdown, articleSettings]);
   const leaveWorkspace = () => {
-    if (hasUnsavedChanges && !window.confirm("文章还有未保存的修改。确定放弃这些修改并返回内容库吗？")) return;
+    if (hasUnsavedChanges && !window.confirm("文章还有未保存的修改。确定放弃这些修改并返回归档库吗？")) return;
     onBack();
   };
   return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`}>
     <header className="editor-topbar">
-      <button className="secondary-button" onClick={leaveWorkspace}>← 返回内容库</button>
+      <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
       <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>

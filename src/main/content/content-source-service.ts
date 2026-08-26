@@ -9,6 +9,7 @@ export interface ContentSourcePreviewItem {
   title: string | null;
   frontMatterKeys: string[];
   createdAt: string | null;
+  archived: boolean;
 }
 
 export interface ContentSourcePreview {
@@ -87,7 +88,7 @@ export class ContentSourceService {
         return { relativePath, ...parsed, createdAt: parsed.createdAt ?? fallbackCreatedAt };
       } catch {
         warnings.push(`无法读取：${relativePath}`);
-        return { relativePath, title: null, frontMatterKeys: [], createdAt: null };
+        return { relativePath, title: null, frontMatterKeys: [], createdAt: null, archived: false };
       }
     });
     allItems.sort((left, right) => {
@@ -159,6 +160,33 @@ export class ContentSourceService {
     }
     fs.writeFileSync(nextFilePath, nextSource, "utf8");
     return this.getArticle(workspaceId, nextRelativePath);
+  }
+
+  setArchived(workspaceId: string, relativePath: string, archived: boolean): ContentSourceArticle {
+    const filePath = this.resolveArticlePath(workspaceId, relativePath);
+    const source = fs.readFileSync(filePath, "utf8");
+    const parts = splitFrontMatter(source);
+    const nextFrontMatter = parts.frontMatter
+      ? replaceFrontMatterArchived(parts.frontMatter, archived)
+      : `---\narchived: ${archived}\n---`;
+    const nextSource = `${nextFrontMatter}\n\n${parts.body}\n`;
+    fs.writeFileSync(filePath, nextSource, "utf8");
+    return this.getArticle(workspaceId, relativePath);
+  }
+
+  archiveArticlesBefore(workspaceId: string, cutoff: string): { archivedCount: number } {
+    const preview = this.preview(workspaceId);
+    const cutoffTimestamp = parseCreatedTimestamp(cutoff);
+    let archivedCount = 0;
+    for (const item of preview.items) {
+      if (item.archived) continue;
+      const itemTimestamp = parseCreatedTimestamp(item.createdAt);
+      if (itemTimestamp > 0 && itemTimestamp <= cutoffTimestamp) {
+        this.setArchived(workspaceId, item.relativePath, true);
+        archivedCount++;
+      }
+    }
+    return { archivedCount };
   }
 
   createArticle(workspaceId: string, title: string): ContentSourceArticle {
@@ -428,6 +456,12 @@ function replaceFrontMatterTitle(frontMatter: string, title: string): string {
   return frontMatter.replace(/^---\s*$/m, (opening) => `${opening}\n${titleLine}`);
 }
 
+function replaceFrontMatterArchived(frontMatter: string, archived: boolean): string {
+  const archivedLine = `archived: ${archived}`;
+  if (/^archived\s*:/m.test(frontMatter)) return frontMatter.replace(/^archived\s*:.*$/m, archivedLine);
+  return frontMatter.replace(/\n---\s*$/, `\n${archivedLine}\n---`);
+}
+
 function normalizeArticleTitle(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -463,15 +497,17 @@ function isArticlePath(relativePath: string): boolean {
   return segments[0] === "posts" && segments.length >= 3 && segments.at(-1)?.toLowerCase() === "index.md";
 }
 
-function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "createdAt"> {
-  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], createdAt: null };
+function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "createdAt" | "archived"> {
+  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], createdAt: null, archived: false };
   const closing = markdown.indexOf("\n---", 3);
-  if (closing < 0) return { title: null, frontMatterKeys: [], createdAt: null };
+  if (closing < 0) return { title: null, frontMatterKeys: [], createdAt: null, archived: false };
   const lines = markdown.slice(3, closing).split(/\r?\n/);
   const frontMatterKeys = lines.map((line) => /^([A-Za-z][\w-]*):/.exec(line.trim())?.[1]).filter((key): key is string => Boolean(key));
   const title = lines.map((line) => /^title:\s*["']?(.+?)["']?\s*$/.exec(line.trim())?.[1]).find((value): value is string => Boolean(value)) ?? null;
   const createdAt = lines.map((line) => /^created:\s*["']?(.+?)["']?\s*$/.exec(line.trim())?.[1]).find((value): value is string => Boolean(value)) ?? null;
-  return { title, frontMatterKeys, createdAt };
+  const archivedLine = lines.map((line) => /^archived:\s*(.+?)\s*$/.exec(line.trim())?.[1]).find((value): value is string | undefined => Boolean(value));
+  const archived = archivedLine ? /^(true|yes|1)$/i.test(archivedLine) : false;
+  return { title, frontMatterKeys, createdAt, archived };
 }
 
 function parseCreatedTimestamp(value: string | null): number {

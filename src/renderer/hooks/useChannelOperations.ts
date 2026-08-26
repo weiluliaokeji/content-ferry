@@ -1,4 +1,4 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownTitle, parseZhuqueReport } from "../utils";
 import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel } from "../publish-labels";
@@ -139,6 +139,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     closeBrief,
     openSourceArticle,
     saveSourceArticle,
+    setArticleArchived,
     createProject,
     deleteProjectDraft,
     openBrief,
@@ -211,6 +212,22 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [juejinStatusReason, setJuejinStatusReason] = useState("");
   const [juejinCorrectionSaving, setJuejinCorrectionSaving] = useState(false);
   const [juejinCorrectionError, setJuejinCorrectionError] = useState("");
+  const autoArchiveRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!sourcePreview) return;
+    const toArchive: string[] = [];
+    for (const item of sourcePreview.items) {
+      if (item.archived || autoArchiveRef.current.has(item.relativePath)) continue;
+      if (isFullyPublished(item)) {
+        toArchive.push(item.relativePath);
+        autoArchiveRef.current.add(item.relativePath);
+      }
+    }
+    if (toArchive.length === 0) return;
+    void Promise.all(toArchive.map((relativePath) => setArticleArchived(relativePath, true))).then(() => {
+      setNotice(`${toArchive.length} 篇文章已全平台发布，自动归档。`);
+    });
+  }, [sourcePreview, accounts, wechatJobs, csdnDrafts, csdnJobs, cnblogsDrafts, cnblogsJobs, juejinDrafts, juejinJobs]);
   const cnblogsStatusRef = useRef<CnblogsPublishJob["status"] | null>(null);
   const juejinStatusRef = useRef<JuejinPublishJob["status"] | null>(null);
   const setCnblogsStatusRef = (value: CnblogsPublishJob["status"] | null) => {
@@ -241,7 +258,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setCsdnDrafts(drafts.items);
       setCsdnJobs(jobs.items);
     } catch {
-      /* 读取失败时不阻塞内容库，按钮仍可作为“生成 CSDN 稿”使用。 */
+      /* 读取失败时不阻塞工作台，按钮仍可作为"生成 CSDN 稿"使用。 */
     }
   };
   const loadCnblogsChannelDrafts = async () => {
@@ -253,7 +270,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setCnblogsDrafts(drafts.items);
       setCnblogsJobs(jobs.items);
     } catch {
-      /* 读取失败时不阻塞内容库，按钮仍可作为“生成博客园稿”使用。 */
+      /* 读取失败时不阻塞工作台，按钮仍可作为"生成博客园稿"使用。 */
     }
   };
   const loadJuejinChannelDrafts = async () => {
@@ -265,7 +282,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setJuejinDrafts(drafts.items);
       setJuejinJobs(jobs.items);
     } catch {
-      /* 读取失败时不阻塞内容库，按钮仍可作为“生成掘金稿”使用。 */
+      /* 读取失败时不阻塞工作台，按钮仍可作为"生成掘金稿"使用。 */
     }
   };
   const deleteCnblogsChannelDraft = async (draftId: string) => {
@@ -617,7 +634,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     // 防御：jobId 缺失（例如轮询把 csdnPublishJob 错写成 {job,draft} 导致顶层 id 丢失）
     // 会拼出 /jobs/undefined/browser-assist，触发服务端 Zod 校验报错。这里提前给出清晰提示。
     if (!jobId) {
-      setError("未找到可用的 CSDN 发布任务（任务 id 缺失）。请返回内容库，重新进入该渠道稿后再试。");
+      setError("未找到可用的 CSDN 发布任务（任务 id 缺失）。请返回工作台，重新进入该渠道稿后再试。");
       return;
     }
     setCsdnDraftSaving(true);

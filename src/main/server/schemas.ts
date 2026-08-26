@@ -23,6 +23,8 @@ export const credentialInput = z.object({ secret: z.string().min(1).max(10000) }
 export const contentSourceInput = z.object({ rootPath: z.string().trim().min(1).max(1000) });
 export const contentSourceArticleQuery = z.object({ path: z.string().trim().min(1).max(1000) });
 export const contentSourceArticleInput = z.object({ path: z.string().trim().min(1).max(1000), markdown: z.string().max(500000) });
+export const contentSourceArchiveInput = z.object({ path: z.string().trim().min(1).max(1000), archived: z.boolean() });
+export const contentSourceArchiveBeforeInput = z.object({ cutoff: z.string().trim().min(1).max(100) });
 export const contentSourceAssetInput = z.object({
   path: z.string().trim().min(1).max(1000),
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
