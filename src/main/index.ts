@@ -29,6 +29,7 @@ import { getOrCreateContentAnyWindow, runContentAnyDetection } from "./automatio
 import { searchWithVisibleResearchBrowser } from "./automation/research-automation";
 import { confirmCsdnBrowserPublish, driveCsdnBrowserPublish, logCsdnBrowserAssist } from "./automation/csdn-automation";
 import { driveWechatBackendToDrafts, getOrCreateWechatBackendWindow, logWechatBrowserAssist } from "./automation/wechat-automation";
+import { readCnblogsPersonalOptions } from "./automation/cnblogs-options-automation";
 
 function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
   const escapedBinary = binaryPath.replace(/'/g, "''");
@@ -285,6 +286,7 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     logCsdnBrowserAssist("requested", { jobId });
     await driveCsdnBrowserPublish(jobId);
   });
+  ipcMain.handle("contentferry:read-cnblogs-personal-options", async () => readCnblogsPersonalOptions());
   ipcMain.handle("contentferry:open-contentany", async () => {
     const window = await getOrCreateContentAnyWindow();
     window.show();

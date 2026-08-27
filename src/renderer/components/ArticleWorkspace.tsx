@@ -193,12 +193,14 @@ export function ArticleWorkspace({
       // 微信文章发布设置默认选好作者：未保存过作者时填最近使用过的作者，
       // 让“申请原创声明 / 开启赞赏”之外，作者也默认就位。
       const defaultAuthor = settings.author || authors.items[0] || "";
-      setArticleSettings((prev) => ({ ...settings, author: defaultAuthor }));
+      const defaultWechatAccountId = accounts.find((account) => account.platform === "wechat_official")?.id ?? "";
+      const accountId = settings.accountId || defaultWechatAccountId;
+      setArticleSettings((prev) => ({ ...settings, author: defaultAuthor, accountId }));
       setSettingsCoverPrompt(settings.coverPrompt);
-      setSavedSettings((prev) => ({ ...settings, author: defaultAuthor }));
+      setSavedSettings((prev) => ({ ...settings, author: defaultAuthor, accountId }));
       setAuthorHistory(authors.items);
     }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"));
-  }, [contextKey]);
+  }, [contextKey, accounts]);
   useEffect(() => {
     const accountQuery = articleSettings.accountId ? `?accountId=${encodeURIComponent(articleSettings.accountId)}` : "";
     const loadCollections = () => request<{ items: string[]; syncedAt: string | null }>(`/article-settings/collections${accountQuery}`)

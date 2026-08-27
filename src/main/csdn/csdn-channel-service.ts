@@ -105,7 +105,7 @@ export class CsdnChannelService {
     if (account.platform !== "csdn") throw new CsdnChannelError("请选择一个 CSDN 账号创建渠道稿。");
     const article = this.contentSources.getArticle(account.workspaceId, input.relativePath);
     const sourceHash = digest(article.markdown);
-    const generationMode = input.generationMode ?? "rewrite";
+    const generationMode = input.generationMode ?? "source";
     // 原文设置（作者/摘要/封面）是 CSDN 稿的默认继承来源；提前读取，便于命中已有草稿时回填。
     const sourceSettings = this.db.prepare("SELECT author, digest, cover_source FROM article_settings WHERE context_key = ?")
       .get(`source:${article.relativePath}`) as { author: string | null; digest: string | null; cover_source: string | null } | undefined;

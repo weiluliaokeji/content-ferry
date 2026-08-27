@@ -146,7 +146,7 @@ export class JuejinChannelService {
     if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号创建渠道稿。");
     const article = this.contentSources.getArticle(account.workspaceId, input.relativePath);
     const sourceHash = digest(article.markdown);
-    const generationMode = input.generationMode ?? "rewrite";
+    const generationMode = input.generationMode ?? "source";
     const sourceSettings = this.db.prepare("SELECT author, digest, cover_source FROM article_settings WHERE context_key = ?")
       .get(`source:${article.relativePath}`) as { author: string | null; digest: string | null; cover_source: string | null } | undefined;
     const existing = this.db.prepare(`SELECT * FROM channel_drafts

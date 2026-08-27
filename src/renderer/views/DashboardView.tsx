@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { bestWechatJob } from "../publish-labels";
 import { platformName } from "../api";
+import { formatLocalTimestamp } from "../app-helpers";
+import { ChannelStrip } from "../components/ChannelStrip";
 import { Pagination } from "../components/Pagination";
-import type { ContentProject, MediaAccount, ChannelRow, ChannelAction } from "../types";
+import type { ContentProject, MediaAccount, ChannelRow } from "../types";
 
 export interface DashboardViewProps {
   items: DashboardItem[];
@@ -32,42 +34,6 @@ export interface DashboardViewProps {
 export type DashboardItem =
   | { kind: "project"; id: string; title: string; createdAt: string; relativePath: string | null; project: ContentProject }
   | { kind: "external"; id: string; title: string; createdAt: string; relativePath: string };
-
-function PlatformIcon({ platform }: { platform: ChannelRow["platform"] }) {
-  const label = platformName(platform);
-  const initials: Record<ChannelRow["platform"], string> = {
-    wechat_official: "微",
-    csdn: "C",
-    cnblogs: "园",
-    juejin: "掘",
-  };
-  return <span className={`platform-icon platform-${platform}`} aria-label={label} title={label}>{initials[platform]}</span>;
-}
-
-function StatusIcon({ row }: { row: ChannelRow }) {
-  if (row.action.kind === "generate") return null;
-  const glyph = row.statusLabel === "已发布" ? "✓" : row.statusLabel === "已冻结" ? "冻" : /草稿|待发布/.test(row.statusLabel) ? "稿" : /处理中|确认中/.test(row.statusLabel) ? "⏳" : /失败|取消/.test(row.statusLabel) ? "✕" : "○";
-  return <span className={`status-icon status-${row.tone}`} aria-label={`${row.label}：${row.statusLabel}`} title={`${row.label}：${row.statusLabel}`}>{glyph}</span>;
-}
-
-function ChannelActionIcon({ action }: { action: ChannelAction }) {
-  if (action.kind === "none") return null;
-  const glyph = action.kind === "generate" ? "＋" : "✎";
-  const title = action.kind === "generate" ? "新建渠道稿" : "编辑/继续";
-  return <button className="channel-action-icon" onClick={() => action.onClick()} aria-label={title} title={title}>{glyph}</button>;
-}
-
-function ChannelStrip({ rows }: { rows: ChannelRow[] }) {
-  return <span className="channel-strip">
-    {rows.map((row) => (
-      <span className="channel-chip" key={row.platform}>
-        <PlatformIcon platform={row.platform} />
-        <StatusIcon row={row} />
-        <ChannelActionIcon action={row.action} />
-      </span>
-    ))}
-  </span>;
-}
 
 function ProjectRow({
   project, accounts, wechatJobs, saving, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, channelRowsFor, selected, onToggle
@@ -100,11 +66,11 @@ function ProjectRow({
       <span className="dashboard-row-title-block">
         <span className="dashboard-row-title-line">
           {archivablePath && <input type="checkbox" className="dashboard-row-checkbox" checked={selected} onChange={onToggle} aria-label="选择此文章" />}
-          {project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}
+          <span className="article-title-inline">{project.draftReady ? <button className="article-title-button" onClick={() => void openDraft(project)}>{project.topic}</button> : <strong>{project.topic}</strong>}<small className="article-created-at">{formatLocalTimestamp(project.createdAt)}</small></span>
         </span>
         <small>{nextText}</small>
       </span>
-      {channelRows.length > 0 && <ChannelStrip rows={channelRows} />}
+      {channelRows.length > 0 && <ChannelStrip rows={channelRows} actions />}
     </span>
     <span className="account-actions">
       <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
@@ -199,10 +165,10 @@ export function DashboardView(props: DashboardViewProps) {
               <span className="dashboard-row-title-block">
                 <span className="dashboard-row-title-line">
                   <input type="checkbox" className="dashboard-row-checkbox" checked={selectedPaths.has(item.relativePath)} onChange={() => togglePath(item.relativePath)} aria-label="选择此文章" />
-                  <button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>
+                  <span className="article-title-inline"><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button><small className="article-created-at">{formatLocalTimestamp(item.createdAt)}</small></span>
                 </span>
               </span>
-              <ChannelStrip rows={channelRowsFor(item)} />
+              <ChannelStrip rows={channelRowsFor(item)} actions />
             </span>
           </li>
         ))}</ul>

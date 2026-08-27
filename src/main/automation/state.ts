@@ -21,6 +21,7 @@ export const state = {
   wechatBackendWindow: undefined as BrowserWindow | undefined,
   wechatEditorWindow: undefined as BrowserWindow | undefined,
   csdnWindow: undefined as BrowserWindow | undefined,
+  cnblogsOptionsWindow: undefined as BrowserWindow | undefined,
   // 当前 CSDN 编辑器窗口所载的发布任务 id。用于区分「重新打开」是复用仍存活的
   // 已填充窗口（轻量：只提到前台 + 重启对话框轮询）还是需要重跑完整辅助流程
   // （重新抓稿、重传图片、重填编辑器）。窗口销毁时清空。

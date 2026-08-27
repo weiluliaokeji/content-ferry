@@ -27,6 +27,11 @@ interface CnblogsPublishOptions {
   tags: string[];
 }
 
+interface CnblogsPublishOptionChoices {
+  categories: string[];
+  tags: string[];
+}
+
 interface CnblogsDraftWorkspaceProps {
   draft: CnblogsChannelDraftShape;
   accountDisplay: string;
@@ -101,6 +106,9 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [publishCategories, setPublishCategories] = useState("");
   const [publishTags, setPublishTags] = useState("");
+  const [publishOptionChoices, setPublishOptionChoices] = useState<CnblogsPublishOptionChoices>({ categories: [], tags: [] });
+  const [publishOptionsLoading, setPublishOptionsLoading] = useState(false);
+  const [publishOptionsError, setPublishOptionsError] = useState("");
   const [correcting, setCorrecting] = useState(false);
   const [correctionStatus, setCorrectionStatus] = useState<"published" | "failed" | "cancelled">("published");
   const [correctionReason, setCorrectionReason] = useState("已在博客园后台核实");
@@ -139,6 +147,22 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
     return result;
   }, [draft.markdown]);
   const images = useMemo(() => extractMarkdownImages(draft.markdown), [draft.markdown]);
+
+  const loadPublishOptionChoices = async () => {
+    if (!window.contentFerry) {
+      setPublishOptionsError("读取博客园个人分类和 Tag 需要在文渡桌面应用中进行。你仍可手工填写。");
+      return;
+    }
+    setPublishOptionsLoading(true);
+    setPublishOptionsError("");
+    try {
+      setPublishOptionChoices(await window.contentFerry.readCnblogsPersonalOptions());
+    } catch (cause) {
+      setPublishOptionsError(cause instanceof Error ? cause.message : "无法读取博客园个人分类和 Tag。");
+    } finally {
+      setPublishOptionsLoading(false);
+    }
+  };
 
   const leaveWorkspace = () => {
     if (dirty && !window.confirm("博客园渠道稿还有未保存的修改。确定放弃这些修改并返回归档库吗？")) return;
@@ -191,6 +215,11 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
 
   const handlePublish = () => {
     onPublish({ categories: splitCommaList(publishCategories), tags: splitCommaList(publishTags) });
+  };
+
+  const togglePublishOption = (value: string, current: string, setValue: (next: string) => void) => {
+    const selected = splitCommaList(current);
+    setValue(selected.includes(value) ? selected.filter((item) => item !== value).join(", ") : [...selected, value].join(", "));
   };
 
   const handleConfirmPublish = async () => {
@@ -460,8 +489,9 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
             <small>{draft.digest.length}/200 字{draft.digest ? "" : " · 默认沿用主稿摘要，也可让 AI 重新生成"}</small>
             <button type="button" className="secondary-button" onClick={() => void generateSummary()} disabled={!isDraft || saving || summaryBusy}>{summaryBusy ? "AI 正在提炼摘要…" : draft.digest ? "AI 重新生成摘要" : "AI 生成适配摘要"}</button>
           </label>
-          <label>分类（可选）<input value={publishCategories} disabled={!!job} onChange={(event) => setPublishCategories(event.target.value)} placeholder="如：人工智能、效率工具；多个用逗号分隔" /><small>发布时追加到正文 [Markdown] 标签之后；草稿已创建后不可修改。</small></label>
-          <label>标签（可选）<input value={publishTags} disabled={!!job} onChange={(event) => setPublishTags(event.target.value)} placeholder="如：Agent、工作流；多个用逗号分隔" /><small>发布时写入博客园文章标签；草稿已创建后不可修改。</small></label>
+          <label>个人分类（可选）<input value={publishCategories} disabled={!!job} onChange={(event) => setPublishCategories(event.target.value)} placeholder="如：人工智能、效率工具；多个用逗号分隔" />{publishOptionChoices.categories.length > 0 && <div className="cnblogs-publish-option-choices">{publishOptionChoices.categories.map((category) => <button type="button" key={category} className={splitCommaList(publishCategories).includes(category) ? "active" : ""} disabled={!!job} onClick={() => togglePublishOption(category, publishCategories, setPublishCategories)}>{category}</button>)}</div>}<small>写入博客园的个人分类；也可直接输入。草稿创建后不可修改。</small></label>
+          <label>Tag 标签（可选）<input value={publishTags} disabled={!!job} onChange={(event) => setPublishTags(event.target.value)} placeholder="如：Agent、工作流；多个用逗号分隔" />{publishOptionChoices.tags.length > 0 && <div className="cnblogs-publish-option-choices">{publishOptionChoices.tags.map((tag) => <button type="button" key={tag} className={splitCommaList(publishTags).includes(tag) ? "active" : ""} disabled={!!job} onClick={() => togglePublishOption(tag, publishTags, setPublishTags)}>{tag}</button>)}</div>}<small>可选择已建 Tag，也可直接输入。草稿创建后不可修改。</small></label>
+          {!job && <div className="cnblogs-option-loader"><button type="button" className="text-button" onClick={() => void loadPublishOptionChoices()} disabled={publishOptionsLoading}>{publishOptionsLoading ? "正在读取博客园个人分类与 Tag…" : "读取博客园个人分类与 Tag"}</button><small>会打开博客园创作后台并使用该窗口的登录状态；首次请先登录。</small>{publishOptionsError && <span className="error">{publishOptionsError}</span>}</div>}
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>1. 点击「发布到博客园」，渠道稿冻结为快照并创建博客园草稿；2. 草稿创建完成后可先到博客园后台预览；3. 点击「确认公开」后文章正式对外可见。</small></div>
           <div className="settings-cover-section">
             <strong>封面</strong>

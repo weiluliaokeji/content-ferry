@@ -789,6 +789,9 @@ export function App() {
     void loadAccounts();
     void loadProjects();
     void loadWechatJobs();
+    void loadCsdnChannelDrafts();
+    void loadCnblogsChannelDrafts();
+    void loadJuejinChannelDrafts();
     void (async () => {
       try {
         const source = await request<{ rootPath: string | null }>("/content-source");
@@ -807,8 +810,13 @@ export function App() {
     return () => clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    if (activeView === "publish" || activeView === "dashboard" || activeView === "library") void loadWechatJobs();
-    if (activeView === "publish" || activeView === "library") { void refreshSourcePreview().catch(() => undefined); void loadCsdnChannelDrafts(); void loadCnblogsChannelDrafts(); void loadJuejinChannelDrafts(); }
+    if (activeView === "publish" || activeView === "dashboard" || activeView === "library") {
+      void loadWechatJobs();
+      void loadCsdnChannelDrafts();
+      void loadCnblogsChannelDrafts();
+      void loadJuejinChannelDrafts();
+    }
+    if (activeView === "publish" || activeView === "library") void refreshSourcePreview().catch(() => undefined);
   }, [activeView]);
   useEffect(() => { if (activeView === "skills") void loadSkillsAndConnections(); }, [activeView]);
   useEffect(() => {

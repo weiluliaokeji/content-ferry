@@ -92,7 +92,7 @@ export const csdnChannelDraftInput = z.object({
   accountId: z.string().uuid(),
   relativePath: z.string().trim().min(1).max(1000),
   projectId: z.string().uuid().optional(),
-  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+  generationMode: z.enum(["rewrite", "source"]).default("source")
 });
 export const csdnChannelDraftSaveInput = z.object({
   title: z.string().trim().min(1).max(120),
@@ -105,7 +105,7 @@ export const cnblogsChannelDraftInput = z.object({
   accountId: z.string().uuid(),
   relativePath: z.string().trim().min(1).max(1000),
   projectId: z.string().uuid().optional(),
-  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+  generationMode: z.enum(["rewrite", "source"]).default("source")
 });
 export const cnblogsChannelDraftSaveInput = z.object({
   title: z.string().trim().min(1).max(120),
@@ -122,7 +122,7 @@ export const juejinChannelDraftInput = z.object({
   accountId: z.string().uuid(),
   relativePath: z.string().trim().min(1).max(1000),
   projectId: z.string().uuid().optional(),
-  generationMode: z.enum(["rewrite", "source"]).default("rewrite")
+  generationMode: z.enum(["rewrite", "source"]).default("source")
 });
 export const juejinChannelDraftSaveInput = z.object({
   title: z.string().trim().min(1).max(80),

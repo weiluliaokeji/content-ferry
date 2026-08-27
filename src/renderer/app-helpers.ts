@@ -9,6 +9,8 @@ export type PublishEntry =
 export const byUpdatedAtDesc = (a: PublishEntry, b: PublishEntry) =>
   new Date(b.job.updatedAt).getTime() - new Date(a.job.updatedAt).getTime();
 
+export const formatLocalTimestamp = (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
+
 export const getPageTitle = (
   activeView: "dashboard" | "library" | "publish" | "skills" | "accounts" | "logs" | "help",
   projectsCount: number

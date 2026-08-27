@@ -177,7 +177,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [csdnCorrectionError, setCsdnCorrectionError] = useState("");
   const [csdnDraftSource, setCsdnDraftSource] = useState<ContentSourceArticle>();
   const [csdnDraftAccountId, setCsdnDraftAccountId] = useState("");
-  const [csdnDraftGenerationMode, setCsdnDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [csdnDraftGenerationMode, setCsdnDraftGenerationMode] = useState<"rewrite" | "source">("source");
   const [csdnDraft, setCsdnDraft] = useState<CsdnChannelDraft>();
   const [csdnDraftSaving, setCsdnDraftSaving] = useState(false);
   const [csdnPublishJob, setCsdnPublishJob] = useState<CsdnPublishJob>();
@@ -190,7 +190,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [cnblogsPublishJob, setCnblogsPublishJob] = useState<CnblogsPublishJob | undefined>(undefined);
   const [cnblogsDraftSource, setCnblogsDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
   const [cnblogsDraftAccountId, setCnblogsDraftAccountId] = useState("");
-  const [cnblogsDraftGenerationMode, setCnblogsDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [cnblogsDraftGenerationMode, setCnblogsDraftGenerationMode] = useState<"rewrite" | "source">("source");
   const [cnblogsDraftSaving, setCnblogsDraftSaving] = useState(false);
   const [cnblogsEntryChoices, setCnblogsEntryChoices] = useState<Array<{ draft: CnblogsChannelDraft; accountName: string; job?: CnblogsPublishJob }> | null>(null);
   const [correctingCnblogsJob, setCorrectingCnblogsJob] = useState<CnblogsPublishJob | undefined>(undefined);
@@ -204,7 +204,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [juejinPublishJob, setJuejinPublishJob] = useState<JuejinPublishJob | undefined>(undefined);
   const [juejinDraftSource, setJuejinDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
   const [juejinDraftAccountId, setJuejinDraftAccountId] = useState("");
-  const [juejinDraftGenerationMode, setJuejinDraftGenerationMode] = useState<"rewrite" | "source">("rewrite");
+  const [juejinDraftGenerationMode, setJuejinDraftGenerationMode] = useState<"rewrite" | "source">("source");
   const [juejinDraftSaving, setJuejinDraftSaving] = useState(false);
   const [juejinEntryChoices, setJuejinEntryChoices] = useState<Array<{ draft: JuejinChannelDraft; accountName: string; job?: JuejinPublishJob }> | null>(null);
   const [correctingJuejinJob, setCorrectingJuejinJob] = useState<JuejinPublishJob | undefined>(undefined);
@@ -308,7 +308,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       if (existing.length === 0) {
         setCnblogsDraftSource(article);
         setCnblogsDraftAccountId(cnblogsAccounts[0].id);
-        setCnblogsDraftGenerationMode("rewrite");
+        setCnblogsDraftGenerationMode("source");
         setCnblogsDraft(undefined);
         setCnblogsPublishJob(undefined);
         setError("");
@@ -354,7 +354,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       if (existing.length === 0) {
         setJuejinDraftSource(article);
         setJuejinDraftAccountId(juejinAccounts[0].id);
-        setJuejinDraftGenerationMode("rewrite");
+        setJuejinDraftGenerationMode("source");
         setJuejinDraft(undefined);
         setJuejinPublishJob(undefined);
         setError("");
@@ -400,7 +400,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       if (existing.length === 0) {
         setCsdnDraftSource(article);
         setCsdnDraftAccountId(csdnAccounts[0].id);
-        setCsdnDraftGenerationMode("rewrite");
+        setCsdnDraftGenerationMode("source");
         setCsdnDraft(undefined);
         setCsdnPublishJob(undefined);
         setError("");
