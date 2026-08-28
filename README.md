@@ -2,7 +2,7 @@
 
 文渡是一款面向 Windows 的本地 AI 自媒体工作台。它以用户自己的 VitePress Markdown 文章库为正式内容源，把资料整理、AI 辅助创作、自然化改写、AIGC 特征检测、封面处理和微信公众号发布串成可恢复的工作流。
 
-项目仍处于早期开发阶段，界面、数据结构和安装方式可能继续调整。目前没有发布开源许可证；在许可证文件正式加入仓库之前，公开可见不等于允许复制、修改或再分发。
+项目仍处于早期开发阶段，界面、数据结构和安装方式可能继续调整。
 
 ## 已实现的主要能力
 
@@ -98,6 +98,14 @@ src/shared/      跨进程纯类型与无副作用工具
 
 新增依赖前必须检查直接和传递许可证。GPL、AGPL、LGPL、SSPL、BSL、非商业条款或许可证不明的依赖与素材需要单独评估并取得明确确认，不能默认加入可分发安装包。
 
+## 许可证
+
+本项目以 **MIT 许可证** 发布。详见 [LICENSE](LICENSE)。
+
+第三方依赖的许可证与署名要求见 [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES.md)，其中 `@resvg/resvg-js` 采用 MPL-2.0（文件级 copyleft，本项目未修改其源码）。
+
+安全漏洞报告流程见 [SECURITY](SECURITY.md)。
+
 ## 文档入口
 
 - [用户使用说明](docs/USER-GUIDE.md)
@@ -107,4 +115,5 @@ src/shared/      跨进程纯类型与无副作用工具
 - [开发设计](spec/02-development-design.md)
 - [交互设计](spec/05-product-interaction-redesign.md)
 - [微信公众号发布实现](spec/06-wechat-publishing-implementation.md)
+- [AI 编码 Agent 操作手册](AGENTS.md)
 *（内容由AI生成，仅供参考）*

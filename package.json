@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Windows-first AI-assisted content creation and publishing workflow.",
+  "license": "MIT",
+  "author": "weiluliaokeji",
+  "homepage": "https://github.com/weiluliaokeji/content-ferry",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weiluliaokeji/content-ferry.git"
+  },
+  "bugs": {
+    "url": "https://github.com/weiluliaokeji/content-ferry/issues"
+  },
   "main": "dist/main/main/index.js",
   "scripts": {
     "dev": "npm run rebuild:native && npm run build:main && concurrently -k \"npm:watch:main\" \"npm:dev:renderer\" \"npm:dev:desktop\"",
