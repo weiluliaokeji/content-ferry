@@ -53,7 +53,7 @@ Codex 连接编辑里有一个“联网补研使用 Codex 内置搜索”开关�
 
 ### 其他模型
 
-文渡还可配置 OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等连接。不同提供商可能需要 API Key、模型名称或服务地址。NVIDIA Build 默认使用 `https://integrate.api.nvidia.com/v1` 和 `z-ai/glm-5.2`，将 NVIDIA API Key 填入“访问凭证”即可；凭据只保存在本机。每个连接的“代理地址”只影响该连接本身；留空就是直连，文章联网调研也不会借用其他模型连接的代理。
+除预置的 OpenAI Codex 外，文渡支持添加任意 **OpenAI 兼容端点**作为自定义连接：在“技能与模型”填写显示名称、模型名、服务地址（baseUrl）、访问凭证与（可选的）代理地址，即可接入 OpenAI API、OpenRouter、Nous Research、NVIDIA Build、GitHub Copilot 等任意兼容服务。不同提供商所需字段不同（有的要 API Key，有的要模型名或专属服务地址），凭据只加密保存在本机、不会回显或写入日志。每个连接的“代理地址”只影响该连接本身；留空就是直连，文章联网调研也不会借用其他模型连接的代理。
 
 图片模型与文本模型分开配置。封面提示词技能负责分析文章并生成提示词，图片模型只接收用户最终确认的提示词；除非提示词明确要求，否则不应生成标题文字。
 
