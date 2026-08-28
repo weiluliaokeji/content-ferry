@@ -61,7 +61,9 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  rmSync
+  rmSync,
+  symlink,
+  writeFileSync
 } from "node:fs";
 import { readdirSync } from "node:fs";
 import os from "node:os";
@@ -238,7 +240,7 @@ async function checkSymlinkPermission() {
   );
   try {
     mkdirSync(testDir, { recursive: true });
-    require("node:fs").writeFileSync(path.join(testDir, "target"), "ok", "utf8");
+    writeFileSync(path.join(testDir, "target"), "ok", "utf8");
     await fsSymlink(path.join(testDir, "target"), path.join(testDir, "link"));
     rmSync(path.join(testDir, "link"), { force: true });
     rmSync(testDir, { recursive: true, force: true });
@@ -256,7 +258,7 @@ async function checkSymlinkPermission() {
 async function fsSymlink(target, link) {
   const flags = process.platform === "win32" ? "junction" : "dir";
   await new Promise((resolve, reject) => {
-    require("node:fs").symlink(target, link, flags, (error) =>
+    symlink(target, link, flags, (error) =>
       error ? reject(error) : resolve()
     );
   });
@@ -338,7 +340,7 @@ function downloadFile(url, destination, label) {
           response.on("data", (chunk) => chunks.push(chunk));
           response.on("end", () => {
             const buffer = Buffer.concat(chunks);
-            require("node:fs").writeFileSync(destination, buffer);
+            writeFileSync(destination, buffer);
             resolve(buffer.length);
           });
           response.on("error", reject);
@@ -728,14 +730,6 @@ main()
   .catch(async (error) => {
     console.error("\n\x1b[31mBuild pipeline failed.\x1b[0m");
     console.error(error);
-    // Try to clean up the override server on failure too.
-    try {
-      const { execSync } = require("node:child_process");
-      // Best-effort: just let the process exit; the server is
-      // bound to 127.0.0.1 so it can't leak past this process.
-    } catch {
-      /* ignore */
-    }
     process.exit(1);
   });
 
