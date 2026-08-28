@@ -91,6 +91,8 @@ npm run verify:installer
 3. 为两个 `.exe` 生成 `SHA256SUMS.txt`；
 4. 创建同名 GitHub Release，并上传 NSIS 安装包、Portable EXE、blockmap 和校验文件。
 
+`build/installer.nsh` 是 NSIS 的安装/卸载钩子，虽位于构建缓存目录旁，但必须随源码提交；`.gitignore` 只忽略 `build/` 下的其余生成内容。
+
 Tag 必须与 `package.json` 中的版本一致。例如将版本改为 `0.1.1`、完成提交并推送后：
 
 ```powershell
