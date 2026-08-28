@@ -239,7 +239,7 @@ export function detectCodexBinary(): CodexStatus {
     ok: false,
     binaryPath: null,
     authenticated: false,
-    reason: "当前未启用 OpenAI Codex。你可以稍后配置 Codex，或改用 OpenAI API、OpenRouter、GitHub Copilot 等模型连接；这不影响进入文渡。"
+    reason: "当前未启用 OpenAI Codex。你可以稍后启用 Codex，或添加任意 OpenAI 兼容端点作为自定义连接（如 OpenAI API、OpenRouter、GitHub Copilot 等）；这不影响进入文渡。"
   };
 }
 

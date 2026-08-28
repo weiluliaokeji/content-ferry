@@ -37,7 +37,7 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
         <article>
           <span>1</span>
           <h3>连接模型</h3>
-          <p>在“技能与模型”登录 OpenAI Codex，或配置 OpenAI API、OpenRouter、Nous Research、GitHub Copilot 等连接。</p>
+          <p>在“技能与模型”登录预置的 OpenAI Codex，或添加任意 OpenAI 兼容端点作为自定义连接（如 OpenAI API、OpenRouter、Nous Research、GitHub Copilot 等）。</p>
           <button className="text-button" onClick={() => onNavigate("skills")}>去配置模型</button>
         </article>
         <article>

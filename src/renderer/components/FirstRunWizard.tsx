@@ -498,7 +498,7 @@ function AiInitStep({
   return (
     <div>
       <p className="lead">
-        AI 服务是可选能力，不影响你先进入文渡管理和编辑本地文章。OpenAI Codex 是预置选项之一，也可以稍后改用 OpenAI API、OpenRouter 或 GitHub Copilot。
+        AI 服务是可选能力，不影响你先进入文渡管理和编辑本地文章。OpenAI Codex 是预置选项之一，也可以稍后添加任意 OpenAI 兼容端点作为自定义连接（如 OpenAI API、OpenRouter、GitHub Copilot 等）。
       </p>
 
       {detecting ? (
