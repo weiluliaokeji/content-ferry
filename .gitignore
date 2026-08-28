@@ -17,6 +17,7 @@ data/
 *.AppImage
 *.blockmap
 *.yml
+!.github/workflows/*.yml
 .cache/
 .tsbuildinfo
 *.tsbuildinfo

@@ -82,6 +82,24 @@ npm run verify:installer
 
 如需自动更新，再加 `electron-updater` 并设置 `publish: { provider: "generic", url: "https://your-cdn/contentferry" }`，届时 `latest.yml` 才会有用。
 
+## 5.1 GitHub Actions 发布
+
+仓库的 `.github/workflows/release-windows.yml` 会在推送形如 `v0.1.0` 的 Git tag 时，使用 GitHub 托管的 Windows Runner 自动执行：
+
+1. `npm ci`；
+2. `npm run dist:win`（类型检查、测试、构建、原生模块重建、打包与产物校验）；
+3. 为两个 `.exe` 生成 `SHA256SUMS.txt`；
+4. 创建同名 GitHub Release，并上传 NSIS 安装包、Portable EXE、blockmap 和校验文件。
+
+Tag 必须与 `package.json` 中的版本一致。例如将版本改为 `0.1.1`、完成提交并推送后：
+
+```powershell
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Actions 页面可查看完整构建日志。工作流默认生成**未签名**安装包；代码签名配置见下一节。
+
 ## 6. 代码签名（未启用）
 
 本次不接 Windows 代码签名（用户决定）。拿到的 EV/OV 代码签名 PFX 后，扩展 `package.json#build` 即可：

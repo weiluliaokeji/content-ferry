@@ -97,6 +97,8 @@ npm run verify:installer
 
 详细的安装包、签名、代理和故障排查说明见 [Windows 构建与分发](docs/BUILDING.md)。
 
+推送与 `package.json` 版本一致的 `v<版本号>` tag 后，GitHub Actions 会在 Windows 环境自动构建并将安装包、Portable EXE 与 SHA-256 校验文件上传到 GitHub Release；当前发布包未启用代码签名。
+
 ## 平台支持
 
 当前以 **Windows 10/11 为首要支持平台**：提供 NSIS 安装包与 Portable EXE，并由 `docs/BUILDING.md` 覆盖完整构建、签名与分发流程。

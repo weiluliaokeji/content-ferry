@@ -1,0 +1,59 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build Windows installers
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Ensure tag matches package version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} must match package.json version v$version."
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build, test and package
+        run: npm run dist:win
+
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem release -File -Filter *.exe |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content release/SHA256SUMS.txt -Encoding ascii
+
+      - name: Create GitHub Release and upload artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem release -File |
+            Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } |
+            ForEach-Object FullName
+          gh release create "${{ github.ref_name }}" @assets --verify-tag --generate-notes --title "文渡 ${{ github.ref_name }}"

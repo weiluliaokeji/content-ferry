@@ -1,6 +1,6 @@
 # Windows 安装包与 AI 初始化设计
 
-> 状态：发布工程设计，尚未生成可交付安装包
+> 状态：Windows x64 的 NSIS 安装包与 Portable EXE 已实现；代码签名、干净机器验收与自动更新仍待完善。
 
 ## 1. 普通用户如何安装
 
@@ -67,5 +67,9 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 5. 在一台未安装 Node.js、未安装 Codex CLI 的干净 Windows x64 虚拟机上验证安装；
 6. 分别验证“从未登录”“已有 Codex 登录”“断网”“升级”“回退”；
 7. 对应用与安装程序进行 Windows 代码签名，再发布稳定版。
+
+### 5.1 GitHub Actions 发布
+
+推送与 `package.json` 版本一致的 `v<版本号>` tag 时，GitHub Actions 在 `windows-latest` 上执行完整 `npm run dist:win` 流水线，并创建同名 GitHub Release。Release 附带 NSIS 安装包、Portable EXE、blockmap 与 SHA-256 校验文件。该流程不携带开发机凭据，也不默认签名；拿到证书后再以 GitHub Secrets 注入签名凭据。
 
 当前工程仍处于开发运行阶段。生成第一个对外安装包前必须补齐：AI 初始化界面、打包配置、应用图标与版本信息、代码签名、干净机器安装测试，以及当前 Electron 安全版本升级。
