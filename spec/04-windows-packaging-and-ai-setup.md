@@ -61,8 +61,8 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 采用 Electron 的标准打包工具生成 NSIS 安装程序。发布流水线至少执行：
 
 1. 锁定并安装依赖；
-2. 类型检查、单元测试和生产构建；
-3. 为目标 Electron 版本重建 `better-sqlite3`；
+2. 类型检查，并为目标 Electron 版本重建 `better-sqlite3`；
+3. 单元测试和生产构建；
 4. 打包应用并确保 Codex 可执行文件和原生模块位于 ASAR 外可执行位置；
 5. 在一台未安装 Node.js、未安装 Codex CLI 的干净 Windows x64 虚拟机上验证安装；
 6. 分别验证“从未登录”“已有 Codex 登录”“断网”“升级”“回退”；

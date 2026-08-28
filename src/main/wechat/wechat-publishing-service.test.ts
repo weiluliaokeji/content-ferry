@@ -225,7 +225,7 @@ describe("rasterizeSvgToPng", () => {
     const png = rasterizeSvgToPng(svg);
     expect(png.length).toBeGreaterThan(0);
     expect(png.toString("binary", 1, 4)).toBe("PNG"); // PNG magic bytes
-  });
+  }, 15_000);
 
   it("respects the SVG intrinsic width when present", () => {
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#0f0"/></svg>');

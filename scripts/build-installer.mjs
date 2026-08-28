@@ -5,9 +5,9 @@
 //   1. Pre-flight checks (Node version, host OS, symlink permission)
 //   2. Dependency lock (npm ci when node_modules is stale)
 //   3. Type check (tsc --noEmit on both projects)
-//   4. Unit tests (vitest, run under the Electron runtime)
-//   5. Production build (tsc + vite)
-//   6. Native module rebuild (better-sqlite3 for the target Electron)
+//   4. Native module rebuild (better-sqlite3 for the target Electron)
+//   5. Unit tests (vitest, run under the Electron runtime)
+//   6. Production build (tsc + vite)
 //   7. Package (electron-builder, with extra files from the config in
 //      package.json#build)
 //
@@ -647,22 +647,22 @@ async function main() {
   // 2) Type check.
   await npmExec("typecheck");
 
-  // 3) Tests (optional).
+  // 3) Tests use Electron's Node ABI, so rebuild before loading SQLite.
+  if (!skipRebuild) {
+    await npmExec("rebuild:native");
+  } else {
+    console.log("  \x1b[33m! --skip-rebuild set, skipping better-sqlite3 rebuild\x1b[0m");
+  }
+
+  // 4) Tests (optional).
   if (!skipTests) {
     await npmExec("test");
   } else {
     console.log("  \x1b[33m! --skip-tests set, skipping vitest\x1b[0m");
   }
 
-  // 4) Production build.
+  // 5) Production build.
   await npmExec("build");
-
-  // 5) Native module rebuild.
-  if (!skipRebuild) {
-    await npmExec("rebuild:native");
-  } else {
-    console.log("  \x1b[33m! --skip-rebuild set, skipping better-sqlite3 rebuild\x1b[0m");
-  }
 
   // 6) Package.
   step("6/7  Package with electron-builder");

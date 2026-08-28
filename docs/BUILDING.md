@@ -11,9 +11,9 @@
 
 1. **依赖锁定** — `npm install`（如 `node_modules` 不存在）。
 2. **类型检查** — `tsc --noEmit` 同时校验 `tsconfig.main.json` 和 `tsconfig.renderer.json`。
-3. **单元测试** — `npm test`（与开发共用同一条 vitest + Electron 运行时命令）。
-4. **生产构建** — `tsc -p tsconfig.main.json` + `vite build`。
-5. **原生模块重建** — `electron-rebuild -f -w better-sqlite3`。
+3. **原生模块重建** — `electron-rebuild -f -w better-sqlite3`，先让 SQLite 与 Electron 测试运行时的 ABI 一致。
+4. **单元测试** — `npm test`（与开发共用同一条 vitest + Electron 运行时命令）。
+5. **生产构建** — `tsc -p tsconfig.main.json` + `vite build`。
 6. **打包** — `electron-builder`，按 `package.json#build` 配置产出 NSIS 安装包 + Portable EXE。
 7. **后置校验** — `scripts/verify-installer.mjs` 检查 `app.asar` 完整性、`better_sqlite3.node`、`codex.exe`、内置技能目录和独立用户手册是否正确进入安装资源。
 
@@ -33,7 +33,7 @@ macOS / Linux 主机可以跑 `npm run pack`（即 `--dir` 模式）做交叉编
 ## 3. 命令
 
 ```powershell
-# 完整构建：类型检查 + 测试 + 构建 + 重建原生 + 打包 + 校验
+# 完整构建：类型检查 + 重建原生 + 测试 + 构建 + 打包 + 校验
 npm run dist:win
 
 # 只产 portable EXE
@@ -87,7 +87,7 @@ npm run verify:installer
 仓库的 `.github/workflows/release-windows.yml` 会在推送形如 `v0.1.0` 的 Git tag 时，使用 GitHub 托管的 Windows Runner 自动执行：
 
 1. `npm ci`；
-2. `npm run dist:win`（类型检查、测试、构建、原生模块重建、打包与产物校验）；
+2. `npm run dist:win`（类型检查、原生模块重建、测试、构建、打包与产物校验）；
 3. 为两个 `.exe` 生成 `SHA256SUMS.txt`；
 4. 创建同名 GitHub Release，并上传 NSIS 安装包、Portable EXE、blockmap 和校验文件。
 
