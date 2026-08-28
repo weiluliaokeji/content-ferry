@@ -55,12 +55,12 @@ publish: false
     };
     const service = new CsdnChannelService(database.connection, accounts, contentSources, provider);
 
-    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" });
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "rewrite" });
     expect(draft).toMatchObject({ title: "适配后的 CSDN 标题", status: "draft" });
     expect(draft.markdown).toContain("# 适配后的 CSDN 标题");
     expect(draft.markdown).not.toContain("微信公众号");
 
-    const sameDraft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" });
+    const sameDraft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "rewrite" });
     expect(sameDraft.id).toBe(draft.id);
 
     const approved = service.approveDraft(draft.id);
@@ -157,7 +157,7 @@ publish: false
     };
     const service = new CsdnChannelService(database.connection, accounts, contentSources, provider);
 
-    await expect(service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md" }))
+    await expect(service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "rewrite" }))
       .rejects.toBeInstanceOf(CsdnChannelError);
   });
 
