@@ -26,7 +26,10 @@ export async function getOrCreateContentAnyWindow(): Promise<BrowserWindow> {
   });
   state.contentAnyWindow = window;
   window.on("closed", () => { if (state.contentAnyWindow === window) state.contentAnyWindow = undefined; });
-  await window.loadURL("https://cn.aifoxs.com/ai-detect");
+  // ContentAny's current application entry point. The former cn.aifoxs.com
+  // address can return a Tengine 502 even while the app.contentany.cn page is
+  // available in a normal browser.
+  await window.loadURL("https://app.contentany.cn/ai-detect");
   await delay(1500);
   return window;
 }
