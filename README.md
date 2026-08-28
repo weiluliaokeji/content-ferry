@@ -4,6 +4,28 @@
 
 项目仍处于早期开发阶段，界面、数据结构和安装方式可能继续调整。
 
+工作台：新建、编辑、发布文章
+
+![1787894028097](assets/workbench.png)
+
+利用AI编辑、改写文章
+
+![1787894107977](assets/editor.png)
+
+集成AI检测助手检测AIGC特征
+
+![1787894452582](assets/zhuque.png)
+
+![1787894513004](assets/contentany.png)
+
+利用AI生成文章封面
+
+![1787894243437](assets/modelscopegenimage.png)
+
+可配置的技能与模型
+
+![1787894823582](assets/skillsandmodels.png)
+
 ## 已实现的主要能力
 
 - 管理多个微信公众号、CSDN 或博客园账号，并保存账号定位、目标读者、写作风格、禁用话题和常用栏目。
@@ -21,15 +43,15 @@
 
 ## 技术架构
 
-| 层 | 主要技术 |
-|---|---|
-| 桌面应用 | Electron 37 |
-| 界面 | React 19、Vite 7、Milkdown / ProseMirror |
-| 本地服务 | Fastify 5，仅监听 `127.0.0.1:4317` |
-| 数据 | SQLite；文章正文以 VitePress Markdown 文件为准 |
-| AI | 文渡模型适配层与可编辑技能 |
-| 发布 | 微信公众号官方 API、回调与必要的浏览器自动化；博客园 MetaWeblog XML-RPC（API Key）直发 |
-| 打包 | electron-builder、NSIS、Portable EXE |
+| 层       | 主要技术                                                                               |
+| -------- | -------------------------------------------------------------------------------------- |
+| 桌面应用 | Electron 37                                                                            |
+| 界面     | React 19、Vite 7、Milkdown / ProseMirror                                               |
+| 本地服务 | Fastify 5，仅监听`127.0.0.1:4317`                                                    |
+| 数据     | SQLite；文章正文以 VitePress Markdown 文件为准                                         |
+| AI       | 文渡模型适配层与可编辑技能                                                             |
+| 发布     | 微信公众号官方 API、回调与必要的浏览器自动化；博客园 MetaWeblog XML-RPC（API Key）直发 |
+| 打包     | electron-builder、NSIS、Portable EXE                                                   |
 
 渲染进程不直接访问文件系统、数据库或系统凭据；这些能力由 Electron 主进程和最小化 preload bridge 提供。
 
@@ -106,6 +128,17 @@ src/shared/      跨进程纯类型与无副作用工具
 
 安全漏洞报告流程见 [SECURITY](SECURITY.md)。
 
+## 关注与联系
+
+本项目的公众号文章均由**文渡（ContentFerry）**编写并完成自动化发布。
+
+- **「围炉聊科技」公众号**：专注 AI、开发工具与前沿技术的实测记录——从模型选型、智能体搭建到用文渡自动化写作的真实流程、文渡的产品思考与发布实践都沉淀在这里。
+
+  ![围炉聊科技公众号](assets/wechat-qrcode.jpg)
+- **作者微信**：欢迎加微信交流反馈、提出需求或参与讨论。
+
+  ![作者微信](assets/wechat-friend-qrcode.jpg)
+
 ## 文档入口
 
 - [用户使用说明](docs/USER-GUIDE.md)
@@ -116,4 +149,4 @@ src/shared/      跨进程纯类型与无副作用工具
 - [交互设计](spec/05-product-interaction-redesign.md)
 - [微信公众号发布实现](spec/06-wechat-publishing-implementation.md)
 - [AI 编码 Agent 操作手册](AGENTS.md)
-*（内容由AI生成，仅供参考）*
+  *（内容由AI生成，仅供参考）*
