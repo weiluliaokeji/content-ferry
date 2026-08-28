@@ -55,5 +55,9 @@ jobs:
         run: |
           $assets = Get-ChildItem release -File |
             Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } |
-            ForEach-Object FullName
-          gh release create "${{ github.ref_name }}" @assets --verify-tag --generate-notes --title "文渡 ${{ github.ref_name }}"
+            ForEach-Object { "$($_.FullName)#$($_.Name)" }
+          if (gh release view "${{ github.ref_name }}" 2>$null) {
+            gh release upload "${{ github.ref_name }}" @assets --clobber
+          } else {
+            gh release create "${{ github.ref_name }}" @assets --verify-tag --generate-notes --title "文渡 ${{ github.ref_name }}"
+          }
