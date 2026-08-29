@@ -19,6 +19,13 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return { items: contentProjects.list(workspace.id) };
   });
 
+  // 归档库只有文章相对路径，需要反查文渡项目才能判断该文章是否有创作档案可看。
+  server.get("/api/content-projects/by-source", async (request) => {
+    const query = z.object({ relativePath: z.string().min(1) }).parse(request.query);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { project: contentProjects.findBySource(workspace.id, query.relativePath) };
+  });
+
   server.post("/api/content-projects", async (request, reply) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentProjectInput.parse(request.body);

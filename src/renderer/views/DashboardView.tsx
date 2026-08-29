@@ -58,7 +58,6 @@ function ProjectRow({
   const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.researchReady ? "生成提纲" : project.briefReady ? "联网补研" : "整理创作方向";
   const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined;
   const canPrepare = !job || job.status === "failed" || job.status === "cancelled";
-  const canEditBrief = project.briefReady && !project.outlineReady && !project.draftReady;
   const channelRows = channelRowsFor({ relativePath: project.sourceRelativePath ?? "", title: project.topic });
   const archivablePath = project.sourceRelativePath;
   return <li key={project.id}>
@@ -74,7 +73,7 @@ function ProjectRow({
     </span>
     <span className="account-actions">
       <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
-      {canEditBrief && <button className="secondary-button" onClick={() => void openBrief(project)}>编辑创作方向</button>}
+      {project.briefReady && <button className="secondary-button" onClick={() => void openBrief(project)}>{project.outlineReady || project.draftReady ? "查看创作方向" : "编辑创作方向"}</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
       {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}
       {!project.draftReady && <button onClick={action}>{label}</button>}

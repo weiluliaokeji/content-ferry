@@ -696,6 +696,26 @@ describe("local API scaffold", () => {
     expect(fs.existsSync(stagedPath)).toBe(false);
   });
 
+  it("looks up a content project by its article path and reports which creation assets exist", async () => {
+    server = createTestServer();
+    const account = await server.inject({ method: "POST", url: "/api/media-accounts", payload: { platform: "wechat_official", displayName: "测试账号" } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "归档后可回看", targetAccountId: account.json().id } });
+    const projectId = project.json().id as string;
+    const relativePath = String(project.json().sourceRelativePath);
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: {
+      objective: "判断是否值得采用", audience: "技术从业者", angle: "以实测为例", sourceNotes: "原始笔记"
+    } });
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: "# 归档后可回看\n\n## 一" } });
+
+    const found = await server.inject({ method: "GET", url: `/api/content-projects/by-source?relativePath=${encodeURIComponent(relativePath)}` });
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toMatchObject({ project: { id: projectId, briefReady: true, outlineReady: true, researchReady: false } });
+
+    const missing = await server.inject({ method: "GET", url: "/api/content-projects/by-source?relativePath=posts/does-not-exist/index.md" });
+    expect(missing.statusCode).toBe(200);
+    expect(missing.json()).toMatchObject({ project: null });
+  });
+
   it("builds an editable initial brief from the project and account context", async () => {
     server = createTestServer();
     const account = await server.inject({ method: "POST", url: "/api/media-accounts", payload: { platform: "wechat_official", displayName: "测试账号" } });

@@ -31,6 +31,18 @@ export class ContentProjectRepository {
       .map((row) => this.map(row));
   }
 
+  findBySource(workspaceId: string, relativePath: string): ContentProject | null {
+    const row = this.db.prepare(`SELECT p.id, p.workspace_id, p.target_account_id, p.source_relative_path, p.topic, p.status, p.created_at, p.updated_at,
+      EXISTS(SELECT 1 FROM content_briefs b WHERE b.project_id = p.id) AS brief_ready,
+      EXISTS(SELECT 1 FROM content_research_plans r WHERE r.project_id = p.id) AS research_ready,
+      EXISTS(SELECT 1 FROM content_outlines o WHERE o.project_id = p.id) AS outline_ready,
+      EXISTS(SELECT 1 FROM content_drafts d WHERE d.project_id = p.id) AS draft_ready,
+      (SELECT r.status FROM content_reviews r WHERE r.project_id = p.id) AS review_status
+      FROM content_projects p WHERE p.workspace_id = ? AND p.source_relative_path = ?`)
+      .get(workspaceId, relativePath) as Record<string, string | null> | undefined;
+    return row ? this.map(row) : null;
+  }
+
   create(input: { workspaceId: string; targetAccountId?: string; topic: string; sourceRelativePath: string }): ContentProject {
     const id = randomUUID();
     const now = new Date().toISOString();
