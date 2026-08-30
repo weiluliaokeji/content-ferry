@@ -80,5 +80,5 @@ export async function streamGeneration<T>(path: string, signal: AbortSignal, onE
   }
 }
 
-export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园", juejin: "掘金" } as const)[platform];
+export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园", juejin: "掘金", "51cto": "51CTO" } as const)[platform];
 

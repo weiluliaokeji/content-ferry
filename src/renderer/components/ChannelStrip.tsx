@@ -7,6 +7,7 @@ function PlatformIcon({ platform }: { platform: ChannelRow["platform"] }) {
     csdn: "C",
     cnblogs: "园",
     juejin: "掘",
+    "51cto": "51",
   };
   const label = platformName(platform);
   return <span className={`platform-icon platform-${platform}`} aria-label={label} title={label}>{initials[platform]}</span>;

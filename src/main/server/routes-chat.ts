@@ -99,7 +99,8 @@ export function registerChatRoutes(ctx: ServerContext): void {
       wechat_official: { maxLength: 120, platformName: "微信公众号" },
       csdn: { maxLength: 200, platformName: "CSDN" },
       cnblogs: { maxLength: 120, platformName: "博客园" },
-      juejin: { maxLength: 100, platformName: "掘金" }
+      juejin: { maxLength: 100, platformName: "掘金" },
+      "51cto": { maxLength: 100, platformName: "51CTO" }
     } as const;
     const target = targets[input.platform];
     const generated = await effectiveModelProvider.generateStructured({

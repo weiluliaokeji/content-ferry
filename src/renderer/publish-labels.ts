@@ -1,4 +1,4 @@
-import type { CnblogsPublishJob, CsdnPublishJob, JuejinPublishJob, WechatPublishJob } from "./types";
+import type { CnblogsPublishJob, CsdnPublishJob, FiftyoneCtoPublishJob, JuejinPublishJob, WechatPublishJob } from "./types";
 
 // 各平台发布任务的状态标签（自 main.tsx 拆分）
 export const WECHAT_JOB_STATUS_PRIORITY: Record<WechatPublishJob["status"], number> = {
@@ -79,5 +79,26 @@ export function juejinJobLabel(job: JuejinPublishJob): string {
     case "needs_credentials": return "缺少掘金凭据";
     case "cancelled": return "已取消发布";
   }
+}
+
+export function fiftyoneCtoJobLabel(job: FiftyoneCtoPublishJob): string {
+  switch (job.status) {
+    case "draft_creating": return "正在发布到 51CTO";
+    case "draft_created": return "草稿已创建，待确认公开";
+    case "confirming": return "正在公开 51CTO 文章";
+    case "published": return "已发布";
+    case "failed": return "发布失败";
+    case "needs_manual_reconciliation": return "待人工核对发布结果";
+    case "needs_credentials": return "缺少 51CTO 凭据";
+    case "cancelled": return "已取消发布";
+  }
+}
+
+export function fiftyoneCtoJobCanStart(job: FiftyoneCtoPublishJob): boolean {
+  return ["draft_creating", "draft_created", "confirming", "needs_manual_reconciliation", "needs_credentials", "failed"].includes(job.status);
+}
+
+export function fiftyoneCtoJobCanCorrect(job: FiftyoneCtoPublishJob): boolean {
+  return ["draft_creating", "draft_created", "confirming", "needs_manual_reconciliation", "needs_credentials", "failed", "cancelled", "published"].includes(job.status);
 }
 

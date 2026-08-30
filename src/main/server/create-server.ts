@@ -22,6 +22,7 @@ import { WechatApiError, WechatPublishingService } from "../wechat/wechat-publis
 import { CsdnChannelError, CsdnChannelService } from "../csdn/csdn-channel-service";
 import { CnblogsChannelError, CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
 import { JuejinChannelError, JuejinChannelService } from "../juejin/juejin-channel-service";
+import { FiftyoneCtoChannelError, FiftyoneCtoChannelService } from "../fiftyone-cto/fiftyone-cto-channel-service";
 import { WechatCallbackService } from "../wechat/wechat-callback-service";
 import { createDailyLogStream } from "../logging/daily-log-stream";
 import { AppCredentialRepository } from "../security/app-credential-repository";
@@ -150,6 +151,7 @@ export function buildServer(
     ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const juejinChannels = options?.juejinChannel
     ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
+  const fiftyoneCtoChannels = new FiftyoneCtoChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
@@ -184,6 +186,9 @@ export function buildServer(
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof JuejinChannelError) {
+      return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof FiftyoneCtoChannelError) {
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof z.ZodError) {
@@ -318,6 +323,7 @@ export function buildServer(
     csdnChannels,
     cnblogsChannels,
     juejinChannels,
+    fiftyoneCtoChannels,
     coverGenerator
   };
 

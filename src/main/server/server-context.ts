@@ -23,6 +23,7 @@ import type { CoverGenerationService } from "../content/modelscope-cover-service
 import type { CsdnChannelService } from "../csdn/csdn-channel-service";
 import type { CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
 import type { JuejinChannelService } from "../juejin/juejin-channel-service";
+import type { FiftyoneCtoChannelService } from "../fiftyone-cto/fiftyone-cto-channel-service";
 import type { CsdnBrowserConfirmResult } from "./schemas";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
@@ -57,5 +58,6 @@ export interface ServerContext {
   csdnChannels: CsdnChannelService;
   cnblogsChannels: CnblogsChannelService;
   juejinChannels: JuejinChannelService;
+  fiftyoneCtoChannels: FiftyoneCtoChannelService;
   coverGenerator: CoverGenerationService;
 }

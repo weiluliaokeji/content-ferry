@@ -1,10 +1,11 @@
-import type { WechatPublishJob, CsdnPublishJob, CnblogsPublishJob, JuejinPublishJob } from "./types";
+import type { WechatPublishJob, CsdnPublishJob, CnblogsPublishJob, JuejinPublishJob, FiftyoneCtoPublishJob } from "./types";
 
 export type PublishEntry =
   | { kind: "wechat"; job: WechatPublishJob }
   | { kind: "csdn"; job: CsdnPublishJob }
   | { kind: "cnblogs"; job: CnblogsPublishJob }
-  | { kind: "juejin"; job: JuejinPublishJob };
+  | { kind: "juejin"; job: JuejinPublishJob }
+  | { kind: "51cto"; job: FiftyoneCtoPublishJob };
 
 export const byUpdatedAtDesc = (a: PublishEntry, b: PublishEntry) =>
   new Date(b.job.updatedAt).getTime() - new Date(a.job.updatedAt).getTime();

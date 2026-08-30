@@ -2,16 +2,18 @@ import { z } from "zod";
 import { CnblogsChannelError } from "../cnblogs/cnblogs-channel-service";
 import { CsdnChannelError } from "../csdn/csdn-channel-service";
 import { JuejinChannelError } from "../juejin/juejin-channel-service";
+import { FiftyoneCtoChannelError } from "../fiftyone-cto/fiftyone-cto-channel-service";
 import {
   cnblogsChannelDraftInput, cnblogsChannelDraftSaveInput, cnblogsPublishOptionsInput,
   csdnChannelDraftInput, csdnChannelDraftSaveInput, juejinChannelDraftInput,
   juejinChannelDraftSaveInput, juejinPublishOptionsInput,
+  fiftyoneCtoChannelDraftInput, fiftyoneCtoChannelDraftSaveInput, fiftyoneCtoPublishOptionsInput,
   type CsdnBrowserConfirmResult
 } from "./schemas";
 import type { ServerContext } from "./server-context";
 
 export function registerChannelsRoutes(ctx: ServerContext): void {
-  const { server, accounts, csdnChannels, cnblogsChannels, juejinChannels, csdnBrowserConfirm } = ctx;
+  const { server, accounts, csdnChannels, cnblogsChannels, juejinChannels, fiftyoneCtoChannels, csdnBrowserConfirm } = ctx;
 
   server.get("/api/integrations/csdn/capabilities/:accountId", async (request) => {
     const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
@@ -275,6 +277,83 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
       reason: z.string().max(500).default("")
     }).parse(request.body);
     return { job: juejinChannels.correctStatus(params.jobId, body.status, body.reason) };
+  });
+
+  server.get("/api/integrations/51cto/capabilities/:accountId", async (request) => {
+    const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
+    const account = accounts.requireAccount(params.accountId);
+    if (account.platform !== "51cto") throw new FiftyoneCtoChannelError("请选择一个 51CTO 账号。");
+    return fiftyoneCtoChannels.capabilities(account.id);
+  });
+
+  server.get("/api/integrations/51cto/channel-drafts", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
+    return { items: fiftyoneCtoChannels.listDrafts(workspace.id, query.accountId) };
+  });
+
+  server.post("/api/integrations/51cto/channel-drafts", async (request, reply) => {
+    const input = fiftyoneCtoChannelDraftInput.parse(request.body);
+    return reply.code(201).send(await fiftyoneCtoChannels.createFromSource(input));
+  });
+
+  server.post("/api/integrations/51cto/channel-drafts/:draftId/approve", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return fiftyoneCtoChannels.approveDraft(params.draftId);
+  });
+
+  server.put("/api/integrations/51cto/channel-drafts/:draftId", async (request) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    return fiftyoneCtoChannels.saveDraft(params.draftId, fiftyoneCtoChannelDraftSaveInput.parse(request.body));
+  });
+
+  server.delete("/api/integrations/51cto/channel-drafts/:draftId", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    fiftyoneCtoChannels.deleteDraft(params.draftId);
+    return reply.code(204).send();
+  });
+
+  server.get("/api/integrations/51cto/jobs", async () => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    return { items: fiftyoneCtoChannels.listJobs(workspace.id) };
+  });
+
+  server.post("/api/integrations/51cto/channel-drafts/:draftId/jobs", async (request, reply) => {
+    const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
+    const options = fiftyoneCtoPublishOptionsInput.parse(request.body ?? {});
+    return reply.code(201).send({ job: fiftyoneCtoChannels.createPublishJob(params.draftId, options) });
+  });
+
+  server.get("/api/integrations/51cto/jobs/:jobId", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const job = fiftyoneCtoChannels.getJob(params.jobId);
+    const draft = fiftyoneCtoChannels.getDraftForJob(params.jobId);
+    return { job, draft };
+  });
+
+  server.post("/api/integrations/51cto/jobs/:jobId/confirm", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    return reply.code(201).send({ job: await fiftyoneCtoChannels.confirmPublish(params.jobId) });
+  });
+
+  server.post("/api/integrations/51cto/jobs/:jobId/record-submission", async (request, reply) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      remoteUrl: z.string().url().nullable(),
+      remoteContentId: z.string().nullable(),
+      state: z.enum(["published", "needs_manual_reconciliation"]).default("published"),
+      reason: z.string().max(500).optional()
+    }).parse(request.body);
+    return reply.code(201).send(fiftyoneCtoChannels.recordSubmission(params.jobId, { ...body, state: body.state }));
+  });
+
+  server.post("/api/integrations/51cto/jobs/:jobId/status", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({
+      status: z.enum(["published", "failed", "cancelled"]),
+      reason: z.string().max(500).default("")
+    }).parse(request.body);
+    return { job: fiftyoneCtoChannels.correctStatus(params.jobId, body.status, body.reason) };
   });
 
 }

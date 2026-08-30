@@ -15,7 +15,7 @@ export type RootState =
   | { status: "wizard"; settings: AppSettingsContract }
   | { status: "ready"; settings: AppSettingsContract };
 
-export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin";
+export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin" | "51cto";
 export type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string; articleSignature: string };
 export type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile };
 export type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null; archived: boolean }>; truncated: boolean; warnings: string[] };
@@ -79,6 +79,24 @@ export type JuejinPublishOptions = {
   categoryId: string;
   tagIds: string[];
 };
+export type FiftyoneCtoChannelDraft = {
+  id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
+  generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string;
+};
+export type FiftyoneCtoPublishJob = {
+  id: string; accountId: string; channelDraftId: string;
+  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  statusNote: string | null; errorMessage: string | null;
+  remoteUrl: string | null; remoteContentId: string | null;
+  updatedAt: string;
+};
+export type FiftyoneCtoPublishOptions = {
+  pid: string;
+  cateId: string;
+  tags: string[];
+  blogType: "1" | "2" | "3";
+};
 export type ChannelAction =
   | { kind: "enter"; label: string; onClick: () => void }
   | { kind: "generate"; label: string; onClick: () => void }
@@ -91,7 +109,7 @@ export type ChannelRow = {
   tone: "neutral" | "info" | "success" | "warning";
   action: ChannelAction;
 };
-export type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string; cnblogsUsername?: string; cnblogsApiKeyConfigured?: boolean; juejinCookieConfigured?: boolean; juejinAidConfigured?: boolean; juejinUuidConfigured?: boolean };
+export type WechatCredentialStatus = { appId: string; appSecretConfigured: boolean; callbackTokenConfigured: boolean; localCallbackUrl: string; cnblogsUsername?: string; cnblogsApiKeyConfigured?: boolean; juejinCookieConfigured?: boolean; juejinAidConfigured?: boolean; juejinUuidConfigured?: boolean; fiftyoneCtoCookieConfigured?: boolean };
 export type WechatMaterial = { mediaId: string; name: string; updatedAt: string; url: string | null };
 export type SelectedImage = { fileName: string; mimeType: string; base64: string };
 export type ArticleSettings = {

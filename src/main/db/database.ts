@@ -426,6 +426,43 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_juejin_publish_job_events_job_created
       ON juejin_publish_job_events(job_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS fiftyone_cto_publish_jobs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+      rendered_package_hash TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN (
+        'draft_creating', 'draft_created', 'confirming',
+        'published', 'failed', 'needs_manual_reconciliation', 'cancelled',
+        'needs_credentials'
+      )),
+      remote_url TEXT,
+      remote_content_id TEXT,
+      status_note TEXT,
+      error_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system' CHECK (status_source IN ('system', 'manual')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fiftyone_cto_publish_jobs_account_updated
+      ON fiftyone_cto_publish_jobs(account_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS fiftyone_cto_publish_job_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES fiftyone_cto_publish_jobs(id) ON DELETE CASCADE,
+      previous_status TEXT,
+      new_status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fiftyone_cto_publish_job_events_job_created
+      ON fiftyone_cto_publish_job_events(job_id, created_at DESC);
+
     -- The public-account web UI is the source of truth. This table is only a
     -- per-account cache of collection names observed by the visible browser,
     -- so the editor can offer real previously-synchronised choices offline.

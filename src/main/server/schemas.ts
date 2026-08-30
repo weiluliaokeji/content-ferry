@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const accountInput = z.object({
-  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin", "51cto"]),
   displayName: z.string().trim().min(1).max(100),
   externalAccountId: z.string().trim().min(1).max(200).optional()
 });
@@ -135,6 +135,25 @@ export const juejinPublishOptionsInput = z.object({
   categoryId: z.string().trim().max(80).optional(),
   tagIds: z.array(z.string().trim().max(80)).max(5).optional()
 });
+export const fiftyoneCtoChannelDraftInput = z.object({
+  accountId: z.string().uuid(),
+  relativePath: z.string().trim().min(1).max(1000),
+  projectId: z.string().uuid().optional(),
+  generationMode: z.enum(["rewrite", "source"]).default("source")
+});
+export const fiftyoneCtoChannelDraftSaveInput = z.object({
+  title: z.string().trim().min(1).max(120),
+  markdown: z.string().trim().min(1).max(100_000),
+  author: z.string().trim().max(16).optional(),
+  digest: z.string().trim().max(200).optional(),
+  coverSource: z.string().trim().max(2000).optional()
+});
+export const fiftyoneCtoPublishOptionsInput = z.object({
+  pid: z.string().trim().max(40).optional(),
+  cateId: z.string().trim().max(40).optional(),
+  tags: z.array(z.string().trim().max(40)).max(10).optional(),
+  blogType: z.enum(["1", "2", "3"]).default("1")
+});
 export const modelProviderSchema = z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9:_-]+$/);
 export const modelConnectionInput = z.object({
   displayName: z.string().trim().min(1).max(100),
@@ -162,7 +181,7 @@ export const skillInput = z.object({
 export const skillFileQuery = z.object({ path: z.string().trim().min(1).max(500) });
 export const skillFileInput = z.object({ path: z.string().trim().min(1).max(500), content: z.string().max(200000) });
 export const articleSummaryInput = z.object({
-  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin"]),
+  platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin", "51cto"]),
   title: z.string().trim().max(500).default(""),
   markdown: z.string().trim().min(1).max(500000)
 });
