@@ -6,10 +6,10 @@
  * base64-embedded local images → POST /blogger/publish). The job transitions
  * draft_creating → published | failed | needs_credentials.
  *
- * Images: local relative images are base64-embedded into the HTML (51CTO's editor
- * supports data URIs); remote http(s) images stay as external links. The 51CTO
- * Alibaba OSS image host (getUploadConfig → getUploadSign → OSS PUT) is a future
- * enhancement that needs a live Cookie to verify the signing protocol.
+ * Images: local relative images are uploaded to 51CTO's image host (am-editor-style
+ * multipart POST; 51CTO's backend stores them on Alibaba OSS and returns a public
+ * URL). A single image's upload failure falls back to base64-embedding that image, so
+ * publishing never breaks. Remote http(s) images stay as external links.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -21,7 +21,8 @@ import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { appendArticleSignature } from "../publishing/article-signature";
 import { CTOClient, mdToHtml51 } from "./fiftyone-cto-client";
-import { inlineFiftyoneCtoLocalImages } from "./fiftyone-cto-image-inliner";
+import { uploadFiftyoneCtoLocalImages } from "./fiftyone-cto-image-inliner";
+import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
 import { FiftyoneCtoChannelError, FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
 
 export { FiftyoneCtoChannelError, FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
@@ -406,20 +407,24 @@ export class FiftyoneCtoChannelService {
       const draft = this.requireDraft(job.channelDraftId);
       const options = this.publishOptionsCache.get(job.id) ?? { pid: "", cateId: "", tags: [], blogType: "1" as const };
 
-      const inlineResult = await inlineFiftyoneCtoLocalImages(
+      const cookie = this.loadCredentials(account).cookie;
+      const uploader = new FiftyoneCtoImageUploader(cookie, this.fetcher);
+      const imageResult = await uploadFiftyoneCtoLocalImages(
         draft.markdown,
         draft.workspaceId,
         draft.sourceRelativePath,
-        this.contentSources
+        this.contentSources,
+        uploader
       );
-      if (inlineResult.inlinedCount > 0 || inlineResult.failed.length > 0) {
+      if (imageResult.uploadedCount > 0 || imageResult.inlinedCount > 0 || imageResult.failed.length > 0) {
         const parts: string[] = [];
-        if (inlineResult.inlinedCount > 0) parts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
-        if (inlineResult.failed.length > 0) parts.push(`本地图片处理失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+        if (imageResult.uploadedCount > 0) parts.push(`本地图片已上传图床 ${imageResult.uploadedCount} 张`);
+        if (imageResult.inlinedCount > 0) parts.push(`本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退）`);
+        if (imageResult.failed.length > 0) parts.push(`本地图片处理失败 ${imageResult.failed.length} 张（${imageResult.failed.map((f) => f.source).join("、")}）`);
         this.db.prepare(`UPDATE fiftyone_cto_publish_jobs SET status_note = ? WHERE id = ?`).run(parts.join("；"), job.id);
       }
 
-      const html = mdToHtml51(inlineResult.markdown);
+      const html = mdToHtml51(imageResult.markdown);
       const tagsStr = (options.tags ?? []).join(",");
       const blogType = options.blogType ?? "1";
       const result = await client.post({

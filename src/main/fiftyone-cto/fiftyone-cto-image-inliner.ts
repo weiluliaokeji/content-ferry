@@ -1,7 +1,17 @@
 import type { ContentSourceService } from "../content/content-source-service";
+import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
 
 export interface FiftyoneCtoImageInliningResult {
   markdown: string;
+  inlinedCount: number;
+  failed: Array<{ source: string; reason: string }>;
+}
+
+export interface FiftyoneCtoImageUploadingResult {
+  markdown: string;
+  /** 成功上传到 51CTO 图床并替换为远程 URL 的张数。 */
+  uploadedCount: number;
+  /** 图床上传失败、回退为 base64 内联的张数。 */
   inlinedCount: number;
   failed: Array<{ source: string; reason: string }>;
 }
@@ -61,6 +71,61 @@ export async function inlineFiftyoneCtoLocalImages(
   }
 
   return { markdown: result, inlinedCount, failed };
+}
+
+/**
+ * 把文章中的本地图片上传到 51CTO 图床（OSS），替换为远程 URL；
+ * 单张上传失败时回退为 base64 内联，保证发布不中断。
+ *
+ * 远程 http(s) 图片、data URI 不动。仅在 51CTO 账号已配置 Cookie 时调用。
+ */
+export async function uploadFiftyoneCtoLocalImages(
+  markdown: string,
+  workspaceId: string,
+  sourceRelativePath: string,
+  contentSources: ContentSourceService,
+  uploader: FiftyoneCtoImageUploader
+): Promise<FiftyoneCtoImageUploadingResult> {
+  const matches = collectFiftyoneCtoImageMatches(markdown);
+  let result = markdown;
+  let uploadedCount = 0;
+  let inlinedCount = 0;
+  const failed: Array<{ source: string; reason: string }> = [];
+
+  for (let index = matches.length - 1; index >= 0; index--) {
+    const { start, end, alt, source } = matches[index];
+    if (source.startsWith("data:")) continue;
+    if (/^https?:\/\//i.test(source)) continue;
+
+    try {
+      const resource = contentSources.readArticleResource(workspaceId, sourceRelativePath, source);
+      const chunks: Buffer[] = [];
+      for await (const chunk of resource.stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const buffer = Buffer.concat(chunks);
+      if (buffer.length === 0) {
+        failed.push({ source, reason: "图片内容为空。" });
+        continue;
+      }
+
+      let url: string;
+      try {
+        url = await uploader.upload(buffer, resource.mimeType, source.split("/").pop() || "image.png");
+        uploadedCount++;
+      } catch {
+        // 图床上传失败（端点/网络/Cookie 问题），回退为 base64 内联，避免图片丢失。
+        url = `data:${resource.mimeType};base64,${buffer.toString("base64")}`;
+        inlinedCount++;
+      }
+
+      result = result.slice(0, start) + `![${alt}](${url})` + result.slice(end);
+    } catch (error) {
+      failed.push({ source, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return { markdown: result, uploadedCount, inlinedCount, failed };
 }
 
 export function collectFiftyoneCtoImageMatches(markdown: string): ImageMatch[] {

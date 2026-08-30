@@ -18,6 +18,7 @@ const testVault: CredentialVault = {
 interface PublishCall {
   url: string;
   method: string;
+  body?: string;
 }
 
 function createFiftyoneCtoFetcher(publishBlogId = "999999"): { fetcher: typeof fetch; calls: PublishCall[] } {
@@ -25,7 +26,8 @@ function createFiftyoneCtoFetcher(publishBlogId = "999999"): { fetcher: typeof f
   const fetcher = (async (input: unknown, init?: RequestInit) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     const method = init?.method ?? "GET";
-    calls.push({ url, method });
+    const body = init?.body !== undefined ? String(init.body) : undefined;
+    calls.push({ url, method, body });
     if (url.includes("old=1")) {
       // 发布页：返回包含 CSRF token 的 HTML。
       return new Response(
@@ -178,5 +180,36 @@ describe("FiftyoneCtoChannelService", () => {
     const settled = await waitForJob(service, job.id, "needs_credentials");
     expect(settled.statusNote).toContain("Cookie");
     expect(settled.errorMessage).toContain("Cookie");
+  });
+
+  it("uploads local images (falling back to inline) during single-shot publish", async () => {
+    const { account, service, calls } = setupHarness();
+    // 准备带本地图片的主稿与资源文件。
+    const articleDir = path.join(sourceDirectory!, "posts", "source", "with-image");
+    fs.mkdirSync(path.join(articleDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(articleDir, "index.md"), [
+      "---",
+      "title: 带图文章",
+      "created: '2026-08-01 10:00:00'",
+      "tags: []",
+      "publish: false",
+      "---",
+      "",
+      "# 带图文章",
+      "",
+      "![图](./assets/x.png)"
+    ].join("\n"), "utf8");
+    fs.writeFileSync(path.join(articleDir, "assets", "x.png"), Buffer.from("fake-png-bytes"), "utf8");
+
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/with-image/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+    const published = await waitForJob(service, job.id, "published");
+
+    expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);
+    // 图床端点在本测试未真正配置，本地图片应回退为 base64 内联进入发布正文。
+    const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
+    expect(publishCall?.body).toBeDefined();
+    expect(decodeURIComponent(publishCall!.body!)).toContain("data:image/png;base64,");
   });
 });
