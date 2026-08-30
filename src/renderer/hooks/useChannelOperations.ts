@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownTitle, parseZhuqueReport } from "../utils";
-import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel } from "../publish-labels";
+import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, fiftyoneCtoJobCanStart, fiftyoneCtoJobCanCorrect } from "../publish-labels";
 import { resolveArticleImageUrl } from "../markdown-preview";
-import type { AccountPlatform, ChannelRow, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, ContentSourceArticle, CsdnChannelDraft, CsdnPublishJob, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, MediaAccount, WechatPublishJob } from "../types";
+import type { AccountPlatform, ChannelRow, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, ContentSourceArticle, CsdnChannelDraft, CsdnPublishJob, FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, FiftyoneCtoPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, MediaAccount, WechatPublishJob } from "../types";
 import type { UseWorkbenchReturn } from "./useWorkbench";
 
 export interface UseChannelOperationsParams {
@@ -212,6 +212,24 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [juejinStatusReason, setJuejinStatusReason] = useState("");
   const [juejinCorrectionSaving, setJuejinCorrectionSaving] = useState(false);
   const [juejinCorrectionError, setJuejinCorrectionError] = useState("");
+  const [fiftyoneCtoDrafts, setFiftyoneCtoDrafts] = useState<FiftyoneCtoChannelDraft[]>([]);
+  const [fiftyoneCtoJobs, setFiftyoneCtoJobs] = useState<FiftyoneCtoPublishJob[]>([]);
+  const [fiftyoneCtoDraft, setFiftyoneCtoDraft] = useState<FiftyoneCtoChannelDraft | undefined>(undefined);
+  const [fiftyoneCtoPublishJob, setFiftyoneCtoPublishJob] = useState<FiftyoneCtoPublishJob | undefined>(undefined);
+  const [fiftyoneCtoDraftSource, setFiftyoneCtoDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
+  const [fiftyoneCtoDraftAccountId, setFiftyoneCtoDraftAccountId] = useState("");
+  const [fiftyoneCtoDraftGenerationMode, setFiftyoneCtoDraftGenerationMode] = useState<"rewrite" | "source">("source");
+  const [fiftyoneCtoDraftSaving, setFiftyoneCtoDraftSaving] = useState(false);
+  const [fiftyoneCtoEntryChoices, setFiftyoneCtoEntryChoices] = useState<Array<{ draft: FiftyoneCtoChannelDraft; accountName: string; job?: FiftyoneCtoPublishJob }> | null>(null);
+  const [correctingFiftyoneCtoJob, setCorrectingFiftyoneCtoJob] = useState<FiftyoneCtoPublishJob | undefined>(undefined);
+  const [correctedFiftyoneCtoStatus, setCorrectedFiftyoneCtoStatus] = useState<"published" | "failed" | "cancelled">("published");
+  const [fiftyoneCtoStatusReason, setFiftyoneCtoStatusReason] = useState("");
+  const [fiftyoneCtoCorrectionSaving, setFiftyoneCtoCorrectionSaving] = useState(false);
+  const [fiftyoneCtoCorrectionError, setFiftyoneCtoCorrectionError] = useState("");
+  const fiftyoneCtoStatusRef = useRef<FiftyoneCtoPublishJob["status"] | null>(null);
+  const setFiftyoneCtoStatusRef = (value: FiftyoneCtoPublishJob["status"] | null) => {
+    fiftyoneCtoStatusRef.current = value;
+  };
   const autoArchiveRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!sourcePreview) return;
@@ -243,7 +261,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const refreshWechatStatus = async () => {
     setWechatJobsRefreshing(true);
     try {
-      await Promise.all([loadWechatJobs(), loadProjects(), loadCsdnChannelDrafts(), loadCnblogsChannelDrafts(), loadJuejinChannelDrafts()]);
+      await Promise.all([loadWechatJobs(), loadProjects(), loadCsdnChannelDrafts(), loadCnblogsChannelDrafts(), loadJuejinChannelDrafts(), loadFiftyoneCtoChannelDrafts()]);
       setWechatJobsRefreshedAt(new Date());
     } finally {
       setWechatJobsRefreshing(false);
@@ -283,6 +301,18 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setJuejinJobs(jobs.items);
     } catch {
       /* 读取失败时不阻塞工作台，按钮仍可作为"生成掘金稿"使用。 */
+    }
+  };
+  const loadFiftyoneCtoChannelDrafts = async () => {
+    try {
+      const [drafts, jobs] = await Promise.all([
+        request<{ items: FiftyoneCtoChannelDraft[] }>("/integrations/51cto/channel-drafts"),
+        request<{ items: FiftyoneCtoPublishJob[] }>("/integrations/51cto/jobs")
+      ]);
+      setFiftyoneCtoDrafts(drafts.items);
+      setFiftyoneCtoJobs(jobs.items);
+    } catch {
+      /* 读取失败时不阻塞工作台，按钮仍可作为"生成 51CTO 稿"使用。 */
     }
   };
   const deleteCnblogsChannelDraft = async (draftId: string) => {
@@ -375,6 +405,51 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     setJuejinPublishJob(choice.job);
     setJuejinDraftSource(undefined);
     setJuejinEntryChoices(null);
+    setError("");
+  };
+  const deleteFiftyoneCtoChannelDraft = async (draftId: string) => {
+    await request(`/integrations/51cto/channel-drafts/${draftId}`, { method: "DELETE" });
+    if (fiftyoneCtoDraft) await openFiftyoneCtoChannelDraft(fiftyoneCtoDraft.sourceRelativePath);
+  };
+  const openFiftyoneCtoChannelDraft = async (relativePath: string) => {
+    const fiftyoneCtoAccounts = accounts.filter((account) => account.platform === "51cto");
+    if (fiftyoneCtoAccounts.length === 0) {
+      setError("请先在“账号”中添加一个 51CTO 账号，再创建 51CTO 渠道稿。");
+      return;
+    }
+    try {
+      const [article, drafts, jobs] = await Promise.all([
+        request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(relativePath)}`),
+        request<{ items: FiftyoneCtoChannelDraft[] }>("/integrations/51cto/channel-drafts"),
+        request<{ items: FiftyoneCtoPublishJob[] }>("/integrations/51cto/jobs")
+      ]);
+      setFiftyoneCtoDrafts(drafts.items);
+      setFiftyoneCtoJobs(jobs.items);
+      const existing = drafts.items.filter((candidate) => candidate.sourceRelativePath === relativePath);
+      if (existing.length === 0) {
+        setFiftyoneCtoDraftSource(article);
+        setFiftyoneCtoDraftAccountId(fiftyoneCtoAccounts[0].id);
+        setFiftyoneCtoDraftGenerationMode("source");
+        setFiftyoneCtoDraft(undefined);
+        setFiftyoneCtoPublishJob(undefined);
+        setError("");
+        return;
+      }
+      setFiftyoneCtoDraftSource(article);
+      setFiftyoneCtoEntryChoices(existing.map((draft) => ({
+        draft,
+        accountName: fiftyoneCtoAccounts.find((account) => account.id === draft.accountId)?.displayName ?? "51CTO 账号",
+        job: jobs.items.find((job) => job.channelDraftId === draft.id)
+      })));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开 51CTO 渠道稿。");
+    }
+  };
+  const openExistingFiftyoneCtoDraft = (choice: { draft: FiftyoneCtoChannelDraft; job?: FiftyoneCtoPublishJob }) => {
+    setFiftyoneCtoDraft(choice.draft);
+    setFiftyoneCtoPublishJob(choice.job);
+    setFiftyoneCtoDraftSource(undefined);
+    setFiftyoneCtoEntryChoices(null);
     setError("");
   };
   const deleteCsdnChannelDraft = async (draftId: string) => {
@@ -499,6 +574,22 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         rows.push({ platform: "juejin", label: "掘金", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成掘金稿", onClick: () => void openJuejinChannelDraft(item.relativePath) } });
       }
     }
+    if (accounts.some((account) => account.platform === "51cto")) {
+      const fiftyoneCtoExisting = fiftyoneCtoDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+      if (fiftyoneCtoExisting) {
+        const fiftyoneCtoJob = fiftyoneCtoJobs.find((job) => job.channelDraftId === fiftyoneCtoExisting.id);
+        const published = !!fiftyoneCtoJob && fiftyoneCtoJob.status === "published";
+        const frozen = fiftyoneCtoExisting.status === "approved";
+        rows.push({
+          platform: "51cto", label: "51CTO",
+          statusLabel: published ? "已发布" : frozen ? "已冻结" : "草稿",
+          tone: (published || frozen) ? "success" : "neutral",
+          action: { kind: "enter", label: "进入 51CTO 稿", onClick: () => void openFiftyoneCtoChannelDraft(item.relativePath) }
+        });
+      } else {
+        rows.push({ platform: "51cto", label: "51CTO", statusLabel: "未生成", tone: "neutral", action: { kind: "generate", label: "生成 51CTO 稿", onClick: () => void openFiftyoneCtoChannelDraft(item.relativePath) } });
+      }
+    }
     return rows;
   };
   const isPublished = (item: { relativePath: string; title?: string | null }): boolean => {
@@ -518,6 +609,11 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     if (juejinExisting) {
       const juejinJob = juejinJobs.find((job) => job.channelDraftId === juejinExisting.id);
       if (juejinJob?.status === "published") return true;
+    }
+    const fiftyoneCtoExisting = fiftyoneCtoDrafts.find((candidate) => candidate.sourceRelativePath === item.relativePath);
+    if (fiftyoneCtoExisting) {
+      const fiftyoneCtoJob = fiftyoneCtoJobs.find((job) => job.channelDraftId === fiftyoneCtoExisting.id);
+      if (fiftyoneCtoJob?.status === "published") return true;
     }
     return false;
   };
@@ -920,6 +1016,182 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     }
     void publishJuejinDraft(options);
   };
+  const generateFiftyoneCtoChannelDraft = async () => {
+    if (!fiftyoneCtoDraftSource || !fiftyoneCtoDraftAccountId) return;
+    setFiftyoneCtoDraftSaving(true);
+    try {
+      const draft = await request<FiftyoneCtoChannelDraft>("/integrations/51cto/channel-drafts", {
+        method: "POST",
+        body: JSON.stringify({ accountId: fiftyoneCtoDraftAccountId, relativePath: fiftyoneCtoDraftSource.relativePath, generationMode: fiftyoneCtoDraftGenerationMode })
+      });
+      setFiftyoneCtoDraft(draft);
+      setError("");
+      void loadFiftyoneCtoChannelDrafts();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "生成 51CTO 渠道稿失败。");
+    } finally {
+      setFiftyoneCtoDraftSaving(false);
+    }
+  };
+  const saveFiftyoneCtoChannelDraft = async () => {
+    if (!fiftyoneCtoDraft) return;
+    setFiftyoneCtoDraftSaving(true);
+    try {
+      const saved = await request<FiftyoneCtoChannelDraft>(`/integrations/51cto/channel-drafts/${fiftyoneCtoDraft.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title: fiftyoneCtoDraft.title, markdown: fiftyoneCtoDraft.markdown, author: fiftyoneCtoDraft.author, digest: fiftyoneCtoDraft.digest, coverSource: fiftyoneCtoDraft.coverSource })
+      });
+      setFiftyoneCtoDraft(saved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 51CTO 渠道稿失败。");
+    } finally {
+      setFiftyoneCtoDraftSaving(false);
+    }
+  };
+  const publishFiftyoneCtoDraft = async (options?: FiftyoneCtoPublishOptions) => {
+    if (!fiftyoneCtoDraft) return;
+    setFiftyoneCtoDraftSaving(true);
+    try {
+      let current = fiftyoneCtoDraft;
+      if (current.status === "draft") {
+        const saved = await request<FiftyoneCtoChannelDraft>(`/integrations/51cto/channel-drafts/${current.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ title: current.title, markdown: current.markdown, author: current.author, digest: current.digest, coverSource: current.coverSource })
+        });
+        current = saved;
+        setFiftyoneCtoDraft(saved);
+      }
+      if (current.status === "draft") {
+        const approved = await request<FiftyoneCtoChannelDraft>(`/integrations/51cto/channel-drafts/${current.id}/approve`, { method: "POST" });
+        current = approved;
+        setFiftyoneCtoDraft(approved);
+      }
+      const payload = await request<{ job: FiftyoneCtoPublishJob }>(`/integrations/51cto/channel-drafts/${current.id}/jobs`, {
+        method: "POST",
+        body: JSON.stringify({ pid: options?.pid ?? "", cateId: options?.cateId ?? "", tags: options?.tags ?? [], blogType: options?.blogType ?? "1" })
+      });
+      if (payload?.job) {
+        fiftyoneCtoStatusRef.current = payload.job.status;
+        setFiftyoneCtoPublishJob(payload.job);
+        setNotice("已创建 51CTO 发布任务，正在发布…");
+        setFiftyoneCtoDraft(undefined);
+        setFiftyoneCtoDraftSource(undefined);
+        setFiftyoneCtoEntryChoices(null);
+        setActiveView("publish");
+        void loadFiftyoneCtoChannelDrafts();
+      }
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "发布到 51CTO 失败。");
+      return;
+    } finally {
+      setFiftyoneCtoDraftSaving(false);
+    }
+  };
+  const requestPublishFiftyoneCto = (options?: FiftyoneCtoPublishOptions) => {
+    if (!fiftyoneCtoDraft) return;
+    if (fiftyoneCtoDraft.status === "draft") {
+      const confirmed = window.confirm(
+        "发布会把本 51CTO 渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务并直接发布到 51CTO。\n\n是否继续？"
+      );
+      if (!confirmed) return;
+    }
+    void publishFiftyoneCtoDraft(options);
+  };
+  const confirmFiftyoneCtoPublish = async (jobId: string) => {
+    setFiftyoneCtoDraftSaving(true);
+    try {
+      const payload = await request<{ job: FiftyoneCtoPublishJob }>(`/integrations/51cto/jobs/${jobId}/confirm`, { method: "POST" });
+      if (payload?.job) {
+        fiftyoneCtoStatusRef.current = payload.job.status;
+        setFiftyoneCtoPublishJob(payload.job);
+        if (payload.job.status === "published") {
+          setNotice("已成功发布到 51CTO。");
+          setFiftyoneCtoDraft(undefined);
+          setFiftyoneCtoDraftSource(undefined);
+          setFiftyoneCtoEntryChoices(null);
+          setActiveView("publish");
+        } else {
+          setNotice("已确认公开，正在发布…");
+        }
+      }
+      await loadFiftyoneCtoChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法确认 51CTO 发布结果。");
+    } finally {
+      setFiftyoneCtoDraftSaving(false);
+    }
+  };
+  const correctFiftyoneCtoStatus = async (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => {
+    setFiftyoneCtoDraftSaving(true);
+    try {
+      const payload = await request<{ job: FiftyoneCtoPublishJob }>(`/integrations/51cto/jobs/${jobId}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status, reason: reason.trim() })
+      });
+      if (payload?.job) setFiftyoneCtoPublishJob(payload.job);
+      await loadFiftyoneCtoChannelDrafts();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法校正 51CTO 发布状态。");
+    } finally {
+      setFiftyoneCtoDraftSaving(false);
+    }
+  };
+  const refreshFiftyoneCtoPublishJob = async () => {
+    if (!fiftyoneCtoPublishJob) return;
+    try {
+      const payload = await request<{ job: FiftyoneCtoPublishJob }>(`/integrations/51cto/jobs/${fiftyoneCtoPublishJob.id}`);
+      if (payload?.job) {
+        const previous = fiftyoneCtoStatusRef.current;
+        fiftyoneCtoStatusRef.current = payload.job.status;
+        setFiftyoneCtoPublishJob(payload.job);
+        void loadFiftyoneCtoChannelDrafts();
+        if (previous === "draft_creating" && payload.job.status === "published") {
+          setNotice("已成功发布到 51CTO。");
+          if (fiftyoneCtoDraft) {
+            setFiftyoneCtoDraft(undefined);
+            setFiftyoneCtoDraftSource(undefined);
+            setFiftyoneCtoEntryChoices(null);
+            setActiveView("publish");
+          }
+        }
+        if (previous === "draft_creating" && payload.job.status === "failed") setNotice(`51CTO 发布失败：${payload.job.errorMessage ?? "请查看发布记录"}`);
+        if (previous === "draft_creating" && payload.job.status === "needs_credentials") setNotice("51CTO 凭据不完整，请前往账号页配置。");
+        if (previous === "draft_creating" && payload.job.status === "needs_manual_reconciliation") setNotice("51CTO 发布未确认，请人工校正发布结果。");
+      }
+    } catch {
+      /* 轮询失败不阻塞界面 */
+    }
+  };
+  const openFiftyoneCtoStatusCorrection = (job: FiftyoneCtoPublishJob) => {
+    setCorrectingFiftyoneCtoJob(job);
+    setCorrectedFiftyoneCtoStatus("published");
+    setFiftyoneCtoStatusReason("已在 51CTO 后台核实");
+    setFiftyoneCtoCorrectionError("");
+  };
+  const saveFiftyoneCtoStatusCorrection = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!correctingFiftyoneCtoJob) {
+      setFiftyoneCtoCorrectionError("核实依据不能超过 500 个字。");
+      return;
+    }
+    const action = correctedFiftyoneCtoStatus === "published" ? "已发布" : correctedFiftyoneCtoStatus === "cancelled" ? "取消发布" : "发布失败";
+    if (!window.confirm(`确定将 51CTO 发布任务人工标记为“${action}”吗？\n\n此操作只校正文渡中的记录，不会调用 51CTO 接口，也不会重新发布。`)) return;
+    setFiftyoneCtoCorrectionSaving(true);
+    try {
+      await correctFiftyoneCtoStatus(correctingFiftyoneCtoJob.id, correctedFiftyoneCtoStatus, fiftyoneCtoStatusReason);
+      setCorrectingFiftyoneCtoJob(undefined);
+      setFiftyoneCtoStatusReason("");
+      setFiftyoneCtoCorrectionError("");
+    } catch (cause) {
+      setFiftyoneCtoCorrectionError(cause instanceof Error ? cause.message : "人工校正 51CTO 发布状态失败。");
+    } finally {
+      setFiftyoneCtoCorrectionSaving(false);
+    }
+  };
   const openCnblogsStatusCorrection = (job: CnblogsPublishJob) => {
     setCorrectingCnblogsJob(job);
     setCorrectedCnblogsStatus("published");
@@ -1204,6 +1476,36 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     setCnblogsStatusRef,
     juejinStatusRef,
     setJuejinStatusRef,
+    fiftyoneCtoDrafts,
+    setFiftyoneCtoDrafts,
+    fiftyoneCtoJobs,
+    setFiftyoneCtoJobs,
+    fiftyoneCtoDraft,
+    setFiftyoneCtoDraft,
+    fiftyoneCtoPublishJob,
+    setFiftyoneCtoPublishJob,
+    fiftyoneCtoDraftSource,
+    setFiftyoneCtoDraftSource,
+    fiftyoneCtoDraftAccountId,
+    setFiftyoneCtoDraftAccountId,
+    fiftyoneCtoDraftGenerationMode,
+    setFiftyoneCtoDraftGenerationMode,
+    fiftyoneCtoDraftSaving,
+    setFiftyoneCtoDraftSaving,
+    fiftyoneCtoEntryChoices,
+    setFiftyoneCtoEntryChoices,
+    correctingFiftyoneCtoJob,
+    setCorrectingFiftyoneCtoJob,
+    correctedFiftyoneCtoStatus,
+    setCorrectedFiftyoneCtoStatus,
+    fiftyoneCtoStatusReason,
+    setFiftyoneCtoStatusReason,
+    fiftyoneCtoCorrectionSaving,
+    setFiftyoneCtoCorrectionSaving,
+    fiftyoneCtoCorrectionError,
+    setFiftyoneCtoCorrectionError,
+    fiftyoneCtoStatusRef,
+    setFiftyoneCtoStatusRef,
     loadWechatJobs,
     refreshWechatStatus,
     loadCsdnChannelDrafts,
@@ -1250,7 +1552,20 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     saveWechatStatusCorrection,
     refreshCsdnPublishJob,
     refreshCnblogsPublishJob,
-    refreshJuejinPublishJob
+    refreshJuejinPublishJob,
+    loadFiftyoneCtoChannelDrafts,
+    openFiftyoneCtoChannelDraft,
+    openExistingFiftyoneCtoDraft,
+    deleteFiftyoneCtoChannelDraft,
+    generateFiftyoneCtoChannelDraft,
+    saveFiftyoneCtoChannelDraft,
+    publishFiftyoneCtoDraft,
+    requestPublishFiftyoneCto,
+    confirmFiftyoneCtoPublish,
+    correctFiftyoneCtoStatus,
+    openFiftyoneCtoStatusCorrection,
+    saveFiftyoneCtoStatusCorrection,
+    refreshFiftyoneCtoPublishJob
   };
 }
 

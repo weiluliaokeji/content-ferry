@@ -1,11 +1,11 @@
 import { platformName } from "../api";
-import { csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel } from "../publish-labels";
+import { csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel } from "../publish-labels";
 import type { Dispatch, SetStateAction } from "react";
 import { Pagination } from "../components/Pagination";
 import type { PublishEntry } from "../app-helpers";
 import type {
   CnblogsChannelDraft, CnblogsPublishJob, CsdnChannelDraft, CsdnPublishJob,
-  JuejinChannelDraft, JuejinPublishJob, MediaAccount, WechatPublishJob,
+  FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, JuejinChannelDraft, JuejinPublishJob, MediaAccount, WechatPublishJob,
 } from "../types";
 
 export interface PublishViewProps {
@@ -13,6 +13,7 @@ export interface PublishViewProps {
   csdnJobs: CsdnPublishJob[];
   cnblogsJobs: CnblogsPublishJob[];
   juejinJobs: JuejinPublishJob[];
+  fiftyoneCtoJobs: FiftyoneCtoPublishJob[];
   accounts: MediaAccount[];
   pendingPageItems: PublishEntry[];
   pendingTotalItems: number;
@@ -35,9 +36,11 @@ export interface PublishViewProps {
   csdnDraftSaving: boolean;
   cnblogsDraftSaving: boolean;
   juejinDraftSaving: boolean;
+  fiftyoneCtoDraftSaving: boolean;
   csdnDrafts: CsdnChannelDraft[];
   cnblogsDrafts: CnblogsChannelDraft[];
   juejinDrafts: JuejinChannelDraft[];
+  fiftyoneCtoDrafts: FiftyoneCtoChannelDraft[];
   setActiveView: Dispatch<SetStateAction<"dashboard" | "library" | "publish" | "skills" | "accounts" | "logs" | "help">>;
   refreshWechatStatus: () => Promise<void> | void;
   startWechatBrowserAssist: (job: WechatPublishJob) => Promise<void> | void;
@@ -58,25 +61,30 @@ export interface PublishViewProps {
   openJuejinStatusCorrection: (job: JuejinPublishJob) => void;
   openJuejinCredentialEntry: (accountId: string) => Promise<void> | void;
   openExistingJuejinDraft: (choice: { draft: JuejinChannelDraft; job?: JuejinPublishJob }) => void;
+  confirmFiftyoneCtoPublish: (jobId: string) => Promise<void> | void;
+  openFiftyoneCtoStatusCorrection: (job: FiftyoneCtoPublishJob) => void;
+  openFiftyoneCtoCredentialEntry: (accountId: string) => Promise<void> | void;
+  openExistingFiftyoneCtoDraft: (choice: { draft: FiftyoneCtoChannelDraft; job?: FiftyoneCtoPublishJob }) => void;
 }
 
 export function PublishView(props: PublishViewProps) {
   const {
-    wechatJobs, csdnJobs, cnblogsJobs, juejinJobs, accounts, pendingPageItems, pendingTotalItems, pendingTotalPages,
+    wechatJobs, csdnJobs, cnblogsJobs, juejinJobs, fiftyoneCtoJobs, accounts, pendingPageItems, pendingTotalItems, pendingTotalPages,
     pendingSafePage, setPublishPendingPage, publishPendingPageSize, setPublishPendingPageSize,
     completedPageItems, completedTotalItems, completedTotalPages, completedSafePage, setPublishCompletedPage,
     publishCompletedPageSize, setPublishCompletedPageSize, PAGE_SIZE_OPTIONS, saving,
-    wechatJobsRefreshedAt, wechatJobsRefreshing, csdnDraftSaving, cnblogsDraftSaving, juejinDraftSaving,
-    csdnDrafts, cnblogsDrafts, juejinDrafts, setActiveView, refreshWechatStatus,
+    wechatJobsRefreshedAt, wechatJobsRefreshing, csdnDraftSaving, cnblogsDraftSaving, juejinDraftSaving, fiftyoneCtoDraftSaving,
+    csdnDrafts, cnblogsDrafts, juejinDrafts, fiftyoneCtoDrafts, setActiveView, refreshWechatStatus,
     startWechatBrowserAssist, openWechatDraftBox, submitWechatJob, openWechatStatusCorrection,
     retryWechatJob, startCsdnBrowserAssist, openCsdnStatusCorrection, confirmCsdnPublish,
     csdnJobCanStart, csdnJobCanCorrect, confirmCnblogsPublish, openCnblogsStatusCorrection,
     openCnblogsCredentialEntry, openExistingCnblogsDraft, confirmJuejinPublish,
     openJuejinStatusCorrection, openJuejinCredentialEntry, openExistingJuejinDraft,
+    confirmFiftyoneCtoPublish, openFiftyoneCtoStatusCorrection, openFiftyoneCtoCredentialEntry, openExistingFiftyoneCtoDraft,
   } = props;
 
   return <>
-    {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在工作台选择文章并发起发布。</p><button onClick={() => setActiveView("dashboard")}>前往工作台</button></div></section> : <>
+    {wechatJobs.length === 0 && csdnJobs.length === 0 && cnblogsJobs.length === 0 && juejinJobs.length === 0 && fiftyoneCtoJobs.length === 0 ? <section className="card"><div className="empty-guidance"><strong>还没有发布任务</strong><p>请先在工作台选择文章并发起发布。</p><button onClick={() => setActiveView("dashboard")}>前往工作台</button></div></section> : <>
       {pendingPageItems.length > 0 && <section className="card">
         <div className="section-heading"><h2>待处理</h2></div>
         <ul className="publish-job-list">{pendingPageItems.map((entry) => {
@@ -127,27 +135,47 @@ export function PublishView(props: PublishViewProps) {
               </>}
             </span></li>;
           }
+          if (entry.kind === "juejin") {
+            const job = entry.job;
+            const account = accounts.find((item) => item.id === job.accountId);
+            const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
+            const juejinLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看掘金草稿" : "查看已发布文章";
+            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{juejinJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{juejinLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+              {job.status === "draft_creating" && <span className="status-badge">正在创建掘金草稿</span>}
+              {(job.status === "draft_created" || job.status === "confirming") && <>
+                <button className="secondary-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>确认公开</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
+              </>}
+              {job.status === "needs_credentials" && <>
+                <button className="secondary-button" onClick={() => void openJuejinCredentialEntry(job.accountId)}>配置掘金凭据</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
+              </>}
+              {job.status === "needs_manual_reconciliation" && <>
+                <button className="secondary-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>人工校正</button>
+                <button className="text-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>重试确认公开</button>
+              </>}
+              {job.status === "failed" && <>
+                <button className="secondary-button" onClick={() => { const draft = juejinDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingJuejinDraft({ draft, job }); }} disabled={juejinDraftSaving}>重新发布</button>
+                <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
+              </>}
+            </span></li>;
+          }
           const job = entry.job;
           const account = accounts.find((item) => item.id === job.accountId);
-          const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
-          const juejinLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看掘金草稿" : "查看已发布文章";
-          return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{juejinJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{juejinLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
-            {job.status === "draft_creating" && <span className="status-badge">正在创建掘金草稿</span>}
-            {(job.status === "draft_created" || job.status === "confirming") && <>
-              <button className="secondary-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>确认公开</button>
-              <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
-            </>}
+          const draft = fiftyoneCtoDrafts.find((item) => item.id === job.channelDraftId);
+          return <li key={job.id}><span><strong>{draft?.title ?? "51CTO 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{fiftyoneCtoJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
+            {job.status === "draft_creating" && <span className="status-badge">正在发布到 51CTO</span>}
             {job.status === "needs_credentials" && <>
-              <button className="secondary-button" onClick={() => void openJuejinCredentialEntry(job.accountId)}>配置掘金凭据</button>
-              <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
+              <button className="secondary-button" onClick={() => void openFiftyoneCtoCredentialEntry(job.accountId)}>配置 51CTO 凭据</button>
+              <button className="text-button" onClick={() => openFiftyoneCtoStatusCorrection(job)} disabled={fiftyoneCtoDraftSaving}>校正状态</button>
             </>}
             {job.status === "needs_manual_reconciliation" && <>
-              <button className="secondary-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>人工校正</button>
-              <button className="text-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>重试确认公开</button>
+              <button className="secondary-button" onClick={() => openFiftyoneCtoStatusCorrection(job)} disabled={fiftyoneCtoDraftSaving}>人工校正</button>
+              <button className="text-button" onClick={() => void confirmFiftyoneCtoPublish(job.id)} disabled={fiftyoneCtoDraftSaving}>重试发布</button>
             </>}
             {job.status === "failed" && <>
-              <button className="secondary-button" onClick={() => { const draft = juejinDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingJuejinDraft({ draft, job }); }} disabled={juejinDraftSaving}>重新发布</button>
-              <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
+              <button className="secondary-button" onClick={() => { const draft = fiftyoneCtoDrafts.find((d) => d.id === job.channelDraftId); if (draft) openExistingFiftyoneCtoDraft({ draft, job }); }} disabled={fiftyoneCtoDraftSaving}>重新发布</button>
+              <button className="text-button" onClick={() => openFiftyoneCtoStatusCorrection(job)} disabled={fiftyoneCtoDraftSaving}>校正状态</button>
             </>}
           </span></li>;
         })}</ul>
@@ -180,10 +208,16 @@ export function PublishView(props: PublishViewProps) {
             const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
             return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
           }
+          if (entry.kind === "juejin") {
+            const job = entry.job;
+            const account = accounts.find((item) => item.id === job.accountId);
+            const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
+            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+          }
           const job = entry.job;
           const account = accounts.find((item) => item.id === job.accountId);
-          const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
-          return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
+          const draft = fiftyoneCtoDrafts.find((item) => item.id === job.channelDraftId);
+          return <li key={job.id}><span><strong>{draft?.title ?? "51CTO 渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${job.status === "cancelled" ? "warning" : "success"}`}>{job.status === "cancelled" ? "已取消" : "已完成"}</span></li>;
         })}</ul>
         <Pagination
           page={completedSafePage}

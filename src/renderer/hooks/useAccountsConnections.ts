@@ -59,6 +59,11 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
   const [juejinCredentialError, setJuejinCredentialError] = useState("");
   const [juejinGrabRunning, setJuejinGrabRunning] = useState(false);
   const [juejinGrabStatus, setJuejinGrabStatus] = useState("");
+  const [fiftyoneCtoCredentialAccount, setFiftyoneCtoCredentialAccount] = useState<MediaAccount | undefined>(undefined);
+  const [fiftyoneCtoCredentialCookie, setFiftyoneCtoCredentialCookie] = useState("");
+  const [fiftyoneCtoCredentialCookieConfigured, setFiftyoneCtoCredentialCookieConfigured] = useState(false);
+  const [fiftyoneCtoCredentialSaving, setFiftyoneCtoCredentialSaving] = useState(false);
+  const [fiftyoneCtoCredentialError, setFiftyoneCtoCredentialError] = useState("");
   const openProfile = (account: MediaAccount) => { setEditing(account); setEditingDisplayName(account.displayName); setEditingExternalId(account.externalAccountId ?? ""); setProfile(account.profile); setError(""); };
   const changeProfile = (field: keyof AccountProfile, value: string) => setProfile((current) => ({ ...current, [field]: value }));
   const saveWechatConnection = async (event: FormEvent) => {
@@ -289,6 +294,49 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
     setActiveView("accounts");
     await openJuejinConnection(fallback);
   };
+  const openFiftyoneCtoConnection = async (account: MediaAccount) => {
+    setFiftyoneCtoCredentialAccount(account);
+    setFiftyoneCtoCredentialCookie("");
+    setFiftyoneCtoCredentialCookieConfigured(false);
+    setFiftyoneCtoCredentialError("");
+    setError("");
+    try {
+      const status = await request<WechatCredentialStatus>(`/media-accounts/${account.id}/credentials/status`);
+      setFiftyoneCtoCredentialCookieConfigured(Boolean(status.fiftyoneCtoCookieConfigured));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取 51CTO 凭据状态。"); }
+  };
+  const saveFiftyoneCtoCredentials = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!fiftyoneCtoCredentialAccount) return;
+    if (!fiftyoneCtoCredentialCookie.trim()) {
+      setFiftyoneCtoCredentialError("请填写 Cookie；已配置时留空可保留原值。");
+      return;
+    }
+    setFiftyoneCtoCredentialSaving(true);
+    try {
+      await request<MediaAccount>(`/media-accounts/${fiftyoneCtoCredentialAccount.id}/credentials/fiftyone_cto_cookie`, {
+        method: "PUT",
+        body: JSON.stringify({ secret: fiftyoneCtoCredentialCookie.trim() })
+      });
+      await loadAccounts();
+      setFiftyoneCtoCredentialAccount(undefined);
+      setFiftyoneCtoCredentialError("");
+    } catch (cause) {
+      setFiftyoneCtoCredentialError(cause instanceof Error ? cause.message : "保存 51CTO 凭据失败。");
+    } finally {
+      setFiftyoneCtoCredentialSaving(false);
+    }
+  };
+  const openFiftyoneCtoCredentialEntry = async (accountId?: string) => {
+    const target = accountId ? accounts.find((item) => item.id === accountId) : undefined;
+    const fallback = target ?? accounts.find((item) => item.platform === "51cto");
+    if (!fallback) {
+      setError("请先在“账号”中添加一个 51CTO 账号，再配置 Cookie。");
+      return;
+    }
+    setActiveView("accounts");
+    await openFiftyoneCtoConnection(fallback);
+  };
   const deleteAccount = async (account: MediaAccount) => {
     if (!window.confirm(`确定删除账号“${account.displayName}”吗？本机保存的该账号凭证也会删除，历史发布记录会保留。`)) return;
     setSaving(true);
@@ -361,6 +409,19 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
     saveJuejinCredentials,
     startJuejinCookieGrab,
     openJuejinCredentialEntry,
+    fiftyoneCtoCredentialAccount,
+    setFiftyoneCtoCredentialAccount,
+    fiftyoneCtoCredentialCookie,
+    setFiftyoneCtoCredentialCookie,
+    fiftyoneCtoCredentialCookieConfigured,
+    setFiftyoneCtoCredentialCookieConfigured,
+    fiftyoneCtoCredentialSaving,
+    setFiftyoneCtoCredentialSaving,
+    fiftyoneCtoCredentialError,
+    setFiftyoneCtoCredentialError,
+    openFiftyoneCtoConnection,
+    saveFiftyoneCtoCredentials,
+    openFiftyoneCtoCredentialEntry,
     deleteAccount,
   };
 }

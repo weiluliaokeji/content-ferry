@@ -5,6 +5,7 @@ import { HelpCenter } from "./components/HelpCenter";
 import { CsdnDraftWorkspace } from "./components/CsdnDraftWorkspace";
 import { CnblogsDraftWorkspace } from "./components/CnblogsDraftWorkspace";
 import { JuejinDraftWorkspace } from "./components/JuejinDraftWorkspace";
+import { FiftyoneCtoDraftWorkspace } from "./components/FiftyoneCtoDraftWorkspace";
 import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { Modal, ProfileFields } from "./components/Modal";
 import { CoverCropModal } from "./components/CoverCropModal";
@@ -339,6 +340,36 @@ export function App() {
     setCnblogsStatusRef,
     juejinStatusRef,
     setJuejinStatusRef,
+    fiftyoneCtoDrafts,
+    setFiftyoneCtoDrafts,
+    fiftyoneCtoJobs,
+    setFiftyoneCtoJobs,
+    fiftyoneCtoDraft,
+    setFiftyoneCtoDraft,
+    fiftyoneCtoPublishJob,
+    setFiftyoneCtoPublishJob,
+    fiftyoneCtoDraftSource,
+    setFiftyoneCtoDraftSource,
+    fiftyoneCtoDraftAccountId,
+    setFiftyoneCtoDraftAccountId,
+    fiftyoneCtoDraftGenerationMode,
+    setFiftyoneCtoDraftGenerationMode,
+    fiftyoneCtoDraftSaving,
+    setFiftyoneCtoDraftSaving,
+    fiftyoneCtoEntryChoices,
+    setFiftyoneCtoEntryChoices,
+    correctingFiftyoneCtoJob,
+    setCorrectingFiftyoneCtoJob,
+    correctedFiftyoneCtoStatus,
+    setCorrectedFiftyoneCtoStatus,
+    fiftyoneCtoStatusReason,
+    setFiftyoneCtoStatusReason,
+    fiftyoneCtoCorrectionSaving,
+    setFiftyoneCtoCorrectionSaving,
+    fiftyoneCtoCorrectionError,
+    setFiftyoneCtoCorrectionError,
+    fiftyoneCtoStatusRef,
+    setFiftyoneCtoStatusRef,
     loadWechatJobs,
     refreshWechatStatus,
     loadCsdnChannelDrafts,
@@ -386,6 +417,19 @@ export function App() {
     refreshCsdnPublishJob,
     refreshCnblogsPublishJob,
     refreshJuejinPublishJob,
+    loadFiftyoneCtoChannelDrafts,
+    openFiftyoneCtoChannelDraft,
+    openExistingFiftyoneCtoDraft,
+    deleteFiftyoneCtoChannelDraft,
+    generateFiftyoneCtoChannelDraft,
+    saveFiftyoneCtoChannelDraft,
+    publishFiftyoneCtoDraft,
+    requestPublishFiftyoneCto,
+    confirmFiftyoneCtoPublish,
+    correctFiftyoneCtoStatus,
+    openFiftyoneCtoStatusCorrection,
+    saveFiftyoneCtoStatusCorrection,
+    refreshFiftyoneCtoPublishJob,
   } = useChannelOperations({
     accounts, setAccounts, loadAccounts, loadProjects, refreshSourcePreview,
     saving, setError, setNotice, setActiveView, wechatJobs, setWechatJobs,
@@ -591,6 +635,19 @@ export function App() {
     saveJuejinCredentials,
     startJuejinCookieGrab,
     openJuejinCredentialEntry,
+    fiftyoneCtoCredentialAccount,
+    setFiftyoneCtoCredentialAccount,
+    fiftyoneCtoCredentialCookie,
+    setFiftyoneCtoCredentialCookie,
+    fiftyoneCtoCredentialCookieConfigured,
+    setFiftyoneCtoCredentialCookieConfigured,
+    fiftyoneCtoCredentialSaving,
+    setFiftyoneCtoCredentialSaving,
+    fiftyoneCtoCredentialError,
+    setFiftyoneCtoCredentialError,
+    openFiftyoneCtoConnection,
+    saveFiftyoneCtoCredentials,
+    openFiftyoneCtoCredentialEntry,
     deleteAccount,
   } = useAccountsConnections({
     accounts, loadAccounts, setError, setSaving, setActiveView,
@@ -936,6 +993,26 @@ export function App() {
     />;
   }
 
+  if (fiftyoneCtoDraft) {
+    const fiftyoneCtoAccount = accounts.find((account) => account.id === fiftyoneCtoDraft.accountId);
+    return <FiftyoneCtoDraftWorkspace
+      draft={fiftyoneCtoDraft}
+      accountDisplay={fiftyoneCtoAccount ? `${fiftyoneCtoAccount.displayName}` : "51CTO 账号"}
+      saving={fiftyoneCtoDraftSaving}
+      job={fiftyoneCtoPublishJob}
+      error={error}
+      onClearError={() => setError("")}
+      onChange={(patch) => setFiftyoneCtoDraft((current) => current ? { ...current, ...patch } : current)}
+      onSave={() => void saveFiftyoneCtoChannelDraft()}
+      onPublish={(options) => requestPublishFiftyoneCto(options)}
+      onConfirmPublish={(jobId) => void confirmFiftyoneCtoPublish(jobId)}
+      onCorrectStatus={(jobId, status, reason) => void correctFiftyoneCtoStatus(jobId, status, reason)}
+      onGoToCredentials={() => void openFiftyoneCtoCredentialEntry(fiftyoneCtoDraft?.accountId)}
+      onDelete={() => fiftyoneCtoDraft && void deleteFiftyoneCtoChannelDraft(fiftyoneCtoDraft.id)}
+      onBack={() => { setFiftyoneCtoDraft(undefined); setFiftyoneCtoPublishJob(undefined); setFiftyoneCtoDraftSource(undefined); setFiftyoneCtoEntryChoices(null); }}
+    />;
+  }
+
   if (sourceArticle) {
     return <ArticleWorkspace
       title={sourceArticle.title ?? sourceArticle.relativePath}
@@ -987,12 +1064,15 @@ export function App() {
   const completedCnblogsJobs = cnblogsJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   const activeJuejinJobs = juejinJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
   const completedJuejinJobs = juejinJobs.filter((job) => job.status === "published" || job.status === "cancelled");
+  const activeFiftyoneCtoJobs = fiftyoneCtoJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
+  const completedFiftyoneCtoJobs = fiftyoneCtoJobs.filter((job) => job.status === "published" || job.status === "cancelled");
   // 待处理（置顶）：微信进行中 + CSDN 进行中 + 博客园进行中 + 掘金进行中，按时间倒序。
   const pendingEntries: PublishEntry[] = [
     ...pendingWechatJobs.map((job) => ({ kind: "wechat" as const, job })),
     ...activeCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
     ...activeCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
     ...activeJuejinJobs.map((job) => ({ kind: "juejin" as const, job })),
+    ...activeFiftyoneCtoJobs.map((job) => ({ kind: "51cto" as const, job })),
   ].sort(byUpdatedAtDesc);
   // 发布记录（置底）：微信 + CSDN + 博客园 + 掘金 已完成，按时间倒序，四类任务交错排列。
   const completedEntries: PublishEntry[] = [
@@ -1000,6 +1080,7 @@ export function App() {
     ...completedCsdnJobs.map((job) => ({ kind: "csdn" as const, job })),
     ...completedCnblogsJobs.map((job) => ({ kind: "cnblogs" as const, job })),
     ...completedJuejinJobs.map((job) => ({ kind: "juejin" as const, job })),
+    ...completedFiftyoneCtoJobs.map((job) => ({ kind: "51cto" as const, job })),
   ].sort(byUpdatedAtDesc);
   // 从归档库进入的创作档案一律只读。批量归档不要求全平台发布完成，部分归档文章
   // 并没有微信已发布记录，仅靠 bestWechatJob 判定会让这些文章仍然可编辑。
@@ -1158,6 +1239,7 @@ export function App() {
       csdnJobs={csdnJobs}
       cnblogsJobs={cnblogsJobs}
       juejinJobs={juejinJobs}
+      fiftyoneCtoJobs={fiftyoneCtoJobs}
       accounts={accounts}
       pendingPageItems={pendingPageItems}
       pendingTotalItems={pendingEntries.length}
@@ -1180,9 +1262,11 @@ export function App() {
       csdnDraftSaving={csdnDraftSaving}
       cnblogsDraftSaving={cnblogsDraftSaving}
       juejinDraftSaving={juejinDraftSaving}
+      fiftyoneCtoDraftSaving={fiftyoneCtoDraftSaving}
       csdnDrafts={csdnDrafts}
       cnblogsDrafts={cnblogsDrafts}
       juejinDrafts={juejinDrafts}
+      fiftyoneCtoDrafts={fiftyoneCtoDrafts}
       setActiveView={setActiveView}
       refreshWechatStatus={refreshWechatStatus}
       startWechatBrowserAssist={startWechatBrowserAssist}
@@ -1203,6 +1287,10 @@ export function App() {
       openJuejinStatusCorrection={openJuejinStatusCorrection}
       openJuejinCredentialEntry={openJuejinCredentialEntry}
       openExistingJuejinDraft={openExistingJuejinDraft}
+      confirmFiftyoneCtoPublish={confirmFiftyoneCtoPublish}
+      openFiftyoneCtoStatusCorrection={openFiftyoneCtoStatusCorrection}
+      openFiftyoneCtoCredentialEntry={openFiftyoneCtoCredentialEntry}
+      openExistingFiftyoneCtoDraft={openExistingFiftyoneCtoDraft}
     />}
 
     {activeView === "dashboard" && <DashboardView
@@ -1347,6 +1435,14 @@ export function App() {
           <button disabled={juejinCredentialSaving || juejinGrabRunning}>{juejinCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
       </form>
     </Modal>}
+    {fiftyoneCtoCredentialAccount && <Modal onClose={() => setFiftyoneCtoCredentialAccount(undefined)} disabled={fiftyoneCtoCredentialSaving} title={`配置 51CTO 凭据：${fiftyoneCtoCredentialAccount.displayName}`} eyebrow="51CTO 博客 Cookie">
+      <form onSubmit={saveFiftyoneCtoCredentials} className="profile-form">
+        <p className="hint">51CTO 博客发布使用登录后的 Cookie 会话。Cookie 为登录 51CTO 博客后，在博客管理页（blog.51cto.com）发起请求时浏览器开发者工具里看到的完整 Cookie 值。出于安全原因不回显明文，已配置时留空即可保留原值。</p>
+        <label>Cookie<input autoFocus value={fiftyoneCtoCredentialCookie} onChange={(event) => { setFiftyoneCtoCredentialCookie(event.target.value); setFiftyoneCtoCredentialError(""); }} autoComplete="off" placeholder="登录 51CTO 博客后复制请求 Cookie" /></label>
+        {fiftyoneCtoCredentialError && <p className="error">{fiftyoneCtoCredentialError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setFiftyoneCtoCredentialAccount(undefined)} disabled={fiftyoneCtoCredentialSaving}>取消</button><button disabled={fiftyoneCtoCredentialSaving}>{fiftyoneCtoCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
+      </form>
+    </Modal>}
     {csdnEntryChoices && <Modal onClose={() => { setCsdnEntryChoices(null); setCsdnDraftSource(undefined); }} disabled={csdnDraftSaving} title="已有 CSDN 渠道稿" wide>
       <section className="csdn-entry-choices">
         <p className="hint">这篇文章已经生成过 CSDN 渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
@@ -1376,6 +1472,16 @@ export function App() {
     </Modal>}
     {juejinDraftSource && !juejinEntryChoices && <Modal onClose={() => { if (!juejinDraftSaving) { setJuejinDraftSource(undefined); setJuejinDraft(undefined); setJuejinPublishJob(undefined); setJuejinEntryChoices(null); } }} disabled={juejinDraftSaving} title={`掘金渠道稿：${juejinDraftSource.title ?? juejinDraftSource.relativePath}`} wide>
       { <section className="csdn-channel-start"><label className="csdn-account-field">目标掘金账号<select value={juejinDraftAccountId} onChange={(event) => setJuejinDraftAccountId(event.target.value)} disabled={juejinDraftSaving}>{accounts.filter((account) => account.platform === "juejin").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={juejinDraftSaving}><legend>生成方式</legend><label className={juejinDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="juejin-generation-mode" checked={juejinDraftGenerationMode === "rewrite"} onChange={() => setJuejinDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为掘金调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={juejinDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="juejin-generation-mode" checked={juejinDraftGenerationMode === "source"} onChange={() => setJuejinDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setJuejinDraftSource(undefined)} disabled={juejinDraftSaving}>取消</button><button type="button" onClick={() => void generateJuejinChannelDraft()} disabled={!juejinDraftAccountId || juejinDraftSaving}>{juejinDraftSaving ? (juejinDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : juejinDraftGenerationMode === "rewrite" ? "生成掘金渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
+    </Modal>}
+    {fiftyoneCtoDraftSource && fiftyoneCtoEntryChoices && <Modal onClose={() => setFiftyoneCtoEntryChoices(null)} disabled={fiftyoneCtoDraftSaving} title={`51CTO 渠道稿：${fiftyoneCtoDraftSource.title ?? fiftyoneCtoDraftSource.relativePath}`}>
+      <section className="csdn-channel-start">
+        <p className="hint">这篇文章已经生成过 51CTO 渠道稿，直接选择进入即可继续编辑；也可以新建一份独立渠道稿。</p>
+        <ul className="csdn-entry-list">{fiftyoneCtoEntryChoices.map((choice) => <li key={choice.draft.id}><span><strong>{choice.draft.title || "未命名渠道稿"}</strong><small>{choice.accountName} · {choice.draft.status === "approved" ? "已冻结" : "草稿"} · 更新于 {new Date(choice.draft.updatedAt).toLocaleString()}</small></span><button className="secondary-button" onClick={() => openExistingFiftyoneCtoDraft(choice)} disabled={fiftyoneCtoDraftSaving}>进入编辑</button></li>)}</ul>
+        <button className="text-button" onClick={() => setFiftyoneCtoEntryChoices(null)} disabled={fiftyoneCtoDraftSaving}>＋ 新建渠道稿</button>
+      </section>
+    </Modal>}
+    {fiftyoneCtoDraftSource && !fiftyoneCtoEntryChoices && <Modal onClose={() => { if (!fiftyoneCtoDraftSaving) { setFiftyoneCtoDraftSource(undefined); setFiftyoneCtoDraft(undefined); setFiftyoneCtoPublishJob(undefined); setFiftyoneCtoEntryChoices(null); } }} disabled={fiftyoneCtoDraftSaving} title={`51CTO 渠道稿：${fiftyoneCtoDraftSource.title ?? fiftyoneCtoDraftSource.relativePath}`} wide>
+      { <section className="csdn-channel-start"><label className="csdn-account-field">目标 51CTO 账号<select value={fiftyoneCtoDraftAccountId} onChange={(event) => setFiftyoneCtoDraftAccountId(event.target.value)} disabled={fiftyoneCtoDraftSaving}>{accounts.filter((account) => account.platform === "51cto").map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label><fieldset className="csdn-generation-mode" disabled={fiftyoneCtoDraftSaving}><legend>生成方式</legend><label className={fiftyoneCtoDraftGenerationMode === "rewrite" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="fiftyonecto-generation-mode" checked={fiftyoneCtoDraftGenerationMode === "rewrite"} onChange={() => setFiftyoneCtoDraftGenerationMode("rewrite")} /><span className="csdn-mode-title">阿文改写为 51CTO 调性</span><small>调用“平台稿改写”技能，生成一份独立渠道稿。</small></label><label className={fiftyoneCtoDraftGenerationMode === "source" ? "csdn-mode-option selected" : "csdn-mode-option"}><input type="radio" name="fiftyonecto-generation-mode" checked={fiftyoneCtoDraftGenerationMode === "source"} onChange={() => setFiftyoneCtoDraftGenerationMode("source")} /><span className="csdn-mode-title">直接使用主稿</span><small>不调用 AI，复制主稿正文作为渠道稿；仍会拦截公众号链接和其他禁止引流内容。</small></label></fieldset><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setFiftyoneCtoDraftSource(undefined)} disabled={fiftyoneCtoDraftSaving}>取消</button><button type="button" onClick={() => void generateFiftyoneCtoChannelDraft()} disabled={!fiftyoneCtoDraftAccountId || fiftyoneCtoDraftSaving}>{fiftyoneCtoDraftSaving ? (fiftyoneCtoDraftGenerationMode === "rewrite" ? "阿文正在改写…" : "正在复制主稿…") : fiftyoneCtoDraftGenerationMode === "rewrite" ? "生成 51CTO 渠道稿" : "使用主稿创建渠道稿"}</button></div></section>}
     </Modal>}
     {(publishProject || publishSource) && <Modal onClose={() => { setPublishProject(undefined); setPublishSource(undefined); }} disabled={saving || coverGenerating} title={`同步微信草稿：${publishProject?.topic ?? publishSource?.title ?? publishSource?.relativePath}`} eyebrow="第一步只创建草稿" wide>
       <p className="hint">这里仅确认文章设置并同步草稿，不再重复编辑账号、作者、摘要和封面。同步成功后请到公众号草稿箱进行手机预览。</p>
@@ -1438,6 +1544,16 @@ export function App() {
         <label>核实依据（可选）<textarea autoFocus value={juejinStatusReason} disabled={juejinCorrectionSaving} onChange={(event) => { setJuejinStatusReason(event.target.value); setJuejinCorrectionError(""); }} maxLength={500} placeholder="例如：掘金后台已删除该草稿，远端文章不存在" /><small>{juejinStatusReason.length}/500，可留空</small></label>
         {juejinCorrectionError && <p className="error">{juejinCorrectionError}</p>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingJuejinJob(undefined)} disabled={juejinCorrectionSaving}>取消</button><button disabled={juejinCorrectionSaving}>{juejinCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
+      </form>
+    </Modal>}
+    {correctingFiftyoneCtoJob && <Modal onClose={() => setCorrectingFiftyoneCtoJob(undefined)} disabled={fiftyoneCtoCorrectionSaving} title="人工校正 51CTO 状态" eyebrow="回执异常兜底">
+      <form onSubmit={saveFiftyoneCtoStatusCorrection} className="profile-form status-correction-modal">
+        <p className="hint">如果你在 51CTO 后台直接发布或删除了文章，核实结果后即可立即校正，无需等待。此操作只校正文渡中的本地记录，不会调用 51CTO 接口，也不会重新发布。</p>
+        <div className="status-correction-warning"><strong>请先在 51CTO 后台核实</strong><span>错误标记可能导致后续误判和重复发布。</span></div>
+        <label>最终状态<select value={correctedFiftyoneCtoStatus} disabled={fiftyoneCtoCorrectionSaving} onChange={(event) => setCorrectedFiftyoneCtoStatus(event.target.value as "published" | "failed" | "cancelled")}><option value="published">已发布</option><option value="failed">发布失败</option><option value="cancelled">取消发布</option></select></label>
+        <label>核实依据（可选）<textarea autoFocus value={fiftyoneCtoStatusReason} disabled={fiftyoneCtoCorrectionSaving} onChange={(event) => { setFiftyoneCtoStatusReason(event.target.value); setFiftyoneCtoCorrectionError(""); }} maxLength={500} placeholder="例如：51CTO 后台已删除该文章，远端文章不存在" /><small>{fiftyoneCtoStatusReason.length}/500，可留空</small></label>
+        {fiftyoneCtoCorrectionError && <p className="error">{fiftyoneCtoCorrectionError}</p>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setCorrectingFiftyoneCtoJob(undefined)} disabled={fiftyoneCtoCorrectionSaving}>取消</button><button disabled={fiftyoneCtoCorrectionSaving}>{fiftyoneCtoCorrectionSaving ? "正在保存…" : "确认校正"}</button></div>
       </form>
     </Modal>}
     {orphanedWechatJob && <Modal onClose={() => setOrphanedWechatJob(undefined)} disabled={saving} title="找不到本地文章" eyebrow="发布记录需要处理">
