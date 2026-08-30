@@ -2,76 +2,154 @@ import { FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
 
 type FetchLike = typeof fetch;
 
-/**
- * 51CTO 编辑器基于 am-editor，其 ImageUploader 通过 POST multipart 把图片传到 51CTO
- * 后端的图床（阿里云 OSS），再由后端返回公网可访问的图片 URL。客户端不需要自己计算
- * OSS 签名 —— 这是服务端行为。am-editor 的响应解析约定为：
- *   response.url || response.data?.url || response.src || response.data?.src
- *
- * 上传端点（IMAGE_UPLOAD_URL）来自 51CTO 编辑器 JS 配置，需登录态才能从浏览器抓到。
- * 下方为常用候选；若实际返回非预期（如一直走 base64 回退），请以浏览器 DevTools 中
- * 上传图片时的真实请求地址覆盖此常量。
- */
-export const FIFTYONE_CTO_IMAGE_UPLOAD_URL = "https://blog.51cto.com/blogger/upload";
-
 const UPLOAD_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
 
-export interface FiftyoneCtoImageUploaderOptions {
-  /** 覆盖默认上传端点（用于联调或端点变更）。 */
-  uploadUrl?: string;
+const SIGN_URL = "https://blog.51cto.com/getUploadSign";
+const CONFIG_URL = "https://blog.51cto.com/getUploadConfig";
+
+interface UploadSignResponse {
+  code: number;
+  msg?: string;
+  data?: {
+    url?: string;
+    sign?: string;
+  };
+}
+
+interface UploadConfigField {
+  key: string;
+  policy: string;
+  "x-amz-algorithm": string;
+  "x-amz-signature": string;
+  "x-amz-credential": string;
+  "X-Amz-Date": string;
+  [key: string]: string;
+}
+
+interface UploadConfigResponse {
+  code: number;
+  msg?: string;
+  data?: {
+    url?: string;
+    fields?: UploadConfigField;
+  };
 }
 
 export class FiftyoneCtoImageUploader {
-  private readonly uploadUrl: string;
+  private readonly baseHeaders: Record<string, string>;
 
   constructor(
     private readonly cookie: string,
-    private readonly fetcher: FetchLike = fetch,
-    options: FiftyoneCtoImageUploaderOptions = {}
+    private readonly fetcher: FetchLike = fetch
   ) {
-    this.uploadUrl = options.uploadUrl ?? FIFTYONE_CTO_IMAGE_UPLOAD_URL;
+    this.baseHeaders = {
+      "User-Agent": UPLOAD_USER_AGENT,
+      Cookie: cookie,
+      accept: "application/json, text/javascript, */*; q=0.01",
+      "accept-language": "zh-CN,zh;q=0.9",
+      origin: "https://blog.51cto.com",
+      referer: "https://blog.51cto.com/blogger/publish",
+      "x-requested-with": "XMLHttpRequest"
+    };
   }
 
-  /** 上传单张图片，返回 51CTO 图床的公网 URL。失败时抛出 FiftyoneCtoCredentialsError。 */
+  /** 上传单张图片到 51CTO 腾讯云 COS 图床，返回公网可访问的 URL。 */
   async upload(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
     if (!this.cookie) {
       throw new FiftyoneCtoCredentialsError("51CTO 账号尚未配置 Cookie，无法上传图片到图床。");
     }
-
-    const form = new FormData();
-    form.append("file", new Blob([buffer], { type: mimeType || "application/octet-stream" }), filename);
-
-    const headers: Record<string, string> = {
-      "User-Agent": UPLOAD_USER_AGENT,
-      Cookie: this.cookie,
-      "x-requested-with": "XMLHttpRequest",
-      Origin: "https://blog.51cto.com",
-      Referer: "https://blog.51cto.com/blogger/publish"
-    };
-
-    const resp = await this.fetcher(this.uploadUrl, {
-      method: "POST",
-      headers,
-      body: form
-    });
-    if (!resp.ok) {
-      throw new FiftyoneCtoCredentialsError(`51CTO 图片上传失败：HTTP ${resp.status}`);
+    if (!buffer || buffer.length === 0) {
+      throw new FiftyoneCtoCredentialsError("上传图片内容为空。");
     }
 
+    const sign = await this.fetchUploadSign();
+    const config = await this.fetchUploadConfig();
+
+    const key = config.fields.key;
+    if (!key) {
+      throw new FiftyoneCtoCredentialsError("51CTO 上传配置缺少 key 字段。");
+    }
+
+    await this.postToCos(config.url, config.fields, buffer, mimeType, filename);
+
+    const cdnBase = sign.url.endsWith("/") ? sign.url : `${sign.url}/`;
+    return `${cdnBase}${key}`;
+  }
+
+  private async fetchUploadSign(): Promise<{ url: string }> {
+    const resp = await this.fetcher(SIGN_URL, { method: "GET", headers: this.baseHeaders });
     const text = await resp.text();
-    let parsed: any;
+    if (!resp.ok) {
+      throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传签名失败：HTTP ${resp.status}`);
+    }
+    let parsed: UploadSignResponse;
     try {
       parsed = JSON.parse(text);
     } catch {
-      parsed = {};
+      throw new FiftyoneCtoCredentialsError(`51CTO 上传签名响应不是 JSON：${text.slice(0, 200)}`);
     }
-    const url: unknown =
-      parsed?.url ?? parsed?.data?.url ?? parsed?.src ?? parsed?.data?.src;
-    if (typeof url !== "string" || !url) {
-      throw new FiftyoneCtoCredentialsError(`51CTO 图片上传响应缺少图片 URL：${text.slice(0, 200)}`);
+    if (parsed.code !== 0 || !parsed.data?.url) {
+      throw new FiftyoneCtoCredentialsError(
+        `51CTO 上传签名响应异常：${parsed.msg || text.slice(0, 200)}`
+      );
     }
-    return url;
+    return { url: parsed.data.url };
+  }
+
+  private async fetchUploadConfig(): Promise<{ url: string; fields: UploadConfigField }> {
+    const resp = await this.fetcher(CONFIG_URL, { method: "GET", headers: this.baseHeaders });
+    const text = await resp.text();
+    if (!resp.ok) {
+      throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传配置失败：HTTP ${resp.status}`);
+    }
+    let parsed: UploadConfigResponse;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new FiftyoneCtoCredentialsError(`51CTO 上传配置响应不是 JSON：${text.slice(0, 200)}`);
+    }
+    if (parsed.code !== 0 || !parsed.data?.url || !parsed.data?.fields) {
+      throw new FiftyoneCtoCredentialsError(
+        `51CTO 上传配置响应异常：${parsed.msg || text.slice(0, 200)}`
+      );
+    }
+    const fields = parsed.data.fields;
+    const required = ["key", "policy", "x-amz-algorithm", "x-amz-signature", "x-amz-credential", "X-Amz-Date"];
+    const missing = required.filter((k) => !fields[k]);
+    if (missing.length > 0) {
+      throw new FiftyoneCtoCredentialsError(`51CTO 上传配置缺少字段：${missing.join(", ")}`);
+    }
+    return { url: parsed.data.url, fields };
+  }
+
+  private async postToCos(
+    cosUrl: string,
+    fields: UploadConfigField,
+    buffer: Buffer,
+    mimeType: string,
+    filename: string
+  ): Promise<void> {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(fields)) {
+      form.append(k, v);
+    }
+    form.append("content-type", mimeType || "application/octet-stream");
+    form.append("file", new Blob([buffer], { type: mimeType || "application/octet-stream" }), filename);
+
+    const headers: Record<string, string> = {
+      ...this.baseHeaders,
+      origin: "https://blog.51cto.com",
+      referer: "https://blog.51cto.com/"
+    };
+    // FormData 自己设置 boundary，不能覆盖 content-type。
+    delete headers["content-type"];
+
+    const resp = await this.fetcher(cosUrl, { method: "POST", headers, body: form as unknown as RequestInit["body"] });
+    if (!resp.ok && resp.status !== 204) {
+      const body = await resp.text().catch(() => "");
+      throw new FiftyoneCtoCredentialsError(`COS 图片上传失败：HTTP ${resp.status} ${body.slice(0, 200)}`);
+    }
   }
 }

@@ -21,7 +21,43 @@ interface PublishCall {
   body?: string;
 }
 
-function createFiftyoneCtoFetcher(publishBlogId = "999999"): { fetcher: typeof fetch; calls: PublishCall[] } {
+const SIGN_URL = "https://blog.51cto.com/getUploadSign";
+const CONFIG_URL = "https://blog.51cto.com/getUploadConfig";
+const COS_URL = "https://51cto-edu-image-1253198479.cos.ap-beijing.myqcloud.com";
+
+function makeSignResponse(): Response {
+  return new Response(JSON.stringify({ code: 0, msg: "success", data: { url: "https://s2.51cto.com/", sign: "sig" } }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function makeConfigResponse(key: string): Response {
+  return new Response(
+    JSON.stringify({
+      code: 0,
+      msg: "success",
+      data: {
+        url: COS_URL,
+        fields: {
+          key,
+          policy: "policy",
+          "x-amz-algorithm": "AWS4-HMAC-SHA256",
+          "x-amz-signature": "sig",
+          "x-amz-credential": "AKID/20260830/ap-beijing/s3/aws4_request",
+          "X-Amz-Date": "20260830T134341Z"
+        }
+      }
+    }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+}
+
+function cosOkResponse(): Response {
+  return new Response(null, { status: 204 });
+}
+
+function createFiftyoneCtoFetcher(publishBlogId = "999999", { failImageUpload = false }: { failImageUpload?: boolean } = {}): { fetcher: typeof fetch; calls: PublishCall[] } {
   const calls: PublishCall[] = [];
   const fetcher = (async (input: unknown, init?: RequestInit) => {
     const url = typeof input === "string" ? input : (input as Request).url;
@@ -35,6 +71,15 @@ function createFiftyoneCtoFetcher(publishBlogId = "999999"): { fetcher: typeof f
         "<body><script>pid: '176'</script><script>cate_id: '200'</script></body></html>",
         { status: 200, headers: { "content-type": "text/html" } }
       );
+    }
+    if (url === SIGN_URL) {
+      return failImageUpload ? new Response("login", { status: 302 }) : makeSignResponse();
+    }
+    if (url === CONFIG_URL) {
+      return failImageUpload ? new Response("login", { status: 302 }) : makeConfigResponse("images/blog/front/202608/uploaded.png");
+    }
+    if (url === COS_URL) {
+      return failImageUpload ? new Response("bad", { status: 400 }) : cosOkResponse();
     }
     // 发布接口：返回成功 JSON。
     return new Response(JSON.stringify({ status: 1, data: { blog_id: publishBlogId } }), {
@@ -182,7 +227,7 @@ describe("FiftyoneCtoChannelService", () => {
     expect(settled.errorMessage).toContain("Cookie");
   });
 
-  it("uploads local images (falling back to inline) during single-shot publish", async () => {
+  it("uploads local images to 51CTO COS during single-shot publish", async () => {
     const { account, service, calls } = setupHarness();
     // 准备带本地图片的主稿与资源文件。
     const articleDir = path.join(sourceDirectory!, "posts", "source", "with-image");
@@ -207,9 +252,55 @@ describe("FiftyoneCtoChannelService", () => {
     const published = await waitForJob(service, job.id, "published");
 
     expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);
-    // 图床端点在本测试未真正配置，本地图片应回退为 base64 内联进入发布正文。
+    // 本地图片应经 getUploadSign -> getUploadConfig -> COS POST 后替换为远程 URL。
+    expect(calls.some((call) => call.url === SIGN_URL)).toBe(true);
+    expect(calls.some((call) => call.url === CONFIG_URL)).toBe(true);
+    expect(calls.some((call) => call.url === COS_URL && call.method === "POST")).toBe(true);
+    const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
+    expect(publishCall?.body).toBeDefined();
+    expect(decodeURIComponent(publishCall!.body!)).toContain("https://s2.51cto.com/images/blog/front/202608/uploaded.png");
+  });
+
+  it("falls back to base64 inlining when COS image upload fails", async () => {
+    const failSourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-51cto-fail-"));
+    const articleDir = path.join(failSourceDirectory, "posts", "source", "with-image-fail");
+    fs.mkdirSync(path.join(articleDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(articleDir, "index.md"), [
+      "---",
+      "title: 带图文章",
+      "created: '2026-08-01 10:00:00'",
+      "tags: []",
+      "publish: false",
+      "---",
+      "",
+      "![图](./assets/x.png)"
+    ].join("\n"), "utf8");
+    fs.writeFileSync(path.join(articleDir, "assets", "x.png"), Buffer.from("fake-png-bytes"), "utf8");
+
+    const { fetcher, calls } = createFiftyoneCtoFetcher("999999", { failImageUpload: true });
+    database?.close();
+    database = openInMemoryDatabase();
+    const accounts = new AccountRepository(database.connection);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const cs = new ContentSourceService(database.connection);
+    cs.setSource(workspace.id, failSourceDirectory);
+    const testAccount = accounts.createAccount({ workspaceId: workspace.id, platform: "51cto", displayName: "fail", externalAccountId: "fail" });
+    accounts.saveCredential(testAccount.id, "fiftyone_cto_cookie", "sess=abc123", testVault);
+    const provider = {
+      generateStructured: async () => ({ value: { title: "t", markdown: "# t\n\n正文。" } })
+    } as unknown as ModelProvider;
+    const failService = new FiftyoneCtoChannelService(database.connection, accounts, testVault, cs, provider, undefined, fetcher);
+
+    const draft = await failService.createFromSource({ accountId: testAccount.id, relativePath: "posts/source/with-image-fail/index.md", generationMode: "source" });
+    const approved = failService.approveDraft(draft.id);
+    const job = failService.createPublishJob(approved.id);
+    const published = await waitForJob(failService, job.id, "published");
+
+    expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);
     const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
     expect(publishCall?.body).toBeDefined();
     expect(decodeURIComponent(publishCall!.body!)).toContain("data:image/png;base64,");
+
+    fs.rmSync(failSourceDirectory, { recursive: true, force: true });
   });
 });

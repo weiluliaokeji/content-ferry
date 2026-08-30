@@ -6,10 +6,11 @@
  * base64-embedded local images → POST /blogger/publish). The job transitions
  * draft_creating → published | failed | needs_credentials.
  *
- * Images: local relative images are uploaded to 51CTO's image host (am-editor-style
- * multipart POST; 51CTO's backend stores them on Alibaba OSS and returns a public
- * URL). A single image's upload failure falls back to base64-embedding that image, so
- * publishing never breaks. Remote http(s) images stay as external links.
+ * Images: local relative images are uploaded to 51CTO's Tencent COS image host via the
+ * signed-upload protocol: GET /getUploadSign -> GET /getUploadConfig -> POST multipart
+ * to the COS URL returned in the config. A single image's upload failure falls back to
+ * base64-embedding that image, so publishing never breaks. Remote http(s) images stay as
+ * external links.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";

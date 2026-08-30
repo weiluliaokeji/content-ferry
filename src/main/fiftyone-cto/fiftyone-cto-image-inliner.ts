@@ -28,12 +28,8 @@ const imagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
 /**
  * 将文章中的本地图片转换为 base64 data URI 内联。
  *
- * 51CTO 的 MVP 图片策略：本地相对路径图片（如 `./assets/foo.png`）读取后直接以
- * data URI 内联进正文，保证本地文章图片无需外部图床即可在 51CTO 渲染；远程 http(s)
- * 图片保持原样由 51CTO 外链渲染；data URI 与代码块内的图片语法不动。
- *
- * 注：真正的 51CTO 阿里云 OSS 图床上传（getUploadConfig → getUploadSign → OSS PUT）
- * 需要实时 Cookie 才能验证签名协议，留作后续增强。
+ * 兜底策略：本地相对路径图片（如 `./assets/foo.png`）读取后直接以 data URI 内联进
+ * 正文；远程 http(s) 图片保持原样由 51CTO 外链渲染；data URI 与代码块内的图片语法不动。
  */
 export async function inlineFiftyoneCtoLocalImages(
   markdown: string,
