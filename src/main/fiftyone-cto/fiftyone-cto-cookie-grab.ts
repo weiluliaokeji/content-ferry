@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
+import { buildFiftyoneCtoHeaders } from "./fiftyone-cto-image-uploader";
 import { buildCookieString, hasLoginCandidate, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
@@ -76,6 +77,11 @@ export class FiftyoneCtoCookieGrabber {
     });
 
     state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab window opened");
+    // 兜底：若窗口打开时已经处于登录态（Cookie 在页面加载即存在，不会触发
+    // cookies.changed 事件），在 dom-ready 时主动校验一次，避免“已登录却抓不到”。
+    window.webContents.on("dom-ready", () => {
+      void this.handleCookieChanged(grabId, window);
+    });
     void window.loadURL(FIFTYONE_CTO_LOGIN_URL).catch((error: unknown) => {
       const current = this.snapshots.get(grabId);
       if (!current) return;
@@ -178,14 +184,31 @@ export class FiftyoneCtoCookieGrabber {
     try {
       const response = await fetch(FIFTYONE_CTO_VERIFY_URL, {
         method: "GET",
-        headers: { Cookie: cookie },
+        headers: buildFiftyoneCtoHeaders(cookie),
         redirect: "manual"
       });
       // 未登录时 51CTO 通常 302 到 passport；手动 follow 下只接受 200 + JSON。
-      if (response.status !== 200) return false;
+      if (response.status !== 200) {
+        state.runtimeInfoLogger?.(
+          { status: response.status },
+          "51cto cookie grab verify: non-200 status"
+        );
+        return false;
+      }
       const body = (await response.json()) as { code?: unknown; data?: { url?: string } };
-      return body?.code === 0 && typeof body?.data?.url === "string" && body.data.url.length > 0;
-    } catch {
+      const ok = body?.code === 0 && typeof body?.data?.url === "string" && body.data.url.length > 0;
+      if (!ok) {
+        state.runtimeInfoLogger?.(
+          { body: JSON.stringify(body).slice(0, 200) },
+          "51cto cookie grab verify: unexpected body"
+        );
+      }
+      return ok;
+    } catch (error) {
+      state.runtimeInfoLogger?.(
+        { error: error instanceof Error ? error.message : String(error) },
+        "51cto cookie grab verify: exception"
+      );
       return false;
     }
   }

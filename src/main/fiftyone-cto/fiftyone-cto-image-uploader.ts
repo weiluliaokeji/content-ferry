@@ -6,6 +6,19 @@ const UPLOAD_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
 
+/** 51CTO 登录态相关的接口需要浏览器特征头，否则会被当作非浏览器请求拒绝。 */
+export function buildFiftyoneCtoHeaders(cookie: string): Record<string, string> {
+  return {
+    "User-Agent": UPLOAD_USER_AGENT,
+    Cookie: cookie,
+    accept: "application/json, text/javascript, */*; q=0.01",
+    "accept-language": "zh-CN,zh;q=0.9",
+    origin: "https://blog.51cto.com",
+    referer: "https://blog.51cto.com/blogger/publish",
+    "x-requested-with": "XMLHttpRequest"
+  };
+}
+
 const SIGN_URL = "https://blog.51cto.com/getUploadSign";
 const CONFIG_URL = "https://blog.51cto.com/getUploadConfig";
 
@@ -44,15 +57,7 @@ export class FiftyoneCtoImageUploader {
     private readonly cookie: string,
     private readonly fetcher: FetchLike = fetch
   ) {
-    this.baseHeaders = {
-      "User-Agent": UPLOAD_USER_AGENT,
-      Cookie: cookie,
-      accept: "application/json, text/javascript, */*; q=0.01",
-      "accept-language": "zh-CN,zh;q=0.9",
-      origin: "https://blog.51cto.com",
-      referer: "https://blog.51cto.com/blogger/publish",
-      "x-requested-with": "XMLHttpRequest"
-    };
+    this.baseHeaders = buildFiftyoneCtoHeaders(cookie);
   }
 
   /** 上传单张图片到 51CTO 腾讯云 COS 图床，返回公网可访问的 URL。 */
