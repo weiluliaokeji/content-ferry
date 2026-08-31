@@ -23,7 +23,7 @@ declare global {
       openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }) => Promise<void>;
       openContentAny: () => Promise<void>;
       openCsdnPublisher: (jobId: string) => Promise<void>;
-      readCnblogsPersonalOptions: () => Promise<{ categories: string[]; tags: string[] }>;
+      readCnblogsPersonalOptions: (accountId: string) => Promise<{ categories: string[]; tags: string[] }>;
       openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;
       runZhuqueDetection: (markdown: string) => Promise<{

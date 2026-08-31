@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { app, dialog, ipcMain, Menu, safeStorage, shell, type OpenDialogOptions } from "electron";
 import { openDatabase } from "./db/database";
+import { AccountRepository } from "./accounts/account-repository";
 import { getDataDirectory } from "./config/paths";
 import { createServer } from "./server/create-server";
 import { ElectronCredentialVault } from "./security/credential-vault";
@@ -198,6 +199,7 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     confirmCsdnBrowserPublish
   );
   state.runtimeInfoLogger = (details, message) => server.log.info(details, message);
+  const accountRepository = new AccountRepository(database.connection);
   let runtimeClosed = false;
   state.runtimeShutdown = async () => {
     if (runtimeClosed) return;
@@ -286,7 +288,18 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     logCsdnBrowserAssist("requested", { jobId });
     await driveCsdnBrowserPublish(jobId);
   });
-  ipcMain.handle("contentferry:read-cnblogs-personal-options", async () => readCnblogsPersonalOptions());
+  ipcMain.handle("contentferry:read-cnblogs-personal-options", async (_event, accountId?: unknown) => {
+    const options = await readCnblogsPersonalOptions();
+    // 读取成功后按账号持久化，弹窗再次打开时直接复用，无需重复抓取。
+    if (typeof accountId === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(accountId)) {
+      try {
+        accountRepository.saveCnblogsOptions(accountId, options.categories, options.tags);
+      } catch (error) {
+        state.runtimeInfoLogger?.({ accountId, error: error instanceof Error ? error.message : String(error) }, "保存博客园个人分类/Tag 失败");
+      }
+    }
+    return options;
+  });
   ipcMain.handle("contentferry:open-contentany", async () => {
     const window = await getOrCreateContentAnyWindow();
     window.show();

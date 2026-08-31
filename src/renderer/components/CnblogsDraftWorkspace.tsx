@@ -47,6 +47,9 @@ interface CnblogsDraftWorkspaceProps {
   onGoToCredentials: () => void;
   onDelete: () => Promise<void> | void;
   onBack: () => void;
+  /** 该账号已持久化的博客园个人分类/Tag，弹窗打开时直接作为候选展示。 */
+  savedCategories?: string[];
+  savedTags?: string[];
 }
 
 function cnblogsJobLabel(status: CnblogsPublishJobShape["status"]): string {
@@ -94,7 +97,7 @@ function splitCommaList(value: string): string[] {
   return value.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
 }
 
-export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack }: CnblogsDraftWorkspaceProps) {
+export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack, savedCategories, savedTags }: CnblogsDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("preview");
   const [dirty, setDirty] = useState(false);
@@ -106,7 +109,10 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [publishCategories, setPublishCategories] = useState("");
   const [publishTags, setPublishTags] = useState("");
-  const [publishOptionChoices, setPublishOptionChoices] = useState<CnblogsPublishOptionChoices>({ categories: [], tags: [] });
+  const [publishOptionChoices, setPublishOptionChoices] = useState<CnblogsPublishOptionChoices>({
+    categories: savedCategories ?? [],
+    tags: savedTags ?? []
+  });
   const [publishOptionsLoading, setPublishOptionsLoading] = useState(false);
   const [publishOptionsError, setPublishOptionsError] = useState("");
   const [correcting, setCorrecting] = useState(false);
@@ -156,7 +162,7 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
     setPublishOptionsLoading(true);
     setPublishOptionsError("");
     try {
-      setPublishOptionChoices(await window.contentFerry.readCnblogsPersonalOptions());
+      setPublishOptionChoices(await window.contentFerry.readCnblogsPersonalOptions(draft.accountId));
     } catch (cause) {
       setPublishOptionsError(cause instanceof Error ? cause.message : "无法读取博客园个人分类和 Tag。");
     } finally {

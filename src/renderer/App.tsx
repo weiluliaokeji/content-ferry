@@ -975,6 +975,8 @@ export function App() {
       onGoToCredentials={() => void openCnblogsCredentialEntry(cnblogsDraft?.accountId)}
       onDelete={() => cnblogsDraft && void deleteCnblogsChannelDraft(cnblogsDraft.id)}
       onBack={() => { setCnblogsDraft(undefined); setCnblogsPublishJob(undefined); setCnblogsDraftSource(undefined); setCnblogsEntryChoices(null); }}
+      savedCategories={cnblogsAccount?.cnblogsCategories}
+      savedTags={cnblogsAccount?.cnblogsTags}
     />;
   }
 

@@ -35,8 +35,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
   openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }): Promise<void> => ipcRenderer.invoke("contentferry:open-wechat-backend", target) as Promise<void>,
   openContentAny: (): Promise<void> => ipcRenderer.invoke("contentferry:open-contentany") as Promise<void>,
   openCsdnPublisher: (jobId: string): Promise<void> => ipcRenderer.invoke("contentferry:open-csdn-publisher", jobId) as Promise<void>,
-  readCnblogsPersonalOptions: (): Promise<{ categories: string[]; tags: string[] }> =>
-    ipcRenderer.invoke("contentferry:read-cnblogs-personal-options") as Promise<{ categories: string[]; tags: string[] }>,
+  readCnblogsPersonalOptions: (accountId: string): Promise<{ categories: string[]; tags: string[] }> =>
+    ipcRenderer.invoke("contentferry:read-cnblogs-personal-options", accountId) as Promise<{ categories: string[]; tags: string[] }>,
   openUserGuide: (): Promise<void> => ipcRenderer.invoke("contentferry:open-user-guide") as Promise<void>,
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>

@@ -487,6 +487,12 @@ export function initialiseDatabase(db: Database.Database): void {
   if (!accountProfileColumns.some((column) => column.name === "article_signature")) {
     db.exec("ALTER TABLE account_profiles ADD COLUMN article_signature TEXT NOT NULL DEFAULT ''");
   }
+  if (!accountProfileColumns.some((column) => column.name === "cnblogs_categories")) {
+    db.exec("ALTER TABLE account_profiles ADD COLUMN cnblogs_categories TEXT NOT NULL DEFAULT ''");
+  }
+  if (!accountProfileColumns.some((column) => column.name === "cnblogs_tags")) {
+    db.exec("ALTER TABLE account_profiles ADD COLUMN cnblogs_tags TEXT NOT NULL DEFAULT ''");
+  }
 
   const projectColumns = db.prepare("PRAGMA table_info(content_projects)").all() as Array<{ name: string }>;
   if (!projectColumns.some((column) => column.name === "source_relative_path")) {

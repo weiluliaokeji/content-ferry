@@ -22,6 +22,10 @@ export interface MediaAccount {
   capabilityLevel: string;
   credentialsConfigured: boolean;
   profile: AccountProfile;
+  /** 博客园个人分类（发布设置里可快速勾选），从创作后台读取后持久化。 */
+  cnblogsCategories: string[];
+  /** 博客园 Tag 标签（发布设置里可快速勾选），从创作后台读取后持久化。 */
+  cnblogsTags: string[];
 }
 
 export class AccountAlreadyExistsError extends Error {
@@ -59,7 +63,8 @@ export class AccountRepository {
     const rows = this.db.prepare(`
       SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
              EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
-             p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature
+             p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
+             p.cnblogs_categories, p.cnblogs_tags
       FROM media_accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
       WHERE a.workspace_id = ? AND a.deleted_at IS NULL ORDER BY a.created_at
     `).all(workspaceId) as Array<Record<string, string | null>>;
@@ -113,6 +118,18 @@ export class AccountRepository {
     return this.requireAccount(accountId);
   }
 
+  /** 持久化博客园个人分类与 Tag（从创作后台读取后调用）。传空数组即清空。 */
+  saveCnblogsOptions(accountId: string, categories: string[], tags: string[]): MediaAccount {
+    this.requireAccount(accountId);
+    const now = new Date().toISOString();
+    const safeCategories = Array.isArray(categories) ? categories.map((value) => String(value).slice(0, 60)).filter(Boolean) : [];
+    const safeTags = Array.isArray(tags) ? tags.map((value) => String(value).slice(0, 60)).filter(Boolean) : [];
+    const changed = this.db.prepare("UPDATE account_profiles SET cnblogs_categories = ?, cnblogs_tags = ?, updated_at = ? WHERE account_id = ?")
+      .run(JSON.stringify(safeCategories), JSON.stringify(safeTags), now, accountId);
+    if (changed.changes === 0) throw new Error("Account not found.");
+    return this.requireAccount(accountId);
+  }
+
   saveCredential(accountId: string, credentialKind: string, secret: string, vault: CredentialVault): void {
     this.requireAccount(accountId);
     const existing = this.db.prepare("SELECT secret_id FROM account_credentials WHERE account_id = ? AND credential_kind = ?")
@@ -132,7 +149,8 @@ export class AccountRepository {
   requireAccount(id: string): MediaAccount {
     const row = this.db.prepare(`SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
       EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
-      p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature
+      p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
+      p.cnblogs_categories, p.cnblogs_tags
       FROM media_accounts a JOIN account_profiles p ON p.account_id = a.id WHERE a.id = ? AND a.deleted_at IS NULL`).get(id) as Record<string, string | null> | undefined;
     if (!row) throw new Error("Account not found.");
     return this.mapAccount(row);
@@ -185,7 +203,21 @@ export class AccountRepository {
       profile: { positioning: row.positioning ?? emptyProfile.positioning, targetAudience: row.target_audience ?? emptyProfile.targetAudience,
         prohibitedTopics: row.prohibited_topics ?? emptyProfile.prohibitedTopics, writingStyle: row.writing_style ?? emptyProfile.writingStyle,
         regularColumns: row.regular_columns ?? emptyProfile.regularColumns,
-        articleSignature: row.article_signature ?? emptyProfile.articleSignature }
+        articleSignature: row.article_signature ?? emptyProfile.articleSignature },
+      cnblogsCategories: parseJsonStringArray(row.cnblogs_categories),
+      cnblogsTags: parseJsonStringArray(row.cnblogs_tags)
     };
+  }
+}
+
+/** 把 account_profiles 里存为 JSON 字符串的数组列安全地解析回 string[]；空/非法值回退空数组。 */
+function parseJsonStringArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
   }
 }
