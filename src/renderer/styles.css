@@ -228,7 +228,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .platform-csdn { background: #fc5531; }
 .platform-cnblogs { background: #0066cc; }
 .platform-juejin { background: #1e80ff; }
-.platform-51cto { background: #0066ff; }
+.platform-51cto { background: #e60012; }
 .status-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 1.55rem; height: 1.55rem; box-sizing: border-box; padding: 0 .24rem; border: 1px solid currentColor; border-radius: .4rem; font-size: .7rem; font-weight: 700; line-height: 1; }
 .status-success { background: #eefaf2; color: #18794e; }
 .status-neutral { background: #f5f7fa; color: #64748b; }
