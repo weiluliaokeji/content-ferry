@@ -327,6 +327,16 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
           verified?: boolean;
           error?: string;
         }>(`/integrations/51cto/cookie-grab/status?grabId=${encodeURIComponent(started.grabId)}`);
+        // 实时反馈：抓取进行中或仍在等待登录时，把后端状态同步到界面。
+        if (snapshot.status === "grabbing") {
+          setFiftyoneCtoGrabStatus("已检测到登录 Cookie，正在验证登录态…");
+        } else if (snapshot.status === "waiting_login") {
+          setFiftyoneCtoGrabStatus(
+            snapshot.error && snapshot.error.length > 0
+              ? snapshot.error
+              : "登录窗口已打开，请在窗口内登录 51CTO（登录后自动获取）。"
+          );
+        }
         if (snapshot.status === "success") {
           if (snapshot.verified !== true) {
             setFiftyoneCtoGrabStatus("已检测到登录 Cookie，但接口验证未通过，请确认登录态后重试。");

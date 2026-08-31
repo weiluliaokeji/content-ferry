@@ -27,6 +27,7 @@ export class FiftyoneCtoCookieGrabber {
   private readonly snapshots = new Map<string, FiftyoneCtoGrabSnapshot>();
   private readonly windows = new Map<string, BrowserWindow>();
   private readonly settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pollTimers = new Map<string, ReturnType<typeof setInterval>>();
   private activeGrabId: string | undefined;
 
   /** Start a grab for an account. Reuses an active grab window for the same account. */
@@ -67,6 +68,7 @@ export class FiftyoneCtoCookieGrabber {
       const timer = this.settleTimers.get(grabId);
       if (timer) clearTimeout(timer);
       this.settleTimers.delete(grabId);
+      this.clearPoll(grabId);
       if (state.fiftyoneCtoGrabWindow === window) state.fiftyoneCtoGrabWindow = undefined;
       const current = this.snapshots.get(grabId);
       if (current && current.status !== "success" && current.status !== "error") {
@@ -82,6 +84,12 @@ export class FiftyoneCtoCookieGrabber {
     window.webContents.on("dom-ready", () => {
       void this.handleCookieChanged(grabId, window);
     });
+    // 轮询兜底：即使 cookies.changed 不触发（部分登录流程只写 HttpOnly/跨域
+    // cookie，或登录态在窗口打开即存在），也周期性检查并验证，确保能抓到。
+    const pollTimer = setInterval(() => {
+      if (!window.isDestroyed()) void this.handleCookieChanged(grabId, window);
+    }, 1500);
+    this.pollTimers.set(grabId, pollTimer);
     void window.loadURL(FIFTYONE_CTO_LOGIN_URL).catch((error: unknown) => {
       const current = this.snapshots.get(grabId);
       if (!current) return;
@@ -101,6 +109,12 @@ export class FiftyoneCtoCookieGrabber {
     return this.snapshots.get(grabId);
   }
 
+  private clearPoll(grabId: string): void {
+    const poll = this.pollTimers.get(grabId);
+    if (poll) clearInterval(poll);
+    this.pollTimers.delete(grabId);
+  }
+
   /** Destroy every grab window (used by destroyAuxiliaryWindows). */
   destroyAll(): void {
     for (const window of this.windows.values()) {
@@ -108,6 +122,8 @@ export class FiftyoneCtoCookieGrabber {
     }
     this.windows.clear();
     this.snapshots.clear();
+    this.settleTimers.clear();
+    this.pollTimers.clear();
     this.activeGrabId = undefined;
   }
 
@@ -151,12 +167,13 @@ export class FiftyoneCtoCookieGrabber {
           ...settled,
           status: "waiting_login",
           lastVerifyAt: now,
-          error: undefined
+          error: "登录态验证未通过（接口未返回登录态），请确认窗口内确实已登录 51CTO。"
         });
         state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab verification failed, waiting for login");
         return;
       }
 
+      this.clearPoll(grabId);
       this.snapshots.set(grabId, {
         grabId,
         accountId: settled.accountId,
@@ -170,6 +187,7 @@ export class FiftyoneCtoCookieGrabber {
     } catch (error) {
       const settled = this.snapshots.get(grabId);
       if (!settled) return;
+      this.clearPoll(grabId);
       this.snapshots.set(grabId, {
         ...settled,
         status: "error",
