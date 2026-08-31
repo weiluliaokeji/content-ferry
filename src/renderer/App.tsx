@@ -1212,6 +1212,7 @@ export function App() {
       openWechatConnection={openWechatConnection}
       openCnblogsConnection={openCnblogsConnection}
       openJuejinConnection={openJuejinConnection}
+      openFiftyoneCtoConnection={openFiftyoneCtoConnection}
       openProfile={openProfile}
       addAccount={addAccount}
     />}
