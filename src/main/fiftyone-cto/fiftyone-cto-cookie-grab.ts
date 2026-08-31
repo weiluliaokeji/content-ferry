@@ -200,12 +200,14 @@ export class FiftyoneCtoCookieGrabber {
   private async verify(cookie: string): Promise<boolean> {
     if (!cookie) return false;
     try {
+      // getUploadSign 必须是 POST 且带 upload_type=image，否则 51CTO 返回
+      // code:10003 "请求方式错误"（GET 会被服务端判定为错误请求方式）。
       const response = await fetch(FIFTYONE_CTO_VERIFY_URL, {
-        method: "GET",
+        method: "POST",
         headers: buildFiftyoneCtoHeaders(cookie),
+        body: new URLSearchParams({ upload_type: "image" }),
         redirect: "manual"
       });
-      // 未登录时 51CTO 通常 302 到 passport；手动 follow 下只接受 200 + JSON。
       if (response.status !== 200) {
         state.runtimeInfoLogger?.(
           { status: response.status },
@@ -213,11 +215,21 @@ export class FiftyoneCtoCookieGrabber {
         );
         return false;
       }
-      const body = (await response.json()) as { code?: unknown; data?: { url?: string } };
+      const text = await response.text();
+      let body: { code?: unknown; data?: { url?: string } };
+      try {
+        body = JSON.parse(text) as { code?: unknown; data?: { url?: string } };
+      } catch {
+        state.runtimeInfoLogger?.(
+          { body: text.slice(0, 200) },
+          "51cto cookie grab verify: non-JSON body"
+        );
+        return false;
+      }
       const ok = body?.code === 0 && typeof body?.data?.url === "string" && body.data.url.length > 0;
       if (!ok) {
         state.runtimeInfoLogger?.(
-          { body: JSON.stringify(body).slice(0, 200) },
+          { code: body?.code, body: JSON.stringify(body).slice(0, 200) },
           "51cto cookie grab verify: unexpected body"
         );
       }

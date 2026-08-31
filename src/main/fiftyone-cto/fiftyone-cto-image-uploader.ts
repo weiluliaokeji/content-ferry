@@ -70,7 +70,7 @@ export class FiftyoneCtoImageUploader {
     }
 
     const sign = await this.fetchUploadSign();
-    const config = await this.fetchUploadConfig();
+    const config = await this.fetchUploadConfig(sign.sign);
 
     const key = config.fields.key;
     if (!key) {
@@ -83,8 +83,14 @@ export class FiftyoneCtoImageUploader {
     return `${cdnBase}${key}`;
   }
 
-  private async fetchUploadSign(): Promise<{ url: string }> {
-    const resp = await this.fetcher(SIGN_URL, { method: "GET", headers: this.baseHeaders });
+  private async fetchUploadSign(): Promise<{ url: string; sign?: string }> {
+    // getUploadSign 必须为 POST + upload_type=image，否则 51CTO 返回
+    // code:10003 "请求方式错误"（GET 会被服务端判定为错误请求方式）。
+    const resp = await this.fetcher(SIGN_URL, {
+      method: "POST",
+      headers: this.baseHeaders,
+      body: new URLSearchParams({ upload_type: "image" })
+    });
     const text = await resp.text();
     if (!resp.ok) {
       throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传签名失败：HTTP ${resp.status}`);
@@ -100,11 +106,18 @@ export class FiftyoneCtoImageUploader {
         `51CTO 上传签名响应异常：${parsed.msg || text.slice(0, 200)}`
       );
     }
-    return { url: parsed.data.url };
+    return { url: parsed.data.url, sign: parsed.data.sign };
   }
 
-  private async fetchUploadConfig(): Promise<{ url: string; fields: UploadConfigField }> {
-    const resp = await this.fetcher(CONFIG_URL, { method: "GET", headers: this.baseHeaders });
+  private async fetchUploadConfig(sign?: string): Promise<{ url: string; fields: UploadConfigField }> {
+    // getUploadConfig 同样需要 POST；并按 51CTO 文档依赖 getUploadSign 返回的签名。
+    const params = new URLSearchParams({ upload_type: "image" });
+    if (sign) params.set("upload_sign", sign);
+    const resp = await this.fetcher(CONFIG_URL, {
+      method: "POST",
+      headers: this.baseHeaders,
+      body: params
+    });
     const text = await resp.text();
     if (!resp.ok) {
       throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传配置失败：HTTP ${resp.status}`);
