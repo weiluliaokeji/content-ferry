@@ -1,4 +1,4 @@
-import { Suspense, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { VisualMarkdownEditor } from "./VisualMarkdownEditor";
 import type { VisualMarkdownSelection } from "./VisualMarkdownEditor";
 import { request, apiBase, renderPhonePreview, resolveArticleImageUrl, extractMarkdownImages } from "../main";
@@ -113,6 +113,14 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
     categories: savedCategories ?? [],
     tags: savedTags ?? []
   });
+  // 账号数据是异步加载的，首次 render 时 savedCategories/savedTags 可能为空；
+  // 当持久化数据到达后，把它同步到候选选项里，避免已保存的分类/Tag 不显示。
+  useEffect(() => {
+    setPublishOptionChoices((current) => ({
+      categories: savedCategories?.length ? savedCategories : current.categories,
+      tags: savedTags?.length ? savedTags : current.tags
+    }));
+  }, [savedCategories, savedTags]);
   const [publishOptionsLoading, setPublishOptionsLoading] = useState(false);
   const [publishOptionsError, setPublishOptionsError] = useState("");
   const [correcting, setCorrecting] = useState(false);
