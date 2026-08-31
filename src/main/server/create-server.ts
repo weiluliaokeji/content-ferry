@@ -52,6 +52,7 @@ import { registerSystemRoutes } from "./routes-system";
 import { registerContentSourceRoutes } from "./routes-content-source";
 import { registerChannelsRoutes } from "./routes-channels";
 import { registerJuejinRoutes } from "./routes-juejin";
+import { registerFiftyoneCtoRoutes } from "./routes-fiftyone-cto";
 import { registerProjectsRoutes } from "./routes-projects";
 import { registerAccountsRoutes } from "./routes-accounts";
 import { registerSettingsRoutes } from "./routes-settings";
@@ -331,6 +332,7 @@ export function buildServer(
   registerContentSourceRoutes(ctx);
   registerChannelsRoutes(ctx);
   registerJuejinRoutes(ctx);
+  registerFiftyoneCtoRoutes(ctx);
   registerProjectsRoutes(ctx);
   registerAccountsRoutes(ctx);
   registerSettingsRoutes(ctx);

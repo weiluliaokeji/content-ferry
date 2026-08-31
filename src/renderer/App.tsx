@@ -645,8 +645,13 @@ export function App() {
     setFiftyoneCtoCredentialSaving,
     fiftyoneCtoCredentialError,
     setFiftyoneCtoCredentialError,
+    fiftyoneCtoGrabRunning,
+    setFiftyoneCtoGrabRunning,
+    fiftyoneCtoGrabStatus,
+    setFiftyoneCtoGrabStatus,
     openFiftyoneCtoConnection,
     saveFiftyoneCtoCredentials,
+    startFiftyoneCtoCookieGrab,
     openFiftyoneCtoCredentialEntry,
     deleteAccount,
   } = useAccountsConnections({
@@ -1441,7 +1446,11 @@ export function App() {
         <p className="hint">51CTO 博客发布使用登录后的 Cookie 会话。Cookie 为登录 51CTO 博客后，在博客管理页（blog.51cto.com）发起请求时浏览器开发者工具里看到的完整 Cookie 值。出于安全原因不回显明文，已配置时留空即可保留原值。</p>
         <label>Cookie<input autoFocus value={fiftyoneCtoCredentialCookie} onChange={(event) => { setFiftyoneCtoCredentialCookie(event.target.value); setFiftyoneCtoCredentialError(""); }} autoComplete="off" placeholder="登录 51CTO 博客后复制请求 Cookie" /></label>
         {fiftyoneCtoCredentialError && <p className="error">{fiftyoneCtoCredentialError}</p>}
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setFiftyoneCtoCredentialAccount(undefined)} disabled={fiftyoneCtoCredentialSaving}>取消</button><button disabled={fiftyoneCtoCredentialSaving}>{fiftyoneCtoCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
+        {fiftyoneCtoGrabStatus && <p className="hint">{fiftyoneCtoGrabStatus}</p>}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={() => void startFiftyoneCtoCookieGrab()} disabled={fiftyoneCtoGrabRunning || fiftyoneCtoCredentialSaving} title="弹出 51CTO 登录窗口，登录成功后自动抓取 Cookie 并回填保存">{fiftyoneCtoGrabRunning ? "等待登录…" : "自动获取 Cookie"}</button>
+          <button type="button" className="secondary-button" onClick={() => setFiftyoneCtoCredentialAccount(undefined)} disabled={fiftyoneCtoGrabRunning || fiftyoneCtoCredentialSaving}>取消</button>
+          <button disabled={fiftyoneCtoCredentialSaving || fiftyoneCtoGrabRunning}>{fiftyoneCtoCredentialSaving ? "正在保存…" : "保存凭据"}</button></div>
       </form>
     </Modal>}
     {csdnEntryChoices && <Modal onClose={() => { setCsdnEntryChoices(null); setCsdnDraftSource(undefined); }} disabled={csdnDraftSaving} title="已有 CSDN 渠道稿" wide>

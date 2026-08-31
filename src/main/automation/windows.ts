@@ -5,7 +5,7 @@ import { state } from "./state";
 // 窗口管理与应用退出逻辑（自 index.ts 拆分）
 
 export function destroyAuxiliaryWindows(): void {
-  for (const window of [state.zhuqueWindow, state.contentAnyWindow, state.wechatEditorWindow, state.wechatBackendWindow, state.juejinGrabWindow, state.cnblogsOptionsWindow]) {
+  for (const window of [state.zhuqueWindow, state.contentAnyWindow, state.wechatEditorWindow, state.wechatBackendWindow, state.juejinGrabWindow, state.fiftyoneCtoGrabWindow, state.cnblogsOptionsWindow]) {
     if (window && !window.isDestroyed()) window.destroy();
   }
   state.zhuqueWindow = undefined;
@@ -13,6 +13,7 @@ export function destroyAuxiliaryWindows(): void {
   state.wechatEditorWindow = undefined;
   state.wechatBackendWindow = undefined;
   state.juejinGrabWindow = undefined;
+  state.fiftyoneCtoGrabWindow = undefined;
   state.cnblogsOptionsWindow = undefined;
   state.wechatBackendAdvanceTask = undefined;
   state.wechatBackendTarget = undefined;

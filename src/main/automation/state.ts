@@ -34,6 +34,7 @@ export const state = {
   // 用户改过，重新上传会自然覆盖此缓存。
   csdnImageUrlCache: new Map<string, Map<string, string>>(),
   juejinGrabWindow: undefined as BrowserWindow | undefined,
+  fiftyoneCtoGrabWindow: undefined as BrowserWindow | undefined,
   wechatBackendAdvanceTask: undefined as Promise<void> | undefined,
   wechatBackendTarget: undefined as WechatBackendTarget | undefined,
   runtimeDatabase: undefined as AppDatabase | undefined,

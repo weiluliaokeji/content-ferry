@@ -64,6 +64,8 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
   const [fiftyoneCtoCredentialCookieConfigured, setFiftyoneCtoCredentialCookieConfigured] = useState(false);
   const [fiftyoneCtoCredentialSaving, setFiftyoneCtoCredentialSaving] = useState(false);
   const [fiftyoneCtoCredentialError, setFiftyoneCtoCredentialError] = useState("");
+  const [fiftyoneCtoGrabRunning, setFiftyoneCtoGrabRunning] = useState(false);
+  const [fiftyoneCtoGrabStatus, setFiftyoneCtoGrabStatus] = useState("");
   const openProfile = (account: MediaAccount) => { setEditing(account); setEditingDisplayName(account.displayName); setEditingExternalId(account.externalAccountId ?? ""); setProfile(account.profile); setError(""); };
   const changeProfile = (field: keyof AccountProfile, value: string) => setProfile((current) => ({ ...current, [field]: value }));
   const saveWechatConnection = async (event: FormEvent) => {
@@ -299,11 +301,63 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
     setFiftyoneCtoCredentialCookie("");
     setFiftyoneCtoCredentialCookieConfigured(false);
     setFiftyoneCtoCredentialError("");
+    setFiftyoneCtoGrabRunning(false);
+    setFiftyoneCtoGrabStatus("");
     setError("");
     try {
       const status = await request<WechatCredentialStatus>(`/media-accounts/${account.id}/credentials/status`);
       setFiftyoneCtoCredentialCookieConfigured(Boolean(status.fiftyoneCtoCookieConfigured));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取 51CTO 凭据状态。"); }
+  };
+  const startFiftyoneCtoCookieGrab = async () => {
+    if (!fiftyoneCtoCredentialAccount) return;
+    setFiftyoneCtoGrabRunning(true);
+    setFiftyoneCtoGrabStatus("正在打开 51CTO 登录窗口，请在弹出的窗口中登录…");
+    setFiftyoneCtoCredentialError("");
+    try {
+      const started = await request<{ grabId: string }>("/integrations/51cto/cookie-grab/start", {
+        method: "POST",
+        body: JSON.stringify({ accountId: fiftyoneCtoCredentialAccount.id })
+      });
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const snapshot = await request<{
+          status: string;
+          cookie?: string;
+          verified?: boolean;
+          error?: string;
+        }>(`/integrations/51cto/cookie-grab/status?grabId=${encodeURIComponent(started.grabId)}`);
+        if (snapshot.status === "success") {
+          if (snapshot.verified !== true) {
+            setFiftyoneCtoGrabStatus("已检测到登录 Cookie，但接口验证未通过，请确认登录态后重试。");
+            return;
+          }
+          const cookie = snapshot.cookie ?? "";
+          await request<MediaAccount>(`/media-accounts/${fiftyoneCtoCredentialAccount.id}/credentials/fiftyone_cto_cookie`, {
+            method: "PUT",
+            body: JSON.stringify({ secret: cookie })
+          });
+          await loadAccounts();
+          setFiftyoneCtoCredentialCookie(cookie);
+          setFiftyoneCtoCredentialCookieConfigured(Boolean(cookie));
+          setFiftyoneCtoGrabStatus("已自动获取并保存 51CTO Cookie，接口验证通过。");
+          return;
+        }
+        if (snapshot.status === "cancelled") {
+          setFiftyoneCtoGrabStatus("已取消自动获取（登录窗口已关闭）。");
+          return;
+        }
+        if (snapshot.status === "error") {
+          setFiftyoneCtoGrabStatus(`自动获取失败：${snapshot.error ?? "未知错误"}`);
+          return;
+        }
+      }
+      setFiftyoneCtoGrabStatus("等待登录超时，请在登录窗口完成登录后重试。");
+    } catch (cause) {
+      setFiftyoneCtoGrabStatus(cause instanceof Error ? cause.message : "启动自动获取 Cookie 失败。");
+    } finally {
+      setFiftyoneCtoGrabRunning(false);
+    }
   };
   const saveFiftyoneCtoCredentials = async (event: FormEvent) => {
     event.preventDefault();
@@ -419,8 +473,13 @@ export function useAccountsConnections(params: UseAccountsConnectionsParams) {
     setFiftyoneCtoCredentialSaving,
     fiftyoneCtoCredentialError,
     setFiftyoneCtoCredentialError,
+    fiftyoneCtoGrabRunning,
+    setFiftyoneCtoGrabRunning,
+    fiftyoneCtoGrabStatus,
+    setFiftyoneCtoGrabStatus,
     openFiftyoneCtoConnection,
     saveFiftyoneCtoCredentials,
+    startFiftyoneCtoCookieGrab,
     openFiftyoneCtoCredentialEntry,
     deleteAccount,
   };
