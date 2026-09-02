@@ -494,6 +494,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .publish-ai-check .detector-switch label { display: grid; gap: .3rem; min-width: 180px; }
 .publish-ai-check .detector-switch select { min-height: 2.25rem; }
 .status-badge.warning { background: #fff4dd; color: #9a6700; }
+.status-badge.danger { background: #fdecec; color: #b42318; }
 .publish-ai-check pre { max-height: 190px; margin: 0; padding: .75rem; overflow: auto; white-space: pre-wrap; border-radius: 8px; background: #fff; color: #344054; font: .78rem/1.6 "Microsoft YaHei UI", sans-serif; }
 .zhuque-report { display: grid; grid-template-columns: minmax(0, 1fr) 210px; min-height: 310px; overflow: hidden; border: 1px solid #dce4ed; border-radius: 12px; background: #fff; }
 .zhuque-segment-panel { min-width: 0; padding: 1rem; border-right: 1px solid #e5eaf0; }

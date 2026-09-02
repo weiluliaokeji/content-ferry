@@ -13,7 +13,7 @@ import { QualityWorkspace } from "./components/QualityWorkspace";
 import { ArticleWorkspace } from "./components/ArticleWorkspace";
 import { ZhuqueReportView } from "./components/ZhuqueReportViews";
 import { resolveArticleImageUrl } from "./markdown-preview";
-import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel } from "./publish-labels";
+import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
 import { emptyProfile, isHighAiDetectionResult, markdownOffsetAtTextareaTop, markdownTitle, parseZhuqueReport, providerName, runtimeLogLevel, skillModelStatus, sourceAssetContextId } from "./utils";
 import { skillModelGroups } from "./app-constants";
 import { byUpdatedAtDesc, getPageTitle, PublishEntry } from "./app-helpers";
@@ -1063,16 +1063,17 @@ export function App() {
   const publishAccountReady = selectedPublishAccount?.platform === "wechat_official";
   const pageTitle = getPageTitle(activeView, projects.length);
   const filteredRuntimeLogs = runtimeLogs;
-  const pendingWechatJobs = wechatJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
-  const completedWechatJobs = wechatJobs.filter((job) => job.status === "published" || job.status === "cancelled");
-  const activeCsdnJobs = csdnJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
-  const completedCsdnJobs = csdnJobs.filter((job) => job.status === "published" || job.status === "cancelled");
-  const activeCnblogsJobs = cnblogsJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
-  const completedCnblogsJobs = cnblogsJobs.filter((job) => job.status === "published" || job.status === "cancelled");
-  const activeJuejinJobs = juejinJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
-  const completedJuejinJobs = juejinJobs.filter((job) => job.status === "published" || job.status === "cancelled");
-  const activeFiftyoneCtoJobs = fiftyoneCtoJobs.filter((job) => job.status !== "published" && job.status !== "cancelled");
-  const completedFiftyoneCtoJobs = fiftyoneCtoJobs.filter((job) => job.status === "published" || job.status === "cancelled");
+  // 待处理 = 未归档：终态（已发布/已取消）和「已人工核实为失败」的任务不再出现。
+  const pendingWechatJobs = wechatJobs.filter((job) => !isSettledPublishStatus(job));
+  const completedWechatJobs = wechatJobs.filter(isSettledPublishStatus);
+  const activeCsdnJobs = csdnJobs.filter((job) => !isSettledPublishStatus(job));
+  const completedCsdnJobs = csdnJobs.filter(isSettledPublishStatus);
+  const activeCnblogsJobs = cnblogsJobs.filter((job) => !isSettledPublishStatus(job));
+  const completedCnblogsJobs = cnblogsJobs.filter(isSettledPublishStatus);
+  const activeJuejinJobs = juejinJobs.filter((job) => !isSettledPublishStatus(job));
+  const completedJuejinJobs = juejinJobs.filter(isSettledPublishStatus);
+  const activeFiftyoneCtoJobs = fiftyoneCtoJobs.filter((job) => !isSettledPublishStatus(job));
+  const completedFiftyoneCtoJobs = fiftyoneCtoJobs.filter(isSettledPublishStatus);
   // 待处理（置顶）：微信进行中 + CSDN 进行中 + 博客园进行中 + 掘金进行中，按时间倒序。
   const pendingEntries: PublishEntry[] = [
     ...pendingWechatJobs.map((job) => ({ kind: "wechat" as const, job })),

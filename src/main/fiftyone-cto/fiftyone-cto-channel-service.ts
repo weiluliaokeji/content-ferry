@@ -80,6 +80,7 @@ export interface FiftyoneCtoPublishJob {
   remoteContentId: string | null;
   statusNote: string | null;
   errorMessage: string | null;
+  statusSource: "system" | "manual";
   createdAt: string;
   updatedAt: string;
 }
@@ -589,6 +590,8 @@ function mapJob(row: Record<string, string | null>): FiftyoneCtoPublishJob {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
     status: row.status as FiftyoneCtoPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
-    statusNote: row.status_note, errorMessage: row.error_message, createdAt: row.created_at!, updatedAt: row.updated_at!
+    statusNote: row.status_note, errorMessage: row.error_message,
+    statusSource: row.status_source === "manual" ? "manual" : "system",
+    createdAt: row.created_at!, updatedAt: row.updated_at!
   };
 }

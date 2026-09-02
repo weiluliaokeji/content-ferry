@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownTitle, parseZhuqueReport } from "../utils";
-import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, fiftyoneCtoJobCanStart, fiftyoneCtoJobCanCorrect } from "../publish-labels";
+import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, defaultCorrectionStatus, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, fiftyoneCtoJobCanStart, fiftyoneCtoJobCanCorrect } from "../publish-labels";
 import { resolveArticleImageUrl } from "../markdown-preview";
 import type { AccountPlatform, ChannelRow, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, ContentSourceArticle, CsdnChannelDraft, CsdnPublishJob, FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, FiftyoneCtoPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, MediaAccount, WechatPublishJob } from "../types";
 import type { UseWorkbenchReturn } from "./useWorkbench";
@@ -1168,7 +1168,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   };
   const openFiftyoneCtoStatusCorrection = (job: FiftyoneCtoPublishJob) => {
     setCorrectingFiftyoneCtoJob(job);
-    setCorrectedFiftyoneCtoStatus("published");
+    setCorrectedFiftyoneCtoStatus(defaultCorrectionStatus(job));
     setFiftyoneCtoStatusReason("已在 51CTO 后台核实");
     setFiftyoneCtoCorrectionError("");
   };
@@ -1194,7 +1194,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   };
   const openCnblogsStatusCorrection = (job: CnblogsPublishJob) => {
     setCorrectingCnblogsJob(job);
-    setCorrectedCnblogsStatus("published");
+    setCorrectedCnblogsStatus(defaultCorrectionStatus(job));
     setCnblogsStatusReason("已在博客园后台核实");
     setCnblogsCorrectionError("");
   };
@@ -1220,7 +1220,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   };
   const openJuejinStatusCorrection = (job: JuejinPublishJob) => {
     setCorrectingJuejinJob(job);
-    setCorrectedJuejinStatus("published");
+    setCorrectedJuejinStatus(defaultCorrectionStatus(job));
     setJuejinStatusReason("已在掘金后台核实");
     setJuejinCorrectionError("");
   };
@@ -1246,7 +1246,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   };
   const openCsdnStatusCorrection = (job: CsdnPublishJob) => {
     setCorrectingCsdnJob(job);
-    setCorrectedCsdnStatus("published");
+    setCorrectedCsdnStatus(defaultCorrectionStatus(job));
     setCsdnStatusReason("已在 CSDN 后台核实");
     setCsdnCorrectionError("");
   };
@@ -1272,7 +1272,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   };
   const openWechatStatusCorrection = (job: WechatPublishJob) => {
     setCorrectingWechatJob(job);
-    setCorrectedWechatStatus("published");
+    setCorrectedWechatStatus(defaultCorrectionStatus(job));
     setWechatStatusReason("已在微信后台核实");
     setWechatCorrectionError("");
   };

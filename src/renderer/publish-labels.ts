@@ -102,3 +102,36 @@ export function fiftyoneCtoJobCanCorrect(job: FiftyoneCtoPublishJob): boolean {
   return ["draft_creating", "draft_created", "confirming", "needs_manual_reconciliation", "needs_credentials", "failed", "cancelled", "published"].includes(job.status);
 }
 
+// 人工校正可选的三档最终状态。
+export type PublishCorrectionStatus = "published" | "failed" | "cancelled";
+// 五个平台发布任务的公共最小形状，便于统一判定归属。
+export type PublishJobLike = { status: string; statusSource?: string };
+
+/**
+ * 判断一条发布任务是否已经归档，即应当出现在「发布记录」而不是「待处理」。
+ *
+ * - published / cancelled：终态，直接归档。
+ * - failed：系统判定失败的任务仍需要用户处理（重试、重新发布或人工核实），
+ *   因此留在「待处理」；只有用户在平台后台核实后主动标记为失败
+ *   （statusSource === "manual"）才视为已处理完毕并归档。
+ */
+export function isSettledPublishStatus(job: PublishJobLike): boolean {
+  if (job.status === "published" || job.status === "cancelled") return true;
+  return job.status === "failed" && job.statusSource === "manual";
+}
+
+/**
+ * 校正弹框的初始状态：跟随任务当前状态，避免「显示为已发布、实际想归档」的误解。
+ * 失败任务默认停在「发布失败」，用户直接确认即可把它归档到发布记录。
+ */
+export function defaultCorrectionStatus(job: PublishJobLike): PublishCorrectionStatus {
+  return job.status === "failed" || job.status === "cancelled" ? job.status : "published";
+}
+
+/** 发布记录区右侧徽标的文案与配色。 */
+export function publishRecordBadge(job: PublishJobLike): { text: string; tone: "success" | "warning" | "danger" } {
+  if (job.status === "cancelled") return { text: "已取消", tone: "warning" };
+  if (job.status === "failed") return { text: "已失败", tone: "danger" };
+  return { text: "已完成", tone: "success" };
+}
+
