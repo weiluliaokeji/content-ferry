@@ -972,7 +972,14 @@ export function App() {
       onPublish={(options) => requestPublishCnblogs(options)}
       onConfirmPublish={(jobId) => void confirmCnblogsPublish(jobId)}
       onCorrectStatus={(jobId, status, reason) => void correctCnblogsStatus(jobId, status, reason)}
-      onGoToCredentials={() => void openCnblogsCredentialEntry(cnblogsDraft?.accountId)}
+      onGoToCredentials={() => {
+        const accountId = cnblogsDraft.accountId;
+        setCnblogsDraft(undefined);
+        setCnblogsPublishJob(undefined);
+        setCnblogsDraftSource(undefined);
+        setCnblogsEntryChoices(null);
+        void openCnblogsCredentialEntry(accountId);
+      }}
       onDelete={() => cnblogsDraft && void deleteCnblogsChannelDraft(cnblogsDraft.id)}
       onBack={() => { setCnblogsDraft(undefined); setCnblogsPublishJob(undefined); setCnblogsDraftSource(undefined); setCnblogsEntryChoices(null); }}
       savedCategories={cnblogsAccount?.cnblogsCategories}
@@ -994,7 +1001,14 @@ export function App() {
       onPublish={(options) => requestPublishJuejin(options)}
       onConfirmPublish={(jobId) => void confirmJuejinPublish(jobId)}
       onCorrectStatus={(jobId, status, reason) => void correctJuejinStatus(jobId, status, reason)}
-      onGoToCredentials={() => void openJuejinCredentialEntry(juejinDraft?.accountId)}
+      onGoToCredentials={() => {
+        const accountId = juejinDraft.accountId;
+        setJuejinDraft(undefined);
+        setJuejinPublishJob(undefined);
+        setJuejinDraftSource(undefined);
+        setJuejinEntryChoices(null);
+        void openJuejinCredentialEntry(accountId);
+      }}
       onDelete={() => juejinDraft && void deleteJuejinChannelDraft(juejinDraft.id)}
       onBack={() => { setJuejinDraft(undefined); setJuejinPublishJob(undefined); setJuejinDraftSource(undefined); setJuejinEntryChoices(null); }}
     />;
@@ -1014,7 +1028,14 @@ export function App() {
       onPublish={(options) => requestPublishFiftyoneCto(options)}
       onConfirmPublish={(jobId) => void confirmFiftyoneCtoPublish(jobId)}
       onCorrectStatus={(jobId, status, reason) => void correctFiftyoneCtoStatus(jobId, status, reason)}
-      onGoToCredentials={() => void openFiftyoneCtoCredentialEntry(fiftyoneCtoDraft?.accountId)}
+      onGoToCredentials={() => {
+        const accountId = fiftyoneCtoDraft.accountId;
+        setFiftyoneCtoDraft(undefined);
+        setFiftyoneCtoPublishJob(undefined);
+        setFiftyoneCtoDraftSource(undefined);
+        setFiftyoneCtoEntryChoices(null);
+        void openFiftyoneCtoCredentialEntry(accountId);
+      }}
       onDelete={() => fiftyoneCtoDraft && void deleteFiftyoneCtoChannelDraft(fiftyoneCtoDraft.id)}
       onBack={() => { setFiftyoneCtoDraft(undefined); setFiftyoneCtoPublishJob(undefined); setFiftyoneCtoDraftSource(undefined); setFiftyoneCtoEntryChoices(null); }}
     />;
