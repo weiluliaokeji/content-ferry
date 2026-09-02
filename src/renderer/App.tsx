@@ -1040,6 +1040,14 @@ export function App() {
       }}
       onDelete={() => fiftyoneCtoDraft && void deleteFiftyoneCtoChannelDraft(fiftyoneCtoDraft.id)}
       onBack={() => { setFiftyoneCtoDraft(undefined); setFiftyoneCtoPublishJob(undefined); setFiftyoneCtoDraftSource(undefined); setFiftyoneCtoEntryChoices(null); }}
+      fiftyoneCtoPidOptions={fiftyoneCtoAccount?.fiftyoneCtoPidOptions}
+      fiftyoneCtoCateOptions={fiftyoneCtoAccount?.fiftyoneCtoCateOptions}
+      onLoadCategories={async (accountId) => {
+        if (!window.contentFerry) throw new Error("本地桥接未就绪，请重启文渡后重试。");
+        const result = await window.contentFerry.readFiftyoneCtoCategories(accountId);
+        void loadAccounts();
+        return result;
+      }}
     />;
   }
 

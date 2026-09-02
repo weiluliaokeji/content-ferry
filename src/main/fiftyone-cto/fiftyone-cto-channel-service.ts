@@ -435,7 +435,8 @@ export class FiftyoneCtoChannelService {
         tags: tagsStr,
         blogType,
         pid: options.pid ?? "",
-        cateId: options.cateId ?? ""
+        cateId: options.cateId ?? "",
+        abstract: draft.digest.slice(0, 200)
       });
       return this.transitionJob(job, "published", {
         remoteUrl: result.url ?? null,

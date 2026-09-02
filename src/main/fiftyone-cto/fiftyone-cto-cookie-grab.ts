@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
-import { buildCookieString, hasLoginCandidate, isFiftyoneCtoLoggedInHtml, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, filterFiftyoneCtoCookies, hasLoginCandidate, isFiftyoneCtoLoggedInHtml, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
 /** 首页级 GET 用 UA（与 CTOClient 一致），不带 AJAX 头以免被当作接口请求拦截。 */
@@ -164,7 +164,9 @@ export class FiftyoneCtoCookieGrabber {
 
     try {
       const cookies = await window.webContents.session.cookies.get({});
-      const cookie = buildCookieString(cookies);
+      // 只保留 51CTO 域 Cookie，避免把抓取窗口会话里其它站点的 Cookie 一并存下，
+      // 既减小存储体积，也降低旧 _csrf 等字段干扰发布接口 CSRF 校验的概率。
+      const cookie = buildCookieString(filterFiftyoneCtoCookies(cookies));
       if (!cookie) {
         this.snapshots.set(grabId, { ...current, status: "error", error: "未能从登录窗口读取到 Cookie。" });
         return;

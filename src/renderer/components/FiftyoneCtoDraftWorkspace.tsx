@@ -28,6 +28,20 @@ export interface FiftyoneCtoPublishOptions {
   blogType: "1" | "2" | "3";
 }
 
+export type FiftyoneCtoCategoryOption = { value: string; label: string };
+
+export type FiftyoneCtoCategoryDebug = {
+  divDropdowns?: Array<{ id: string; selector: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
+  selects: Array<{ name: string; id: string; label: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
+  categoryTextNodes: Array<{ tag: string; text: string }>;
+};
+
+export type FiftyoneCtoLoadedCategories = {
+  pidOptions: FiftyoneCtoCategoryOption[];
+  cateOptions: FiftyoneCtoCategoryOption[];
+  debug?: FiftyoneCtoCategoryDebug;
+};
+
 interface FiftyoneCtoDraftWorkspaceProps {
   draft: FiftyoneCtoChannelDraftShape;
   accountDisplay: string;
@@ -43,6 +57,12 @@ interface FiftyoneCtoDraftWorkspaceProps {
   onGoToCredentials: () => void;
   onDelete: () => Promise<void> | void;
   onBack: () => void;
+  /** 从账号本地缓存读取的 51CTO 一级栏目（pid）选项；为空时下拉退化为手动输入。 */
+  fiftyoneCtoPidOptions?: FiftyoneCtoCategoryOption[];
+  /** 从账号本地缓存读取的 51CTO 授权分类（cate_id）选项；为空时下拉退化为手动输入。 */
+  fiftyoneCtoCateOptions?: FiftyoneCtoCategoryOption[];
+  /** 点击「加载分类」时调用：打开 51CTO 发布页抓取选项并持久化到本地，返回最新选项与页面 DOM 调试结构。 */
+  onLoadCategories: (accountId: string) => Promise<FiftyoneCtoLoadedCategories>;
 }
 
 function fiftyoneCtoJobLabel(status: FiftyoneCtoPublishJobShape["status"]): string {
@@ -92,7 +112,34 @@ async function fileToBase64(file: File): Promise<string> {
   return btoa(binary);
 }
 
-export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack }: FiftyoneCtoDraftWorkspaceProps) {
+/** 一级栏目 / 授权分类 控件：有选项时渲染下拉，否则渲染可手动输入的文本框（应对级联分类未自动加载的情况）。 */
+function renderCategoryControl(props: {
+  id: string;
+  label: string;
+  hint: string;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const useSelect = props.options.length > 0;
+  return (
+    <label>
+      {props.label}
+      {useSelect ? (
+        <select id={props.id} value={props.value} disabled={props.disabled} onChange={(event) => props.onChange(event.target.value)}>
+          <option value="">请选择{props.label.replace(/（.*?）/g, "")}</option>
+          {props.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      ) : (
+        <input id={props.id} value={props.value} disabled={props.disabled} onChange={(event) => props.onChange(event.target.value)} placeholder="请先点击上方「加载分类」拉取选项，或手动填写 id" />
+      )}
+      <small>{props.hint}</small>
+    </label>
+  );
+}
+
+export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack, fiftyoneCtoPidOptions, fiftyoneCtoCateOptions, onLoadCategories }: FiftyoneCtoDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("settings");
   const [dirty, setDirty] = useState(false);
@@ -121,6 +168,13 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
   const [assistantError, setAssistantError] = useState("");
   const [aiChatLog, setAiChatLog] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const [summaryBusy, setSummaryBusy] = useState(false);
+  // 发布前本地校验：51CTO 要求标签非空，空标签会在发布接口被拒。
+  // 与其发布失败再回显「标签不能为空」，不如在发布前拦截并提示用户填写。
+  const [publishValidationError, setPublishValidationError] = useState("");
+  // 加载 51CTO 分类：弹窗抓取并持久化，结果本地缓存（loadedCategories），同时也写回账号本地缓存。
+  const [categoryLoading, setCategoryLoading] = useState(false);
+  const [categoryLoadError, setCategoryLoadError] = useState("");
+  const [loadedCategories, setLoadedCategories] = useState<FiftyoneCtoLoadedCategories | null>(null);
 
   const wordCount = useMemo(
     () => draft.markdown.replace(/[#>*_`\-[\]()]/g, "").replace(/\s/g, "").length,
@@ -151,8 +205,67 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
     setDirty(false);
   };
 
+  // 打开不同渠道稿时，重置发布表单并自动从主稿 frontmatter 的 tags 填充标签。
+  useEffect(() => {
+    setPublishPid("");
+    setPublishCateId("");
+    setPublishTags("");
+    setPublishBlogType("1");
+    setLoadedCategories(null);
+    setCategoryLoadError("");
+    setPublishValidationError("");
+    if (!draft.sourceRelativePath) return;
+    let cancelled = false;
+    request<{ tags: string[] }>(`/content-source/article-tags?path=${encodeURIComponent(draft.sourceRelativePath)}`)
+      .then((data) => {
+        if (cancelled) return;
+        const tags = (data.tags ?? []).join(", ");
+        if (tags) setPublishTags(tags);
+      })
+      .catch(() => { /* 自动填充失败不阻塞发布，用户仍可手动填写 */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.id]);
+
+  // 点击「加载分类」：从 51CTO 发布页抓取一级栏目/授权分类选项，保存本地后填充下拉。
+  const handleLoadCategories = async () => {
+    setCategoryLoading(true);
+    setCategoryLoadError("");
+    try {
+      const result = await onLoadCategories(draft.accountId);
+      setLoadedCategories(result);
+      if (!result.pidOptions.some((option) => option.value === publishPid)) setPublishPid("");
+      if (!result.cateOptions.some((option) => option.value === publishCateId)) setPublishCateId("");
+      setPublishValidationError("");
+    } catch (cause) {
+      setCategoryLoadError(cause instanceof Error ? cause.message : "加载 51CTO 分类失败。");
+    } finally {
+      setCategoryLoading(false);
+    }
+  };
+
   const handlePublish = () => {
+    if (!publishPid.trim()) {
+      setPublishValidationError("51CTO 要求必须选择「一级栏目」。请先点击「加载分类」从 51CTO 拉取选项并选择；若下拉为空，可手动填写栏目 id。");
+      setRightPanel("settings");
+      requestAnimationFrame(() => document.getElementById("fiftyone-cto-pid-input")?.focus());
+      return;
+    }
+    if (!publishCateId.trim()) {
+      setPublishValidationError("51CTO 要求必须选择「授权分类」。请先点击「加载分类」从 51CTO 拉取选项并选择；若下拉为空，可手动填写分类 id。");
+      setRightPanel("settings");
+      requestAnimationFrame(() => document.getElementById("fiftyone-cto-cate-input")?.focus());
+      return;
+    }
     const tags = publishTags.split(/[,，\s]+/).map((tag) => tag.trim()).filter(Boolean);
+    if (tags.length === 0) {
+      // 51CTO 要求发布前必须填写至少一个标签；标签已默认从主稿属性自动填充，这里仅在用户清空时拦截。
+      setPublishValidationError("51CTO 要求发布前必须填写至少一个标签。标签已默认从主稿属性的 tags 自动填充；若为空，请在此填写后再发布（多个标签用逗号分隔）。");
+      setRightPanel("settings");
+      requestAnimationFrame(() => document.getElementById("fiftyone-cto-tags-input")?.focus());
+      return;
+    }
+    setPublishValidationError("");
     onPublish({ pid: publishPid.trim(), cateId: publishCateId.trim(), tags, blogType: publishBlogType });
   };
 
@@ -404,9 +517,56 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
             <small>{draft.digest.length}/200 字{draft.digest ? "" : " · 默认沿用主稿摘要，也可让 AI 重新生成"}</small>
             <button type="button" className="secondary-button" onClick={() => void generateSummary()} disabled={!isDraft || saving || summaryBusy}>{summaryBusy ? "AI 正在提炼摘要…" : draft.digest ? "AI 重新生成摘要" : "AI 生成适配摘要"}</button>
           </label>
-          <label>一级栏目 pid（可选）<input value={publishPid} disabled={!canEditPublishOptions} onChange={(event) => setPublishPid(event.target.value)} placeholder="留空则自动从发布页抓取" /><small>对应 51CTO 的一级分类 id；不填时由客户端自动获取。</small></label>
-          <label>授权分类 cate_id（可选）<input value={publishCateId} disabled={!canEditPublishOptions} onChange={(event) => setPublishCateId(event.target.value)} placeholder="留空则自动从发布页抓取" /><small>对应 51CTO 的授权分类 id；不填时由客户端自动获取。若自动获取为空，可能会提示“请选择授权分类”。</small></label>
-          <label>标签（逗号分隔）<input value={publishTags} disabled={!canEditPublishOptions} onChange={(event) => setPublishTags(event.target.value)} placeholder="例如：前端, 架构, 后端" /><small>51CTO 标签为自由文本，用英文或中文逗号分隔。</small></label>
+          <div className="fiftyone-cto-category-loader">
+            <button type="button" className="secondary-button" onClick={() => void handleLoadCategories()} disabled={!canEditPublishOptions || categoryLoading}>
+              {categoryLoading ? "正在从 51CTO 加载…" : "加载分类"}
+            </button>
+            <small>从 51CTO 后台同步我的文章分类，保存到本地后，后续发布无需重复登录。</small>
+          </div>
+          {categoryLoadError && <p className="error editor-inline-error">{categoryLoadError}</p>}
+          {loadedCategories && (loadedCategories.pidOptions.length === 0 || loadedCategories.cateOptions.length === 0) && loadedCategories.debug && (
+            <details className="fiftyone-cto-diagnostic">
+              <summary>未抓到分类选项：51CTO 发布页诊断（供开发校准）</summary>
+              {(loadedCategories.debug.divDropdowns?.length ?? 0) > 0 && (
+                <>
+                  <p>页面中的自定义下拉（div）元素：</p>
+                  <ul>{loadedCategories.debug.divDropdowns?.map((dropdown, index) => (
+                    <li key={index}><code>#{dropdown.id}</code> · <code>{dropdown.selector}</code> · 共 {dropdown.count} 项{dropdown.sample.length ? ` · 示例：${dropdown.sample.map((sample) => `${sample.label}(${sample.value})`).join("、")}` : ""}</li>
+                  ))}</ul>
+                </>
+              )}
+              <p>页面中的原生 &lt;select&gt; 元素：</p>
+              {loadedCategories.debug.selects.length > 0 ? (
+                <ul>{loadedCategories.debug.selects.map((select, index) => (
+                  <li key={index}><code>{select.name || select.id || "(无 name/id)"}</code> · label=&quot;{select.label}&quot; · 共 {select.count} 项{select.sample.length ? ` · 示例：${select.sample.map((sample) => `${sample.label}(${sample.value})`).join("、")}` : ""}</li>
+                ))}</ul>
+              ) : <p>未找到任何 &lt;select&gt; 元素。</p>}
+              <p>含「栏目 / 分类 / 授权」关键词的文本节点：</p>
+              {loadedCategories.debug.categoryTextNodes.length > 0 ? (
+                <ul>{loadedCategories.debug.categoryTextNodes.map((node, index) => <li key={index}>&lt;{node.tag}&gt; {node.text}</li>)}</ul>
+              ) : <p>无。</p>}
+            </details>
+          )}
+          {renderCategoryControl({
+            id: "fiftyone-cto-pid-input",
+            label: "一级栏目 pid（必选）",
+            hint: "对应 51CTO 的一级分类；发布前必选。选项来自「加载分类」拉取的本地缓存。",
+            options: loadedCategories?.pidOptions ?? fiftyoneCtoPidOptions ?? [],
+            value: publishPid,
+            disabled: !canEditPublishOptions,
+            onChange: (value) => { setPublishPid(value); setPublishValidationError(""); }
+          })}
+          {renderCategoryControl({
+            id: "fiftyone-cto-cate-input",
+            label: "授权分类 cate_id（必选）",
+            hint: "对应 51CTO 的授权分类；发布前必选。部分账号的「授权分类」在选定「一级栏目」后才会展开，若下拉为空可手动填写分类 id。",
+            options: loadedCategories?.cateOptions ?? fiftyoneCtoCateOptions ?? [],
+            value: publishCateId,
+            disabled: !canEditPublishOptions,
+            onChange: (value) => { setPublishCateId(value); setPublishValidationError(""); }
+          })}
+          {publishValidationError && <p className="error editor-inline-error" role="alert">{publishValidationError}</p>}
+          <label>标签（必填，逗号分隔）<input id="fiftyone-cto-tags-input" value={publishTags} disabled={!canEditPublishOptions} onChange={(event) => { setPublishTags(event.target.value); setPublishValidationError(""); }} placeholder="例如：前端, 架构, 后端" /><small>51CTO 标签为自由文本，用英文或中文逗号分隔；发布前必须至少填写一个，否则会被 51CTO 拒绝。</small></label>
           <label>文章类型<select value={publishBlogType} disabled={!canEditPublishOptions} onChange={(event) => setPublishBlogType(event.target.value as "1" | "2" | "3")}>{BLOG_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select><small>1=原创，2=转载，3=翻译。</small></label>
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>51CTO 为单步发布：点击「发布到 51CTO」后，渠道稿冻结为快照并直接调用 51CTO 接口发布，发布完成后在发布记录可见结果。</small></div>
           <div className="settings-cover-section">

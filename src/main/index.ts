@@ -31,6 +31,7 @@ import { searchWithVisibleResearchBrowser } from "./automation/research-automati
 import { confirmCsdnBrowserPublish, driveCsdnBrowserPublish, logCsdnBrowserAssist } from "./automation/csdn-automation";
 import { driveWechatBackendToDrafts, getOrCreateWechatBackendWindow, logWechatBrowserAssist } from "./automation/wechat-automation";
 import { readCnblogsPersonalOptions } from "./automation/cnblogs-options-automation";
+import { readFiftyoneCtoCategories } from "./fiftyone-cto/fiftyone-cto-category-automation";
 
 function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
   const escapedBinary = binaryPath.replace(/'/g, "''");
@@ -187,10 +188,11 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
   state.runtimeDatabase = database;
   const modelProvider = new OpenAICodexProvider(path.join(dataDirectory, "ai-sandbox"));
   const assetStore = new LocalAssetStore(path.join(dataDirectory, "content-assets"));
+  const vault = new ElectronCredentialVault(safeStorage);
   const server = await createServer(
     new Date().toISOString(),
     database,
-    new ElectronCredentialVault(safeStorage),
+    vault,
     modelProvider,
     assetStore,
     logFilePath,
@@ -299,6 +301,20 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
       }
     }
     return options;
+  });
+  ipcMain.handle("contentferry:read-fiftyone-cto-categories", async (_event, accountId?: unknown) => {
+    if (typeof accountId !== "string" || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(accountId)) throw new Error("缺少有效的 51CTO 账号标识。");
+    const account = accountRepository.requireAccount(accountId);
+    if (account.platform !== "51cto") throw new Error("该账号不是 51CTO 账号。");
+    const categories = await readFiftyoneCtoCategories(account, accountRepository, vault);
+    // 抓取成功后按账号持久化，弹窗再次打开时直接复用，无需重复抓取。
+    try {
+      accountRepository.saveFiftyoneCtoOptions(accountId, categories.pidOptions, categories.cateOptions);
+    } catch (error) {
+      state.runtimeInfoLogger?.({ accountId, error: error instanceof Error ? error.message : String(error) }, "保存 51CTO 分类选项失败");
+    }
+    // 连同抓取时的页面 DOM 调试结构一起返回，便于前端在选项为空时展示，供校准选择器。
+    return { pidOptions: categories.pidOptions, cateOptions: categories.cateOptions, debug: categories.debug };
   });
   ipcMain.handle("contentferry:open-contentany", async () => {
     const window = await getOrCreateContentAnyWindow();

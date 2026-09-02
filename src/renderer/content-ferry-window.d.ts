@@ -13,6 +13,17 @@ type AppSettings = {
 
 type CodexStatus = { ok: boolean; binaryPath: string | null; authenticated: boolean; authMethod?: string; reason?: string };
 
+type FiftyoneCtoCategoryOption = { value: string; label: string };
+type FiftyoneCtoCategoryDebug = {
+  selects: Array<{ name: string; id: string; label: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
+  categoryTextNodes: Array<{ tag: string; text: string }>;
+};
+type FiftyoneCtoCategoriesResult = {
+  pidOptions: FiftyoneCtoCategoryOption[];
+  cateOptions: FiftyoneCtoCategoryOption[];
+  debug?: FiftyoneCtoCategoryDebug;
+};
+
 declare global {
   interface Window {
     contentFerry?: {
@@ -24,6 +35,7 @@ declare global {
       openContentAny: () => Promise<void>;
       openCsdnPublisher: (jobId: string) => Promise<void>;
       readCnblogsPersonalOptions: (accountId: string) => Promise<{ categories: string[]; tags: string[] }>;
+      readFiftyoneCtoCategories: (accountId: string) => Promise<FiftyoneCtoCategoriesResult>;
       openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;
       runZhuqueDetection: (markdown: string) => Promise<{

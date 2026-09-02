@@ -76,13 +76,25 @@ describe("isFiftyoneCtoLoggedInHtml（用首页 SSR HTML 标记判断登录态�
   const loggedOutHtml =
     '<li class="logins"><a href="/user/login">登录</a><a href="/user/reg">注册</a></li>';
 
-  it("accepts the logged-in home page markup (more user + logout + data-uid)", () => {
+  // 匿名首页也会包含作者头像 data-uid 与内联类名 login-out（右侧「退出」无关），
+  // 因此 data-uid / login-out 绝不能当作正向判据，否则会把未登录 Cookie 误判为已登录。
+  const anonymousHomeHtml =
+    '<li class="logins"><a href="/user/login">登录</a></li>' +
+    '<img class="author-avatar" data-uid="999" src="https://avatar.51cto.com/999.jpg">' +
+    '<span class="login-out">已退出</span>';
+
+  it("accepts the logged-in home page markup (more user)", () => {
     expect(isFiftyoneCtoLoggedInHtml(loggedInHtml)).toBe(true);
   });
 
   it("rejects the logged-out home page markup (class='logins')", () => {
     // 未登录时地址栏同样可以是 blog.51cto.com，必须靠 HTML 标记区分。
     expect(isFiftyoneCtoLoggedInHtml(loggedOutHtml)).toBe(false);
+  });
+
+  it("rejects anonymous home markup that only has data-uid / login-out (no more user)", () => {
+    // 关键不变量：匿名首页含 data-uid×N 与 login-out，若把它们当正向判据会假阳性。
+    expect(isFiftyoneCtoLoggedInHtml(anonymousHomeHtml)).toBe(false);
   });
 
   it("rejects empty html", () => {

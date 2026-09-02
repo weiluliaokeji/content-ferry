@@ -55,9 +55,13 @@ export function shouldRecordCookieGrabLoadError(status: FiftyoneCtoGrabStatus): 
 /**
  * 登录态校验：用 Cookie 去请求 51CTO 博客首页（SSR），检查响应 HTML 里的
  * 登录态标记。首页导航由服务端渲染，登录/未登录的标记直接写在初始 HTML 中：
- * - 已登录：右上角是 <li class="more user">，含「退出」按钮（login-out）与
- *   头像 data-uid；
+ * - 已登录：右上角是 <li class="more user">（用户菜单，含「退出」）；
  * - 未登录：右上角是 <li class="logins">，含「登录 / 注册」入口。
+ *
+ * 注意：匿名首页也包含 头像 data-uid（文章作者，约 10 处）与内联 CSS 类名
+ * login-out（约 1 处），因此 data-uid / login-out 不能作为正向判据，否则会
+ * 把未登录 Cookie 误判为已登录。可靠的唯一正向标记是 class="more user"，
+ * 唯一负向标记是 class="logins"。
  *
  * 为什么不用地址栏 URL：未登录时地址栏同样可以是 blog.51cto.com，纯域名判断
  * 会假阳性。为什么不用 fetch 发布页看 am-editor：发布页是 SPA，初始 HTML 是
@@ -68,6 +72,14 @@ export function isFiftyoneCtoLoggedInHtml(html: string): boolean {
   const lower = html.toLowerCase();
   // 明确的未登录标记优先判失败（class="logins" 是未登录导航专属）。
   if (/class="logins"/.test(lower)) return false;
-  // 已登录正向标记：用户菜单（more user）/ 退出按钮 / 头像 data-uid。
-  return /class="more user"|login-out|data-uid=/.test(lower);
+  // 已登录正向标记：仅认 <li class="more user">（其它标记在匿名页也会命中）。
+  return /class="more user"/.test(lower);
+}
+
+/** 仅保留 51CTO 域（含子域）下的 Cookie，剔除抓取会话中混入的其它站点 Cookie。 */
+export function filterFiftyoneCtoCookies(cookies: CookieEntry[]): CookieEntry[] {
+  return cookies.filter((entry) => {
+    const domain = entry.domain?.toLowerCase() ?? "";
+    return domain === "51cto.com" || domain.endsWith(".51cto.com");
+  });
 }

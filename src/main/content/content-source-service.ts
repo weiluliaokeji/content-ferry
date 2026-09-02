@@ -9,6 +9,7 @@ export interface ContentSourcePreviewItem {
   relativePath: string;
   title: string | null;
   frontMatterKeys: string[];
+  tags: string[];
   createdAt: string | null;
   archived: boolean;
 }
@@ -89,7 +90,7 @@ export class ContentSourceService {
         return { relativePath, ...parsed, createdAt: parsed.createdAt ?? fallbackCreatedAt };
       } catch {
         warnings.push(`无法读取：${relativePath}`);
-        return { relativePath, title: null, frontMatterKeys: [], createdAt: null, archived: false };
+        return { relativePath, title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
       }
     });
     allItems.sort((left, right) => {
@@ -111,6 +112,13 @@ export class ContentSourceService {
       markdown: parts.body,
       frontMatter: parts.frontMatter
     };
+  }
+
+  getArticleTags(workspaceId: string, relativePath: string): string[] {
+    const filePath = this.resolveArticlePath(workspaceId, relativePath);
+    const source = fs.readFileSync(filePath, "utf8");
+    const parts = splitFrontMatter(source);
+    return parseFrontMatterTags(parts.frontMatter);
   }
 
   saveArticle(workspaceId: string, relativePath: string, markdown: string): ContentSourceArticle {
@@ -509,17 +517,67 @@ function isArticlePath(relativePath: string): boolean {
   return segments[0] === "posts" && segments.length >= 3 && segments.at(-1)?.toLowerCase() === "index.md";
 }
 
-function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "createdAt" | "archived"> {
-  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], createdAt: null, archived: false };
+function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "tags" | "createdAt" | "archived"> {
+  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
   const closing = markdown.indexOf("\n---", 3);
-  if (closing < 0) return { title: null, frontMatterKeys: [], createdAt: null, archived: false };
+  if (closing < 0) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
   const lines = markdown.slice(3, closing).split(/\r?\n/);
   const frontMatterKeys = lines.map((line) => /^([A-Za-z][\w-]*):/.exec(line.trim())?.[1]).filter((key): key is string => Boolean(key));
   const title = lines.map((line) => /^title:\s*["']?(.+?)["']?\s*$/.exec(line.trim())?.[1]).find((value): value is string => Boolean(value)) ?? null;
   const createdAt = lines.map((line) => /^created:\s*["']?(.+?)["']?\s*$/.exec(line.trim())?.[1]).find((value): value is string => Boolean(value)) ?? null;
   const archivedLine = lines.map((line) => /^archived:\s*(.+?)\s*$/.exec(line.trim())?.[1]).find((value): value is string | undefined => Boolean(value));
   const archived = archivedLine ? /^(true|yes|1)$/i.test(archivedLine) : false;
-  return { title, frontMatterKeys, createdAt, archived };
+  const tags = parseFrontMatterTags(markdown.slice(3, closing));
+  return { title, frontMatterKeys, tags, createdAt, archived };
+}
+
+/**
+ * 从 front matter 文本中解析 tags。兼容两种常见写法：
+ * 1) 逗号/分号分隔的标量：tags: AI安全, 实战教程
+ * 2) YAML 列表：tags:\n  - AI安全\n  - 实战教程\n  或 tags: [AI安全, 实战教程]
+ * 返回去重、去空、trim 后的标签数组。
+ */
+export function parseFrontMatterTags(frontMatter: string): string[] {
+  const lines = frontMatter.split(/\r?\n/);
+  let inTags = false;
+  const raw: string[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    if (inTags) {
+      if (/^[A-Za-z][\w-]*:/.test(trimmed)) break;
+      if (/^-\s+(.+)$/.test(trimmed)) {
+        raw.push(trimmed.replace(/^-\s+/, ""));
+        continue;
+      }
+      // 数组行内格式 tags: [a, b]
+      const inline = /^tags:\s*\[([^\]]*)\]/.exec(trimmed);
+      if (inline) {
+        raw.push(...inline[1].split(/[,，]/));
+        break;
+      }
+      break;
+    }
+    if (/^tags\s*:/.test(trimmed)) {
+      const scalar = /^tags\s*:\s*["']?(.+?)["']?\s*$/.exec(trimmed);
+      if (scalar) {
+        raw.push(...scalar[1].split(/[,，]/));
+        break;
+      }
+      const inline = /^tags\s*:\s*\[([^\]]*)\]/.exec(trimmed);
+      if (inline) {
+        raw.push(...inline[1].split(/[,，]/));
+        break;
+      }
+      inTags = true;
+    }
+  }
+  const result = raw.map((value) => value.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  return [...new Set(result)];
+}
+
+export function getArticleTags(frontMatter: string): string[] {
+  return parseFrontMatterTags(frontMatter);
 }
 
 function parseCreatedTimestamp(value: string | null): number {

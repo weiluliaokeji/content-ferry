@@ -16,6 +16,8 @@ export interface FiftyoneCtoPublishInput {
   blogType: "1" | "2" | "3";
   pid: string;
   cateId: string;
+  /** 文章摘要（来自草稿 digest）。51CTO 摘要字段为 abstract。 */
+  abstract?: string;
 }
 
 export class CTOClient {
@@ -23,6 +25,14 @@ export class CTOClient {
   static readonly PAGE_URL = "https://blog.51cto.com/blogger/publish?old=1&orig=first-publish";
 
   private readonly baseHeaders: Record<string, string>;
+  /**
+   * 发布页 GET 响应下发的当次 `_csrf` cookie。
+   * Yii2 要求 POST 的 `_csrf` 参数必须与请求里的 `_csrf` cookie 完全一致，否则
+   * 直接返回 404「文章不存在或已删除」页（与不存在的路由同款），被误判成登录失效。
+   * 存储的 Cookie 串里的 `_csrf` 来自更早的抓取会话，与本次 GET 取到的 csrf-token
+   * 不一致，因此必须用当次 GET 下发的 `_csrf` cookie 覆盖后再 POST。
+   */
+  private freshCsrfCookie: string | undefined;
 
   constructor(private readonly cookie: string, private readonly fetcher: FetchLike = fetch) {
     this.baseHeaders = {
@@ -33,7 +43,7 @@ export class CTOClient {
     };
   }
 
-  /** 从发布页抓取 CSRF token、pid（一级栏目）、cate_id（二级/授权分类）。 */
+  /** 从发布页抓取 CSRF token、pid（一级栏目）、cate_id（二级/授权分类），并记下当次 _csrf cookie。 */
   async fetchConfig(): Promise<{ csrfToken: string; pid: string; cateId: string }> {
     const result = { csrfToken: "", pid: "", cateId: "" };
     const req = new Request(CTOClient.PAGE_URL, { headers: this.baseHeaders });
@@ -42,6 +52,9 @@ export class CTOClient {
 
     const csrf = /<meta\s+name="csrf-token"\s+content="([^"]+)"/.exec(html);
     if (csrf) result.csrfToken = csrf[1];
+
+    // 取当次 GET 下发的 _csrf cookie（与上面的 csrf-token meta 同源），用于 POST 时覆盖旧 cookie。
+    this.freshCsrfCookie = extractSetCookieValue(resp.headers, "_csrf");
 
     const pid = /pid:\s*'(\d+)'/.exec(html);
     if (pid) result.pid = pid[1];
@@ -70,15 +83,20 @@ export class CTOClient {
       pid,
       cate_id: cateId,
       tag: input.tags,
+      abstract: input.abstract ?? "",
       blog_type: input.blogType,
       copy_code: "1",
-      is_old: "2",
+      is_old: "0",
       check: "0",
       _csrf: config.csrfToken
     });
 
+    // Yii2 要求 _csrf 参数与 _csrf cookie 一致：用当次 GET 下发的 _csrf 覆盖存储串里的旧值。
+    const cookieHeader = mergeCsrfCookie(this.cookie, this.freshCsrfCookie);
+
     const headers: Record<string, string> = {
       ...this.baseHeaders,
+      Cookie: cookieHeader,
       accept: "application/json, text/javascript, */*; q=0.01",
       "accept-language": "zh-CN,zh;q=0.9",
       "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -99,7 +117,11 @@ export class CTOClient {
     } catch {
       // 发布接口返回了 HTML（通常是登录页）而非 JSON：说明 Cookie 没有通过
       // 登录态校验。用更准确文案替代含糊的“可能已过期”，便于定位。
-      const looksLikeLoginPage = /<!DOCTYPE|<html/i.test(text) && /passport|login|请登录|登录后|未登录/i.test(text);
+      // 仅匹配真正的登录/鉴权页标记，避免误命中发布接口返回的 404「文章不存在」页
+      // （该页内联脚本含 login.js、退出按钮含 login-out 类，裸 login 正则会误判为登录页）。
+      const looksLikeLoginPage =
+        /<!DOCTYPE|<html/i.test(text) &&
+        /passport|请登录|登录后|未登录|账号登录|登录 51CTO|立即登录|去登录/i.test(text);
       if (looksLikeLoginPage) {
         throw new FiftyoneCtoCredentialsError("51CTO 返回的是登录页，Cookie 无效或未登录。请重新在账号管理获取最新 Cookie 后重试。");
       }
@@ -203,4 +225,40 @@ export function mdToHtml51(md: string): string {
   flushList();
 
   return `<div class="editor-container container am-engine" id="container" data-element="root">\n${html.join("\n")}\n</div>`;
+}
+
+/** 从响应 set-cookie 头里取指定 cookie 的值（多行 set-cookie 时逐行匹配）。 */
+function extractSetCookieValue(headers: Headers, name: string): string | undefined {
+  const lines = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [];
+  const fallback = headers.get("set-cookie");
+  if (fallback && lines.length === 0) lines.push(fallback);
+  const lower = name.toLowerCase();
+  for (const line of lines) {
+    const m = new RegExp(`(?:^|;\\s*)${escapeRegExp(lower)}=([^;]+)`, "i").exec(line);
+    if (m) return m[1].trim();
+  }
+  return undefined;
+}
+
+/**
+ * 用当次 GET 下发的 _csrf cookie 覆盖存储 Cookie 串里的旧 _csrf。
+ * Yii2 CSRF 校验要求 POST 的 _csrf 参数与请求中的 _csrf cookie 完全一致，
+ * 而存储串里的 _csrf 来自更早的抓取会话（与本次 csrf-token 不同），必须替换。
+ */
+function mergeCsrfCookie(originalCookie: string, freshCsrf: string | undefined): string {
+  const parts: string[] = [];
+  for (const raw of originalCookie.split(";")) {
+    const piece = raw.trim();
+    if (!piece) continue;
+    const eq = piece.indexOf("=");
+    const name = eq >= 0 ? piece.slice(0, eq).trim().toLowerCase() : piece.toLowerCase();
+    if (name === "_csrf") continue;
+    parts.push(piece);
+  }
+  if (freshCsrf) parts.push(`_csrf=${freshCsrf}`);
+  return parts.join("; ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

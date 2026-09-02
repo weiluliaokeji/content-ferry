@@ -26,6 +26,17 @@ type AppSettingsContract = {
 
 type CodexStatusContract = { ok: boolean; binaryPath: string | null; authenticated: boolean; authMethod?: string; reason?: string };
 
+type FiftyoneCtoCategoryOption = { value: string; label: string };
+type FiftyoneCtoCategoryDebug = {
+  selects: Array<{ name: string; id: string; label: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
+  categoryTextNodes: Array<{ tag: string; text: string }>;
+};
+type FiftyoneCtoCategoriesContract = {
+  pidOptions: FiftyoneCtoCategoryOption[];
+  cateOptions: FiftyoneCtoCategoryOption[];
+  debug?: FiftyoneCtoCategoryDebug;
+};
+
 contextBridge.exposeInMainWorld("contentFerry", {
   apiBaseUrl: "http://127.0.0.1:4317",
   selectDirectory: (): Promise<string | undefined> => ipcRenderer.invoke("contentferry:select-directory") as Promise<string | undefined>,
@@ -37,6 +48,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
   openCsdnPublisher: (jobId: string): Promise<void> => ipcRenderer.invoke("contentferry:open-csdn-publisher", jobId) as Promise<void>,
   readCnblogsPersonalOptions: (accountId: string): Promise<{ categories: string[]; tags: string[] }> =>
     ipcRenderer.invoke("contentferry:read-cnblogs-personal-options", accountId) as Promise<{ categories: string[]; tags: string[] }>,
+  readFiftyoneCtoCategories: (accountId: string): Promise<FiftyoneCtoCategoriesContract> =>
+    ipcRenderer.invoke("contentferry:read-fiftyone-cto-categories", accountId) as Promise<FiftyoneCtoCategoriesContract>,
   openUserGuide: (): Promise<void> => ipcRenderer.invoke("contentferry:open-user-guide") as Promise<void>,
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>

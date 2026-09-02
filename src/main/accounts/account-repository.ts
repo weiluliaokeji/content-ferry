@@ -26,6 +26,10 @@ export interface MediaAccount {
   cnblogsCategories: string[];
   /** 博客园 Tag 标签（发布设置里可快速勾选），从创作后台读取后持久化。 */
   cnblogsTags: string[];
+  /** 51CTO 一级栏目（pid）选项，从发布页读取后持久化，{value,label} 列表。 */
+  fiftyoneCtoPidOptions: Array<{ value: string; label: string }>;
+  /** 51CTO 授权分类（cate_id）选项，从发布页读取后持久化，{value,label} 列表。 */
+  fiftyoneCtoCateOptions: Array<{ value: string; label: string }>;
 }
 
 export class AccountAlreadyExistsError extends Error {
@@ -64,7 +68,8 @@ export class AccountRepository {
       SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
              EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
              p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
-             p.cnblogs_categories, p.cnblogs_tags
+             p.cnblogs_categories, p.cnblogs_tags,
+             p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options
       FROM media_accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
       WHERE a.workspace_id = ? AND a.deleted_at IS NULL ORDER BY a.created_at
     `).all(workspaceId) as Array<Record<string, string | null>>;
@@ -130,6 +135,18 @@ export class AccountRepository {
     return this.requireAccount(accountId);
   }
 
+  /** 持久化 51CTO 发布页抓取的一级栏目（pid）与授权分类（cate_id）选项，供发布设置下拉复用。 */
+  saveFiftyoneCtoOptions(accountId: string, pidOptions: Array<{ value: string; label: string }>, cateOptions: Array<{ value: string; label: string }>): MediaAccount {
+    this.requireAccount(accountId);
+    const now = new Date().toISOString();
+    const safePid = Array.isArray(pidOptions) ? pidOptions.filter((item) => item && String(item.value ?? "").trim() && String(item.label ?? "").trim()).map((item) => ({ value: String(item.value).slice(0, 12), label: String(item.label).slice(0, 60) })) : [];
+    const safeCate = Array.isArray(cateOptions) ? cateOptions.filter((item) => item && String(item.value ?? "").trim() && String(item.label ?? "").trim()).map((item) => ({ value: String(item.value).slice(0, 12), label: String(item.label).slice(0, 60) })) : [];
+    const changed = this.db.prepare("UPDATE account_profiles SET fiftyone_cto_pid_options = ?, fiftyone_cto_cate_options = ?, updated_at = ? WHERE account_id = ?")
+      .run(JSON.stringify(safePid), JSON.stringify(safeCate), now, accountId);
+    if (changed.changes === 0) throw new Error("Account not found.");
+    return this.requireAccount(accountId);
+  }
+
   saveCredential(accountId: string, credentialKind: string, secret: string, vault: CredentialVault): void {
     this.requireAccount(accountId);
     const existing = this.db.prepare("SELECT secret_id FROM account_credentials WHERE account_id = ? AND credential_kind = ?")
@@ -150,7 +167,8 @@ export class AccountRepository {
     const row = this.db.prepare(`SELECT a.id, a.workspace_id, a.platform, a.display_name, a.external_account_id, a.capability_level,
       EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
       p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
-      p.cnblogs_categories, p.cnblogs_tags
+      p.cnblogs_categories, p.cnblogs_tags,
+      p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options
       FROM media_accounts a JOIN account_profiles p ON p.account_id = a.id WHERE a.id = ? AND a.deleted_at IS NULL`).get(id) as Record<string, string | null> | undefined;
     if (!row) throw new Error("Account not found.");
     return this.mapAccount(row);
@@ -205,8 +223,24 @@ export class AccountRepository {
         regularColumns: row.regular_columns ?? emptyProfile.regularColumns,
         articleSignature: row.article_signature ?? emptyProfile.articleSignature },
       cnblogsCategories: parseJsonStringArray(row.cnblogs_categories),
-      cnblogsTags: parseJsonStringArray(row.cnblogs_tags)
+      cnblogsTags: parseJsonStringArray(row.cnblogs_tags),
+      fiftyoneCtoPidOptions: parseCategoryOptions(row.fiftyone_cto_pid_options),
+      fiftyoneCtoCateOptions: parseCategoryOptions(row.fiftyone_cto_cate_options)
     };
+  }
+}
+
+/** 把 account_profiles 里存为 JSON 字符串的分类选项列安全地解析回 {value,label}[]；空/非法值回退空数组。 */
+function parseCategoryOptions(value: string | null | undefined): Array<{ value: string; label: string }> {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is { value: string; label: string } => item && typeof item === "object" && typeof item.value === "string" && typeof item.label === "string")
+      .map((item) => ({ value: item.value, label: item.label }));
+  } catch {
+    return [];
   }
 }
 

@@ -56,6 +56,12 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
     return contentSources.getArticle(workspace.id, query.path);
   });
 
+  server.get("/api/content-source/article-tags", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = z.object({ path: z.string().trim().min(1).max(1000) }).parse(request.query);
+    return { tags: contentSources.getArticleTags(workspace.id, query.path) };
+  });
+
   server.put("/api/content-source/article", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentSourceArticleInput.parse(request.body);
