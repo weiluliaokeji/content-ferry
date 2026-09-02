@@ -8,6 +8,7 @@ import type { ModelProvider } from "../ai/model-provider";
 import { ContentSourceService } from "../content/content-source-service";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
+import { JUEJIN_MAX_TAGS } from "../../shared/juejin-tags";
 import { JuejinChannelService, type JuejinPublishJob } from "./juejin-channel-service";
 
 const testVault: CredentialVault = {
@@ -33,7 +34,7 @@ function createApiFetcher(handlers: Record<string, (call: ApiCall) => Response |
   const fetcher = (async (input: unknown, init: RequestInit | undefined) => {
     const body = String(init?.body ?? "");
     const url = String(input);
-    const endpoint = /\/content_api\/v1\/([^?]+)/.exec(url)?.[1] ?? "";
+    const endpoint = /\/(?:content|tag)_api\/v1\/([^?]+)/.exec(url)?.[1] ?? "";
     const call = { endpoint, url, body };
     calls.push(call);
     const handler = handlers[endpoint];
@@ -90,7 +91,7 @@ describe("JuejinChannelService", () => {
     sourceDirectory = undefined;
   });
 
-  function setupHarness(handlers: Record<string, (call: ApiCall) => Response | Error> = defaultHandlers()) {
+  function setupHarness(handlers: Record<string, (call: ApiCall) => Response | Error> = defaultHandlers(), providerOverride?: ModelProvider) {
     const { fetcher, calls } = createApiFetcher(handlers);
     database = openInMemoryDatabase();
     const accounts = new AccountRepository(database.connection);
@@ -121,7 +122,7 @@ describe("JuejinChannelService", () => {
     accounts.saveCredential(account.id, "juejin_cookie", "sessionid=abc; passport_csrf_token=xyz", testVault);
     accounts.saveCredential(account.id, "juejin_aid", "2608", testVault);
     accounts.saveCredential(account.id, "juejin_uuid", "uuid-123", testVault);
-    const provider = {
+    const provider = providerOverride ?? {
       generateStructured: async () => ({
         value: { title: "适配后的标题", markdown: "# 适配后的标题\n\n适配后的独立正文。" }
       })
@@ -161,6 +162,96 @@ describe("JuejinChannelService", () => {
       markdown: "# 违规标题\n\n关注公众号获取更多。"
     })).toThrow(/公众号引流/);
   });
+
+  it("recommends category and tags from official lists via AI, constraining to valid ids", async () => {
+    const tagHandler = () => apiResponse([
+      { tag: { tag_id: "tag-1", tag_name: "Docker" } },
+      { tag: { tag_id: "tag-2", tag_name: "Kubernetes" } },
+      { tag: { tag_id: "tag-3", tag_name: "前端" } }
+    ]);
+    const provider = {
+      generateStructured: async (req: { prompt: string }) => {
+        expect(req.prompt).toContain("Docker");
+        expect(req.prompt).toContain("可选分类");
+        return { value: { categoryId: "6809637769959178254", tagIds: ["tag-1", "tag-2", "not-a-real-tag"] } };
+      }
+    } as unknown as ModelProvider;
+    const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
+
+    const recommendation = await service.recommendPublishOptions(account.id, {
+      title: "用 Docker 部署 Kubernetes 集群",
+      markdown: "# 用 Docker 部署 Kubernetes 集群\n\n容器编排实践。"
+    });
+
+    expect(recommendation.categoryId).toBe("6809637769959178254");
+    // 非法 tag id 被剔除，只保留官方清单内的 id。
+    expect(recommendation.tagIds).toEqual(["tag-1", "tag-2"]);
+  });
+
+  it("caps the AI tag recommendation at the Juejin platform limit of 3 tags", async () => {
+    const tagHandler = () => apiResponse([
+      { tag: { tag_id: "tag-1", tag_name: "Docker" } },
+      { tag: { tag_id: "tag-2", tag_name: "Kubernetes" } },
+      { tag: { tag_id: "tag-3", tag_name: "云原生" } },
+      { tag: { tag_id: "tag-4", tag_name: "容器" } },
+      { tag: { tag_id: "tag-5", tag_name: "运维" } }
+    ]);
+    const provider = {
+      generateStructured: async () => ({
+        value: { categoryId: "6809637769959178254", tagIds: ["tag-1", "tag-2", "tag-3", "tag-4", "tag-5"] }
+      })
+    } as unknown as ModelProvider;
+    const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
+
+    const recommendation = await service.recommendPublishOptions(account.id, {
+      title: "用 Docker 部署 Kubernetes 集群",
+      markdown: "# 用 Docker 部署 Kubernetes 集群\n\n容器编排实践。"
+    });
+
+    // 掘金接口最多接受 3 个标签；AI 即便返回更多也必须截断，否则创建草稿会被拒绝。
+    expect(recommendation.tagIds).toEqual(["tag-1", "tag-2", "tag-3"]);
+    expect(recommendation.tagIds.length).toBe(JUEJIN_MAX_TAGS);
+  });
+
+  it("falls back to deterministic inference when the model is unavailable", async () => {
+    const tagHandler = () => apiResponse([
+      { tag: { tag_id: "tag-3", tag_name: "前端" } }
+    ]);
+    const provider = {
+      generateStructured: async () => { throw new Error("模型不可用"); }
+    } as unknown as ModelProvider;
+    const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
+
+    const recommendation = await service.recommendPublishOptions(account.id, {
+      title: "一段与任何官方标签都无关的内容",
+      markdown: "# 一段与任何官方标签都无关的内容\n\n纯散文。"
+    });
+
+    // 模型失败时回退到确定性分类（无关键词命中 → 代码人生），标签为空数组。
+    expect(recommendation.categoryId).toBe("6809637776263217160");
+    expect(recommendation.tagIds).toEqual([]);
+  });
+
+  it("stores the AI recommendation on the channel draft at creation time", async () => {
+    const tagHandler = () => apiResponse([
+      { tag: { tag_id: "tag-1", tag_name: "Docker" } },
+      { tag: { tag_id: "tag-2", tag_name: "Kubernetes" } }
+    ]);
+    const provider = {
+      generateStructured: async (req: { prompt: string }) => {
+        if (req.prompt.includes("可选分类")) {
+          return { value: { categoryId: "6809637769959178254", tagIds: ["tag-1", "tag-2"] } };
+        }
+        return { value: { title: "适配后的标题", markdown: "# 适配后的标题\n\n正文。" } };
+      }
+    } as unknown as ModelProvider;
+    const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
+
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    expect(draft.suggestedCategoryId).toBe("6809637769959178254");
+    expect(draft.suggestedTagIds).toEqual(["tag-1", "tag-2"]);
+  });
+
 
   it("creates an idempotent publish job that reaches draft_created", async () => {
     const { account, service, calls } = setupHarness();
@@ -267,6 +358,27 @@ describe("JuejinChannelService", () => {
     expect(body.cover_image).toBe("");
     expect(body.edit_type).toBe(10);
     expect(body.html_content).toBe("deprecated");
+  });
+
+  it("clamps tag_ids to the 3-tag platform limit when creating the remote draft", async () => {
+    const { account, service, calls } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const saved = service.saveDraft(draft.id, {
+      title: "掘金标签上限测试",
+      markdown: "# 掘金标签上限测试\n\n正文"
+    });
+    const approved = service.approveDraft(saved.id);
+    // 即便上游（旧草稿的 AI 推荐等）传来超过上限的标签，发布前也必须截断，
+    // 否则掘金接口会直接拒绝："您最多可以为文章添加3个标签"。
+    const job = service.createPublishJob(approved.id, {
+      categoryId: "6809637771511070734",
+      tagIds: ["tag-1", "tag-2", "tag-3", "tag-4", "tag-5"]
+    });
+    await waitForJob(service, job.id, "draft_created");
+
+    const create = calls.find((call) => call.endpoint === "article_draft/create")!;
+    const body = JSON.parse(create.body) as Record<string, unknown>;
+    expect(body.tag_ids).toEqual(["tag-1", "tag-2", "tag-3"]);
   });
 
   it("moves to needs_credentials when credentials are missing and recovers after configuration", async () => {

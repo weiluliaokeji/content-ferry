@@ -570,6 +570,12 @@ export function initialiseDatabase(db: Database.Database): void {
   if (!channelDraftColumns.some((column) => column.name === "cover_source")) {
     db.exec("ALTER TABLE channel_drafts ADD COLUMN cover_source TEXT NOT NULL DEFAULT ''");
   }
+  if (!channelDraftColumns.some((column) => column.name === "suggested_category_id")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN suggested_category_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (!channelDraftColumns.some((column) => column.name === "suggested_tag_ids")) {
+    db.exec("ALTER TABLE channel_drafts ADD COLUMN suggested_tag_ids TEXT NOT NULL DEFAULT '[]'");
+  }
 
   // 迁移：放宽 csdn_publish_jobs.status 的 CHECK 约束，容纳 needs_user / failed。
   // 早期版本的约束缺少这两个状态，会导致填充失败回写与人工校正失败。幂等：仅在

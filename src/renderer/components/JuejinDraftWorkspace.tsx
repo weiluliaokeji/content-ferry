@@ -8,6 +8,7 @@ interface JuejinChannelDraftShape {
   id: string; accountId: string; sourceRelativePath: string; generationMode: "rewrite" | "source";
   title: string; markdown: string; author: string; digest: string; coverSource: string;
   status: "draft" | "approved" | "superseded";
+  suggestedCategoryId: string; suggestedTagIds: string[];
 }
 
 export type JuejinDraftPatch = Partial<Pick<JuejinChannelDraftShape, "title" | "markdown" | "author" | "digest" | "coverSource">>;
@@ -57,89 +58,7 @@ function juejinJobLabel(status: JuejinPublishJobShape["status"]): string {
   }
 }
 
-/** 掘金固定分类 ID（来自 PsChina/web-publish adapters/juejin.yaml 实测）。 */
-const JUEJIN_CATEGORIES: Array<{ label: string; id: string }> = [
-  { label: "后端", id: "6809637769959178254" },
-  { label: "前端", id: "6809637767543259144" },
-  { label: "Android", id: "6809635626879549454" },
-  { label: "iOS", id: "6809635626661445640" },
-  { label: "人工智能", id: "6809637773935378440" },
-  { label: "开发工具", id: "6809637771511070734" },
-  { label: "代码人生", id: "6809637776263217160" },
-  { label: "阅读", id: "6809637772874219534" }
-];
-
-/** 掘金已知 tag 名 → ID 映射；未命中的输入按 tag ID 原文透传。 */
-const JUEJIN_KNOWN_TAGS: Record<string, string> = {
-  "AI编程": "7467857238494020000",
-  "OpenAI": "6809641073527226000",
-  "AIGC": "7197380506562871000"
-};
-
-/** 掘金分类关键词组（id 对应 JUEJIN_CATEGORIES）：按标题+正文命中数最多的分类胜出。 */
-const JUEJIN_CATEGORY_KEYWORDS: Array<{ id: string; keywords: string[] }> = [
-  { id: "6809637769959178254", keywords: ["后端", "java", "spring", "微服务", "数据库", "mysql", "redis", "golang", "服务端", "接口", "架构", "分布式", "中间件", "docker", "kubernetes", "k8s", "linux", "nginx", "消息队列", "kafka", "高并发"] },
-  { id: "6809637767543259144", keywords: ["前端", "react", "vue", "javascript", "typescript", "html", "css", "组件", "界面", "网页", "浏览器", "web", "node"] },
-  { id: "6809635626879549454", keywords: ["android", "安卓", "kotlin", "gradle", "apk"] },
-  { id: "6809635626661445640", keywords: ["ios", "swift", "objective-c", "xcode", "iphone", "macos"] },
-  { id: "6809637773935378440", keywords: ["人工智能", "大模型", "llm", "gpt", "机器学习", "深度学习", "神经网络", "nlp", "多模态", "rag", "智能体", "aigc", "prompt", "提示词", "微调", "finetune", "embedding", "token", "ai"] },
-  { id: "6809637771511070734", keywords: ["开发工具", "vscode", "ide", "编辑器", "命令行", "终端", "git", "github", "调试", "性能优化", "测试", "构建", "ci/cd", "自动化"] },
-  { id: "6809637776263217160", keywords: ["程序员", "代码人生", "职场", "面试", "职业", "成长", "心得", "经验", "随笔"] },
-  { id: "6809637772874219534", keywords: ["阅读", "读书", "书评", "读后感", "荐书", "书单"] }
-];
-
-/** 判断 text 是否包含 keyword：纯英文/数字类关键词按单词边界匹配，其余按子串匹配。 */
-function textContainsKeyword(text: string, keyword: string): boolean {
-  const lower = text.toLowerCase();
-  const kw = keyword.toLowerCase();
-  if (/^[a-z0-9][a-z0-9+#._-]*$/.test(kw)) {
-    return new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(lower);
-  }
-  return lower.includes(kw);
-}
-
-/** 根据标题+正文自动推断掘金分类 id：命中关键词最多的分类胜出，无命中时返回默认分类（代码人生）。 */
-export function inferJuejinCategory(title: string, markdown: string): string {
-  const text = `${title}\n${markdown}`.toLowerCase();
-  let bestId = "";
-  let bestScore = 0;
-  for (const group of JUEJIN_CATEGORY_KEYWORDS) {
-    let score = 0;
-    for (const keyword of group.keywords) {
-      if (textContainsKeyword(text, keyword)) score += 1;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestId = group.id;
-    }
-  }
-  if (bestId) return bestId;
-  const fallback = JUEJIN_CATEGORIES.find((category) => category.label === "代码人生");
-  return fallback?.id ?? JUEJIN_CATEGORIES[0]?.id ?? "";
-}
-
-/** 根据标题+正文从官方标签中推断最多 3 个掘金标签 id（id 必须真实存在于 availableTags，严禁造非法 tag_id）。 */
-export function inferJuejinTags(title: string, markdown: string, availableTags: Array<{ id: string; name: string }>): string[] {
-  const text = `${title}\n${markdown}`.toLowerCase();
-  const matched: string[] = [];
-  for (const tag of availableTags) {
-    if (matched.length >= 3) break;
-    const name = tag.name.trim();
-    if (!name) continue;
-    if (textContainsKeyword(text, name)) {
-      matched.push(tag.id);
-      continue;
-    }
-    // 内置映射兜底：标题/正文出现内置标签名时，选中官方标签中同名者。
-    for (const knownName of Object.keys(JUEJIN_KNOWN_TAGS)) {
-      if (knownName.toLowerCase() === name.toLowerCase() && textContainsKeyword(text, knownName)) {
-        matched.push(tag.id);
-        break;
-      }
-    }
-  }
-  return matched;
-}
+import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
 
 function normalizeImageMime(file: File): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
   if (file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/gif" || file.type === "image/webp") return file.type;
@@ -357,22 +276,28 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
 
   // 自动按文章内容推断分类与标签：仅当用户尚未手动设置过、且分类标签可编辑时生效；
   // 用户手动改动过分类或标签后不再覆盖。
+  // 优先采用创建掘金稿时由 AI 推荐的标签/分类（draft.suggested*）；缺省时退回确定性推断。
   useEffect(() => {
     if (!canEditPublishOptions) return;
     if (userTouchedPublishRef.current) return;
-    const category = inferJuejinCategory(draft.title, draft.markdown);
-    if (category) setPublishCategory(category);
-    if (availableTags.length > 0) {
+    if (draft.suggestedCategoryId) {
+      setPublishCategory(draft.suggestedCategoryId);
+    } else {
+      setPublishCategory(inferJuejinCategory(draft.title, draft.markdown));
+    }
+    if (draft.suggestedTagIds && draft.suggestedTagIds.length > 0) {
+      setSelectedTagIds(draft.suggestedTagIds.slice(0, JUEJIN_MAX_TAGS));
+    } else if (availableTags.length > 0) {
       setSelectedTagIds(inferJuejinTags(draft.title, draft.markdown, availableTags));
     }
-  }, [draft.title, draft.markdown, availableTags, canEditPublishOptions]);
+  }, [draft.title, draft.markdown, availableTags, canEditPublishOptions, draft.suggestedCategoryId, draft.suggestedTagIds]);
 
   const toggleTag = (id: string) => {
     userTouchedPublishRef.current = true;
     setSelectedTagIds((current) =>
       current.includes(id)
         ? current.filter((tagId) => tagId !== id)
-        : current.length >= 5 ? current : [...current, id]
+        : current.length >= JUEJIN_MAX_TAGS ? current : [...current, id]
     );
   };
 
@@ -597,7 +522,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
             <button type="button" className="secondary-button" onClick={() => void generateSummary()} disabled={!isDraft || saving || summaryBusy}>{summaryBusy ? "AI 正在提炼摘要…" : draft.digest ? "AI 重新生成摘要" : "AI 生成适配摘要"}</button>
           </label>
           <label>分类（必选）<select value={publishCategory} disabled={!canEditPublishOptions} onChange={(event) => { userTouchedPublishRef.current = true; setPublishCategory(event.target.value); }}><option value="">请选择分类…</option>{JUEJIN_CATEGORIES.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select><small>掘金要求必选一个分类；草稿已创建且任务进行中时不可修改。</small></label>
-          <label>标签（必选 1~5 个）
+          <label>标签（必选 1~{JUEJIN_MAX_TAGS} 个）
             {tagsLoading ? <p className="hint">正在加载掘金官方标签…</p> : <>
               <input value={tagSearch} disabled={!canEditPublishOptions} onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索掘金标签…" />
               <div className="juejin-tag-options">
@@ -605,7 +530,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
                   <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)}>{tag.name}</button>
                 ))}
               </div>
-              <small>已选 {selectedTagIds.length}/5 个 · 选项来自掘金官方标签{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。</small>
+              <small>已选 {selectedTagIds.length}/{JUEJIN_MAX_TAGS} 个 · 掘金最多允许 {JUEJIN_MAX_TAGS} 个{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。</small>
             </>}
           </label>
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>1. 点击「发布到掘金」，渠道稿冻结为快照并创建掘金草稿；2. 草稿创建完成后可先到掘金草稿箱预览；3. 点击「确认公开」后文章正式对外可见。</small></div>

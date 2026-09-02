@@ -21,6 +21,7 @@ import { appendArticleSignature } from "../publishing/article-signature";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
+import { JUEJIN_CATEGORIES, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
 
 const juejinDraftSchema = {
   type: "object",
@@ -75,6 +76,10 @@ export interface JuejinChannelDraft {
   author: string;
   digest: string;
   coverSource: string;
+  /** 创建稿时由 AI 推荐的掘金分类 id（官方分类），缺省时为空串。 */
+  suggestedCategoryId: string;
+  /** 创建稿时由 AI 推荐的掘金标签 id 列表（官方 tag_id），缺省时为空数组。 */
+  suggestedTagIds: string[];
   status: JuejinChannelDraftStatus;
   createdAt: string;
   updatedAt: string;
@@ -92,6 +97,7 @@ export interface JuejinPublishJob {
   remoteContentId: string | null;
   statusNote: string | null;
   errorMessage: string | null;
+  statusSource: "system" | "manual";
   createdAt: string;
   updatedAt: string;
 }
@@ -134,6 +140,61 @@ export class JuejinChannelService {
     if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
     const { client } = this.buildClient(account);
     return client.listTags();
+  }
+
+  /**
+   * 根据标题+正文，从掘金官方分类与标签中由 AI 推荐最相关的分类与最多 JUEJIN_MAX_TAGS 个标签。
+   * 推荐结果以官方 id 为硬约束：AI 返回的 categoryId/tagIds 必须落在官方清单内，
+   * 否则剔除或回退到确定性推断。模型不可用/超时/校验失败时，回退到 inferJuejin*，
+   * 保证创建掘金稿时总能拿到（即便不完美）的分类与标签建议。
+   */
+  async recommendPublishOptions(accountId: string, input: { title: string; markdown: string }): Promise<{ categoryId: string; tagIds: string[] }> {
+    const account = this.accounts.requireAccount(accountId);
+    if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
+
+    // 拉取官方标签候选池（较 UI 下拉更大，给 AI 更多选择）。
+    let tags: Array<{ id: string; name: string }> = [];
+    try {
+      const { client } = this.buildClient(account);
+      tags = await client.listTags("", 200);
+    } catch {
+      tags = [];
+    }
+    const deterministicCategory = inferJuejinCategory(input.title, input.markdown);
+
+    // 拿不到官方标签清单时无法约束 AI 选型，直接退回确定性分类 + 空标签（UI 会自行推断）。
+    if (tags.length === 0) {
+      return { categoryId: deterministicCategory, tagIds: [] };
+    }
+
+    try {
+      const generated = await this.modelProvider.generateStructured({
+        task: "summary",
+        prompt: buildJuejinTagSuggestionPrompt({
+          title: input.title,
+          markdown: input.markdown,
+          categories: JUEJIN_CATEGORIES,
+          tags
+        }),
+        outputSchema: juejinTagSuggestionSchema,
+        timeoutMs: 60_000,
+        parse: (value) => parseJuejinTagSuggestion(value)
+      });
+      const allowedTagIds = new Set(tags.map((tag) => tag.id));
+      const categoryId = JUEJIN_CATEGORIES.some((category) => category.id === generated.value.categoryId)
+        ? generated.value.categoryId
+        : deterministicCategory;
+      const tagIds = generated.value.tagIds.filter((id) => allowedTagIds.has(id)).slice(0, JUEJIN_MAX_TAGS);
+      return {
+        categoryId,
+        tagIds: tagIds.length > 0 ? tagIds : inferJuejinTags(input.title, input.markdown, tags)
+      };
+    } catch {
+      return {
+        categoryId: deterministicCategory,
+        tagIds: inferJuejinTags(input.title, input.markdown, tags)
+      };
+    }
   }
 
   async createFromSource(input: {
@@ -188,16 +249,19 @@ export class JuejinChannelService {
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";
     const coverSource = sourceSettings?.cover_source ?? "";
+    // 创建稿时由 AI 根据正文推荐掘金分类与标签（模型不可用时回退确定性推断）。
+    const recommendation = await this.recommendPublishOptions(account.id, { title, markdown });
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
       this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ?
         WHERE account_id = ? AND source_relative_path = ? AND status IN ('draft', 'approved')`).run(now, account.id, article.relativePath);
       this.db.prepare(`INSERT INTO channel_drafts
-        (id, workspace_id, account_id, project_id, source_relative_path, source_hash, generation_mode, title, markdown, author, digest, cover_source, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`)
+        (id, workspace_id, account_id, project_id, source_relative_path, source_hash, generation_mode, title, markdown, author, digest, cover_source, suggested_category_id, suggested_tag_ids, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`)
         .run(id, account.workspaceId, account.id, input.projectId ?? null, article.relativePath, sourceHash, generationMode,
-          generatedDraft.title.trim().slice(0, 80), markdown, author, sourceDigest.slice(0, 200), coverSource, now, now);
+          generatedDraft.title.trim().slice(0, 80), markdown, author, sourceDigest.slice(0, 200), coverSource,
+          recommendation.categoryId, JSON.stringify(recommendation.tagIds), now, now);
     })();
     return this.requireDraft(id);
   }
@@ -518,7 +582,7 @@ export class JuejinChannelService {
         markContent,
         briefContent,
         categoryId: options.categoryId || "6809637769959178254", // 默认"后端"分类
-        tagIds: options.tagIds.length > 0 ? options.tagIds : [],
+        tagIds: options.tagIds.slice(0, JUEJIN_MAX_TAGS),
         coverImage: draft.coverSource || "",
         editType: 10
       };
@@ -689,6 +753,57 @@ function buildJuejinRewritePrompt(input: {
 ${input.markdown}`;
 }
 
+const juejinTagSuggestionSchema = {
+  type: "object",
+  properties: {
+    categoryId: { type: "string" },
+    tagIds: { type: "array", items: { type: "string" }, maxItems: JUEJIN_MAX_TAGS }
+  },
+  required: ["categoryId", "tagIds"],
+  additionalProperties: false
+} as const;
+
+function parseJuejinTagSuggestion(value: unknown): { categoryId: string; tagIds: string[] } {
+  if (!value || typeof value !== "object") throw new JuejinChannelError("模型没有返回可用的掘金标签建议。");
+  const record = value as Record<string, unknown>;
+  const categoryId = typeof record.categoryId === "string" ? record.categoryId : "";
+  const tagIds = Array.isArray(record.tagIds) ? record.tagIds.filter((id) => typeof id === "string") : [];
+  return { categoryId, tagIds: tagIds.slice(0, JUEJIN_MAX_TAGS) };
+}
+
+function buildJuejinTagSuggestionPrompt(input: {
+  title: string;
+  markdown: string;
+  categories: Array<{ label: string; id: string }>;
+  tags: Array<{ id: string; name: string }>;
+}): string {
+  const categoryLines = input.categories.map((category) => `- ${category.label} (id: ${category.id})`).join("\n");
+  const tagLines = input.tags.map((tag) => `- ${tag.name} (id: ${tag.id})`).join("\n");
+  // 标签取决于主题，标题+开头已足够；截断正文以控制 token 成本。
+  const body = input.markdown.length > 4000
+    ? `${input.markdown.slice(0, 4000)}\n…（正文已截断）`
+    : input.markdown;
+  return `你是掘金（技术社区）的标签推荐助手。请基于下面这篇文章，从给定的官方分类与官方标签中，挑选出最贴合文章主题的分类与标签。
+
+硬性要求：
+- categoryId 必须从下面的“可选分类”列表里选一个，且只能填其 id。
+- tagIds 必须从下面的“可选标签”列表里挑选，最多 ${JUEJIN_MAX_TAGS} 个（掘金接口硬性上限，超过会被拒绝），且只能填列表中的 id；不要编造任何不在列表里的 id。
+- 只根据文章真实主题选型，不要选泛化、无关或仅因某个词偶然出现而命中的标签。
+- 至少要选 1 个、最多 ${JUEJIN_MAX_TAGS} 个真正相关的标签；如果文章主题很专一，2~3 个精准标签优于勉强凑满 ${JUEJIN_MAX_TAGS} 个松散标签。
+- 只输出 JSON：{ "categoryId": "<分类id>", "tagIds": ["<标签id>", ...] }。
+
+可选分类：
+${categoryLines}
+
+可选标签：
+${tagLines}
+
+文章标题：${input.title}
+
+文章正文：
+${body}`;
+}
+
 function firstHeading(markdown: string): string | null {
   return /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim() ?? null;
 }
@@ -702,11 +817,21 @@ function digest(value: string): string {
 }
 
 function mapDraft(row: Record<string, string | null>): JuejinChannelDraft {
+  let suggestedTagIds: string[] = [];
+  try {
+    const raw = row.suggested_tag_ids;
+    if (typeof raw === "string" && raw.trim()) suggestedTagIds = JSON.parse(raw);
+  } catch { /* 非法 JSON 时回退为空数组 */ }
+  if (!Array.isArray(suggestedTagIds)) suggestedTagIds = [];
+  // 归一化：只保留字符串 id，并截断到平台上限。
+  // 历史草稿可能存有超过上限的推荐标签（接口会拒绝），读回时一并收敛。
+  suggestedTagIds = suggestedTagIds.filter((id): id is string => typeof id === "string").slice(0, JUEJIN_MAX_TAGS);
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, projectId: row.project_id,
     sourceRelativePath: row.source_relative_path!, sourceHash: row.source_hash!,
     generationMode: row.generation_mode === "source" ? "source" : "rewrite", title: row.title!, markdown: row.markdown!,
     author: row.author ?? "", digest: row.digest ?? "", coverSource: row.cover_source ?? "",
+    suggestedCategoryId: row.suggested_category_id ?? "", suggestedTagIds,
     status: row.status as JuejinChannelDraftStatus, createdAt: row.created_at!, updatedAt: row.updated_at!
   };
 }
@@ -716,6 +841,8 @@ function mapJob(row: Record<string, string | null>): JuejinPublishJob {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
     status: row.status as JuejinPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
-    statusNote: row.status_note, errorMessage: row.error_message, createdAt: row.created_at!, updatedAt: row.updated_at!
+    statusNote: row.status_note, errorMessage: row.error_message,
+    statusSource: row.status_source === "manual" ? "manual" : "system",
+    createdAt: row.created_at!, updatedAt: row.updated_at!
   };
 }

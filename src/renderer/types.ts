@@ -44,6 +44,7 @@ export type CsdnPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "queued" | "needs_login" | "filling" | "needs_user" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "failed" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
+  statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
   updatedAt: string;
 };
@@ -56,6 +57,7 @@ export type CnblogsPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null; errorMessage: string | null;
+  statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
   updatedAt: string;
 };
@@ -67,11 +69,13 @@ export type JuejinChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
   generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
   status: "draft" | "approved" | "superseded"; updatedAt: string;
+  suggestedCategoryId: string; suggestedTagIds: string[];
 };
 export type JuejinPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null; errorMessage: string | null;
+  statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
   updatedAt: string;
 };
@@ -88,6 +92,7 @@ export type FiftyoneCtoPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null; errorMessage: string | null;
+  statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
   updatedAt: string;
 };
