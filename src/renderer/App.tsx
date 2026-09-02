@@ -854,6 +854,7 @@ export function App() {
     void loadCsdnChannelDrafts();
     void loadCnblogsChannelDrafts();
     void loadJuejinChannelDrafts();
+    void loadFiftyoneCtoChannelDrafts();
     void (async () => {
       try {
         const source = await request<{ rootPath: string | null }>("/content-source");
@@ -877,6 +878,7 @@ export function App() {
       void loadCsdnChannelDrafts();
       void loadCnblogsChannelDrafts();
       void loadJuejinChannelDrafts();
+      void loadFiftyoneCtoChannelDrafts();
     }
     if (activeView === "publish" || activeView === "library") void refreshSourcePreview().catch(() => undefined);
   }, [activeView]);
