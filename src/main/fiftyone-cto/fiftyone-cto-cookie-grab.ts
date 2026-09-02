@@ -18,9 +18,13 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
-import { buildCookieString, hasLoginCandidate, isFiftyoneCtoLoggedInPage, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, hasLoginCandidate, isFiftyoneCtoLoggedInHtml, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
+/** 首页级 GET 用 UA（与 CTOClient 一致），不带 AJAX 头以免被当作接口请求拦截。 */
+const FIFTYONE_CTO_PAGE_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
 const COOKIE_SETTLE_MS = 800;
 /** 同一 grabId 两次接口验证的最小间隔，避免 cookies changed 高频触发死循环。 */
 const VERIFY_THROTTLE_MS = 5000;
@@ -166,7 +170,7 @@ export class FiftyoneCtoCookieGrabber {
         return;
       }
 
-      const verified = await this.verify(window);
+      const verified = await this.verify(cookie);
       const settled = this.snapshots.get(grabId);
       if (!settled || settled.status !== "grabbing" || window.isDestroyed()) return;
 
@@ -175,9 +179,9 @@ export class FiftyoneCtoCookieGrabber {
           ...settled,
           status: "waiting_login",
           lastVerifyAt: now,
-          error: "窗口尚未停留在 51CTO 已登录页面（地址栏应为 blog.51cto.com 域，而非 passport 登录页）。请先在窗口内登录，再等待自动抓取。"
+          error: "登录态验证未通过（首页未返回已登录标记）。请确认窗口内确实已登录 51CTO 且停留在博客页面，再等待自动抓取。"
         });
-        state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab verification failed, window not on logged-in page");
+        state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab verification failed, homepage not logged-in");
         return;
       }
 
@@ -205,20 +209,29 @@ export class FiftyoneCtoCookieGrabber {
     }
   }
 
-  private async verify(window: BrowserWindow): Promise<boolean> {
-    if (window.isDestroyed()) return false;
+  private async verify(cookie: string): Promise<boolean> {
+    if (!cookie) return false;
     try {
-      // 用窗口当前真实地址栏 URL 判断登录态：用户已在窗口内登录，地址栏必然停在
-      // blog.51cto.com 域（写作/个人中心等），绝不会停在 passport 登录域。这是
-      // 最直接的“已登录”证据，且不受 SPA 初始 HTML 不含编辑器标记的影响。
-      // （早期用 fetch 固定发布页 URL 再解析 HTML 标记，因 URL 不对 + SPA 空壳
-      //  导致“已登录却 verify 失败”的假阴性。）
-      const url = window.webContents.getURL();
-      const ok = isFiftyoneCtoLoggedInPage(url);
+      // 用 Cookie 请求博客首页（SSR）：已登录时响应 HTML 含 <li class="more user">
+      // 与「退出」按钮（login-out）/ 头像 data-uid；未登录时含 <li class="logins">
+      // （登录/注册入口）。据此判定 Cookie 是否真正登录态。
+      // 不用地址栏 URL（未登录也可在 blog.51cto.com 域，会假阳性），也不用发布页
+      // （SPA 空壳，初始 HTML 不含编辑器标记，会假阴性）。
+      const response = await fetch(FIFTYONE_CTO_LOGIN_URL, {
+        method: "GET",
+        headers: { "User-Agent": FIFTYONE_CTO_PAGE_USER_AGENT, Cookie: cookie },
+        redirect: "manual"
+      });
+      if (response.status !== 200) {
+        state.runtimeInfoLogger?.({ status: response.status }, "51cto cookie grab verify: non-200 homepage");
+        return false;
+      }
+      const html = await response.text();
+      const ok = isFiftyoneCtoLoggedInHtml(html);
       if (!ok) {
         state.runtimeInfoLogger?.(
-          { url: url.slice(0, 120) },
-          "51cto cookie grab verify: window not on logged-in 51cto page"
+          { htmlHead: html.slice(0, 200) },
+          "51cto cookie grab verify: homepage not in logged-in state"
         );
       }
       return ok;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCookieString,
   hasLoginCandidate,
-  isFiftyoneCtoLoggedInPage,
+  isFiftyoneCtoLoggedInHtml,
   shouldRecordCookieGrabLoadError
 } from "./fiftyone-cto-cookie-grab-utils";
 
@@ -66,24 +66,31 @@ describe("shouldRecordCookieGrabLoadError（延迟 loadURL reject 不覆盖成�
   });
 });
 
-describe("isFiftyoneCtoLoggedInPage（用窗口地址栏 URL 判断登录态）", () => {
-  it("rejects the passport login domain", () => {
-    expect(isFiftyoneCtoLoggedInPage("https://passport.51cto.com/login?xxx")).toBe(false);
-    expect(isFiftyoneCtoLoggedInPage("https://login.51cto.com/")).toBe(false);
+describe("isFiftyoneCtoLoggedInHtml（用首页 SSR HTML 标记判断登录态）", () => {
+  // 已登录：右上角是 <li class="more user">，含「退出」按钮与头像 data-uid
+  const loggedInHtml =
+    '<li class="more user"><a class="login-out" href="/user/logout">退出</a>' +
+    '<img class="user-img" src="https://avatar.51cto.com/abc.jpg" data-uid="123456"></li>';
+
+  // 未登录：右上角是 <li class="logins">，含「登录 / 注册」入口
+  const loggedOutHtml =
+    '<li class="logins"><a href="/user/login">登录</a><a href="/user/reg">注册</a></li>';
+
+  it("accepts the logged-in home page markup (more user + logout + data-uid)", () => {
+    expect(isFiftyoneCtoLoggedInHtml(loggedInHtml)).toBe(true);
   });
 
-  it("rejects unrelated / empty URLs", () => {
-    expect(isFiftyoneCtoLoggedInPage("")).toBe(false);
-    expect(isFiftyoneCtoLoggedInPage("https://www.baidu.com/")).toBe(false);
-    expect(isFiftyoneCtoLoggedInPage("not-a-url")).toBe(false);
+  it("rejects the logged-out home page markup (class='logins')", () => {
+    // 未登录时地址栏同样可以是 blog.51cto.com，必须靠 HTML 标记区分。
+    expect(isFiftyoneCtoLoggedInHtml(loggedOutHtml)).toBe(false);
   });
 
-  it("accepts the blog.51cto.com home page (logged-in state)", () => {
-    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/")).toBe(true);
+  it("rejects empty html", () => {
+    expect(isFiftyoneCtoLoggedInHtml("")).toBe(false);
   });
 
-  it("accepts blog subpaths such as the writing / profile pages", () => {
-    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/blogger/publish")).toBe(true);
-    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/u/12345/article/write")).toBe(true);
+  it("treats ambiguous html without either marker as not logged-in", () => {
+    // 既无 more user 也无 logins（例如 SPA 空壳），保守判失败，等待真实登录页。
+    expect(isFiftyoneCtoLoggedInHtml('<div id="app"></div>')).toBe(false);
   });
 });

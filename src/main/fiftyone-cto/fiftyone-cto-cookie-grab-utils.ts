@@ -53,26 +53,21 @@ export function shouldRecordCookieGrabLoadError(status: FiftyoneCtoGrabStatus): 
 }
 
 /**
- * 登录态校验：用抓取窗口当前的真实地址栏 URL 判断——而不是脱离窗口去 fetch
- * 一个固定页面再猜 HTML 标记。窗口本身是真实浏览器，用户已在其中登录，
- * 登录成功后地址栏必然停在 blog.51cto.com 域（写作/个人中心等），绝不会停在
- * passport 登录域。这是最直接的“已登录”证据。
+ * 登录态校验：用 Cookie 去请求 51CTO 博客首页（SSR），检查响应 HTML 里的
+ * 登录态标记。首页导航由服务端渲染，登录/未登录的标记直接写在初始 HTML 中：
+ * - 已登录：右上角是 <li class="more user">，含「退出」按钮（login-out）与
+ *   头像 data-uid；
+ * - 未登录：右上角是 <li class="logins">，含「登录 / 注册」入口。
  *
- * 为什么不用 fetch 发布页看标记：51CTO 的编辑器页与登录页都是 SPA，初始 HTML
- * 不含 am-editor 容器或密码框，且我们硬编码的发布页 URL 实际返回的不是编辑器
- * 页，导致两次“已登录却 verify 失败”的假阴性。地址栏 URL 由浏览器导航真实决定，
- * 不受 SPA 初始 HTML 影响，远比解析页面标记可靠。
+ * 为什么不用地址栏 URL：未登录时地址栏同样可以是 blog.51cto.com，纯域名判断
+ * 会假阳性。为什么不用 fetch 发布页看 am-editor：发布页是 SPA，初始 HTML 是
+ * 空壳、不含编辑器容器，导致“已登录却 verify 失败”。首页 SSR 标记最可靠。
  */
-export function isFiftyoneCtoLoggedInPage(url: string): boolean {
-  if (!url) return false;
-  try {
-    const u = new URL(url);
-    const host = u.host.toLowerCase();
-    // passport 登录域（含 passport.51cto.com / login.51cto.com 等）→ 未登录
-    if (/passport\.51cto\.com$|login\.51cto\.com$/.test(host)) return false;
-    // 已登录：停在 51CTO 博客域（blog.51cto.com 或 *.blog.51cto.com）
-    return host.endsWith("blog.51cto.com") || host === "51cto.com";
-  } catch {
-    return false;
-  }
+export function isFiftyoneCtoLoggedInHtml(html: string): boolean {
+  if (!html) return false;
+  const lower = html.toLowerCase();
+  // 明确的未登录标记优先判失败（class="logins" 是未登录导航专属）。
+  if (/class="logins"/.test(lower)) return false;
+  // 已登录正向标记：用户菜单（more user）/ 退出按钮 / 头像 data-uid。
+  return /class="more user"|login-out|data-uid=/.test(lower);
 }
