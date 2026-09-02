@@ -69,3 +69,12 @@ export function mapVerifyResult(errNo: number | string | null | undefined): bool
   if (errNo === null || errNo === undefined) return false;
   return Number(errNo) === 0;
 }
+
+/**
+ * loadURL 的 promise 在登录页保活/重定向场景下会延迟 reject（窗口关闭后才到达）。
+ * 只有当抓取还停在初始 waiting_login（即加载在抓到凭据之前就失败）时才应记为 error，
+ * 否则会覆盖已经成功的抓取结果。
+ */
+export function shouldRecordCookieGrabLoadError(status: JuejinGrabStatus): boolean {
+  return status === "waiting_login";
+}

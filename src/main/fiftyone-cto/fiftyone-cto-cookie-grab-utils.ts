@@ -42,3 +42,12 @@ export function buildCookieString(cookies: CookieEntry[]): string {
     .map((entry) => `${entry.name}=${entry.value}`)
     .join("; ");
 }
+
+/**
+ * loadURL 的 promise 在登录页保活/重定向场景下会延迟 reject（窗口关闭后才到达）。
+ * 只有当抓取还停在初始 waiting_login（即加载在抓到凭据之前就失败）时才应记为 error，
+ * 否则会覆盖已经成功的抓取结果。
+ */
+export function shouldRecordCookieGrabLoadError(status: FiftyoneCtoGrabStatus): boolean {
+  return status === "waiting_login";
+}

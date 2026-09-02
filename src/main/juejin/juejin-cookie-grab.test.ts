@@ -5,7 +5,8 @@ import {
   extractUuidFromCookie,
   hasLoginCandidate,
   mapVerifyResult,
-  resolveUuid
+  resolveUuid,
+  shouldRecordCookieGrabLoadError
 } from "./cookie-grab-utils";
 
 describe("buildCookieString", () => {
@@ -128,5 +129,18 @@ describe("mapVerifyResult (err_no === 0)", () => {
 describe("DEFAULT_JUJIN_AID", () => {
   it("is 2608", () => {
     expect(DEFAULT_JUJIN_AID).toBe("2608");
+  });
+});
+
+describe("shouldRecordCookieGrabLoadError（延迟 loadURL reject 不覆盖成功结果）", () => {
+  it("only records load error while still in the initial waiting_login state", () => {
+    expect(shouldRecordCookieGrabLoadError("waiting_login")).toBe(true);
+  });
+
+  it("ignores the deferred reject once grabbing/success/error/cancelled", () => {
+    expect(shouldRecordCookieGrabLoadError("grabbing")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("success")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("error")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("cancelled")).toBe(false);
   });
 });

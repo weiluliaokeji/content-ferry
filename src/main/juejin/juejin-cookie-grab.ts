@@ -17,6 +17,7 @@ import {
   hasLoginCandidate,
   mapVerifyResult,
   resolveUuid,
+  shouldRecordCookieGrabLoadError,
   type CookieEntry,
   type JuejinGrabSnapshot,
   type JuejinGrabStatus
@@ -90,6 +91,9 @@ export class JuejinCookieGrabber {
     void window.loadURL(JUJIN_LOGIN_URL).catch((error: unknown) => {
       const current = this.snapshots.get(grabId);
       if (!current) return;
+      // 与 51CTO 同理：登录页保活/重定向会让 loadURL 的 promise 延迟 reject，
+      // 抓取成功并关闭窗口后才到达。仅当加载在抓到凭据之前就失败时记为 error。
+      if (!shouldRecordCookieGrabLoadError(current.status)) return;
       this.snapshots.set(grabId, {
         ...current,
         status: "error",

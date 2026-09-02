@@ -13,7 +13,7 @@ import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
 import { buildFiftyoneCtoHeaders } from "./fiftyone-cto-image-uploader";
-import { buildCookieString, hasLoginCandidate, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, hasLoginCandidate, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
 const FIFTYONE_CTO_VERIFY_URL = "https://blog.51cto.com/getUploadSign";
@@ -93,6 +93,10 @@ export class FiftyoneCtoCookieGrabber {
     void window.loadURL(FIFTYONE_CTO_LOGIN_URL).catch((error: unknown) => {
       const current = this.snapshots.get(grabId);
       if (!current) return;
+      // 51CTO 登录页会持续保活/重定向，loadURL 的 promise 在抓取成功后调用
+      // window.close() 时才以 ERR_FAILED 被 reject。此时凭据已经抓取并验证成功，
+      // 不能让这次延迟的 reject 覆盖成功的快照。仅当加载在抓到凭据之前就失败时记为 error。
+      if (!shouldRecordCookieGrabLoadError(current.status)) return;
       this.snapshots.set(grabId, {
         ...current,
         status: "error",

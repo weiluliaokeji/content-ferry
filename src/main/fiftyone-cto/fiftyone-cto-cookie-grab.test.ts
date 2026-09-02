@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCookieString, hasLoginCandidate } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, hasLoginCandidate, shouldRecordCookieGrabLoadError } from "./fiftyone-cto-cookie-grab-utils";
 
 describe("buildCookieString", () => {
   it("joins name=value pairs with '; '", () => {
@@ -45,5 +45,18 @@ describe("hasLoginCandidate (候选触发，登录成功以接口验证为准)",
 
   it("returns false for an empty cookie list", () => {
     expect(hasLoginCandidate([])).toBe(false);
+  });
+});
+
+describe("shouldRecordCookieGrabLoadError（延迟 loadURL reject 不覆盖成功结果）", () => {
+  it("only records load error while still in the initial waiting_login state", () => {
+    expect(shouldRecordCookieGrabLoadError("waiting_login")).toBe(true);
+  });
+
+  it("ignores the deferred reject once grabbing/success/error/cancelled", () => {
+    expect(shouldRecordCookieGrabLoadError("grabbing")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("success")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("error")).toBe(false);
+    expect(shouldRecordCookieGrabLoadError("cancelled")).toBe(false);
   });
 });
