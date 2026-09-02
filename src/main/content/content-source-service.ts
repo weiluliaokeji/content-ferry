@@ -3,6 +3,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
 
 export interface ContentSourcePreviewItem {
   relativePath: string;
@@ -245,7 +246,7 @@ export class ContentSourceService {
     return { stream: fs.createReadStream(assetPath), mimeType };
   }
 
-  readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string): { stream: NodeJS.ReadableStream; mimeType: string } {
+  readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string, options: { rasterize?: boolean } = {}): { stream: NodeJS.ReadableStream; mimeType: string } {
     const articlePath = this.resolveArticlePath(workspaceId, relativePath);
     const rootPath = this.getSource(workspaceId)!;
     const cleanSource = decodeResourcePath(sourceUrl);
@@ -278,6 +279,17 @@ export class ContentSourceService {
       // intrinsic dimensions parsed from the viewBox so they render at a usable size.
       const raw = fs.readFileSync(resourcePath, "utf-8");
       const normalized = withSvgIntrinsicSize(raw);
+      // Renderer previews ask for a rasterized PNG by passing `rasterize: true`.
+      // Browsers render inline `<img src="...svg">` documents by loading the
+      // SVG and every external resource it references (web fonts, remote
+      // images, `@import url(...)`). In sandboxed editors those fetches can
+      // fail and the SVG collapses to a flat background rectangle. Replacing
+      // every glyph with resvg's system-font fallback ships a self-contained
+      // PNG that always displays. We never rewrite the original SVG on disk.
+      if (options.rasterize) {
+        const png = rasterizeSvgToPng(Buffer.from(normalized, "utf-8"));
+        return { stream: Readable.from(png), mimeType: "image/png" };
+      }
       return { stream: Readable.from(Buffer.from(normalized, "utf-8")), mimeType };
     }
     return { stream: fs.createReadStream(resourcePath), mimeType };

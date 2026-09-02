@@ -29,6 +29,7 @@ describe("inlineFiftyoneCtoLocalImages", () => {
     const articleDirectory = path.join(sourceDirectory, "posts", "article");
     fs.mkdirSync(path.join(articleDirectory, "assets"), { recursive: true });
     fs.writeFileSync(path.join(articleDirectory, "assets", "diagram.png"), Buffer.from("fake-png-bytes", "utf8"));
+    fs.writeFileSync(path.join(articleDirectory, "assets", "line.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#00f"/></svg>');
     fs.writeFileSync(path.join(articleDirectory, "index.md"), "---\ntitle: 测试\n---\n", "utf8");
     const contentSources = new ContentSourceService(database.connection);
     contentSources.setSource(workspace.id, sourceDirectory);
@@ -87,4 +88,23 @@ describe("inlineFiftyoneCtoLocalImages", () => {
     expect(result.failed).toHaveLength(0);
     expect(result.markdown).toBe(markdown);
   });
+
+  it("rasterizes local SVG assets to PNG before inlining (51CTO editor cannot render SVG)", async () => {
+    const { workspaceId, relativePath, contentSources } = setupArticle();
+    const markdown = "# 测试\n\n![路线图](./assets/line.svg)\n";
+    const result = await inlineFiftyoneCtoLocalImages(markdown, workspaceId, relativePath, contentSources);
+
+    expect(result.inlinedCount).toBe(1);
+    expect(result.failed).toHaveLength(0);
+    expect(result.markdown).toContain("data:image/png;base64,");
+    expect(result.markdown).not.toContain("data:image/svg");
+    expect(result.markdown).not.toContain("./assets/line.svg");
+
+    // 校验 base64 解码后真的是 PNG（magic bytes 89 50 4E 47），不是 SVG
+    const match = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(result.markdown);
+    expect(match).not.toBeNull();
+    const decoded = Buffer.from(match![1], "base64");
+    expect(decoded.length).toBeGreaterThan(0);
+    expect(decoded.toString("binary", 1, 4)).toBe("PNG");
+  }, 15_000);
 });

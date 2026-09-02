@@ -138,10 +138,105 @@ const CSDN_UPLOAD_URL_EXTRACTOR_SOURCE = extractCsdnUploadUrl.toString();
 
 const IN_PAGE_UPLOAD_FN_SOURCE = `
 (function (arg) {
-  return (async function (a) {
+  return (async function uploadOneImage(a) {
     ${CSDN_UPLOAD_URL_EXTRACTOR_SOURCE}
+    // 把任意值序列化为可读字符串（避免再出现 [object Object]）。
+    // CSDN 的 window.csdn.upload.uploadImg 在失败时会以纯对象 reject，
+    // 直接 String(err) 会得到 [object Object]，真实原因被吞。
+    function safeStringify(value) {
+      if (value === null || value === undefined) return String(value);
+      if (typeof value === 'string') return value;
+      if (value instanceof Error) return value.stack || (value.name + ': ' + value.message);
+      if (typeof value === 'object') {
+        try {
+          var seen = [];
+          return JSON.stringify(value, function (key, val) {
+            if (typeof val === 'object' && val !== null) {
+              if (seen.indexOf(val) >= 0) return '[Circular]';
+              seen.push(val);
+            }
+            if (typeof val === 'function') return '[Function]';
+            if (typeof val === 'undefined') return '[undefined]';
+            if (typeof val === 'bigint') return val.toString() + 'n';
+            return val;
+          }, 2);
+        } catch (e) {
+          return Object.prototype.toString.call(value) + ' (stringify failed: ' + e.message + ')';
+        }
+      }
+      return String(value);
+    }
+    // 从 SVG 文本里解析 viewBox 的宽高（多数 SVG 没有 width/height 属性）。
+    // 用 charCodeAt 比较避免在模板字面量里写反斜杠转义。
+    function parseSvgViewBox(svgText) {
+      var idx = svgText.indexOf('viewBox=');
+      if (idx < 0) return null;
+      var rest = svgText.slice(idx + 8);
+      var i = 0;
+      while (i < rest.length) {
+        var c = rest.charCodeAt(i);
+        if (c === 32 || c === 9 || c === 10 || c === 13) i++;
+        else break;
+      }
+      var qCode = rest.charCodeAt(i);
+      if (qCode !== 34 && qCode !== 39) return null;
+      var quoteChar = rest[i];
+      i++;
+      var end = rest.indexOf(quoteChar, i);
+      if (end < 0) return null;
+      var content = rest.slice(i, end);
+      var parts = [];
+      var current = '';
+      for (var ci2 = 0; ci2 < content.length; ci2++) {
+        var c2 = content.charCodeAt(ci2);
+        if (c2 === 32 || c2 === 9 || c2 === 10 || c2 === 13 || c2 === 44) {
+          if (current.length > 0) { parts.push(current); current = ''; }
+        } else {
+          current += content[ci2];
+        }
+      }
+      if (current.length > 0) parts.push(current);
+      if (parts.length < 4) return null;
+      var w = parseFloat(parts[2]);
+      var h = parseFloat(parts[3]);
+      if (!(w > 0) || !(h > 0)) return null;
+      return { w: w, h: h };
+    }
+    // CSDN 图床不接受 image/svg+xml：把 SVG 栅格化为 PNG 后再上传。
+    // 2x 缩放保证 retina 清晰度；尺寸优先用 image.naturalWidth/Height，
+    // 缺失时回退到 viewBox 解析，仍失败用 1200x800 兜底。
+    function renderSvgDataUrlToPng(svgDataUrl) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () {
+          var w = img.naturalWidth, h = img.naturalHeight;
+          if (!w || !h) {
+            var vb = parseSvgViewBox(svgDataUrl);
+            if (vb) { w = vb.w; h = vb.h; }
+          }
+          if (!w || !h) { w = 1200; h = 800; }
+          var scale = 2;
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          try { resolve(canvas.toDataURL('image/png')); }
+          catch (e) { reject(new Error('CANVAS_TO_PNG_FAILED: ' + safeStringify(e))); }
+        };
+        img.onerror = function () { reject(new Error('SVG_IMAGE_LOAD_FAILED')); };
+        img.src = svgDataUrl;
+      });
+    }
     if (typeof window.csdn === 'undefined' || typeof window.csdn.upload === 'undefined' || typeof window.csdn.upload.uploadImg !== 'function') {
       throw new Error('WINDOW_CSDN_UPLOAD_UNAVAILABLE');
+    }
+    // CSDN 图床拒绝 image/svg+xml：栅格化后再上传，避免整篇因一张 SVG 卡住。
+    if (a.mimeType === 'image/svg+xml') {
+      var pngDataUrl = await renderSvgDataUrlToPng(a.dataUrl);
+      var newName = a.filename || 'image';
+      if (newName.toLowerCase().endsWith('.svg')) newName = newName.slice(0, -4) + '.png';
+      return uploadOneImage({ dataUrl: pngDataUrl, filename: newName, mimeType: 'image/png' });
     }
     var comma = a.dataUrl.indexOf(',');
     var b64 = comma >= 0 ? a.dataUrl.slice(comma + 1) : a.dataUrl;
@@ -150,12 +245,14 @@ const IN_PAGE_UPLOAD_FN_SOURCE = `
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     var blob = new Blob([bytes], { type: a.mimeType || 'application/octet-stream' });
     var file = new File([blob], a.filename || 'image', { type: a.mimeType });
-    var res = await window.csdn.upload.uploadImg({ appName: 'direct_blog', type: 'blog', imageTemplate: '', file: file });
-    var url = extractCsdnUploadUrl(res);
-    if (!url) {
-      throw new Error('UPLOAD_NO_URL:' + JSON.stringify(res));
+    try {
+      var res = await window.csdn.upload.uploadImg({ appName: 'direct_blog', type: 'blog', imageTemplate: '', file: file });
+      var url = extractCsdnUploadUrl(res);
+      if (!url) throw new Error('UPLOAD_NO_URL: ' + safeStringify(res));
+      return url;
+    } catch (err) {
+      throw new Error('CSDN_UPLOAD_REJECTED: ' + safeStringify(err));
     }
-    return url;
   })(arg);
 })
 `;

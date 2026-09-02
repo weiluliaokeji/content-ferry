@@ -16,7 +16,13 @@ export function resolveArticleImageUrl(source: string, assetContextId: string, s
     return `${apiBase}/content-assets/${source.slice("contentferry-asset://".length)}`;
   }
   if (sourceArticlePath) {
-    return `${apiBase}/content-source/article-resource?path=${encodeURIComponent(sourceArticlePath)}&src=${encodeURIComponent(source)}`;
+    // SVGs are routed through resvg at the wire boundary; see
+    // `src/shared/svg-rasterize.ts`. Without `?rasterize=1` the browser loads
+    // the SVG as a document and tries to fetch every `@import url(...)` it
+    // carries, which fails inside the local editor and surfaces as a flat
+    // rectangle.
+    const rasterHint = /\.svg(?:\?|#|$)/i.test(source) ? "1" : "0";
+    return `${apiBase}/content-source/article-resource?path=${encodeURIComponent(sourceArticlePath)}&src=${encodeURIComponent(source)}&rasterize=${rasterHint}`;
   }
   return `${apiBase}/content-assets/${assetContextId}/${source.replace(/^\.?\//, "")}`;
 }

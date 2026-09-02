@@ -1,4 +1,5 @@
 import type { ContentSourceService } from "../content/content-source-service";
+import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
 import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
 
 export interface FiftyoneCtoImageInliningResult {
@@ -24,6 +25,19 @@ interface ImageMatch {
 }
 
 const imagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+
+/**
+ * 51CTO 编辑器（am-engine）与发布后的文章页都不渲染 <img src="...svg">，会显示成深灰块。
+ * 提前把 SVG 栅格化为 PNG，扩展名同步改成 .png，避免 COS/51CTO 按扩展名校验 mime 后再次失败。
+ */
+function rasterizeSvgIfNeeded(buffer: Buffer, mimeType: string, source: string): { buffer: Buffer; mimeType: string; filename: string } {
+  const filename = source.split("/").pop() || "image.png";
+  if (mimeType !== "image/svg+xml" && !filename.toLowerCase().endsWith(".svg")) {
+    return { buffer, mimeType, filename };
+  }
+  const png = rasterizeSvgToPng(buffer);
+  return { buffer: png, mimeType: "image/png", filename: filename.replace(/\.svg$/i, ".png") || "image.png" };
+}
 
 /**
  * 将文章中的本地图片转换为 base64 data URI 内联。
@@ -58,7 +72,8 @@ export async function inlineFiftyoneCtoLocalImages(
         failed.push({ source, reason: "图片内容为空。" });
         continue;
       }
-      const dataUrl = `data:${resource.mimeType};base64,${buffer.toString("base64")}`;
+      const { buffer: preparedBuffer, mimeType: preparedMime } = rasterizeSvgIfNeeded(buffer, resource.mimeType, source);
+      const dataUrl = `data:${preparedMime};base64,${preparedBuffer.toString("base64")}`;
       result = result.slice(0, start) + `![${alt}](${dataUrl})` + result.slice(end);
       inlinedCount++;
     } catch (error) {
@@ -105,13 +120,15 @@ export async function uploadFiftyoneCtoLocalImages(
         continue;
       }
 
+      const { buffer: preparedBuffer, mimeType: preparedMime, filename: preparedName } = rasterizeSvgIfNeeded(buffer, resource.mimeType, source);
+
       let url: string;
       try {
-        url = await uploader.upload(buffer, resource.mimeType, source.split("/").pop() || "image.png");
+        url = await uploader.upload(preparedBuffer, preparedMime, preparedName);
         uploadedCount++;
       } catch {
         // 图床上传失败（端点/网络/Cookie 问题），回退为 base64 内联，避免图片丢失。
-        url = `data:${resource.mimeType};base64,${buffer.toString("base64")}`;
+        url = `data:${preparedMime};base64,${preparedBuffer.toString("base64")}`;
         inlinedCount++;
       }
 

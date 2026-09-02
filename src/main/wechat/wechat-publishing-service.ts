@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { Resvg } from "@resvg/resvg-js";
 import type { AccountRepository } from "../accounts/account-repository";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ContentSourceService } from "../content/content-source-service";
 import type { CredentialVault } from "../security/credential-vault";
 import { appendArticleSignature } from "../publishing/article-signature";
+import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
 
 type FetchLike = typeof fetch;
 type PublishMode = "publish" | "mass";
@@ -474,21 +474,16 @@ function parseContentFerryAsset(source: string): { contextId: string; fileName: 
  * rasterized before upload. The output width is taken from the SVG's intrinsic
  * width/viewBox, capped to avoid accidentally generating enormous images.
  */
-export function rasterizeSvgToPng(svgBytes: Buffer): Buffer {
-  const svg = svgBytes.toString("utf-8");
-  let width = 1200;
-  const viewBoxMatch = /\bviewBox\s*=\s*["']([^"']+)["']/i.exec(svg);
-  if (viewBoxMatch) {
-    const coords = viewBoxMatch[1].trim().split(/[\s,]+/).map(Number);
-    if (coords.length === 4 && coords[2] > 0) width = Math.round(coords[2]);
-  } else {
-    const widthMatch = /\bwidth\s*=\s*["']([0-9.]+)/i.exec(svg);
-    if (widthMatch) width = Math.round(Number(widthMatch[1]));
-  }
-  width = Math.max(1, Math.min(width, 2000));
-  const resvg = new Resvg(svg, { fitTo: { mode: "width", value: width } });
-  return Buffer.from(resvg.render().asPng());
-}
+/**
+ * Render an SVG to PNG using resvg. WeChat's material/uploadimg endpoints reject
+ * `image/svg+xml`, and the local editor's preview can fail to resolve web-font
+ * `@import`s inside the SVG document. Rasterizing once at the wire boundary
+ * removes both failure modes.
+ *
+ * Implementation lives in `src/shared/svg-rasterize.ts` so the editor preview
+ * endpoint can reuse it.
+ */
+export { rasterizeSvgToPng };
 
 export function markdownToWechatHtml(markdown: string, uploadedImages: Map<string, string> = new Map()): string {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");

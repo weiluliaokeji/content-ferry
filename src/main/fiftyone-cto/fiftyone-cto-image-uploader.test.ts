@@ -192,4 +192,40 @@ describe("uploadFiftyoneCtoLocalImages", () => {
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0].source).toBe("./missing.png");
   });
+
+  it("rasterizes SVG to PNG before calling uploader.upload", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#00f"/></svg>');
+    const sources = fakeContentSources({ "./a.svg": { mimeType: "image/svg+xml", bytes: svg } });
+    let captured: { mimeType: string; filename: string; bytes: Buffer } | undefined;
+    const spyUploader = {
+      upload: async (bytes: Buffer, mimeType: string, filename: string) => {
+        captured = { mimeType, filename, bytes };
+        return "https://s2.51cto.com/up.png";
+      }
+    } as unknown as FiftyoneCtoImageUploader;
+
+    const result = await uploadFiftyoneCtoLocalImages("![a](./a.svg)", "ws", "post/index.md", sources, spyUploader);
+
+    expect(result.uploadedCount).toBe(1);
+    expect(captured).toBeDefined();
+    expect(captured!.mimeType).toBe("image/png");
+    expect(captured!.filename).toBe("a.png");
+    expect(captured!.bytes.toString("binary", 1, 4)).toBe("PNG");
+  }, 15_000);
+
+  it("falls back to PNG base64 inlining when SVG upload fails", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#0f0"/></svg>');
+    const sources = fakeContentSources({ "./a.svg": { mimeType: "image/svg+xml", bytes: svg } });
+
+    const result = await uploadFiftyoneCtoLocalImages("![a](./a.svg)", "ws", "post/index.md", sources, failUploader);
+
+    expect(result.uploadedCount).toBe(0);
+    expect(result.inlinedCount).toBe(1);
+    expect(result.markdown).toContain("data:image/png;base64,");
+    expect(result.markdown).not.toContain("data:image/svg");
+
+    const match = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(result.markdown);
+    expect(match).not.toBeNull();
+    expect(Buffer.from(match![1], "base64").toString("binary", 1, 4)).toBe("PNG");
+  }, 15_000);
 });

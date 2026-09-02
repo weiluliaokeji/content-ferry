@@ -99,10 +99,15 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({
       path: z.string().trim().min(1).max(1000),
-      src: z.string().trim().min(1).max(2000)
+      src: z.string().trim().min(1).max(2000),
+      // Renderer previews pass `rasterize=1` so SVG images are converted to
+      // PNG at the wire boundary. Without this the browser would try to fetch
+      // external resources referenced inside the SVG (web fonts, etc.) which
+      // is unreliable in the local editor.
+      rasterize: z.enum(["0", "1"]).optional()
     }).parse(request.query);
     try {
-      const asset = contentSources.readArticleResource(workspace.id, query.path, query.src);
+      const asset = contentSources.readArticleResource(workspace.id, query.path, query.src, { rasterize: query.rasterize === "1" });
       return reply.type(asset.mimeType).send(asset.stream);
     } catch {
       return reply.code(404).send();

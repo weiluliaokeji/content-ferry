@@ -603,6 +603,22 @@ describe("local API scaffold", () => {
       expect(publicImage.statusCode).toBe(200);
       const escapedImage = await server.inject({ method: "GET", url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("../../../../outside.png")}` });
       expect(escapedImage.statusCode).toBe(404);
+      fs.mkdirSync(path.join(sourceDirectory, "posts", "修改后的正文", "assets"), { recursive: true });
+      const svgContent = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 120"><rect width="100%" height="100%" fill="#0f172a"/></svg>';
+      fs.writeFileSync(path.join(sourceDirectory, "posts", "修改后的正文", "assets", "diagram.svg"), svgContent);
+      const svgImage = await server.inject({ method: "GET", url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("./assets/diagram.svg")}` });
+      expect(svgImage.statusCode).toBe(200);
+      expect(svgImage.headers["content-type"]).toContain("image/svg+xml");
+      expect(svgImage.body).toContain("<svg");
+      const svgRasterized = await server.inject({ method: "GET", url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("./assets/diagram.svg")}&rasterize=1` });
+      expect(svgRasterized.statusCode).toBe(200);
+      expect(svgRasterized.headers["content-type"]).toContain("image/png");
+      // The PNG magic header must be present at byte 0 — any other content (SVG
+      // body, an HTML error page, plain text) means rasterize silently failed.
+      expect(Buffer.from(svgRasterized.rawPayload).subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
+      const svgRasterizeOff = await server.inject({ method: "GET", url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("./assets/diagram.svg")}&rasterize=0` });
+      expect(svgRasterizeOff.statusCode).toBe(200);
+      expect(svgRasterizeOff.headers["content-type"]).toContain("image/svg+xml");
       expect(fs.readFileSync(path.join(sourceDirectory, "posts", "修改后的正文", "index.md"), "utf8")).toContain("正文");
     } finally {
       fs.rmSync(sourceDirectory, { recursive: true, force: true });

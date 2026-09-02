@@ -238,7 +238,14 @@ export function VisualMarkdownEditor({
           blockOnUpload: uploadImage,
           proxyDomURL: (url) => {
             if (sourceArticlePath && isLocalArticleImage(url)) {
-              return `http://127.0.0.1:4317/api/content-source/article-resource?path=${encodeURIComponent(sourceArticlePath)}&src=${encodeURIComponent(url)}`;
+              // Local article images are served from the local article endpoint.
+              // SVGs get `?rasterize=1` so the server converts them to PNG via
+              // resvg before the editor's `<img>` loads them — browsers render
+              // SVG documents by following every external reference they carry
+              // (web fonts, `@import`, remote images) which is unreliable here.
+              const separator = url.includes("?") ? "&" : "?";
+              const rasterHint = isLocalArticleSvg(url) ? "1" : "0";
+              return `http://127.0.0.1:4317/api/content-source/article-resource?path=${encodeURIComponent(sourceArticlePath)}&src=${encodeURIComponent(url)}&rasterize=${rasterHint}`;
             }
             if (!url.startsWith("contentferry-asset://")) return url;
             const relative = url.slice("contentferry-asset://".length);
@@ -707,6 +714,10 @@ function normalizeImageMime(file: File): "image/jpeg" | "image/png" | "image/gif
 
 function isLocalArticleImage(url: string): boolean {
   return !/^(?:https?:|data:|blob:|contentferry-asset:)/i.test(url);
+}
+
+function isLocalArticleSvg(url: string): boolean {
+  return /\.svg(?:\?|#|$)/i.test(url);
 }
 
 async function fileToBase64(file: File): Promise<string> {
