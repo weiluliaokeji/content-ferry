@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCookieString,
   hasLoginCandidate,
-  isAuthenticatedFiftyoneCtoPublishPage,
+  isFiftyoneCtoLoggedInPage,
   shouldRecordCookieGrabLoadError
 } from "./fiftyone-cto-cookie-grab-utils";
 
@@ -66,52 +66,24 @@ describe("shouldRecordCookieGrabLoadError（延迟 loadURL reject 不覆盖成�
   });
 });
 
-describe("isAuthenticatedFiftyoneCtoPublishPage（用发布页本身做登录态校验）", () => {
-  const loginHtml =
-    '<html><head><meta name="csrf-token" content="abc"></head>' +
-    '<body><form><input type="text" name="user"><input type="password" name="pass"></form></body></html>';
-
-  // 51CTO 登录页密码框由前端 JS 渲染，初始 HTML 是空壳、不含密码框，
-  // 但也不含编辑器容器——这正是此前 verify 假阳性的场景。
-  const spaLoginShellHtml =
-    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
-    '<meta name="csrf-param" content="_csrf"><meta name="csrf-token" content="abc">' +
-    '</head><body><div id="app"></div><script src="/passport/login.js"></script></body></html>';
-
-  const editorHtml =
-    '<html><head><meta name="csrf-token" content="abc"></head>' +
-    '<body><div class="editor-container container am-engine" id="container" data-element="root">' +
-    "<script>var pid='176'; var cate_id='200';</script></body></html>";
-
-  it("rejects a 302 redirect to the passport login page", () => {
-    expect(
-      isAuthenticatedFiftyoneCtoPublishPage({
-        status: 302,
-        location: "https://passport.51cto.com/login?xxx",
-        html: ""
-      })
-    ).toBe(false);
+describe("isFiftyoneCtoLoggedInPage（用窗口地址栏 URL 判断登录态）", () => {
+  it("rejects the passport login domain", () => {
+    expect(isFiftyoneCtoLoggedInPage("https://passport.51cto.com/login?xxx")).toBe(false);
+    expect(isFiftyoneCtoLoggedInPage("https://login.51cto.com/")).toBe(false);
   });
 
-  it("rejects a 200 response that is actually the login form (password input)", () => {
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: loginHtml })).toBe(false);
+  it("rejects unrelated / empty URLs", () => {
+    expect(isFiftyoneCtoLoggedInPage("")).toBe(false);
+    expect(isFiftyoneCtoLoggedInPage("https://www.baidu.com/")).toBe(false);
+    expect(isFiftyoneCtoLoggedInPage("not-a-url")).toBe(false);
   });
 
-  it("rejects a 200 SPA login shell without a password field but also without an editor container", () => {
-    // 回归：此前用“不含 password 即已登录”会把这种匿名 Cookie 误判为成功。
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: spaLoginShellHtml })).toBe(false);
+  it("accepts the blog.51cto.com home page (logged-in state)", () => {
+    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/")).toBe(true);
   });
 
-  it("rejects non-200 statuses", () => {
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 503, html: editorHtml })).toBe(false);
-  });
-
-  it("accepts a 200 response with the am-editor container (authenticated editor page)", () => {
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: editorHtml })).toBe(true);
-  });
-
-  it("accepts a 200 editor page identified by editor-container even without am-engine", () => {
-    const alt = '<html><body><div class="editor-container">文章标题</div></body></html>';
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: alt })).toBe(true);
+  it("accepts blog subpaths such as the writing / profile pages", () => {
+    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/blogger/publish")).toBe(true);
+    expect(isFiftyoneCtoLoggedInPage("https://blog.51cto.com/u/12345/article/write")).toBe(true);
   });
 });

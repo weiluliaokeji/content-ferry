@@ -3,10 +3,12 @@
  *
  * Opens a login BrowserWindow pointing at https://blog.51cto.com/ (contextIsolation
  * enabled, no script injection), watches session cookie changes, then builds the
- * Cookie string and verifies it by loading the authenticated publish page itself
- * (GET /blogger/publish). A 302 to the login page, or a response that does NOT
- * contain the am-editor container (editor-container / am-engine) means the cookie
- * is not a real session, so the grab will not report success.
+ * Cookie string and verifies it by checking the window's current address bar URL.
+ * Once the user logs in for real, the address bar stays on the blog.51cto.com
+ * domain (writing / profile pages) and never on the passport login domain, so a
+ * logged-in page is the most direct proof of a real session — and it is immune to
+ * the SPA empty-shell problem where neither an editor container nor a password
+ * field is present in the initial HTML.
  *
  * Unlike Juejin, 51CTO only needs the Cookie header for its publish and image-host
  * APIs; no extra aid/uuid fields are required.
@@ -16,14 +18,9 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
-import { buildCookieString, hasLoginCandidate, isAuthenticatedFiftyoneCtoPublishPage, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, hasLoginCandidate, isFiftyoneCtoLoggedInPage, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
-const FIFTYONE_CTO_PUBLISH_PAGE_URL = "https://blog.51cto.com/blogger/publish?old=1&orig=first-publish";
-/** 页面级 GET 用 UA（与 CTOClient 一致），不带 AJAX 头以免被当作接口请求拦截。 */
-const FIFTYONE_CTO_PAGE_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-  "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
 const COOKIE_SETTLE_MS = 800;
 /** 同一 grabId 两次接口验证的最小间隔，避免 cookies changed 高频触发死循环。 */
 const VERIFY_THROTTLE_MS = 5000;
@@ -169,7 +166,7 @@ export class FiftyoneCtoCookieGrabber {
         return;
       }
 
-      const verified = await this.verify(cookie);
+      const verified = await this.verify(window);
       const settled = this.snapshots.get(grabId);
       if (!settled || settled.status !== "grabbing" || window.isDestroyed()) return;
 
@@ -178,9 +175,9 @@ export class FiftyoneCtoCookieGrabber {
           ...settled,
           status: "waiting_login",
           lastVerifyAt: now,
-          error: "登录态验证未通过（接口未返回登录态），请确认窗口内确实已登录 51CTO。"
+          error: "窗口尚未停留在 51CTO 已登录页面（地址栏应为 blog.51cto.com 域，而非 passport 登录页）。请先在窗口内登录，再等待自动抓取。"
         });
-        state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab verification failed, waiting for login");
+        state.runtimeInfoLogger?.({ grabId, status: "waiting_login" }, "51cto cookie grab verification failed, window not on logged-in page");
         return;
       }
 
@@ -208,25 +205,20 @@ export class FiftyoneCtoCookieGrabber {
     }
   }
 
-  private async verify(cookie: string): Promise<boolean> {
-    if (!cookie) return false;
+  private async verify(window: BrowserWindow): Promise<boolean> {
+    if (window.isDestroyed()) return false;
     try {
-      // 直接用发布页本身做登录态校验：GET 发布页，已登录返回 200 + 编辑器页，
-      // 未登录则 302 跳转登录页或返回带密码框的登录页 HTML。
-      // 不再用 getUploadSign（图片上传签名，匿名即可返回 code:0），否则会出现
-      // “verify 通过但发布时却说 Cookie 已过期”的假阳性。
-      const response = await fetch(FIFTYONE_CTO_PUBLISH_PAGE_URL, {
-        method: "GET",
-        headers: { "User-Agent": FIFTYONE_CTO_PAGE_USER_AGENT, Cookie: cookie },
-        redirect: "manual"
-      });
-      const location = response.headers.get("location") ?? undefined;
-      const html = response.status === 200 ? await response.text() : "";
-      const ok = isAuthenticatedFiftyoneCtoPublishPage({ status: response.status, location, html });
+      // 用窗口当前真实地址栏 URL 判断登录态：用户已在窗口内登录，地址栏必然停在
+      // blog.51cto.com 域（写作/个人中心等），绝不会停在 passport 登录域。这是
+      // 最直接的“已登录”证据，且不受 SPA 初始 HTML 不含编辑器标记的影响。
+      // （早期用 fetch 固定发布页 URL 再解析 HTML 标记，因 URL 不对 + SPA 空壳
+      //  导致“已登录却 verify 失败”的假阴性。）
+      const url = window.webContents.getURL();
+      const ok = isFiftyoneCtoLoggedInPage(url);
       if (!ok) {
         state.runtimeInfoLogger?.(
-          { status: response.status, location: location?.slice(0, 120) },
-          "51cto cookie grab verify: publish page indicates not authenticated"
+          { url: url.slice(0, 120) },
+          "51cto cookie grab verify: window not on logged-in 51cto page"
         );
       }
       return ok;

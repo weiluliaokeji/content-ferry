@@ -52,34 +52,27 @@ export function shouldRecordCookieGrabLoadError(status: FiftyoneCtoGrabStatus): 
   return status === "waiting_login";
 }
 
-/** 登录态校验：GET 发布页的响应是否代表“已登录的发布编辑器页”（而非登录页）。 */
-export interface FiftyoneCtoPublishPageCheck {
-  /** HTTP 状态码（redirect:"manual" 下可能见到 3xx）。 */
-  status: number;
-  /** 重定向目标（仅 3xx 时有意义）。 */
-  location?: string;
-  /** 响应体 HTML。 */
-  html: string;
-}
-
 /**
- * 判定 51CTO 发布页响应是否为“已登录状态”：
- * - 任何 3xx 重定向（通常跳 passport 登录页）→ 判失败；
- * - 非 200 → 判失败；
- * - 已登录的发布编辑器页由服务端渲染，一定含 am-editor 编辑器容器
- *   （am-engine / editor-container）。未登录返回的是登录页，不含该标记。
+ * 登录态校验：用抓取窗口当前的真实地址栏 URL 判断——而不是脱离窗口去 fetch
+ * 一个固定页面再猜 HTML 标记。窗口本身是真实浏览器，用户已在其中登录，
+ * 登录成功后地址栏必然停在 blog.51cto.com 域（写作/个人中心等），绝不会停在
+ * passport 登录域。这是最直接的“已登录”证据。
  *
- * 早期方案检测“是否含 <input type="password">”会假阳性：51CTO 的登录页密码框
- * 由前端 JS 渲染，初始 HTML 里没有密码框，导致匿名 Cookie 也被判为已登录，
- * 后续发布才暴露“Cookie 已过期/非 JSON 响应”。因此改用正向标记——只有真正
- * 渲染出编辑器容器才视为已登录。
- *
- * 注意：不要再用 getUploadSign（图片上传签名，匿名即可返回 code:0）做校验，
- * 那同样会让未真正登录的 Cookie 通过验证。
+ * 为什么不用 fetch 发布页看标记：51CTO 的编辑器页与登录页都是 SPA，初始 HTML
+ * 不含 am-editor 容器或密码框，且我们硬编码的发布页 URL 实际返回的不是编辑器
+ * 页，导致两次“已登录却 verify 失败”的假阴性。地址栏 URL 由浏览器导航真实决定，
+ * 不受 SPA 初始 HTML 影响，远比解析页面标记可靠。
  */
-export function isAuthenticatedFiftyoneCtoPublishPage(check: FiftyoneCtoPublishPageCheck): boolean {
-  if (check.status >= 300 && check.status < 400) return false;
-  if (check.status !== 200) return false;
-  const html = check.html.toLowerCase();
-  return /am-engine|editor-container/.test(html);
+export function isFiftyoneCtoLoggedInPage(url: string): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.host.toLowerCase();
+    // passport 登录域（含 passport.51cto.com / login.51cto.com 等）→ 未登录
+    if (/passport\.51cto\.com$|login\.51cto\.com$/.test(host)) return false;
+    // 已登录：停在 51CTO 博客域（blog.51cto.com 或 *.blog.51cto.com）
+    return host.endsWith("blog.51cto.com") || host === "51cto.com";
+  } catch {
+    return false;
+  }
 }
