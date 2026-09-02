@@ -97,6 +97,12 @@ export class CTOClient {
     try {
       parsed = JSON.parse(text);
     } catch {
+      // 发布接口返回了 HTML（通常是登录页）而非 JSON：说明 Cookie 没有通过
+      // 登录态校验。用更准确文案替代含糊的“可能已过期”，便于定位。
+      const looksLikeLoginPage = /<!DOCTYPE|<html/i.test(text) && /passport|login|请登录|登录后|未登录/i.test(text);
+      if (looksLikeLoginPage) {
+        throw new FiftyoneCtoCredentialsError("51CTO 返回的是登录页，Cookie 无效或未登录。请重新在账号管理获取最新 Cookie 后重试。");
+      }
       throw new FiftyoneCtoCredentialsError(`51CTO 返回非 JSON 响应，可能 Cookie 已过期：${text.slice(0, 200)}`);
     }
     if (parsed.status === 1 && parsed.data?.blog_id) {

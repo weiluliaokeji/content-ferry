@@ -4,8 +4,9 @@
  * Opens a login BrowserWindow pointing at https://blog.51cto.com/ (contextIsolation
  * enabled, no script injection), watches session cookie changes, then builds the
  * Cookie string and verifies it by loading the authenticated publish page itself
- * (GET /blogger/publish). A 302 to the login page or a password-field login form
- * means the cookie is not a real session, so the grab will not report success.
+ * (GET /blogger/publish). A 302 to the login page, or a response that does NOT
+ * contain the am-editor container (editor-container / am-engine) means the cookie
+ * is not a real session, so the grab will not report success.
  *
  * Unlike Juejin, 51CTO only needs the Cookie header for its publish and image-host
  * APIs; no extra aid/uuid fields are required.

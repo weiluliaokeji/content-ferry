@@ -71,6 +71,18 @@ describe("isAuthenticatedFiftyoneCtoPublishPage（用发布页本身做登录态
     '<html><head><meta name="csrf-token" content="abc"></head>' +
     '<body><form><input type="text" name="user"><input type="password" name="pass"></form></body></html>';
 
+  // 51CTO 登录页密码框由前端 JS 渲染，初始 HTML 是空壳、不含密码框，
+  // 但也不含编辑器容器——这正是此前 verify 假阳性的场景。
+  const spaLoginShellHtml =
+    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">' +
+    '<meta name="csrf-param" content="_csrf"><meta name="csrf-token" content="abc">' +
+    '</head><body><div id="app"></div><script src="/passport/login.js"></script></body></html>';
+
+  const editorHtml =
+    '<html><head><meta name="csrf-token" content="abc"></head>' +
+    '<body><div class="editor-container container am-engine" id="container" data-element="root">' +
+    "<script>var pid='176'; var cate_id='200';</script></body></html>";
+
   it("rejects a 302 redirect to the passport login page", () => {
     expect(
       isAuthenticatedFiftyoneCtoPublishPage({
@@ -85,25 +97,21 @@ describe("isAuthenticatedFiftyoneCtoPublishPage（用发布页本身做登录态
     expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: loginHtml })).toBe(false);
   });
 
-  it("rejects non-200 statuses", () => {
-    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 503, html: loginHtml })).toBe(false);
+  it("rejects a 200 SPA login shell without a password field but also without an editor container", () => {
+    // 回归：此前用“不含 password 即已登录”会把这种匿名 Cookie 误判为成功。
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: spaLoginShellHtml })).toBe(false);
   });
 
-  it("accepts a 200 response without a password field (authenticated editor page)", () => {
-    const editorHtml =
-      '<html><body><div class="am-editor">文章标题</div>' +
-      "<script>var pid: '176'; var cate_id: '200';</script></body></html>";
+  it("rejects non-200 statuses", () => {
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 503, html: editorHtml })).toBe(false);
+  });
+
+  it("accepts a 200 response with the am-editor container (authenticated editor page)", () => {
     expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: editorHtml })).toBe(true);
   });
 
-  it("accepts a 200 response whose redirect target is unrelated (kept as 200 page check)", () => {
-    const editorHtml = "<html><body><div>编辑器</div></body></html>";
-    expect(
-      isAuthenticatedFiftyoneCtoPublishPage({
-        status: 200,
-        location: "https://blog.51cto.com/something",
-        html: editorHtml
-      })
-    ).toBe(true);
+  it("accepts a 200 editor page identified by editor-container even without am-engine", () => {
+    const alt = '<html><body><div class="editor-container">文章标题</div></body></html>';
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: alt })).toBe(true);
   });
 });

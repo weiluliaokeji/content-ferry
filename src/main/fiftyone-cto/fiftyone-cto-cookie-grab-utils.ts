@@ -64,18 +64,22 @@ export interface FiftyoneCtoPublishPageCheck {
 
 /**
  * 判定 51CTO 发布页响应是否为“已登录状态”：
- * - 登录态失效时 51CTO 通常 302 跳转到 passport 登录页 → 判失败；
- * - 其余非 200 → 判失败；
- * - 登录页一定含密码输入框（<input type="password">），已登录的发布编辑器页不会包含 → 含密码框即判失败。
+ * - 任何 3xx 重定向（通常跳 passport 登录页）→ 判失败；
+ * - 非 200 → 判失败；
+ * - 已登录的发布编辑器页由服务端渲染，一定含 am-editor 编辑器容器
+ *   （am-engine / editor-container）。未登录返回的是登录页，不含该标记。
+ *
+ * 早期方案检测“是否含 <input type="password">”会假阳性：51CTO 的登录页密码框
+ * 由前端 JS 渲染，初始 HTML 里没有密码框，导致匿名 Cookie 也被判为已登录，
+ * 后续发布才暴露“Cookie 已过期/非 JSON 响应”。因此改用正向标记——只有真正
+ * 渲染出编辑器容器才视为已登录。
  *
  * 注意：不要再用 getUploadSign（图片上传签名，匿名即可返回 code:0）做校验，
- * 那会让未真正登录的 Cookie 也通过验证，导致后续发布才暴露“Cookie 已过期/未登录”。
+ * 那同样会让未真正登录的 Cookie 通过验证。
  */
 export function isAuthenticatedFiftyoneCtoPublishPage(check: FiftyoneCtoPublishPageCheck): boolean {
-  if (check.status >= 300 && check.status < 400) {
-    if (/passport|login/i.test(check.location ?? "")) return false;
-  }
+  if (check.status >= 300 && check.status < 400) return false;
   if (check.status !== 200) return false;
-  if (/<input[^>]+type=["']?password/i.test(check.html)) return false;
-  return true;
+  const html = check.html.toLowerCase();
+  return /am-engine|editor-container/.test(html);
 }
