@@ -503,7 +503,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
         {rightPanel === "settings" && <div className="side-panel-content">
           <h3>发布设置</h3>
           {assistantError && <p className="error editor-inline-error">{assistantError}</p>}
-          {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">掘金账号尚未配置 Cookie / aid / uuid，请先前往账号管理补凭据后重试。</div>}
+          {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">发布任务此前因凭据校验未通过而暂停。如已保存 Cookie / aid / uuid，请点击顶部「重新尝试发布」用新凭据继续。</div>}
           {jobStatus === "failed" && job?.errorMessage && <div className="cnblogs-publish-error" role="alert"><strong>发布失败</strong><span>{job.errorMessage}</span><small>可重新选择分类与标签后点击顶部「重试发布」再次尝试；如仍失败，可在掘金后台核对后使用人工校正。</small></div>}
           {jobStatus === "cancelled" && <p className="hint">本次发布任务已取消。可重新选择分类与标签后，点击顶部「重新发布」创建新任务。</p>}
           {showReconciliationForm && <div className="cnblogs-reconcile-form">

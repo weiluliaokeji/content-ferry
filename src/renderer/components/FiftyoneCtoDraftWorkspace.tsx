@@ -386,7 +386,7 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
         {rightPanel === "settings" && <div className="side-panel-content">
           <h3>发布设置</h3>
           {assistantError && <p className="error editor-inline-error">{assistantError}</p>}
-          {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">51CTO 账号尚未配置 Cookie，请先前往账号管理补凭据后重试。</div>}
+          {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">发布任务此前因 Cookie 校验未通过而暂停。如已在账号管理保存最新 Cookie，请点击顶部「重新尝试发布」用新凭据继续。</div>}
           {jobStatus === "failed" && job?.errorMessage && <div className="cnblogs-publish-error" role="alert"><strong>发布失败</strong><span>{job.errorMessage}</span><small>可重新设置分类/标签后点击顶部「重试发布」再次尝试；如仍失败，可在 51CTO 后台核对后使用人工校正。</small></div>}
           {jobStatus === "cancelled" && <p className="hint">本次发布任务已取消。可重新设置后，点击顶部「重新发布」创建新任务。</p>}
           {showReconciliationForm && <div className="cnblogs-reconcile-form">
