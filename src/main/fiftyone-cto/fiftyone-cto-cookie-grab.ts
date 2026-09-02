@@ -3,20 +3,26 @@
  *
  * Opens a login BrowserWindow pointing at https://blog.51cto.com/ (contextIsolation
  * enabled, no script injection), watches session cookie changes, then builds the
- * Cookie string and verifies it by calling the login-only /getUploadSign endpoint.
+ * Cookie string and verifies it by loading the authenticated publish page itself
+ * (GET /blogger/publish). A 302 to the login page or a password-field login form
+ * means the cookie is not a real session, so the grab will not report success.
  *
  * Unlike Juejin, 51CTO only needs the Cookie header for its publish and image-host
  * APIs; no extra aid/uuid fields are required.
+ *
  */
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { state } from "../automation/state";
 import { FiftyoneCtoChannelError } from "./fiftyone-cto-channel-error";
-import { buildFiftyoneCtoHeaders } from "./fiftyone-cto-image-uploader";
-import { buildCookieString, hasLoginCandidate, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
+import { buildCookieString, hasLoginCandidate, isAuthenticatedFiftyoneCtoPublishPage, shouldRecordCookieGrabLoadError, type FiftyoneCtoGrabSnapshot } from "./fiftyone-cto-cookie-grab-utils";
 
 const FIFTYONE_CTO_LOGIN_URL = "https://blog.51cto.com/";
-const FIFTYONE_CTO_VERIFY_URL = "https://blog.51cto.com/getUploadSign";
+const FIFTYONE_CTO_PUBLISH_PAGE_URL = "https://blog.51cto.com/blogger/publish?old=1&orig=first-publish";
+/** 页面级 GET 用 UA（与 CTOClient 一致），不带 AJAX 头以免被当作接口请求拦截。 */
+const FIFTYONE_CTO_PAGE_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
 const COOKIE_SETTLE_MS = 800;
 /** 同一 grabId 两次接口验证的最小间隔，避免 cookies changed 高频触发死循环。 */
 const VERIFY_THROTTLE_MS = 5000;
@@ -204,37 +210,22 @@ export class FiftyoneCtoCookieGrabber {
   private async verify(cookie: string): Promise<boolean> {
     if (!cookie) return false;
     try {
-      // getUploadSign 必须是 POST 且带 upload_type=image，否则 51CTO 返回
-      // code:10003 "请求方式错误"（GET 会被服务端判定为错误请求方式）。
-      const response = await fetch(FIFTYONE_CTO_VERIFY_URL, {
-        method: "POST",
-        headers: buildFiftyoneCtoHeaders(cookie),
-        body: new URLSearchParams({ upload_type: "image" }),
+      // 直接用发布页本身做登录态校验：GET 发布页，已登录返回 200 + 编辑器页，
+      // 未登录则 302 跳转登录页或返回带密码框的登录页 HTML。
+      // 不再用 getUploadSign（图片上传签名，匿名即可返回 code:0），否则会出现
+      // “verify 通过但发布时却说 Cookie 已过期”的假阳性。
+      const response = await fetch(FIFTYONE_CTO_PUBLISH_PAGE_URL, {
+        method: "GET",
+        headers: { "User-Agent": FIFTYONE_CTO_PAGE_USER_AGENT, Cookie: cookie },
         redirect: "manual"
       });
-      if (response.status !== 200) {
-        state.runtimeInfoLogger?.(
-          { status: response.status },
-          "51cto cookie grab verify: non-200 status"
-        );
-        return false;
-      }
-      const text = await response.text();
-      let body: { code?: unknown; data?: { url?: string } };
-      try {
-        body = JSON.parse(text) as { code?: unknown; data?: { url?: string } };
-      } catch {
-        state.runtimeInfoLogger?.(
-          { body: text.slice(0, 200) },
-          "51cto cookie grab verify: non-JSON body"
-        );
-        return false;
-      }
-      const ok = body?.code === 0 && typeof body?.data?.url === "string" && body.data.url.length > 0;
+      const location = response.headers.get("location") ?? undefined;
+      const html = response.status === 200 ? await response.text() : "";
+      const ok = isAuthenticatedFiftyoneCtoPublishPage({ status: response.status, location, html });
       if (!ok) {
         state.runtimeInfoLogger?.(
-          { code: body?.code, body: JSON.stringify(body).slice(0, 200) },
-          "51cto cookie grab verify: unexpected body"
+          { status: response.status, location: location?.slice(0, 120) },
+          "51cto cookie grab verify: publish page indicates not authenticated"
         );
       }
       return ok;

@@ -51,3 +51,31 @@ export function buildCookieString(cookies: CookieEntry[]): string {
 export function shouldRecordCookieGrabLoadError(status: FiftyoneCtoGrabStatus): boolean {
   return status === "waiting_login";
 }
+
+/** 登录态校验：GET 发布页的响应是否代表“已登录的发布编辑器页”（而非登录页）。 */
+export interface FiftyoneCtoPublishPageCheck {
+  /** HTTP 状态码（redirect:"manual" 下可能见到 3xx）。 */
+  status: number;
+  /** 重定向目标（仅 3xx 时有意义）。 */
+  location?: string;
+  /** 响应体 HTML。 */
+  html: string;
+}
+
+/**
+ * 判定 51CTO 发布页响应是否为“已登录状态”：
+ * - 登录态失效时 51CTO 通常 302 跳转到 passport 登录页 → 判失败；
+ * - 其余非 200 → 判失败；
+ * - 登录页一定含密码输入框（<input type="password">），已登录的发布编辑器页不会包含 → 含密码框即判失败。
+ *
+ * 注意：不要再用 getUploadSign（图片上传签名，匿名即可返回 code:0）做校验，
+ * 那会让未真正登录的 Cookie 也通过验证，导致后续发布才暴露“Cookie 已过期/未登录”。
+ */
+export function isAuthenticatedFiftyoneCtoPublishPage(check: FiftyoneCtoPublishPageCheck): boolean {
+  if (check.status >= 300 && check.status < 400) {
+    if (/passport|login/i.test(check.location ?? "")) return false;
+  }
+  if (check.status !== 200) return false;
+  if (/<input[^>]+type=["']?password/i.test(check.html)) return false;
+  return true;
+}

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildCookieString, hasLoginCandidate, shouldRecordCookieGrabLoadError } from "./fiftyone-cto-cookie-grab-utils";
+import {
+  buildCookieString,
+  hasLoginCandidate,
+  isAuthenticatedFiftyoneCtoPublishPage,
+  shouldRecordCookieGrabLoadError
+} from "./fiftyone-cto-cookie-grab-utils";
 
 describe("buildCookieString", () => {
   it("joins name=value pairs with '; '", () => {
@@ -58,5 +63,47 @@ describe("shouldRecordCookieGrabLoadError（延迟 loadURL reject 不覆盖成�
     expect(shouldRecordCookieGrabLoadError("success")).toBe(false);
     expect(shouldRecordCookieGrabLoadError("error")).toBe(false);
     expect(shouldRecordCookieGrabLoadError("cancelled")).toBe(false);
+  });
+});
+
+describe("isAuthenticatedFiftyoneCtoPublishPage（用发布页本身做登录态校验）", () => {
+  const loginHtml =
+    '<html><head><meta name="csrf-token" content="abc"></head>' +
+    '<body><form><input type="text" name="user"><input type="password" name="pass"></form></body></html>';
+
+  it("rejects a 302 redirect to the passport login page", () => {
+    expect(
+      isAuthenticatedFiftyoneCtoPublishPage({
+        status: 302,
+        location: "https://passport.51cto.com/login?xxx",
+        html: ""
+      })
+    ).toBe(false);
+  });
+
+  it("rejects a 200 response that is actually the login form (password input)", () => {
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: loginHtml })).toBe(false);
+  });
+
+  it("rejects non-200 statuses", () => {
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 503, html: loginHtml })).toBe(false);
+  });
+
+  it("accepts a 200 response without a password field (authenticated editor page)", () => {
+    const editorHtml =
+      '<html><body><div class="am-editor">文章标题</div>' +
+      "<script>var pid: '176'; var cate_id: '200';</script></body></html>";
+    expect(isAuthenticatedFiftyoneCtoPublishPage({ status: 200, html: editorHtml })).toBe(true);
+  });
+
+  it("accepts a 200 response whose redirect target is unrelated (kept as 200 page check)", () => {
+    const editorHtml = "<html><body><div>编辑器</div></body></html>";
+    expect(
+      isAuthenticatedFiftyoneCtoPublishPage({
+        status: 200,
+        location: "https://blog.51cto.com/something",
+        html: editorHtml
+      })
+    ).toBe(true);
   });
 });
