@@ -10,6 +10,7 @@
  * are cookie + aid + uuid, stored via CredentialVault.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 import type Database from "better-sqlite3";
 import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
 import type { CredentialVault } from "../security/credential-vault";
@@ -540,8 +541,11 @@ export class JuejinChannelService {
       // 优先上传到掘金图床替换为 CDN URL；上传失败（含超 10MiB、无凭据等）时
       // 回退为 base64 data URI 内联。远程 http(s) 图片保持原样由掘金外链渲染。
       const uploader = new JuejinImageUploader({ cookie, fetcher: this.fetcher });
+      const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
+        uploadImage: async (png) => (await uploader.uploadImage(png)).url
+      });
       const inlineResult = await inlineJuejinLocalImages(
-        draft.markdown,
+        mermaidMarkdown,
         draft.workspaceId,
         draft.sourceRelativePath,
         this.contentSources,

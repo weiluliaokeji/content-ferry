@@ -7,6 +7,7 @@ import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { resolveCsdnImagesForBrowser, resolveCoverToDataUrl } from "./csdn-image-inliner";
 import { appendArticleSignature } from "../publishing/article-signature";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 
 const csdnDraftSchema = {
   type: "object",
@@ -313,7 +314,12 @@ export class CsdnChannelService {
     coverDataUrl?: string;
   }> {
     const draft = this.getDraftForJob(jobId);
-    const images = await resolveCsdnImagesForBrowser(draft.markdown, draft.workspaceId, draft.sourceRelativePath, this.contentSources);
+    // 先把 mermaid 代码块渲染成 data URI 图片，下游 resolveCsdnImagesForBrowser
+    // 会把它和本地图片一起交给 CSDN 图床上传（CSDN 编辑器无法渲染裸 mermaid）。
+    const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
+      uploadImage: (png, name) => Promise.resolve(`data:image/png;base64,${png.toString("base64")}`)
+    });
+    const images = await resolveCsdnImagesForBrowser(mermaidMarkdown, draft.workspaceId, draft.sourceRelativePath, this.contentSources);
     // Source the summary and cover from the MAIN article (article_settings for
     // `source:<relativePath>`), falling back to the CSDN channel draft's own
     // copy. The channel draft only snapshots these at generation time, so if the
@@ -333,7 +339,7 @@ export class CsdnChannelService {
     const coverDataUrl = resolvedCover ?? images[0]?.dataUrl;
     return {
       title: draft.title,
-      markdown: draft.markdown,
+      markdown: mermaidMarkdown,
       author: draft.author,
       digest,
       images,

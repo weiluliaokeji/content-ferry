@@ -13,6 +13,7 @@
  * external links.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 import type Database from "better-sqlite3";
 import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
 import type { CredentialVault } from "../security/credential-vault";
@@ -411,8 +412,11 @@ export class FiftyoneCtoChannelService {
 
       const cookie = this.loadCredentials(account).cookie;
       const uploader = new FiftyoneCtoImageUploader(cookie, this.fetcher);
+      const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
+        uploadImage: (png, name) => uploader.upload(png, "image/png", name)
+      });
       const imageResult = await uploadFiftyoneCtoLocalImages(
-        draft.markdown,
+        mermaidMarkdown,
         draft.workspaceId,
         draft.sourceRelativePath,
         this.contentSources,

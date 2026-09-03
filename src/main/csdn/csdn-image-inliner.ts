@@ -253,7 +253,15 @@ export async function resolveCsdnImagesForBrowser(
   const out: ResolvedCsdnImage[] = [];
 
   for (const { source } of matches) {
-    if (source.startsWith("data:")) continue;
+    if (source.startsWith("data:")) {
+      // 已内联的图（含 mermaid 渲染产物）也要上传到 CSDN 图床：CSDN 编辑器会把
+      // base64 data URI 当外链、转存代理会失败，必须改用 CSDN 托管 URL。
+      const meta = source.slice(5, source.indexOf(","));
+      const mimeType = /^image\/[a-z0-9.+-]+$/i.test(meta) ? meta : "image/png";
+      out.push({ source, dataUrl: source, mimeType, filename: `mermaid-${out.length + 1}.png` });
+      seen.add(source);
+      continue;
+    }
     if (isCsdnHosted(source)) continue;
     if (seen.has(source)) continue;
     seen.add(source);

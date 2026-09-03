@@ -104,7 +104,7 @@ describe("resolveCsdnImagesForBrowser", () => {
     sourceDirectory = undefined;
   });
 
-  it("resolves local images to data URLs and skips CSDN-hosted / data: sources", async () => {
+  it("resolves local images to data URLs and skips only CSDN-hosted sources", async () => {
     database = openInMemoryDatabase();
     const accounts = new AccountRepository(database.connection);
     const workspace = accounts.getOrCreateDefaultWorkspace();
@@ -135,11 +135,16 @@ describe("resolveCsdnImagesForBrowser", () => {
 
     const images = await resolveCsdnImagesForBrowser(markdown, workspace.id, "posts/article/index.md", contentSources);
 
-    // 本地 + 远程需要上传；已托管 + 内嵌跳过。
-    expect(images).toHaveLength(2);
+    // 本地 + 远程需要上传；已托管（CSDN）跳过；内嵌 data: URI 现在也会随浏览器辅助
+    // 上传到 CSDN 图床（CSDN 编辑器无法渲染 base64，必须改用托管 URL）。
+    expect(images).toHaveLength(3);
     const sources = images.map((image) => image.source);
     expect(sources).toContain("./assets/diagram.png");
     expect(sources).toContain("https://example.com/x.png");
+    expect(sources).toContain("data:image/png;base64,QUJD");
+    const embedded = images.find((image) => image.source === "data:image/png;base64,QUJD");
+    expect(embedded?.mimeType).toBe("image/png");
+    expect(embedded?.filename).toMatch(/^mermaid-\d+\.png$/);
     const local = images.find((image) => image.source === "./assets/diagram.png");
     expect(local?.dataUrl).toBe(`data:image/png;base64,${Buffer.from("fake-png-bytes", "utf8").toString("base64")}`);
     expect(local?.mimeType).toBe("image/png");

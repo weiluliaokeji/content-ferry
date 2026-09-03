@@ -9,6 +9,7 @@ import type { PublishCapabilities } from "../publishing/platform-publisher-conne
 import { appendArticleSignature } from "../publishing/article-signature";
 import { CnblogsApiError, CnblogsClient, type CnblogsBlogInfo, type CnblogsPostPayload } from "./cnblogs-client";
 import { uploadCnblogsImages } from "./cnblogs-image-uploader";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 
 const cnblogsDraftSchema = {
   type: "object",
@@ -590,8 +591,18 @@ export class CnblogsChannelService {
     const keywords = (options?.tags ?? []).map((tag) => tag.trim()).filter(Boolean).join(",");
 
     const client = this.clientFor(blog.blogName);
+    const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
+      uploadImage: async (png, name) => {
+        const result = await client.newMediaObject(blog.blogId, credentials.username, credentials.apiKey, {
+          name,
+          type: "image/png",
+          bits: png
+        });
+        return result.url;
+      }
+    });
     const uploaded = await uploadCnblogsImages({
-      markdown: draft.markdown,
+      markdown: mermaidMarkdown,
       workspaceId: draft.workspaceId,
       sourceRelativePath: draft.sourceRelativePath,
       contentSources: this.contentSources,

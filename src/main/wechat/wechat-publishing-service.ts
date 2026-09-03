@@ -6,6 +6,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { CredentialVault } from "../security/credential-vault";
 import { appendArticleSignature } from "../publishing/article-signature";
 import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 
 type FetchLike = typeof fetch;
 type PublishMode = "publish" | "mass";
@@ -299,10 +300,14 @@ export class WechatPublishingService {
     resolveLocalImage: (source: string) => Promise<{ bytes: Buffer; mimeType: string; fileName: string } | null>
   ) {
     let thumbMediaId = suppliedThumbMediaId?.trim() || "";
+    // 先把 mermaid 代码块渲染成图片并上传到微信图床，下游解析器把它当普通图片处理。
+    const mermaidMarkdown = await renderMermaidBlocks(markdown, {
+      uploadImage: (png, name) => this.uploadMultipart(accountId, "/cgi-bin/media/uploadimg", png, "image/png", name, "url")
+    });
     const uploaded = new Map<string, string>();
     const imagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
     // 代码示例中的 ![](...) 只是文本，不能作为要上传的正文图片处理。
-    const matches = [...withoutFencedCodeBlocks(markdown).matchAll(imagePattern)];
+    const matches = [...withoutFencedCodeBlocks(mermaidMarkdown).matchAll(imagePattern)];
     for (const match of matches) {
       const source = match[2];
       if (/^https?:\/\//i.test(source)) continue;
@@ -323,7 +328,7 @@ export class WechatPublishingService {
     if (!thumbMediaId) {
       throw new WechatApiError("微信公众号草稿必须有封面。请先选择本地图片、生成封面或从微信素材库选择。");
     }
-    const html = markdownToWechatHtml(markdown, uploaded);
+    const html = markdownToWechatHtml(mermaidMarkdown, uploaded);
     return { html, thumbMediaId };
   }
 

@@ -32,6 +32,7 @@ import { confirmCsdnBrowserPublish, driveCsdnBrowserPublish, logCsdnBrowserAssis
 import { driveWechatBackendToDrafts, getOrCreateWechatBackendWindow, logWechatBrowserAssist } from "./automation/wechat-automation";
 import { readCnblogsPersonalOptions } from "./automation/cnblogs-options-automation";
 import { readFiftyoneCtoCategories } from "./fiftyone-cto/fiftyone-cto-category-automation";
+import { disposeMermaidRenderer } from "./mermaid/mermaid-render";
 
 function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
   const escapedBinary = binaryPath.replace(/'/g, "''");
@@ -367,6 +368,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
+  // 关闭前销毁共享的 mermaid 渲染窗口，避免隐藏窗口泄漏。
+  disposeMermaidRenderer();
   if (!state.shutdownPromise && state.runtimeShutdown) {
     event.preventDefault();
     void shutdownAndExit();
