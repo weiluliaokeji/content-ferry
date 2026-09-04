@@ -261,7 +261,7 @@ describe("FiftyoneCtoChannelService", () => {
     expect(decodeURIComponent(publishCall!.body!)).toContain("https://s2.51cto.com/images/blog/front/202608/uploaded.png");
   });
 
-  it("falls back to base64 inlining when COS image upload fails", async () => {
+  it("fails the whole publish when COS image upload fails (no base64 fallback)", async () => {
     const failSourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-51cto-fail-"));
     const articleDir = path.join(failSourceDirectory, "posts", "source", "with-image-fail");
     fs.mkdirSync(path.join(articleDir, "assets"), { recursive: true });
@@ -294,15 +294,18 @@ describe("FiftyoneCtoChannelService", () => {
     const draft = await failService.createFromSource({ accountId: testAccount.id, relativePath: "posts/source/with-image-fail/index.md", generationMode: "source" });
     const approved = failService.approveDraft(draft.id);
     const job = failService.createPublishJob(approved.id);
-    const published = await waitForJob(failService, job.id, "published");
+    // 上传失败应整体发布失败，而不是回退成 base64 内联后照常发布。
+    const failed = await waitForJob(failService, job.id, "failed");
 
-    expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);
+    expect(failed.remoteUrl).toBeNull();
+    // 不应再向 51CTO 发发布请求。
     const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
-    expect(publishCall?.body).toBeDefined();
-    expect(decodeURIComponent(publishCall!.body!)).toContain("data:image/png;base64,");
-    // 上传失败时，status_note 必须保留失败原因，避免用户看到 base64 却无法定位问题。
-    expect(published.statusNote ?? "").toMatch(/图床上传失败回退/);
-    expect(published.statusNote ?? "").toMatch(/本地图片已内联 1 张/);
+    expect(publishCall).toBeUndefined();
+    // statusNote 必须暴露失败原因，且不得出现 base64 内联降级字样。
+    expect(failed.statusNote ?? "").toMatch(/上传 51CTO 图床失败/);
+    expect(failed.statusNote ?? "").not.toMatch(/图床上传失败回退/);
+    expect(failed.statusNote ?? "").not.toMatch(/本地图片已内联/);
+    expect(failed.errorMessage).toBeTruthy();
 
     fs.rmSync(failSourceDirectory, { recursive: true, force: true });
   });

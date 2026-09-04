@@ -168,19 +168,22 @@ describe("uploadFiftyoneCtoLocalImages", () => {
     const result = await uploadFiftyoneCtoLocalImages(md, "ws", "post/index.md", sources, okUploader);
 
     expect(result.uploadedCount).toBe(1);
-    expect(result.inlinedCount).toBe(0);
+    expect(result.failed).toHaveLength(0);
     expect(result.markdown).toContain("https://s2.51cto.com/up.png");
     expect(result.markdown).toContain("https://x.com/b.png");
     expect(result.markdown).toContain("data:image/png;base64,AAA");
   });
 
-  it("falls back to base64 inlining when the uploader throws", async () => {
+  it("records failure and does NOT inline when the uploader throws", async () => {
     const sources = fakeContentSources({ "./a.png": { mimeType: "image/png", bytes: Buffer.from("fake") } });
     const result = await uploadFiftyoneCtoLocalImages("![a](./a.png)", "ws", "post/index.md", sources, failUploader);
 
     expect(result.uploadedCount).toBe(0);
-    expect(result.inlinedCount).toBe(1);
-    expect(result.markdown).toMatch(/!\[a\]\(data:image\/png;base64,/);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].reason).toContain("boom");
+    // 不再回退为 base64 内联：保留原始本地引用，交由频道服务整体中止发布。
+    expect(result.markdown).not.toMatch(/!\[a\]\(data:image\/png;base64,/);
+    expect(result.markdown).toContain("![a](./a.png)");
   });
 
   it("records failures for missing resources", async () => {
@@ -188,7 +191,6 @@ describe("uploadFiftyoneCtoLocalImages", () => {
     const result = await uploadFiftyoneCtoLocalImages("![a](./missing.png)", "ws", "post/index.md", sources, okUploader);
 
     expect(result.uploadedCount).toBe(0);
-    expect(result.inlinedCount).toBe(0);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0].source).toBe("./missing.png");
   });
@@ -213,19 +215,18 @@ describe("uploadFiftyoneCtoLocalImages", () => {
     expect(captured!.bytes.toString("binary", 1, 4)).toBe("PNG");
   }, 15_000);
 
-  it("falls back to PNG base64 inlining when SVG upload fails", async () => {
+  it("does not inline SVG as base64 when the upload fails (records failure instead)", async () => {
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#0f0"/></svg>');
     const sources = fakeContentSources({ "./a.svg": { mimeType: "image/svg+xml", bytes: svg } });
 
     const result = await uploadFiftyoneCtoLocalImages("![a](./a.svg)", "ws", "post/index.md", sources, failUploader);
 
     expect(result.uploadedCount).toBe(0);
-    expect(result.inlinedCount).toBe(1);
-    expect(result.markdown).toContain("data:image/png;base64,");
-    expect(result.markdown).not.toContain("data:image/svg");
-
-    const match = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(result.markdown);
-    expect(match).not.toBeNull();
-    expect(Buffer.from(match![1], "base64").toString("binary", 1, 4)).toBe("PNG");
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].source).toBe("./a.svg");
+    expect(result.failed[0].reason).toMatch(/boom/);
+    // 失败时绝不回退成 base64 内联——内联后的文章对 51CTO 不可用（data URI 超长、可能被截断）。
+    expect(result.markdown).not.toContain("data:image/");
+    expect(result.markdown).toContain("./a.svg");
   }, 15_000);
 });

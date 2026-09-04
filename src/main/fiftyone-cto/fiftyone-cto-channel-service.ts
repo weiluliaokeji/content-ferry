@@ -426,18 +426,19 @@ export class FiftyoneCtoChannelService {
         this.contentSources,
         uploader
       );
+      // 任意本地图片上传失败 → 整体发布失败：回退成 base64 内联的文章内联超长 data URI，
+      // 51CTO 文章页加载异常且可能被截断，实际不可用。因此不再降级，直接中止发布。
+      if (imageResult.failed.length > 0) {
+        const detail = imageResult.failed
+          .slice(0, 5)
+          .map((f) => `${f.source}（${f.reason.slice(0, 120)}）`)
+          .join("、");
+        const note = `本地图片上传 51CTO 图床失败 ${imageResult.failed.length} 张，文章未发布：${detail}`;
+        return this.transitionJob(job, "failed", { statusNote: note, errorMessage: imageResult.failed[0].reason });
+      }
+
       const imageSummary: string[] = [];
       if (imageResult.uploadedCount > 0) imageSummary.push(`本地图片已上传图床 ${imageResult.uploadedCount} 张`);
-      if (imageResult.inlinedCount > 0) {
-        // 把失败原因也保留下来：之前 transitionJob 会用「已发布：url」覆盖掉这部分信息，
-        // 用户看到 base64 内联图片却完全无法定位图床为什么挂了。
-        const failureReason = imageResult.failed[0]?.reason ?? "";
-        const inlineDetail = failureReason
-          ? `本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退：${failureReason.slice(0, 200)}）`
-          : `本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退）`;
-        imageSummary.push(inlineDetail);
-      }
-      if (imageResult.failed.length > 0) imageSummary.push(`本地图片处理失败 ${imageResult.failed.length} 张（${imageResult.failed.map((f) => f.source).join("、")}）`);
       const imageStatusNote = imageSummary.join("；");
 
       const html = mdToHtml51(imageResult.markdown);
