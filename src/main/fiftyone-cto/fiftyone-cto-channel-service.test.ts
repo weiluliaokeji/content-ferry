@@ -300,7 +300,36 @@ describe("FiftyoneCtoChannelService", () => {
     const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
     expect(publishCall?.body).toBeDefined();
     expect(decodeURIComponent(publishCall!.body!)).toContain("data:image/png;base64,");
+    // 上传失败时，status_note 必须保留失败原因，避免用户看到 base64 却无法定位问题。
+    expect(published.statusNote ?? "").toMatch(/图床上传失败回退/);
+    expect(published.statusNote ?? "").toMatch(/本地图片已内联 1 张/);
 
     fs.rmSync(failSourceDirectory, { recursive: true, force: true });
+  });
+
+  it("keeps image upload summary in statusNote when COS upload succeeds", async () => {
+    const { account, service } = setupHarness();
+    const articleDir = path.join(sourceDirectory!, "posts", "source", "with-image-ok");
+    fs.mkdirSync(path.join(articleDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(articleDir, "index.md"), [
+      "---",
+      "title: 带图文章",
+      "created: '2026-08-01 10:00:00'",
+      "tags: []",
+      "publish: false",
+      "---",
+      "",
+      "# 带图文章",
+      "",
+      "![图](./assets/x.png)"
+    ].join("\n"), "utf8");
+    fs.writeFileSync(path.join(articleDir, "assets", "x.png"), Buffer.from("fake-png-bytes"), "utf8");
+
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/with-image-ok/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+    const published = await waitForJob(service, job.id, "published");
+
+    expect(published.statusNote ?? "").toMatch(/本地图片已上传图床 1 张/);
   });
 });

@@ -426,13 +426,19 @@ export class FiftyoneCtoChannelService {
         this.contentSources,
         uploader
       );
-      if (imageResult.uploadedCount > 0 || imageResult.inlinedCount > 0 || imageResult.failed.length > 0) {
-        const parts: string[] = [];
-        if (imageResult.uploadedCount > 0) parts.push(`本地图片已上传图床 ${imageResult.uploadedCount} 张`);
-        if (imageResult.inlinedCount > 0) parts.push(`本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退）`);
-        if (imageResult.failed.length > 0) parts.push(`本地图片处理失败 ${imageResult.failed.length} 张（${imageResult.failed.map((f) => f.source).join("、")}）`);
-        this.db.prepare(`UPDATE fiftyone_cto_publish_jobs SET status_note = ? WHERE id = ?`).run(parts.join("；"), job.id);
+      const imageSummary: string[] = [];
+      if (imageResult.uploadedCount > 0) imageSummary.push(`本地图片已上传图床 ${imageResult.uploadedCount} 张`);
+      if (imageResult.inlinedCount > 0) {
+        // 把失败原因也保留下来：之前 transitionJob 会用「已发布：url」覆盖掉这部分信息，
+        // 用户看到 base64 内联图片却完全无法定位图床为什么挂了。
+        const failureReason = imageResult.failed[0]?.reason ?? "";
+        const inlineDetail = failureReason
+          ? `本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退：${failureReason.slice(0, 200)}）`
+          : `本地图片已内联 ${imageResult.inlinedCount} 张（图床上传失败回退）`;
+        imageSummary.push(inlineDetail);
       }
+      if (imageResult.failed.length > 0) imageSummary.push(`本地图片处理失败 ${imageResult.failed.length} 张（${imageResult.failed.map((f) => f.source).join("、")}）`);
+      const imageStatusNote = imageSummary.join("；");
 
       const html = mdToHtml51(imageResult.markdown);
       const tagsStr = (options.tags ?? []).join(",");
@@ -446,10 +452,14 @@ export class FiftyoneCtoChannelService {
         cateId: options.cateId ?? "",
         abstract: draft.digest.slice(0, 200)
       });
+      // 把图片处理摘要拼到最终 statusNote，避免 transitionJob 的「已发布：url」覆盖掉上传详情。
+      const finalNote = imageStatusNote
+        ? `${result.url ? `已发布：${result.url}` : "已发布。"}（${imageStatusNote}）`
+        : result.url ? `已发布：${result.url}` : "已发布。";
       return this.transitionJob(job, "published", {
         remoteUrl: result.url ?? null,
         remoteContentId: result.blogId ?? null,
-        statusNote: result.url ? `已发布：${result.url}` : "已发布。",
+        statusNote: finalNote,
         errorMessage: null
       });
     } catch (error) {

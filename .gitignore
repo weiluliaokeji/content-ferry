@@ -29,4 +29,5 @@ build/*
 
 # mermaid 渲染验证脚手架（.mermaid-verify）的运行时产物
 .mermaid-verify/out/
+.cto-image-verify/out/
 .mermaid-verify/*.txt

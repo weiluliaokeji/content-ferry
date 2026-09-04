@@ -1,0 +1,6 @@
+{
+  "name": "contentferry-cto-image-verify",
+  "version": "0.0.0",
+  "private": true,
+  "description": "独立 Electron 验证脚手架：直接调 51CTO 图床接口（getUploadSign -> getUploadConfig -> COS POST），不依赖发布全流程。"
+}

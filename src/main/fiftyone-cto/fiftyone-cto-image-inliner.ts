@@ -126,8 +126,15 @@ export async function uploadFiftyoneCtoLocalImages(
       try {
         url = await uploader.upload(preparedBuffer, preparedMime, preparedName);
         uploadedCount++;
-      } catch {
+      } catch (uploadErr) {
         // 图床上传失败（端点/网络/Cookie 问题），回退为 base64 内联，避免图片丢失。
+        // 之前这里吞掉了真实错误，导致用户看到 base64 图片却无法定位原因；现在必须打日志。
+        const reason = uploadErr instanceof Error
+          ? uploadErr.message
+          : typeof uploadErr === "object" && uploadErr !== null
+            ? JSON.stringify(uploadErr, Object.getOwnPropertyNames(uploadErr))
+            : String(uploadErr);
+        console.error(`[51cto] COS 上传失败，回退为 base64 内联：source=${source} reason=${reason}`);
         url = `data:${preparedMime};base64,${preparedBuffer.toString("base64")}`;
         inlinedCount++;
       }
