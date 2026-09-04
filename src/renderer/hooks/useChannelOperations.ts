@@ -1049,7 +1049,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setFiftyoneCtoDraftSaving(false);
     }
   };
-  const publishFiftyoneCtoDraft = async (options?: FiftyoneCtoPublishOptions) => {
+  const publishFiftyoneCtoDraft = async (options?: FiftyoneCtoPublishOptions, republishFromJobId?: string) => {
     if (!fiftyoneCtoDraft) return;
     setFiftyoneCtoDraftSaving(true);
     try {
@@ -1069,12 +1069,18 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       }
       const payload = await request<{ job: FiftyoneCtoPublishJob }>(`/integrations/51cto/channel-drafts/${current.id}/jobs`, {
         method: "POST",
-        body: JSON.stringify({ pid: options?.pid ?? "", cateId: options?.cateId ?? "", tags: options?.tags ?? [], blogType: options?.blogType ?? "1" })
+        body: JSON.stringify({
+          pid: options?.pid ?? "",
+          cateId: options?.cateId ?? "",
+          tags: options?.tags ?? [],
+          blogType: options?.blogType ?? "1",
+          ...(republishFromJobId ? { republishFromJobId } : {})
+        })
       });
       if (payload?.job) {
         fiftyoneCtoStatusRef.current = payload.job.status;
         setFiftyoneCtoPublishJob(payload.job);
-        setNotice("已创建 51CTO 发布任务，正在发布…");
+        setNotice(republishFromJobId ? "已创建重新发布任务，正在发布…" : "已创建 51CTO 发布任务，正在发布…");
         setFiftyoneCtoDraft(undefined);
         setFiftyoneCtoDraftSource(undefined);
         setFiftyoneCtoEntryChoices(null);
@@ -1089,7 +1095,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setFiftyoneCtoDraftSaving(false);
     }
   };
-  const requestPublishFiftyoneCto = (options?: FiftyoneCtoPublishOptions) => {
+  const requestPublishFiftyoneCto = (options?: FiftyoneCtoPublishOptions, republishFromJobId?: string) => {
     if (!fiftyoneCtoDraft) return;
     if (fiftyoneCtoDraft.status === "draft") {
       const confirmed = window.confirm(
@@ -1097,7 +1103,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       );
       if (!confirmed) return;
     }
-    void publishFiftyoneCtoDraft(options);
+    void publishFiftyoneCtoDraft(options, republishFromJobId);
   };
   const confirmFiftyoneCtoPublish = async (jobId: string) => {
     setFiftyoneCtoDraftSaving(true);

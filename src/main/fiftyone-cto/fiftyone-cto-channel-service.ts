@@ -82,6 +82,14 @@ export interface FiftyoneCtoPublishJob {
   statusNote: string | null;
   errorMessage: string | null;
   statusSource: "system" | "manual";
+  /** 发布时填写的一级栏目 pid；再次进入时优先用作回。默认值。 */
+  pid: string | null;
+  /** 发布时填写的授权分类 cate_id。 */
+  cateId: string | null;
+  /** 发布时填写的标签列表（JSON 序列化）。 */
+  tags: string[];
+  /** 发布时填写的原创/转载/翻译（1/2/3）。 */
+  blogType: "1" | "2" | "3";
   createdAt: string;
   updatedAt: string;
 }
@@ -264,12 +272,52 @@ export class FiftyoneCtoChannelService {
     return this.requireDraft(id);
   }
 
-  createPublishJob(channelDraftId: string, options?: FiftyoneCtoPublishOptions): FiftyoneCtoPublishJob {
+  /**
+   * 创建 51CTO 发布任务。
+   *
+   * republishFromJobId（可选）=从已发布（published）的旧任务再发一次：复用旧任务的
+   * pid/cateId/tags/blogType 作为默认值，但允许调用方在 options 里覆盖；旧任务
+   * 状态保留（不改 status_source），新任务走独立的 draft_creating → published
+   * 链路。常用于「文章在 51CTO 后台被人工删除/格式异常，文渡这边显示已发布，但
+   * 实际需要重新发布」的场景。
+   */
+  createPublishJob(channelDraftId: string, options?: FiftyoneCtoPublishOptions, republishFromJobId?: string): FiftyoneCtoPublishJob {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new FiftyoneCtoChannelError("请先审核并冻结 51CTO 渠道稿，再创建发布任务。");
+
+    // republishFromJobId 模式：优先复用旧任务的发布参数。调用方仍可在 options 里覆盖。
+    let inherited: FiftyoneCtoPublishOptions | null = null;
+    if (republishFromJobId) {
+      const previous = this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE id = ?").get(republishFromJobId) as Record<string, string | null> | undefined;
+      if (!previous) throw new FiftyoneCtoChannelError("找不到被重新发布的 51CTO 任务，无法继续。");
+      const previousJob = mapJob(previous);
+      if (previousJob.status !== "published") {
+        throw new FiftyoneCtoChannelError("只有「已发布」状态的 51CTO 任务支持从文渡再发一次；当前状态：" + previousJob.status);
+      }
+      inherited = {
+        pid: previousJob.pid ?? "",
+        cateId: previousJob.cateId ?? "",
+        tags: previousJob.tags ?? [],
+        blogType: previousJob.blogType ?? "1"
+      };
+    }
+
+    // 合并 options：republishFromJobId 给的 defaults，options 优先覆盖。
+    const finalOptions: FiftyoneCtoPublishOptions = {
+      pid: options?.pid ?? inherited?.pid ?? "",
+      cateId: options?.cateId ?? inherited?.cateId ?? "",
+      tags: options?.tags ?? inherited?.tags ?? [],
+      blogType: options?.blogType ?? inherited?.blogType ?? "1"
+    };
+
     const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
     let idempotencyKey = `fiftyonecto:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
-    const found = this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    // republishFromJobId 模式（用户主动再发）必然生成全新任务：直接给 idempotency_key
+    // 拼一个随机后缀，既绕开 idempotency 命中，也满足 UNIQUE(idempotency_key) 约束。
+    if (republishFromJobId) {
+      idempotencyKey = `${idempotencyKey}:republish:${randomUUID()}`;
+    }
+    const found = republishFromJobId ? undefined : this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
     if (found) {
       let foundJob = mapJob(found);
       const restartable: FiftyoneCtoPublishJobStatus[] = ["draft_creating", "needs_credentials", "failed"];
@@ -281,7 +329,7 @@ export class FiftyoneCtoChannelService {
           });
         }
         if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
-          this.publishOptionsCache.set(foundJob.id, options ?? {});
+          this.publishOptionsCache.set(foundJob.id, finalOptions);
           void this.executePublish(foundJob.id).catch(() => {});
         }
         return foundJob;
@@ -290,18 +338,21 @@ export class FiftyoneCtoChannelService {
     }
     const now = new Date().toISOString();
     const id = randomUUID();
+    const initialNote = republishFromJobId
+      ? `已重新创建 51CTO 发布任务（参考旧任务 ${republishFromJobId.slice(0, 8)}），正在发布。`
+      : "已创建 51CTO 发布任务，正在发布。";
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO fiftyone_cto_publish_jobs
-        (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?)`)
+        (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, pid, cate_id, tags, blog_type, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
-          "已创建 51CTO 发布任务，正在发布。", now, now);
+          initialNote, finalOptions.pid, finalOptions.cateId, JSON.stringify(finalOptions.tags ?? []), finalOptions.blogType, now, now);
       this.db.prepare(`INSERT INTO fiftyone_cto_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
-        VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
-        .run(randomUUID(), id, now);
+        VALUES (?, ?, '', 'draft_creating', 'system', ?, ?)`)
+        .run(randomUUID(), id, republishFromJobId ? `重新发布（参考旧任务 ${republishFromJobId.slice(0, 8)}）` : '创建发布任务', now);
     })();
-    this.publishOptionsCache.set(id, options ?? {});
+    this.publishOptionsCache.set(id, finalOptions);
     void this.executePublish(id).catch(() => {});
     return this.requireJob(id);
   }
@@ -408,7 +459,15 @@ export class FiftyoneCtoChannelService {
 
     try {
       const draft = this.requireDraft(job.channelDraftId);
-      const options = this.publishOptionsCache.get(job.id) ?? { pid: "", cateId: "", tags: [], blogType: "1" as const };
+      // 优先用进程内 cache（最快），否则从 DB 行读——重启 dev 进程后 cache 为空，
+      // 仍可由 DB 持久化的 pid/cateId/tags/blogType 恢复上次发布用的分类与标签。
+      const cached = this.publishOptionsCache.get(job.id);
+      const options: FiftyoneCtoPublishOptions = cached ?? {
+        pid: job.pid ?? "",
+        cateId: job.cateId ?? "",
+        tags: job.tags ?? [],
+        blogType: job.blogType ?? "1"
+      };
 
       const cookie = this.loadCredentials(account).cookie;
       const uploader = new FiftyoneCtoImageUploader(cookie, this.fetcher);
@@ -612,6 +671,24 @@ function mapJob(row: Record<string, string | null>): FiftyoneCtoPublishJob {
     status: row.status as FiftyoneCtoPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
     statusNote: row.status_note, errorMessage: row.error_message,
     statusSource: row.status_source === "manual" ? "manual" : "system",
+    pid: row.pid, cateId: row.cate_id, tags: parseTags(row.tags), blogType: parseBlogType(row.blog_type),
     createdAt: row.created_at!, updatedAt: row.updated_at!
   };
+}
+
+/** DB 里 tags 列是 JSON 字符串（也可能为空或非法）；安全解析回 string[]，空值回退到 []。 */
+function parseTags(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
+
+/** blogType 是 "1"/"2"/"3"；空值或非法值回退到 "1"。 */
+function parseBlogType(value: string | null | undefined): "1" | "2" | "3" {
+  return value === "2" || value === "3" ? value : "1";
 }

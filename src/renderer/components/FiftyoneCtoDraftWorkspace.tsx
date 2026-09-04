@@ -18,6 +18,14 @@ interface FiftyoneCtoPublishJobShape {
   errorMessage: string | null;
   remoteUrl: string | null;
   remoteContentId: string | null;
+  /** 上次发布用的一级栏目 pid；重新进入时用于回填。 */
+  pid: string | null;
+  /** 上次发布用的授权分类 cate_id。 */
+  cateId: string | null;
+  /** 上次发布用的标签。 */
+  tags: string[];
+  /** 上次发布用的文章类型（1 原创 / 2 转载 / 3 翻译）。 */
+  blogType: "1" | "2" | "3";
   updatedAt: string;
 }
 
@@ -51,7 +59,7 @@ interface FiftyoneCtoDraftWorkspaceProps {
   onClearError?: () => void;
   onChange: (patch: FiftyoneCtoDraftPatch) => void;
   onSave: () => Promise<void> | void;
-  onPublish: (options: FiftyoneCtoPublishOptions) => void;
+  onPublish: (options: FiftyoneCtoPublishOptions, republishFromJobId?: string) => void;
   onConfirmPublish: (jobId: string) => Promise<void> | void;
   onCorrectStatus: (jobId: string, status: "published" | "failed" | "cancelled", reason: string) => Promise<void> | void;
   onGoToCredentials: () => void;
@@ -227,6 +235,19 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.id]);
 
+  // 打开渠道稿时，若已存在发布任务（如「已发布」），回填上次发布用的 pid/cateId/标签/类型。
+  // 这解决了「文章在 51CTO 后台被删、重新进入渠道稿后上次分类全丢、也无法选择」的问题：
+  // 分类值随任务持久化在 DB，重新进入即可恢复，无需再次登录 51CTO 抓取。
+  // 注意：此 effect 声明在 draft.id effect 之后，执行顺序靠后，其回填值优先于主稿 frontmatter 的 tags。
+  useEffect(() => {
+    if (!job) return;
+    if (job.pid) setPublishPid(job.pid);
+    if (job.cateId) setPublishCateId(job.cateId);
+    if (job.tags && job.tags.length > 0) setPublishTags(job.tags.join(", "));
+    setPublishBlogType(job.blogType ?? "1");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+
   // 点击「加载分类」：从 51CTO 发布页抓取一级栏目/授权分类选项，保存本地后填充下拉。
   const handleLoadCategories = async () => {
     setCategoryLoading(true);
@@ -244,7 +265,7 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
     }
   };
 
-  const handlePublish = () => {
+  const handlePublish = (republishFromJobId?: string) => {
     if (!publishPid.trim()) {
       setPublishValidationError("51CTO 要求必须选择「一级栏目」。请先点击「加载分类」从 51CTO 拉取选项并选择；若下拉为空，可手动填写栏目 id。");
       setRightPanel("settings");
@@ -266,7 +287,7 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
       return;
     }
     setPublishValidationError("");
-    onPublish({ pid: publishPid.trim(), cateId: publishCateId.trim(), tags, blogType: publishBlogType });
+    onPublish({ pid: publishPid.trim(), cateId: publishCateId.trim(), tags, blogType: publishBlogType }, republishFromJobId);
   };
 
   const handleConfirmPublish = async () => {
@@ -314,7 +335,8 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
   const isDraft = draft.status === "draft";
   const jobStatus = job?.status;
   // 51CTO 为单步发布：无草稿阶段，pid/cateId 留空时由客户端自动从发布页抓取。
-  const canEditPublishOptions = isDraft || !job || jobStatus === "cancelled" || jobStatus === "failed" || jobStatus === "needs_credentials";
+  // 「已发布」也放开编辑：文章可能在 51CTO 后台被删，用户需修改分类/标签后重新发布。
+  const canEditPublishOptions = isDraft || !job || jobStatus === "published" || jobStatus === "cancelled" || jobStatus === "failed" || jobStatus === "needs_credentials";
   const showReconciliationForm = jobStatus === "needs_manual_reconciliation";
 
   const chooseCover = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -437,14 +459,15 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
         <span>{saving ? "正在保存…" : dirty ? "有未保存修改" : "已保存"}</span>
         {job && <span className="hint cnblogs-inline-status">{fiftyoneCtoJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
-        {!job && <button onClick={handlePublish} disabled={saving}>发布到 51CTO</button>}
+        {!job && <button onClick={() => handlePublish()} disabled={saving}>发布到 51CTO</button>}
         {jobStatus === "draft_creating" && <span className="status-badge neutral">正在发布到 51CTO…</span>}
         {jobStatus === "published" && (job?.remoteUrl ? <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a> : <span className="status-badge success">已发布</span>)}
-        {jobStatus === "failed" && <button onClick={handlePublish} disabled={saving}>重试发布</button>}
-        {jobStatus === "cancelled" && <button onClick={handlePublish} disabled={saving}>重新发布</button>}
+        {jobStatus === "published" && <button onClick={() => handlePublish(job?.id)} disabled={saving}>重新发布</button>}
+        {jobStatus === "failed" && <button onClick={() => handlePublish()} disabled={saving}>重试发布</button>}
+        {jobStatus === "cancelled" && <button onClick={() => handlePublish()} disabled={saving}>重新发布</button>}
         {jobStatus === "needs_credentials" && <>
           <button onClick={onGoToCredentials} className="secondary-button">前往账号管理配置凭据</button>
-          <button onClick={handlePublish} disabled={saving}>重新尝试发布</button>
+          <button onClick={() => handlePublish()} disabled={saving}>重新尝试发布</button>
         </>}
         {showReconciliationForm && !correcting && <button className="secondary-button" onClick={() => setCorrecting(true)} disabled={correctionBusy}>人工校正</button>}
       </div>
@@ -502,6 +525,7 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
           {jobStatus === "needs_credentials" && <div className="status-badge warning cnblogs-credential-banner">发布任务此前因 Cookie 校验未通过而暂停。如已在账号管理保存最新 Cookie，请点击顶部「重新尝试发布」用新凭据继续。</div>}
           {jobStatus === "failed" && job?.errorMessage && <div className="cnblogs-publish-error" role="alert"><strong>发布失败</strong><span>{job.errorMessage}</span><small>可重新设置分类/标签后点击顶部「重试发布」再次尝试；如仍失败，可在 51CTO 后台核对后使用人工校正。</small></div>}
           {jobStatus === "cancelled" && <p className="hint">本次发布任务已取消。可重新设置后，点击顶部「重新发布」创建新任务。</p>}
+          {jobStatus === "published" && <p className="hint">本次已发布。若文章在 51CTO 后台被删除或需改分类重发，可修改上方分类/标签后点击顶部「重新发布」——会用上次的分类/标签作为默认值再发一次。</p>}
           {showReconciliationForm && <div className="cnblogs-reconcile-form">
             {!correcting ? <p className="hint">发布结果无法自动确认（回执缺失或异常）。请到 51CTO 后台核对草稿/文章实际状态后人工校正。</p> : <>
               <label>最终状态<select value={correctionStatus} onChange={(event) => setCorrectionStatus(event.target.value as "published" | "failed" | "cancelled")}><option value="published">已发布</option><option value="failed">发布失败</option><option value="cancelled">取消发布</option></select></label>
@@ -523,7 +547,10 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
             </button>
             <small>从 51CTO 后台同步我的文章分类，保存到本地后，后续发布无需重复登录。</small>
           </div>
-          {categoryLoadError && <p className="error editor-inline-error">{categoryLoadError}</p>}
+          {categoryLoadError && <div className="error editor-inline-error" role="alert">
+            <p>{categoryLoadError}</p>
+            <p className="hint">分类拉取失败不影响发布：可直接在上方「一级栏目」「授权分类」输入框手动填写栏目 id / 分类 id（从 51CTO 后台的文章分类页可查到）。</p>
+          </div>}
           {loadedCategories && (loadedCategories.pidOptions.length === 0 || loadedCategories.cateOptions.length === 0) && loadedCategories.debug && (
             <details className="fiftyone-cto-diagnostic">
               <summary>未抓到分类选项：51CTO 发布页诊断（供开发校准）</summary>

@@ -1027,7 +1027,7 @@ export function App() {
       onClearError={() => setError("")}
       onChange={(patch) => setFiftyoneCtoDraft((current) => current ? { ...current, ...patch } : current)}
       onSave={() => void saveFiftyoneCtoChannelDraft()}
-      onPublish={(options) => requestPublishFiftyoneCto(options)}
+      onPublish={(options, republishFromJobId) => requestPublishFiftyoneCto(options, republishFromJobId)}
       onConfirmPublish={(jobId) => void confirmFiftyoneCtoPublish(jobId)}
       onCorrectStatus={(jobId, status, reason) => void correctFiftyoneCtoStatus(jobId, status, reason)}
       onGoToCredentials={() => {

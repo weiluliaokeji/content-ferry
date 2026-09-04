@@ -335,4 +335,94 @@ describe("FiftyoneCtoChannelService", () => {
 
     expect(published.statusNote ?? "").toMatch(/本地图片已上传图床 1 张/);
   });
+
+  it("persists pid/cateId/tags/blogType into the job row and the publish request", async () => {
+    const { account, service, database, calls } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+
+    const job = service.createPublishJob(approved.id, { pid: "176", cateId: "200", tags: ["前端", "React"], blogType: "2" });
+    // 创建即反映发布参数（不依赖异步 executePublish 完成后才可见）。
+    expect(job.pid).toBe("176");
+    expect(job.cateId).toBe("200");
+    expect(job.tags).toEqual(["前端", "React"]);
+    expect(job.blogType).toBe("2");
+
+    const published = await waitForJob(service, job.id, "published");
+    expect(published.pid).toBe("176");
+    expect(published.cateId).toBe("200");
+    expect(published.tags).toEqual(["前端", "React"]);
+    expect(published.blogType).toBe("2");
+
+    // 落盘验证：重启 dev 进程后仍能从 DB 恢复（而不是只在内存 publishOptionsCache 里）。
+    const row = database.connection.prepare(
+      "SELECT pid, cate_id, tags, blog_type FROM fiftyone_cto_publish_jobs WHERE id = ?"
+    ).get(job.id) as { pid: string; cate_id: string; tags: string; blog_type: string };
+    expect(row.pid).toBe("176");
+    expect(row.cate_id).toBe("200");
+    expect(JSON.parse(row.tags)).toEqual(["前端", "React"]);
+    expect(row.blog_type).toBe("2");
+
+    // 发布请求体应携带这些参数（tag 用逗号拼接，pid/cate_id/blog_type 原样透传）。
+    const publishCall = calls.find((call) => call.url === CTOClient.PUBLISH_URL);
+    expect(publishCall?.body).toBeDefined();
+    const body = decodeURIComponent(publishCall!.body!);
+    expect(body).toContain("pid=176");
+    expect(body).toContain("cate_id=200");
+    expect(body).toContain("tag=前端,React");
+    expect(body).toContain("blog_type=2");
+  });
+
+  it("restores publish options from DB after service reconstruction (cache miss)", async () => {
+    const { account, service, database } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id, { pid: "176", cateId: "200", tags: ["Go"], blogType: "3" });
+    await waitForJob(service, job.id, "published");
+
+    // 模拟重启：新建 service（publishOptionsCache 为空），读同一个 DB 连接。
+    // getJob 走 requireJob → mapJob，直接从 DB 行恢复发布参数。
+    const accounts2 = new AccountRepository(database.connection);
+    const cs2 = new ContentSourceService(database.connection);
+    const provider2 = {
+      generateStructured: async () => ({ value: { title: "t", markdown: "# t\n\n正文。" } })
+    } as unknown as ModelProvider;
+    const service2 = new FiftyoneCtoChannelService(database.connection, accounts2, testVault, cs2, provider2, undefined, undefined);
+    const restored = service2.getJob(job.id);
+    expect(restored.pid).toBe("176");
+    expect(restored.cateId).toBe("200");
+    expect(restored.tags).toEqual(["Go"]);
+    expect(restored.blogType).toBe("3");
+  });
+
+  it("republishFromJobId reuses the previous published job's options and creates a new job", async () => {
+    const { account, service } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+
+    const first = service.createPublishJob(approved.id, { pid: "176", cateId: "200", tags: ["Go", "后端"], blogType: "3" });
+    await waitForJob(service, first.id, "published");
+
+    // 不带 options 再发一次：应复用旧任务参数、生成全新任务、并绕过 idempotency 命中。
+    const second = service.createPublishJob(approved.id, undefined, first.id);
+    expect(second.id).not.toBe(first.id);
+    expect(second.pid).toBe("176");
+    expect(second.cateId).toBe("200");
+    expect(second.tags).toEqual(["Go", "后端"]);
+    expect(second.blogType).toBe("3");
+
+    await waitForJob(service, second.id, "published");
+    expect(service.listJobs(second.workspaceId).filter((j) => j.channelDraftId === approved.id)).toHaveLength(2);
+  });
+
+  it("rejects republishFromJobId when the referenced job is not published", async () => {
+    const { account, service } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+    await waitForJob(service, job.id, "published");
+    service.correctStatus(job.id, "failed", "人工确认发布失败");
+
+    expect(() => service.createPublishJob(approved.id, undefined, job.id)).toThrow(/已发布/);
+  });
 });

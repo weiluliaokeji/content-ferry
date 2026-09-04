@@ -94,6 +94,7 @@ export type FiftyoneCtoPublishJob = {
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
+  pid: string | null; cateId: string | null; tags: string[]; blogType: "1" | "2" | "3";
   updatedAt: string;
 };
 export type FiftyoneCtoPublishOptions = {

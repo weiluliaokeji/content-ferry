@@ -78,3 +78,72 @@ describe("csdn_publish_jobs migration (old schema without status_source)", () =>
     expect(row.status_source).toBe("system");
   });
 });
+
+describe("fiftyone_cto_publish_jobs migration (old schema without pid/cate_id/tags/blog_type)", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("adds the four publish-option columns to a legacy table without losing rows", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+
+    // 卸下当前表，替换为「旧 schema」形态：没有 pid / cate_id / tags / blog_type。
+    conn.exec("DROP TABLE IF EXISTS fiftyone_cto_publish_job_events");
+    conn.exec("DROP TABLE IF EXISTS fiftyone_cto_publish_jobs");
+    conn.exec(`CREATE TABLE fiftyone_cto_publish_jobs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+      rendered_package_hash TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL,
+      remote_url TEXT,
+      remote_content_id TEXT,
+      status_note TEXT,
+      error_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    conn.exec(`CREATE TABLE fiftyone_cto_publish_job_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES fiftyone_cto_publish_jobs(id) ON DELETE CASCADE,
+      previous_status TEXT,
+      new_status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    )`);
+
+    // 合法父行 + 一条已发布的旧任务。
+    conn.exec("INSERT INTO workspaces (id, display_name, timezone, created_at) VALUES ('w1', 'w', 'Asia/Shanghai', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO media_accounts (id, workspace_id, platform, display_name, created_at) VALUES ('a1', 'w1', '51cto', 'a', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO channel_drafts (id, workspace_id, account_id, source_relative_path, source_hash, title, markdown, status, created_at, updated_at) VALUES ('d1', 'w1', 'a1', 'p', 'h', 't', 'm', 'approved', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
+    conn.exec(`INSERT INTO fiftyone_cto_publish_jobs
+      (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
+      VALUES ('j1', 'w1', 'a1', 'd1', 'h1', 'k1', 'published', '已发布', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`);
+
+    // 重新触发迁移（createInitialTables 走 IF NOT EXISTS 跳过，ALTER 补列）。
+    initialiseDatabase(conn);
+
+    const columns = conn.prepare("PRAGMA table_info(fiftyone_cto_publish_jobs)").all() as Array<{ name: string }>;
+    const names = columns.map((column) => column.name);
+    expect(names).toContain("pid");
+    expect(names).toContain("cate_id");
+    expect(names).toContain("tags");
+    expect(names).toContain("blog_type");
+
+    // 旧行未填新列，迁移后应为 NULL（mapJob 会把 NULL 回退成 "" / [] / "1"）。
+    const row = conn.prepare(
+      "SELECT id, status, pid, cate_id, tags, blog_type FROM fiftyone_cto_publish_jobs WHERE id = ?"
+    ).get("j1") as { id: string; status: string; pid: string | null; cate_id: string | null; tags: string | null; blog_type: string | null };
+    expect(row.id).toBe("j1");
+    expect(row.status).toBe("published");
+    expect(row.pid).toBeNull();
+    expect(row.cate_id).toBeNull();
+    expect(row.tags).toBeNull();
+    expect(row.blog_type).toBeNull();
+  });
+});

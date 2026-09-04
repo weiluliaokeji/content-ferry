@@ -320,8 +320,18 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
 
   server.post("/api/integrations/51cto/channel-drafts/:draftId/jobs", async (request, reply) => {
     const params = z.object({ draftId: z.string().uuid() }).parse(request.params);
-    const options = fiftyoneCtoPublishOptionsInput.parse(request.body ?? {});
-    return reply.code(201).send({ job: fiftyoneCtoChannels.createPublishJob(params.draftId, options) });
+    const input = z.object({
+      pid: z.string().optional(),
+      cateId: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      blogType: z.enum(["1", "2", "3"]).optional(),
+      // 从已发布任务再发一次（如：51CTO 后台已删该文章，文渡显示已发布但用户想重新发布）。
+      // 不传 = 走普通 createPublishJob 路径（按 idempotency key 命中/创建新任务）。
+      republishFromJobId: z.string().uuid().optional()
+    }).parse(request.body ?? {});
+    const { republishFromJobId, ...publishOptions } = input;
+    const options = fiftyoneCtoPublishOptionsInput.parse(publishOptions);
+    return reply.code(201).send({ job: fiftyoneCtoChannels.createPublishJob(params.draftId, options, republishFromJobId) });
   });
 
   server.get("/api/integrations/51cto/jobs/:jobId", async (request) => {

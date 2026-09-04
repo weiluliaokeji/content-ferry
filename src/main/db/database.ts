@@ -443,6 +443,13 @@ export function initialiseDatabase(db: Database.Database): void {
       status_note TEXT,
       error_message TEXT,
       status_source TEXT NOT NULL DEFAULT 'system' CHECK (status_source IN ('system', 'manual')),
+      -- 发布时的发布参数（pid/cate_id/tags/blog_type）：上次发布用的分类/标签/类型，
+      -- 再次进入渠道稿时从这里恢复，避免每次发布都要重新选。pid 与 cate_id 是 51CTO
+      -- 后端的不可变 id，不是分类显示文案。
+      pid TEXT,
+      cate_id TEXT,
+      tags TEXT,
+      blog_type TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -581,6 +588,23 @@ export function initialiseDatabase(db: Database.Database): void {
   }
   if (!channelDraftColumns.some((column) => column.name === "suggested_tag_ids")) {
     db.exec("ALTER TABLE channel_drafts ADD COLUMN suggested_tag_ids TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  // 迁移：给老库的 fiftyone_cto_publish_jobs 补 4 列发布参数。这 4 列之前根本
+  // 不存在，导致之前发布的 pid / cate_id / tags / blog_type 全没存盘，重启 dev
+  // 后 cache 失效、再次进入渠道稿要重新选。新库直接由 CREATE TABLE IF NOT EXISTS 拿到。
+  const fiftyoneCtoJobColumns = db.prepare("PRAGMA table_info(fiftyone_cto_publish_jobs)").all() as Array<{ name: string }>;
+  if (!fiftyoneCtoJobColumns.some((column) => column.name === "pid")) {
+    db.exec("ALTER TABLE fiftyone_cto_publish_jobs ADD COLUMN pid TEXT");
+  }
+  if (!fiftyoneCtoJobColumns.some((column) => column.name === "cate_id")) {
+    db.exec("ALTER TABLE fiftyone_cto_publish_jobs ADD COLUMN cate_id TEXT");
+  }
+  if (!fiftyoneCtoJobColumns.some((column) => column.name === "tags")) {
+    db.exec("ALTER TABLE fiftyone_cto_publish_jobs ADD COLUMN tags TEXT");
+  }
+  if (!fiftyoneCtoJobColumns.some((column) => column.name === "blog_type")) {
+    db.exec("ALTER TABLE fiftyone_cto_publish_jobs ADD COLUMN blog_type TEXT");
   }
 
   // 迁移：放宽 csdn_publish_jobs.status 的 CHECK 约束，容纳 needs_user / failed。
