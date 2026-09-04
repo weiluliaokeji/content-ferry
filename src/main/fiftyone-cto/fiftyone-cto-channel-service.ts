@@ -413,7 +413,11 @@ export class FiftyoneCtoChannelService {
       const cookie = this.loadCredentials(account).cookie;
       const uploader = new FiftyoneCtoImageUploader(cookie, this.fetcher);
       const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
-        uploadImage: (png, name) => uploader.upload(png, "image/png", name)
+        uploadImage: (png, name) => uploader.upload(png, "image/png", name),
+        onError: (source, error) => {
+          const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
+          console.error(`[51cto] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
+        }
       });
       const imageResult = await uploadFiftyoneCtoLocalImages(
         mermaidMarkdown,

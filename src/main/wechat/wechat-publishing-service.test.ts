@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { markdownToWechatHtml, rasterizeSvgToPng, removeDuplicateLeadingTitle } from "./wechat-publishing-service";
+import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 
 describe("Wechat article title rendering", () => {
   it("removes a matching leading level-one heading from the Wechat body", () => {
@@ -237,5 +238,54 @@ describe("rasterizeSvgToPng", () => {
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5000 5000"><rect width="5000" height="5000" fill="#f00"/></svg>');
     const png = rasterizeSvgToPng(svg);
     expect(png.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Wechat publish: mermaid -> image, code -> code-snippet (regression)", () => {
+  // Mirrors the real article shape: a python code block next to a mermaid
+  // diagram. Regression for the report where both were published as plain text.
+  const article = [
+    "## 写入",
+    "",
+    "```python",
+    "# src/claude_agent_sdk/_internal/transcript_mirror_batcher.py",
+    "MAX_PENDING_ENTRIES = 500   # 攒 500 条",
+    "MAX_PENDING_BYTES = 1 << 20 # 或 1MiB，先到先刷",
+    "```",
+    "",
+    "核心逻辑：",
+    "",
+    "```mermaid",
+    "flowchart TD",
+    "A[add 被调用] --> B{内容为空?}",
+    "B -->|是| C[拒绝]",
+    "```"
+  ].join("\n");
+
+  it("renders mermaid blocks as images and python blocks as code-snippet", async () => {
+    const withMermaid = await renderMermaidBlocks(article, {
+      renderer: async () => Buffer.from("fake-png"),
+      uploadImage: async (_png, name) => `https://img.example.com/${name}`
+    });
+    expect(withMermaid).not.toContain("```mermaid");
+
+    const html = markdownToWechatHtml(withMermaid, new Map());
+    // The styling class is always code-snippet__js (WeChat's API only keeps
+    // that one); the real language lives in data-lang.
+    expect(html).toContain('code-snippet__js');
+    expect(html).toContain('data-lang="python"');
+    expect(html).toContain("https://img.example.com/mermaid-1.png");
+    expect(html).not.toContain("flowchart TD");
+    // python source leaked as a literal fence token
+    expect(html).not.toContain("```python");
+  });
+
+  it("keeps python as code-snippet even when mermaid rendering is skipped", () => {
+    // Raw ```mermaid blocks must not desync the fence state machine.
+    const html = markdownToWechatHtml(article, new Map());
+    expect(html).toContain('code-snippet__js');
+    expect(html).toContain('data-lang="python"');
+    expect(html).toContain("flowchart TD");
+    expect(html).not.toContain("```python");
   });
 });

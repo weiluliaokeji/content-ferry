@@ -542,7 +542,11 @@ export class JuejinChannelService {
       // 回退为 base64 data URI 内联。远程 http(s) 图片保持原样由掘金外链渲染。
       const uploader = new JuejinImageUploader({ cookie, fetcher: this.fetcher });
       const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
-        uploadImage: async (png) => (await uploader.uploadImage(png)).url
+        uploadImage: async (png) => (await uploader.uploadImage(png)).url,
+        onError: (source, error) => {
+          const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
+          console.error(`[juejin] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
+        }
       });
       const inlineResult = await inlineJuejinLocalImages(
         mermaidMarkdown,

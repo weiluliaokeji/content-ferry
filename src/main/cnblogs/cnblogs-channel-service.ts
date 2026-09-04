@@ -599,6 +599,10 @@ export class CnblogsChannelService {
           bits: png
         });
         return result.url;
+      },
+      onError: (source, error) => {
+        const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
+        console.error(`[cnblogs] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
       }
     });
     const uploaded = await uploadCnblogsImages({

@@ -317,7 +317,11 @@ export class CsdnChannelService {
     // 先把 mermaid 代码块渲染成 data URI 图片，下游 resolveCsdnImagesForBrowser
     // 会把它和本地图片一起交给 CSDN 图床上传（CSDN 编辑器无法渲染裸 mermaid）。
     const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
-      uploadImage: (png, name) => Promise.resolve(`data:image/png;base64,${png.toString("base64")}`)
+      uploadImage: (png, name) => Promise.resolve(`data:image/png;base64,${png.toString("base64")}`),
+      onError: (source, error) => {
+        const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
+        console.error(`[csdn] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
+      }
     });
     const images = await resolveCsdnImagesForBrowser(mermaidMarkdown, draft.workspaceId, draft.sourceRelativePath, this.contentSources);
     // Source the summary and cover from the MAIN article (article_settings for

@@ -302,7 +302,13 @@ export class WechatPublishingService {
     let thumbMediaId = suppliedThumbMediaId?.trim() || "";
     // 先把 mermaid 代码块渲染成图片并上传到微信图床，下游解析器把它当普通图片处理。
     const mermaidMarkdown = await renderMermaidBlocks(markdown, {
-      uploadImage: (png, name) => this.uploadMultipart(accountId, "/cgi-bin/media/uploadimg", png, "image/png", name, "url")
+      uploadImage: (png, name) => this.uploadMultipart(accountId, "/cgi-bin/media/uploadimg", png, "image/png", name, "url"),
+      onError: (source, error) => {
+        // 渲染失败时不阻断发布：保留原始 mermaid 块，但必须把原因写进日志，
+        // 否则用户只会看到公众号里一堆未转换的源码而毫无头绪。
+        const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
+        console.error(`[wechat] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
+      }
     });
     const uploaded = new Map<string, string>();
     const imagePattern = /!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
@@ -329,6 +335,9 @@ export class WechatPublishingService {
       throw new WechatApiError("微信公众号草稿必须有封面。请先选择本地图片、生成封面或从微信素材库选择。");
     }
     const html = markdownToWechatHtml(mermaidMarkdown, uploaded);
+    const codeSnippetCount = (html.match(/class="code-snippet__/g) ?? []).length;
+    // eslint-disable-next-line no-console
+    console.log(`[wechat] prepareWechatArticle done: ${uploaded.size} inline images, ${codeSnippetCount} code snippets`);
     return { html, thumbMediaId };
   }
 
@@ -614,6 +623,10 @@ function renderWechatCodeBlock(lines: string[], lang: string): string {
   // the whole block ends up on one line.  So we emit the exact native markup
   // WeChat itself produces, with one <code> per line so the line break is
   // structural and cannot be collapsed.
+  // WeChat's public-API sanitizer only reliably keeps the `code-snippet__js`
+  // class; other language classes (e.g. `code-snippet__python`) get stripped on
+  // ingest, leaving the block unstyled. So the styling class is hardcoded to
+  // `code-snippet__js` and the real language is preserved in `data-lang`.
   const langClass = wechatCodeLang(lang);
   const lineHtml = lines
     .map((line) => {
@@ -622,8 +635,8 @@ function renderWechatCodeBlock(lines: string[], lang: string): string {
     })
     .join("");
   return (
-    `<section class="code-snippet__${langClass}">` +
-    `<pre class="code-snippet__${langClass} code-snippet code-snippet_nowrap" data-lang="${langClass}" ` +
+    `<section class="code-snippet__js">` +
+    `<pre class="code-snippet__js code-snippet code-snippet_nowrap" data-lang="${langClass}" ` +
     `style="background-color:#f7f7f7;padding:1em;border-radius:4px;font-size:14px;line-height:1.6;color:#333333;white-space:pre-wrap;word-break:break-word;">` +
     `${lineHtml}` +
     `</pre></section>`

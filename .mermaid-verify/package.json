@@ -1,0 +1,7 @@
+{
+  "name": "contentferry-mermaid-verify",
+  "version": "1.0.0",
+  "description": "Temporary harness: verify mermaid -> PNG rendering in a real Electron app (deleted after use)",
+  "main": "main.cjs",
+  "private": true
+}
