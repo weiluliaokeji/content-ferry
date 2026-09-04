@@ -135,12 +135,16 @@ export class JuejinChannelService {
   /**
    * 查询掘金官方标签选项，供发布草稿前强制选择标签使用
    * （掘金 article_draft/create 要求至少 1 个标签，且标签须为官方 tag_id）。
+   *
+   * limit 与 recommendPublishOptions 保持一致（200）：AI 推荐时从 200 候选池选 3 个 tagId，
+   * 前端展示若只拉 60 个热门标签，会让 AI 选中的非热门 tagId 出现“选中但不可见”的死锁——
+   * 计入 3/3 但 UI 渲染不出对应按钮，用户既看不到也无法取消。
    */
   async listTags(accountId: string): Promise<Array<{ id: string; name: string }>> {
     const account = this.accounts.requireAccount(accountId);
     if (account.platform !== "juejin") throw new JuejinChannelError("请选择一个掘金账号。");
     const { client } = this.buildClient(account);
-    return client.listTags();
+    return client.listTags("", 200);
   }
 
   /**
@@ -537,9 +541,11 @@ export class JuejinChannelService {
       const options = this.publishOptionsCache.get(job.id) ?? { categoryId: "", tagIds: [] };
 
       // 掘金支持 ImageX 图片上传（5 步：gen_token → ApplyImageUpload → 直传 →
-      // CommitImageUpload → get_img_url），本地相对路径图片（如 ./assets/foo.png）
-      // 优先上传到掘金图床替换为 CDN URL；上传失败（含超 10MiB、无凭据等）时
-      // 回退为 base64 data URI 内联。远程 http(s) 图片保持原样由掘金外链渲染。
+      // CommitImageUpload → get_img_url）。本地相对路径图片（如 ./assets/foo.png）
+      // 优先上传到掘金图床替换为 CDN URL；上传失败（含超 10MiB、cookie 过期、
+      // 接口改版、网络等）不再回退 base64 内联——回退后的文章在掘金文章页不可用，
+      // 改为整体发布失败并在 status_note 暴露真实原因。远程 http(s) 图片由掘金
+      // 外链渲染。
       const uploader = new JuejinImageUploader({ cookie, fetcher: this.fetcher });
       const mermaidMarkdown = await renderMermaidBlocks(draft.markdown, {
         uploadImage: async (png) => (await uploader.uploadImage(png)).url,
@@ -553,28 +559,34 @@ export class JuejinChannelService {
         draft.workspaceId,
         draft.sourceRelativePath,
         this.contentSources,
-        { uploader }
+        uploader
       );
-      if (inlineResult.uploadedCount > 0 || inlineResult.inlinedCount > 0 || inlineResult.failed.length > 0) {
-        const noteParts: string[] = [];
-        if (inlineResult.uploadedCount > 0) noteParts.push(`本地图片已上传 ${inlineResult.uploadedCount} 张`);
-        if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
-        if (inlineResult.failed.length > 0) noteParts.push(`本地图片处理失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
+
+      // 上传失败时整体发布失败，不再生成 draft、不再调用掘金发布接口。
+      if (inlineResult.failed.length > 0) {
+        const failedDetail = inlineResult.failed
+          .slice(0, 5)
+          .map((f) => `${f.source}（${f.reason.slice(0, 120)}）`)
+          .join("、");
+        const reason = `本地图片上传掘金图床失败 ${inlineResult.failed.length} 张，文章未发布：${failedDetail}${inlineResult.failed.length > 5 ? "…" : ""}`;
+        return this.transitionJob(job, "failed", {
+          statusNote: reason,
+          errorMessage: reason
+        });
+      }
+
+      if (inlineResult.uploadedCount > 0) {
         this.db.prepare(`UPDATE juejin_publish_jobs SET status_note = ? WHERE id = ?`)
-          .run(noteParts.join("；"), job.id);
+          .run(`本地图片已上传 ${inlineResult.uploadedCount} 张`, job.id);
       }
 
       // 构建摘要：取 digest 字段，若为空则用 markdown 前 100 个字符
       const briefContent = (draft.digest || draft.markdown.replace(/#{1,6}\s+.*\n?/g, "").replace(/[#*`\n]/g, " ").trim().slice(0, 100)).slice(0, 100);
 
-      // 兜底：内联后正文仍超过掘金最大字数限制时，本地直接转 failed 并给出
+      // 兜底：本地图片全部上传成功后正文仍超过掘金最大字数限制时，发布失败并给出
       // 明确提示，避免请求打到掘金被服务端拒绝（只留下不可见错误）。
       if (inlineResult.markdown.length > JUJIN_MAX_MARK_CONTENT_CHARS) {
-        const noteParts: string[] = [];
-        if (inlineResult.uploadedCount > 0) noteParts.push(`本地图片已上传 ${inlineResult.uploadedCount} 张`);
-        if (inlineResult.inlinedCount > 0) noteParts.push(`本地图片已内联 ${inlineResult.inlinedCount} 张`);
-        if (inlineResult.failed.length > 0) noteParts.push(`本地图片处理失败 ${inlineResult.failed.length} 张（${inlineResult.failed.map((f) => f.source).join("、")}）`);
-        const reason = `正文经本地图片处理后为 ${inlineResult.markdown.length} 字符，超过掘金最大字数限制（${JUJIN_MAX_MARK_CONTENT_CHARS}）。${noteParts.join("；")}请删除过大的本地图片，或将文章拆分后重新生成渠道稿再发布。`;
+        const reason = `正文经本地图片处理后为 ${inlineResult.markdown.length} 字符，超过掘金最大字数限制（${JUJIN_MAX_MARK_CONTENT_CHARS}）。请删除过大的本地图片，或将文章拆分后重新生成渠道稿再发布。`;
         return this.transitionJob(job, "failed", {
           statusNote: reason,
           errorMessage: reason

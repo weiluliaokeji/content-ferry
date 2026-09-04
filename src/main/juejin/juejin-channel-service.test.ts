@@ -511,48 +511,43 @@ describe("JuejinChannelService", () => {
     expect(calls.some((call) => /upload|image/i.test(call.endpoint))).toBe(false);
   });
 
-  it("inlines local asset images to data URIs before creating the draft", async () => {
-    const { account, service, calls, sourceDirectory } = setupHarness();
-    const assetsDir = path.join(sourceDirectory, "posts", "source", "assets");
-    fs.writeFileSync(path.join(assetsDir, "local.png"), Buffer.from("local-png-bytes", "utf8"));
-    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
-    const saved = service.saveDraft(draft.id, {
-      title: "本地图测试",
-      markdown: "# 本地图测试\n\n![本地图](./assets/local.png)\n",
-      coverSource: ""
-    });
-    const approved = service.approveDraft(saved.id);
-    const job = service.createPublishJob(approved.id);
-    await waitForJob(service, job.id, "draft_created");
-
-    const create = calls.find((call) => call.endpoint === "article_draft/create")!;
-    const body = JSON.parse(create.body) as Record<string, unknown>;
-    expect(body.mark_content).toContain("data:image/png;base64,");
-    expect(body.mark_content).toContain(Buffer.from("local-png-bytes", "utf8").toString("base64"));
-    expect(body.mark_content).not.toContain("./assets/local.png");
-    // 仍不调用任何上传端点（本地图直接内联，不上传图床）。
-    expect(calls.some((call) => /upload|image/i.test(call.endpoint))).toBe(false);
-  });
-
-  it("moves the job to failed when the inlined markdown exceeds the content length limit", async () => {
+  it("fails the publish job when local image upload throws (no base64 fallback)", async () => {
     const { account, service, calls } = setupHarness();
     const assetsDir = path.join(sourceDirectory!, "posts", "source", "assets");
     fs.writeFileSync(path.join(assetsDir, "local.png"), Buffer.from("local-png-bytes", "utf8"));
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
-    // 正文接近本地上限（100000），内联一张本地图后必然超过掘金字数限制。
-    const longBody = `${"内容".repeat(49_980)}\n\n![本地图](./assets/local.png)\n`;
     const saved = service.saveDraft(draft.id, {
-      title: "超长正文测试",
-      markdown: longBody,
+      title: "本地图上传失败测试",
+      markdown: "# 本地图上传失败测试\n\n![本地图](./assets/local.png)\n",
       coverSource: ""
     });
     const approved = service.approveDraft(saved.id);
-
     const job = service.createPublishJob(approved.id);
     const failed = await waitForJob(service, job.id, "failed");
-    expect(failed.errorMessage).toContain("超过掘金最大字数限制");
-    expect(failed.errorMessage).toContain("本地图片已内联");
-    // 本地侧拦截，不应向掘金发起 create 请求。
+
+    // 旧语义：失败回退 base64 → draft_created、正文含 data:image/png;base64,
+    // 新语义：失败 → 整体 failed，不再调用掘金发布接口，正文保留原路径。
+    expect(failed.errorMessage).toMatch(/本地图片上传掘金图床失败/);
+    expect(failed.errorMessage).toContain("./assets/local.png");
+    expect(failed.statusNote ?? "").toMatch(/本地图片上传掘金图床失败/);
     expect(calls.some((call) => call.endpoint === "article_draft/create")).toBe(false);
+    // 文章正文未替换为 data URI（回退路径已删除）。
+    expect((failed as JuejinPublishJob & { markdown?: string }).markdown ?? "").not.toContain("data:image/png;base64,");
+  });
+
+  it("rejects drafts whose markdown already exceeds the content length limit at save time", async () => {
+    // saveDraft 是 markdown 进入 executePublish 之前的本地校验门，逻辑与掘金服务端
+    // 字数上限（JUJIN_MAX_MARK_CONTENT_CHARS = 100_000）保持一致——本测试断言这条
+    // 校验存在且生效。inliner 在新版本只做 URL 替换（不内联 base64），不再放大
+    // markdown 长度，所以"inliner 处理后超长"路径已被消除（见 690cfa5 与本次
+    // 删除 base64 兜底后的代码）。
+    const { account, service } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const oversize = `${"内容".repeat(50_001)}`;
+    expect(() => service.saveDraft(draft.id, {
+      title: "超长正文测试",
+      markdown: oversize,
+      coverSource: ""
+    })).toThrow(/掘金/);
   });
 });
