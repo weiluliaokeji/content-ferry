@@ -162,7 +162,9 @@ describe("local API scaffold", () => {
     expect(updated.json()).toMatchObject({ provider: "agnes" });
     expect(fs.readFileSync(path.join(skillsDirectory, "cover-generation", "SKILL.md"), "utf8"))
       .toContain("用户自定义要求");
-  });
+    // 本用例是重型端到端场景（真实临时技能目录 + 多次文件读写），本地独占实测 ~2.6s，
+    // CI 2 核 runner 与整仓并行下会超过 vitest 默认 5s 预算，显式放宽超时。
+  }, 30_000);
 
   it("stores Tavily configuration locally and can test or remove it", async () => {
     server = createTestServer();
@@ -623,7 +625,10 @@ describe("local API scaffold", () => {
     } finally {
       fs.rmSync(sourceDirectory, { recursive: true, force: true });
     }
-  });
+    // 本用例是重型端到端场景（真实临时文章库 + 20+ 次 HTTP inject + 2 次 SVG resvg 光栅化），
+    // 本地独占实测 2.6~4.9s 波动，CI 2 核 runner 稳定超 5s 默认预算（v0.1.4 release 两次失败于此），
+    // 显式放宽超时避免把环境慢误判为用例卡死。
+  }, 30_000);
 
   it("sorts VitePress articles by front matter created time descending", async () => {
     server = createTestServer();
