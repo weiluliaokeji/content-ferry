@@ -431,7 +431,7 @@ export class FiftyoneCtoChannelService {
       if (imageResult.failed.length > 0) {
         const detail = imageResult.failed
           .slice(0, 5)
-          .map((f) => `${f.source}（${f.reason.slice(0, 120)}）`)
+          .map((f) => `${f.source}（${f.reason.slice(0, 400)}）`)
           .join("、");
         const note = `本地图片上传 51CTO 图床失败 ${imageResult.failed.length} 张，文章未发布：${detail}`;
         return this.transitionJob(job, "failed", { statusNote: note, errorMessage: imageResult.failed[0].reason });

@@ -129,8 +129,11 @@ export class FiftyoneCtoImageUploader {
       throw new FiftyoneCtoCredentialsError(`51CTO 上传配置响应不是 JSON：${text.slice(0, 200)}`);
     }
     if (parsed.code !== 0 || !parsed.data?.url || !parsed.data?.fields) {
+      // 把 51CTO 服务端的 raw 响应一并抛上来，便于 channel-service 把 raw 写进
+      // status_note —— 排查"参数错误"等通用错时这是唯一线索。这里只截 500 字避免
+      // 把 base64 之类的整段 COS 凭证写进日志/DB。
       throw new FiftyoneCtoCredentialsError(
-        `51CTO 上传配置响应异常：${parsed.msg || text.slice(0, 200)}`
+        `51CTO 上传配置响应异常：${parsed.msg || "无 msg"} (code=${parsed.code}, body=${text.slice(0, 500)})`
       );
     }
     const fields = parsed.data.fields;
