@@ -113,6 +113,10 @@ export class FiftyoneCtoImageUploader {
     // getUploadConfig 同样需要 POST；并按 51CTO 文档依赖 getUploadSign 返回的签名。
     const params = new URLSearchParams({ upload_type: "image" });
     if (sign) params.set("upload_sign", sign);
+    // 51CTO 服务端的 code:10001 "参数错误" 不会告诉调用方缺哪个字段；把我们
+    // 发过去的 body 一起打到 error / status_note，排查时一眼能看到 send vs
+    // response 的差异（避免盲改 upload_type / mime_type / file_size 等字段）。
+    const sendBody = params.toString();
     const resp = await this.fetcher(CONFIG_URL, {
       method: "POST",
       headers: this.baseHeaders,
@@ -120,20 +124,22 @@ export class FiftyoneCtoImageUploader {
     });
     const text = await resp.text();
     if (!resp.ok) {
-      throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传配置失败：HTTP ${resp.status}`);
+      throw new FiftyoneCtoCredentialsError(
+        `获取 51CTO 上传配置失败：HTTP ${resp.status} (send=POST ${CONFIG_URL} body=${sendBody})`
+      );
     }
     let parsed: UploadConfigResponse;
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new FiftyoneCtoCredentialsError(`51CTO 上传配置响应不是 JSON：${text.slice(0, 200)}`);
+      throw new FiftyoneCtoCredentialsError(
+        `51CTO 上传配置响应不是 JSON (send=POST ${CONFIG_URL} body=${sendBody})：${text.slice(0, 200)}`
+      );
     }
     if (parsed.code !== 0 || !parsed.data?.url || !parsed.data?.fields) {
-      // 把 51CTO 服务端的 raw 响应一并抛上来，便于 channel-service 把 raw 写进
-      // status_note —— 排查"参数错误"等通用错时这是唯一线索。这里只截 500 字避免
-      // 把 base64 之类的整段 COS 凭证写进日志/DB。
       throw new FiftyoneCtoCredentialsError(
-        `51CTO 上传配置响应异常：${parsed.msg || "无 msg"} (code=${parsed.code}, body=${text.slice(0, 500)})`
+        `51CTO 上传配置响应异常：${parsed.msg || "无 msg"} ` +
+          `(code=${parsed.code}, send=POST ${CONFIG_URL} body=${sendBody}, response=${text.slice(0, 500)})`
       );
     }
     const fields = parsed.data.fields;

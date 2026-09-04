@@ -107,6 +107,34 @@ describe("FiftyoneCtoImageUploader", () => {
       .rejects.toThrow(/缺少字段/);
   });
 
+  it("includes send body + url + response in the error when getUploadConfig returns non-zero code", async () => {
+    // 真实失败：9/4 用户发布时 5 张图全部 code:10001 "参数错误"。
+    // 排查需要直接看到 send body / response，assertion 锁这一行为。
+    const fetcher = makeFetcher((url) => {
+      if (url === SIGN_URL) return makeSignResponse();
+      if (url === CONFIG_URL) {
+        // 51CTO 后端的真实返回形态。
+        return okJson({ code: 10001, msg: "参数错误", data: {} });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    let err: Error | undefined;
+    try {
+      await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "x.png");
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeDefined();
+    // send 侧：URL + method + body 三件都得在 error message 里
+    expect(err!.message).toContain(CONFIG_URL);
+    expect(err!.message).toMatch(/send=POST/);
+    expect(err!.message).toContain("upload_type=image");
+    expect(err!.message).toContain("upload_sign=sign-value");
+    // response 侧：message + code
+    expect(err!.message).toContain("参数错误");
+    expect(err!.message).toContain("code=10001");
+  });
+
   it("posts multipart form-data to COS with signature fields and file", async () => {
     let cosCall: { url: string; body: unknown } | undefined;
     const fetcher = makeFetcher((url, init) => {
