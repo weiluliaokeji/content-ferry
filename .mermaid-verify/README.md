@@ -13,15 +13,21 @@ npm run build:main
 # 2) 用本地 Electron 跑真实代码
 ./node_modules/electron/dist/electron.exe .mermaid-verify/main.cjs
 
-# 3) 比较两种 mermaid 选项
+# 3) 跑端到端管线（renderMermaidBlocks → markdownToWechatHtml）
+./node_modules/electron/dist/electron.exe .mermaid-verify/e2e.cjs
+
+# 4) 比较两种 mermaid 选项
 ./node_modules/electron/dist/electron.exe .mermaid-verify/probe2.cjs
 ```
 
-产物写到 `out/`，日志写到 `probe2.txt` / `main-run.txt` / `probe.txt`。
+产物写到 `out/`，日志写到 `probe2.txt` / `main-run.txt` / `probe.txt` / `e2e-run.txt`。
+
+优先跑 `e2e.cjs`：它驱动的是**用户实际走的发布管线**（mermaid 转图 + 代码块转微信样式），一次覆盖两个回归点。
 
 ## 文件
 
 - `main.cjs` —— 跑生产 `inspectMermaidRender`（已编译的 dist），全部 9 个 mermaid 块，输出非白像素统计。
+- `e2e.cjs` —— **首选**：跑生产管线 `renderMermaidBlocks()` → `markdownToWechatHtml()`，断言「N 个 mermaid fence → N 张 PNG、0 个 fence 残留、python fence 全部拿到 `code-snippet__js` + `data-lang`」，并把最终 HTML 落到 `out/e2e-wechat.html`。
 - `probe.cjs` —— 横向对比 `capturePage`（off-screen / 隐藏 / 可见）和 `<img>+<canvas>` 两条路径。诊断用。
 - `probe2.cjs` —— 验证 `htmlLabels:false` 和默认配置在 9 个块上的尺寸与质量，决定生产实现选哪个。
 - `sanity.cjs` —— 隔离测试：纯 HTML 红矩形 → `capturePage` 看空白边界。

@@ -26,3 +26,7 @@ Thumbs.db
 .workbuddy/
 build/*
 !build/installer.nsh
+
+# mermaid 渲染验证脚手架（.mermaid-verify）的运行时产物
+.mermaid-verify/out/
+.mermaid-verify/*.txt
