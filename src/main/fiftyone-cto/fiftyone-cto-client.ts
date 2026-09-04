@@ -86,7 +86,7 @@ export class CTOClient {
       abstract: input.abstract ?? "",
       blog_type: input.blogType,
       copy_code: "1",
-      is_old: "0",
+      is_old: "2",
       check: "0",
       _csrf: config.csrfToken
     });
@@ -142,15 +142,17 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * 将 Markdown 转为 51CTO publish 接口 content 字段期望的 HTML 片段。
+ * 将 Markdown 转为 51CTO publish 接口 content 字段期望的 HTML。
  * 仅生成 <p> / <h1>–<h6> / <ul> / <ol> / <li> / <pre><code> / <blockquote> / <a> / <img> 等
- * 块级与内联标签；不再包裹 am-engine 编辑器容器。
+ * 块级与内联标签，并整体包裹在 am-engine 编辑器容器内。
  *
- * 历史：早期版本套了一层 `<div class="editor-container container am-engine" ...>...</div>`，
- * 这是 51CTO 草稿编辑器（am-editor）的容器标识。51CTO 发布流程是单步发布（POST
- * `content` 直接落到数据库），发布页只渲染纯 HTML；编辑器容器 div 不会被剥除，反而
- * 会被发布页当作不可识别的字面文本整段显示——用户在文章页看到的就是 "<div class="
- * editor-container ...">" 这种字面源码。
+ * 51CTO 的编辑器（am-editor）要求正文 content 必须包在
+ * `<div class="editor-container container am-engine" id="container" data-element="root">`
+ * 容器里，否则发布页会把 HTML 标签当作纯文本整段显示。配合 `is_old=2`，服务端会
+ * 按 am-editor 格式解析并正常渲染。
+ *
+ * 历史：曾一度去掉该容器并只发纯 HTML 片段，结果文章页出现 `<p>`、`<h2>` 等标签
+ * 字面文本（issue：发出去的文章显示包含标签），现恢复容器包装。
  */
 export function mdToHtml51(md: string): string {
   const lines = md.split(/\r?\n/);
@@ -231,7 +233,13 @@ export function mdToHtml51(md: string): string {
   }
   flushList();
 
-  return html.join("\n");
+  const innerHtml = html.join("\n");
+  return (
+    '<div class="editor-container container am-engine" ' +
+    'id="container" data-element="root">\n' +
+    innerHtml +
+    "\n</div>"
+  );
 }
 
 /** 从响应 set-cookie 头里取指定 cookie 的值（多行 set-cookie 时逐行匹配）。 */

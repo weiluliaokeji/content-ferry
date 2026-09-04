@@ -62,6 +62,8 @@ describe("CTOClient CSRF cookie 对齐（修复 404 误判）", () => {
     // 4) 正文/摘要/栏目均已发送
     expect(postedBody).toContain("title=%E6%B5%8B%E8%AF%95%E6%A0%87%E9%A2%98");
     expect(postedBody).toContain("abstract=%E6%91%98%E8%A6%81");
+    // 5) 51CTO 需要 is_old=2；content 容器包装由 mdToHtml51 保证（见下方 mdToHtml51 测试）
+    expect(postedBody).toContain("is_old=2");
   });
 
   it("当次 _csrf 缺失时仍携带存储串的 _csrf（不破坏既有行为）", async () => {
@@ -94,15 +96,15 @@ describe("mdToHtml51", () => {
     expect(html).toContain("const a = 1;");
   });
 
-  it("输出纯 HTML 片段，不包 am-editor 编辑器容器 div", () => {
-    // 51CTO 发布接口的 content 字段是纯 HTML 片段；包裹 <div class="editor-container ...">
-    // 会被发布页当作字面文本整段显示（用户文章页看到 <div class="editor-container ..."> 等源码）。
+  it("输出 am-editor 编辑器容器包裹的 HTML，发布页才能正常渲染", () => {
+    // 51CTO 的 am-editor 要求 content 必须包在 editor-container am-engine 容器内，
+    // 否则文章页会把 <p>/<h2> 等标签当作纯文本显示。
     const html = mdToHtml51("# 标题\n\n正文。\n");
-    expect(html).not.toContain("editor-container");
-    expect(html).not.toContain("am-engine");
-    expect(html).not.toContain("data-element=\"root\"");
-    expect(html).not.toMatch(/^<div/i);
-    expect(html.trimEnd().endsWith("</p>")).toBe(true);
+    expect(html).toContain("editor-container");
+    expect(html).toContain("am-engine");
+    expect(html).toContain('data-element="root"');
+    expect(html).toMatch(/^<div class="editor-container container am-engine"/);
+    expect(html.trimEnd().endsWith("</div>")).toBe(true);
   });
 
   it("不嵌套未识别 HTML，标题 / 段落 / 引用 / 列表 / 代码块标签保持原样", () => {
@@ -137,7 +139,7 @@ describe("mdToHtml51", () => {
     expect(html).toContain("print(1)");
     expect(html).toContain('<a href="https://example.com">链接</a>');
     expect(html).toContain('<img src="https://example.com/x.png" alt="图">');
-    // 关键回归守卫：绝不再包 editor-container
-    expect(html).not.toContain("editor-container");
+    // 关键回归守卫：必须包在 editor-container am-engine 容器内，否则文章页会显示字面标签
+    expect(html).toContain('<div class="editor-container container am-engine" id="container" data-element="root">');
   });
 });
