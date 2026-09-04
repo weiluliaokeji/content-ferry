@@ -142,4 +142,28 @@ describe("mdToHtml51", () => {
     // 关键回归守卫：必须包在 editor-container am-engine 容器内，否则文章页会显示字面标签
     expect(html).toContain('<div class="editor-container container am-engine" id="container" data-element="root">');
   });
+
+  it("把 Markdown 表格转成 <table>，不再显示 |---| 源码", () => {
+    const md = [
+      "| 指纹面 | 做了什么 |",
+      "|---|---|",
+      "| 基础导航 | navigator.webdriver=false |",
+      "| Canvas / WebGL | 渲染噪声注入 |"
+    ].join("\n");
+    const html = mdToHtml51(md);
+
+    // 不再保留 Markdown 表格源码标记
+    expect(html).not.toContain("|---|---|");
+    expect(html).not.toContain("| 基础导航 |");
+
+    // 正确生成 thead / tbody / tr / th / td
+    expect(html).toContain("<table>");
+    expect(html).toContain("</table>");
+    expect(html).toContain("<thead><tr><th>指纹面</th><th>做了什么</th></tr></thead>");
+    expect(html).toContain("<tbody>");
+    expect(html).toContain("<td>基础导航</td>");
+    expect(html).toContain("<td>navigator.webdriver=false</td>");
+    expect(html).toContain("<td>Canvas / WebGL</td>");
+    expect(html).toContain("<td>渲染噪声注入</td>");
+  });
 });

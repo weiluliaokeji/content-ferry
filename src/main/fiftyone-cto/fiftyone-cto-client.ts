@@ -161,6 +161,10 @@ export function mdToHtml51(md: string): string {
   let codeLang = "";
   let codeBuf: string[] = [];
   let listType: "ul" | "ol" | null = null;
+  let inTable = false;
+  let tableHeadHtml = "";
+  let tableBodyRows: string[] = [];
+  let tableHeadColumnCount = 0;
 
   const flushList = () => {
     if (listType) {
@@ -168,6 +172,30 @@ export function mdToHtml51(md: string): string {
       listType = null;
     }
   };
+
+  const flushTable = () => {
+    if (inTable) {
+      html.push(
+        `<table>\n${tableHeadHtml}\n<tbody>\n${tableBodyRows.join("\n")}\n</tbody>\n</table>`
+      );
+      inTable = false;
+      tableHeadHtml = "";
+      tableBodyRows = [];
+      tableHeadColumnCount = 0;
+    }
+  };
+
+  const parseTableCells = (line: string): string[] =>
+    line
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter((cell, index, arr) => {
+        // 去掉因首/尾 | 产生的空字符串，但保留中间真正为空的单元格
+        if ((index === 0 || index === arr.length - 1) && cell === "") return false;
+        return true;
+      });
+
+  const isDividerRow = (line: string): boolean => /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(line);
 
   const inline = (text: string): string =>
     text
@@ -195,6 +223,38 @@ export function mdToHtml51(md: string): string {
       continue;
     }
     flushList();
+
+    // GFM 表格：上一行必须是 <p>|表头|</p>，当前行是 |---|---| 分隔行
+    if (!inTable && isDividerRow(line)) {
+      const last = html[html.length - 1];
+      if (last && last.startsWith("<p>") && last.endsWith("</p>") && last.includes("|")) {
+        const headCells = parseTableCells(last.slice(3, -4));
+        tableHeadColumnCount = headCells.length;
+        tableHeadHtml = `<thead><tr>${headCells
+          .map((cell) => `<th>${inline(cell)}</th>`)
+          .join("")}</tr></thead>`;
+        html.pop();
+        inTable = true;
+        continue;
+      }
+    }
+
+    // 正在表格内：继续消费数据行；非表格行则先闭合表格再按普通块处理
+    if (inTable) {
+      if (line.includes("|")) {
+        const cells = parseTableCells(line);
+        while (cells.length < tableHeadColumnCount) cells.push("");
+        tableBodyRows.push(
+          `<tr>${cells
+            .slice(0, tableHeadColumnCount)
+            .map((cell) => `<td>${inline(cell)}</td>`)
+            .join("")}</tr>`
+        );
+        continue;
+      }
+      flushTable();
+    }
+
     if (!line.trim()) continue;
 
     let m: RegExpExecArray | null;
@@ -232,6 +292,7 @@ export function mdToHtml51(md: string): string {
     html.push(`<p>${inline(line)}</p>`);
   }
   flushList();
+  flushTable();
 
   const innerHtml = html.join("\n");
   return (
