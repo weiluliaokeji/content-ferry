@@ -70,7 +70,7 @@ export class FiftyoneCtoImageUploader {
     }
 
     const sign = await this.fetchUploadSign();
-    const config = await this.fetchUploadConfig(sign.sign);
+    const config = await this.fetchUploadConfig(sign.sign, mimeType, filename);
 
     const key = config.fields.key;
     if (!key) {
@@ -109,10 +109,15 @@ export class FiftyoneCtoImageUploader {
     return { url: parsed.data.url, sign: parsed.data.sign };
   }
 
-  private async fetchUploadConfig(sign?: string): Promise<{ url: string; fields: UploadConfigField }> {
-    // getUploadConfig 同样需要 POST；并按 51CTO 文档依赖 getUploadSign 返回的签名。
+  private async fetchUploadConfig(sign?: string, ext?: string, name?: string): Promise<{ url: string; fields: UploadConfigField }> {
+    // getUploadConfig 必须 POST；按用户在浏览器抓取的 cURL，除 upload_type + upload_sign 外，
+    // 51CTO 后端还会校验 ext（MIME type，例如 image/jpeg）和 name（文件名），缺任一字段
+    // 会回 code:10001「参数错误」（response.data 永远为空，不会告诉调用方缺的是哪个字段）。
+    // URLSearchParams 会把 image/jpeg 编为 image%2Fjpeg，与浏览器完全一致。
     const params = new URLSearchParams({ upload_type: "image" });
     if (sign) params.set("upload_sign", sign);
+    if (ext) params.set("ext", ext);
+    if (name) params.set("name", name);
     // 51CTO 服务端的 code:10001 "参数错误" 不会告诉调用方缺哪个字段；把我们
     // 发过去的 body 一起打到 error / status_note，排查时一眼能看到 send vs
     // response 的差异（避免盲改 upload_type / mime_type / file_size 等字段）。

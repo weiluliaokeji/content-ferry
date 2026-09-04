@@ -130,9 +130,36 @@ describe("FiftyoneCtoImageUploader", () => {
     expect(err!.message).toMatch(/send=POST/);
     expect(err!.message).toContain("upload_type=image");
     expect(err!.message).toContain("upload_sign=sign-value");
+    // 缺这两个字段就是用户 9/4 遇到 code:10001「参数错误」的根因；之后必须保留在 send body。
+    expect(err!.message).toContain("ext=image");
+    expect(err!.message).toContain("name=x.png");
     // response 侧：message + code
     expect(err!.message).toContain("参数错误");
     expect(err!.message).toContain("code=10001");
+  });
+
+  it("sends ext (MIME) and name (filename) to getUploadConfig so 51CTO does not reject with code:10001", async () => {
+    // 排查依据：用户在浏览器抓的 cURL 显示 51CTO 后端除了 upload_type+upload_sign
+    // 还会校验 ext 和 name，缺一就回 code:10001「参数错误」。这条正向锁定这两个字段一定发出。
+    let configBody = "";
+    const fetcher = makeFetcher((url, init) => {
+      if (url === SIGN_URL) return makeSignResponse();
+      if (url === CONFIG_URL) {
+        // 真实 fetch 会把 URLSearchParams 序列化为 urlencoded 字符串，mock 同步此行为以便断言。
+        const body = init?.body;
+        configBody = body instanceof URLSearchParams ? body.toString() : typeof body === "string" ? body : "";
+        return makeConfigResponse("images/z.png");
+      }
+      if (url === COS_URL) return cosOkResponse();
+      return new Response("unexpected", { status: 500 });
+    });
+    await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("hi"), "image/jpeg", "th (+).jpeg");
+
+    const params = new URLSearchParams(configBody);
+    expect(params.get("upload_type")).toBe("image");
+    expect(params.get("upload_sign")).toBe("sign-value");
+    expect(params.get("ext")).toBe("image/jpeg"); // URLSearchParams 会把 / 编为 %2F，反解回来是 image/jpeg
+    expect(params.get("name")).toBe("th (+).jpeg");
   });
 
   it("posts multipart form-data to COS with signature fields and file", async () => {
