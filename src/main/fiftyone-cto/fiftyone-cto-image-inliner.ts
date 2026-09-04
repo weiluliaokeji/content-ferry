@@ -135,6 +135,9 @@ export async function uploadFiftyoneCtoLocalImages(
             ? JSON.stringify(uploadErr, Object.getOwnPropertyNames(uploadErr))
             : String(uploadErr);
         console.error(`[51cto] COS 上传失败，回退为 base64 内联：source=${source} reason=${reason}`);
+        // 必须记到 failed，否则频道服务拼 statusNote 时拿不到原因，用户只能看到
+        // 「图床上传失败回退」而看不到真实错误（cookie 过期 / 接口改版 / 网络）。
+        failed.push({ source, reason });
         url = `data:${preparedMime};base64,${preparedBuffer.toString("base64")}`;
         inlinedCount++;
       }
