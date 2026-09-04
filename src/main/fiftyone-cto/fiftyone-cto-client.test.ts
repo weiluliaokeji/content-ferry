@@ -93,4 +93,51 @@ describe("mdToHtml51", () => {
     expect(html).toContain("<pre><code");
     expect(html).toContain("const a = 1;");
   });
+
+  it("输出纯 HTML 片段，不包 am-editor 编辑器容器 div", () => {
+    // 51CTO 发布接口的 content 字段是纯 HTML 片段；包裹 <div class="editor-container ...">
+    // 会被发布页当作字面文本整段显示（用户文章页看到 <div class="editor-container ..."> 等源码）。
+    const html = mdToHtml51("# 标题\n\n正文。\n");
+    expect(html).not.toContain("editor-container");
+    expect(html).not.toContain("am-engine");
+    expect(html).not.toContain("data-element=\"root\"");
+    expect(html).not.toMatch(/^<div/i);
+    expect(html.trimEnd().endsWith("</p>")).toBe(true);
+  });
+
+  it("不嵌套未识别 HTML，标题 / 段落 / 引用 / 列表 / 代码块标签保持原样", () => {
+    // 防止以后有人重新加上包装 div 引入回归
+    const html = mdToHtml51([
+      "# 一级",
+      "",
+      "## 二级",
+      "",
+      "段落文字",
+      "",
+      "> 引用",
+      "",
+      "- 列表项 1",
+      "- 列表项 2",
+      "",
+      "```py",
+      "print(1)",
+      "```",
+      "",
+      "[链接](https://example.com)",
+      "",
+      "![图](https://example.com/x.png)"
+    ].join("\n"));
+    expect(html).toContain("<h1>一级</h1>");
+    expect(html).toContain("<h2>二级</h2>");
+    expect(html).toContain("<p>段落文字</p>");
+    expect(html).toContain("<blockquote>引用</blockquote>");
+    expect(html).toContain("<ul>");
+    expect(html).toContain('<li>列表项 1</li>');
+    expect(html).toContain('<pre><code class="language-py">');
+    expect(html).toContain("print(1)");
+    expect(html).toContain('<a href="https://example.com">链接</a>');
+    expect(html).toContain('<img src="https://example.com/x.png" alt="图">');
+    // 关键回归守卫：绝不再包 editor-container
+    expect(html).not.toContain("editor-container");
+  });
 });
