@@ -470,6 +470,10 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .settings-danger-section small { font-weight: 400; color: #7a3b36; }
 .settings-danger-section .danger-button { justify-self: start; }
 .danger-button:hover { background: #8f1d14; }
+.channel-handoff-hint { display: grid; gap: .55rem; padding: .85rem; border: 1px solid #cddafc; border-radius: 10px; background: #f5f9ff; }
+.channel-handoff-hint strong { color: #27364f; font-size: .9rem; }
+.channel-handoff-hint p { margin: 0; color: #55637d; font-size: .84rem; line-height: 1.65; }
+.channel-handoff-hint button { justify-self: start; }
 .wechat-comment-settings { display: grid; gap: .75rem; margin: 0; padding: .85rem; border: 1px solid #e1e7f1; border-radius: 10px; }
 .wechat-comment-settings legend { padding: 0 .35rem; color: #27364f; font-size: .9rem; font-weight: 700; }
 .wechat-comment-settings .checkbox-row { display: flex; align-items: flex-start; gap: .65rem; }

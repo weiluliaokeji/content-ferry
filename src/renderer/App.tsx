@@ -1051,6 +1051,18 @@ export function App() {
     />;
   }
 
+  // 非微信平台（CSDN / 博客园 / 掘金 / 51CTO）的发布在渠道稿中进行：文章设置里
+  // 选了这些平台后，交接给对应渠道稿，避免在这里维护第二份平台专属参数。
+  const enterChannelDraftFor = (relativePath: string) => (platform: AccountPlatform) => {
+    switch (platform) {
+      case "csdn": void openCsdnChannelDraft(relativePath); break;
+      case "cnblogs": void openCnblogsChannelDraft(relativePath); break;
+      case "juejin": void openJuejinChannelDraft(relativePath); break;
+      case "51cto": void openFiftyoneCtoChannelDraft(relativePath); break;
+      default: break;
+    }
+  };
+
   if (sourceArticle) {
     return <ArticleWorkspace
       title={sourceArticle.title ?? sourceArticle.relativePath}
@@ -1065,6 +1077,7 @@ export function App() {
       onBack={() => setSourceArticle(undefined)}
       onSave={saveSourceArticle}
       onPublish={() => void prepareSourcePublish(sourceArticle)}
+      onEnterChannel={enterChannelDraftFor(sourceArticle.relativePath)}
     />;
   }
 
@@ -1087,6 +1100,14 @@ export function App() {
       onBack={() => { draftAbortRef.current?.abort(); setDraftProject(undefined); setDraft(undefined); setDraftGenerationStatus(""); }}
       onSave={saveDraft}
       onPublish={() => void prepareProjectPublish(draftProject, draft)}
+      onEnterChannel={(platform) => {
+        const relativePath = draftProject.sourceRelativePath ?? draft.sourceRelativePath;
+        if (!relativePath) {
+          setError("这篇文章还没有写入文章库，暂时无法生成渠道稿。请先保存一次正文再重试。");
+          return;
+        }
+        enterChannelDraftFor(relativePath)(platform);
+      }}
     />;
   }
 

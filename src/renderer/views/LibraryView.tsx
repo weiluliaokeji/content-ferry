@@ -73,6 +73,7 @@ export function LibraryView(props: LibraryViewProps) {
                   <span className="article-title-inline"><button className="article-title-button" onClick={() => void openSourceArticle(item.relativePath)}>{item.title ?? "未命名文章"}</button>{item.createdAt && <small className="article-created-at">{formatLocalTimestamp(item.createdAt)}</small>}</span>
                 </span>
                 <span className="channel-strip-wrap">
+                  {/* 归档库只做状态查阅，平台操作入口在工作台（spec/05 §4.1）。 */}
                   <ChannelStrip rows={rows} />
                   <button
                     type="button"

@@ -31,7 +31,8 @@ export function ArticleWorkspace({
   onChange,
   onBack,
   onSave,
-  onPublish
+  onPublish,
+  onEnterChannel
 }: {
   title: string;
   subtitle: string;
@@ -49,6 +50,8 @@ export function ArticleWorkspace({
   onBack: () => void;
   onSave: () => Promise<{ success: boolean; markdown?: string; error?: string }>;
   onPublish?: () => void;
+  // 非微信平台的发布在渠道稿中进行：这里提供入口，直接打开对应平台的渠道稿。
+  onEnterChannel?: (platform: AccountPlatform) => void;
 }) {
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">(initialRightPanel);
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
@@ -350,6 +353,16 @@ export function ArticleWorkspace({
   };
   const selectedSettingsAccount = accounts.find((account) => account.id === articleSettings.accountId);
   const digestMaxLength = selectedSettingsAccount?.platform === "csdn" ? 200 : 120;
+  // 非微信平台的发布设置在渠道稿里（栏目、分类、标签、发布形式等），这里只做交接，
+  // 不在文章设置里维护第二份平台参数。
+  const channelHandoffPlatform = selectedSettingsAccount && selectedSettingsAccount.platform !== "wechat_official" && onEnterChannel
+    ? selectedSettingsAccount.platform
+    : undefined;
+  const enterChannelDraft = async () => {
+    if (!channelHandoffPlatform || !onEnterChannel) return;
+    if (!await persistArticleSettings()) return;
+    onEnterChannel(channelHandoffPlatform);
+  };
   const generateArticleSummary = async () => {
     if (!selectedSettingsAccount) {
       setWorkspaceError("请先选择发布账号，系统需要根据平台生成对应长度的摘要。");
@@ -582,7 +595,9 @@ export function ArticleWorkspace({
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
-      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
+      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{channelHandoffPlatform && onEnterChannel
+  ? <button onClick={() => void enterChannelDraft()} disabled={busy || generating}>进入{platformName(channelHandoffPlatform)}渠道稿</button>
+  : onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
     <div className="editor-columns">
       <aside className="editor-left-panel">
@@ -623,6 +638,11 @@ export function ArticleWorkspace({
             </select>
             <small>选择后会随文章保存；发布前仍可更改。</small>
           </label>
+          {channelHandoffPlatform && <div className="channel-handoff-hint" role="status">
+            <strong>在{platformName(channelHandoffPlatform)}渠道稿中发布</strong>
+            <p>{platformName(channelHandoffPlatform)}的栏目、分类、标签、发布形式等平台专属设置，以及发布前的正文调整，都在渠道稿里完成。这里保存的作者、摘要和封面会带到渠道稿。</p>
+            <button type="button" onClick={() => void enterChannelDraft()}>进入{platformName(channelHandoffPlatform)}渠道稿</button>
+          </div>}
           <label>作者<input list={`author-history-${assetContextId}`} value={articleSettings.author} maxLength={16} onChange={(event) => setArticleSettings((current) => ({ ...current, author: event.target.value }))} placeholder="可输入或选择过去使用过的作者" /><datalist id={`author-history-${assetContextId}`}>{authorHistory.map((author) => <option value={author} key={author} />)}</datalist><small>{articleSettings.author.length}/16 字</small></label>
           <label>摘要
             <textarea value={articleSettings.digest} maxLength={digestMaxLength} onChange={(event) => setArticleSettings((current) => ({ ...current, digest: event.target.value }))} placeholder={`用于${selectedSettingsAccount ? platformName(selectedSettingsAccount.platform) : "目标平台"}的内容卡片和分享，最多 ${digestMaxLength} 字`} />
@@ -698,7 +718,9 @@ export function ArticleWorkspace({
             </details>
           </div>
           <button type="button" onClick={() => void persistArticleSettings()} disabled={busy}>保存发布设置</button>
-          <p className="hint">发布时只做完整性检查，不再重复填写账号、作者、摘要和封面。</p>
+          <p className="hint">{channelHandoffPlatform
+            ? `这里保存的作者、摘要和封面会带到${platformName(channelHandoffPlatform)}渠道稿，平台专属设置在渠道稿中填写。`
+            : "发布时只做完整性检查，不再重复填写账号、作者、摘要和封面。"}</p>
         </div>}
       </aside>
     </div>
