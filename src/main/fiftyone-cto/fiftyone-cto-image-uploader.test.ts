@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContentSourceService } from "../content/content-source-service";
-import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
+import { FiftyoneCtoImageUploader, IMAGE_UPLOAD_MAX_ATTEMPTS } from "./fiftyone-cto-image-uploader";
 import { uploadFiftyoneCtoLocalImages } from "./fiftyone-cto-image-inliner";
 
 const SIGN_URL = "https://blog.51cto.com/getUploadSign";
@@ -192,6 +192,85 @@ describe("FiftyoneCtoImageUploader", () => {
     });
     await expect(new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "x.png"))
       .rejects.toThrow(/COS 图片上传失败/);
+  });
+});
+
+describe("FiftyoneCtoImageUploader retry (transient network / 5xx)", () => {
+  /**
+   * 构造一个 fetcher：SIGN_URL 按 behaviors 序列逐次响应（"throw"=网络层异常、
+   * "ok-503"=服务端 5xx、其余=正常签名）；CONFIG/COS 始终返回成功。
+   * 返回 signCalls 计数器，用于断言是否发生了重试。
+   */
+  function fetcherWithSignBehaviors(behaviors: Array<"throw" | "ok-503" | "ok">): {
+    fetcher: typeof fetch;
+    signCalls: () => number;
+  } {
+    let count = 0;
+    const fetcher = (async (input: unknown, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === SIGN_URL) {
+        const b = behaviors[count] ?? "ok";
+        count++;
+        if (b === "throw") throw new TypeError("fetch failed");
+        if (b === "ok-503") return new Response("server error", { status: 503 });
+        return makeSignResponse();
+      }
+      if (url === CONFIG_URL) return makeConfigResponse();
+      if (url === COS_URL) return cosOkResponse();
+      return new Response("unexpected", { status: 500 });
+    }) as unknown as typeof fetch;
+    return { fetcher, signCalls: () => count };
+  }
+
+  it("retries a transient fetch failure and succeeds on a later attempt", async () => {
+    // 用户 9/6 遇到 assets/paper-figure-3.png 单张图 fetch failed 直接判失败。
+    // 复现：前两次签名请求网络层异常，第三次恢复。预期整体上传成功且签名被重试 3 次。
+    const { fetcher, signCalls } = fetcherWithSignBehaviors(["throw", "throw", "ok"]);
+    const url = await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "x.png");
+    expect(url).toContain("https://s2.51cto.com/");
+    expect(signCalls()).toBe(3);
+  });
+
+  it("gives up after max attempts on persistent 5xx and throws FiftyoneCtoTransientError", async () => {
+    const { fetcher, signCalls } = fetcherWithSignBehaviors(["ok-503", "ok-503", "ok-503"]);
+    let err: Error | undefined;
+    try {
+      await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "x.png");
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeDefined();
+    expect(err!.name).toBe("FiftyoneCtoTransientError");
+    expect(err!.message).toContain("重试 3 次仍失败");
+    expect(signCalls()).toBe(IMAGE_UPLOAD_MAX_ATTEMPTS);
+  });
+
+  it("does NOT retry on a credential/param error (4xx) and fails fast", async () => {
+    let signCount = 0;
+    const fetcher = (async (input: unknown, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url === SIGN_URL) {
+        signCount++;
+        return makeSignResponse();
+      }
+      if (url === CONFIG_URL) {
+        // 51CTO 真实的参数错误：不可重试，应让上层整体中止而非空耗重试预算。
+        return okJson({ code: 10001, msg: "参数错误", data: {} });
+      }
+      if (url === COS_URL) return cosOkResponse();
+      return new Response("unexpected", { status: 500 });
+    }) as unknown as typeof fetch;
+    let err: Error | undefined;
+    try {
+      await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "x.png");
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeDefined();
+    expect(err!.name).toBe("FiftyoneCtoCredentialsError");
+    expect(err!.message).toContain("参数错误");
+    // 凭据/参数错误不触发重试：签名仅调用 1 次。
+    expect(signCount).toBe(1);
   });
 });
 

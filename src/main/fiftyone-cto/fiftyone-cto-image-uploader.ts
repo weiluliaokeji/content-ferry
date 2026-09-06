@@ -1,6 +1,16 @@
-import { FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
+import {
+  FiftyoneCtoCredentialsError,
+  FiftyoneCtoTransientError
+} from "./fiftyone-cto-channel-error";
 
 type FetchLike = typeof fetch;
+
+/** 单张图片上传失败时的最大尝试次数（含首次）。网络抖动通常第 2 次即恢复。 */
+export const IMAGE_UPLOAD_MAX_ATTEMPTS = 3;
+/** 指数退避基值（毫秒）：第 1 次重试前 500ms，第 2 次 1000ms。 */
+const IMAGE_UPLOAD_BACKOFF_BASE_MS = 500;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const UPLOAD_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -60,7 +70,11 @@ export class FiftyoneCtoImageUploader {
     this.baseHeaders = buildFiftyoneCtoHeaders(cookie);
   }
 
-  /** 上传单张图片到 51CTO 腾讯云 COS 图床，返回公网可访问的 URL。 */
+  /**
+   * 上传单张图片到 51CTO 腾讯云 COS 图床，返回公网可访问的 URL。
+   * 对**临时错误**（网络抖动 fetch failed / ECONNRESET / ETIMEDOUT / TLS、以及 5xx）
+   * 做有限次指数退避重试；对**凭据/参数类错误**（4xx、code 非 0、字段缺失）直接抛出不重试。
+   */
   async upload(buffer: Buffer, mimeType: string, filename: string): Promise<string> {
     if (!this.cookie) {
       throw new FiftyoneCtoCredentialsError("51CTO 账号尚未配置 Cookie，无法上传图片到图床。");
@@ -69,30 +83,90 @@ export class FiftyoneCtoImageUploader {
       throw new FiftyoneCtoCredentialsError("上传图片内容为空。");
     }
 
-    const sign = await this.fetchUploadSign();
-    const config = await this.fetchUploadConfig(sign.sign, mimeType, filename);
+    return this.withRetry(async () => {
+      const sign = await this.fetchUploadSign();
+      const config = await this.fetchUploadConfig(sign.sign, mimeType, filename);
 
-    const key = config.fields.key;
-    if (!key) {
-      throw new FiftyoneCtoCredentialsError("51CTO 上传配置缺少 key 字段。");
+      const key = config.fields.key;
+      if (!key) {
+        throw new FiftyoneCtoCredentialsError("51CTO 上传配置缺少 key 字段。");
+      }
+
+      await this.postToCos(config.url, config.fields, buffer, mimeType, filename);
+
+      const cdnBase = sign.url.endsWith("/") ? sign.url : `${sign.url}/`;
+      return `${cdnBase}${key}`;
+    });
+  }
+
+  /**
+   * 对整段上传流程做有限重试。仅在错误为「可重试临时错误」时重试；
+   * 凭据/参数类错误（FiftyoneCtoCredentialsError）立即抛出，不浪费重试预算。
+   */
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < IMAGE_UPLOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const isLast = attempt === IMAGE_UPLOAD_MAX_ATTEMPTS - 1;
+        if (isLast || !FiftyoneCtoImageUploader.isRetryable(err)) {
+          if (isLast && FiftyoneCtoImageUploader.isRetryable(err)) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new FiftyoneCtoTransientError(
+              `51CTO 图床上传重试 ${IMAGE_UPLOAD_MAX_ATTEMPTS} 次仍失败：${msg}`,
+              { cause: err }
+            );
+          }
+          throw err;
+        }
+        const delay = IMAGE_UPLOAD_BACKOFF_BASE_MS * Math.pow(2, attempt);
+        console.warn(
+          `[51cto] 图片上传第 ${attempt + 1} 次尝试失败（可重试，将在 ${delay}ms 后重试）：` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+        await sleep(delay);
+      }
     }
+    throw lastErr;
+  }
 
-    await this.postToCos(config.url, config.fields, buffer, mimeType, filename);
+  /**
+   * 是否可重试：凭据/参数类错误（FiftyoneCtoCredentialsError）不可重试；
+   * 其余（FiftyoneCtoTransientError、fetch 抛出的网络 TypeError、未知错误）均可重试。
+   */
+  private static isRetryable(err: unknown): boolean {
+    if (err instanceof FiftyoneCtoCredentialsError) return false;
+    return true;
+  }
 
-    const cdnBase = sign.url.endsWith("/") ? sign.url : `${sign.url}/`;
-    return `${cdnBase}${key}`;
+  /** 包装 fetch：网络层异常（fetch failed / ECONNRESET / TLS 等）统一转为可重试临时错误。 */
+  private async guardedFetch(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await this.fetcher(url, init);
+    } catch (netErr) {
+      const reason = netErr instanceof Error ? netErr.message : String(netErr);
+      throw new FiftyoneCtoTransientError(`51CTO 图床网络请求失败（${url}）：${reason}`, {
+        cause: netErr
+      });
+    }
   }
 
   private async fetchUploadSign(): Promise<{ url: string; sign?: string }> {
     // getUploadSign 必须为 POST + upload_type=image，否则 51CTO 返回
     // code:10003 "请求方式错误"（GET 会被服务端判定为错误请求方式）。
-    const resp = await this.fetcher(SIGN_URL, {
+    const resp = await this.guardedFetch(SIGN_URL, {
       method: "POST",
       headers: this.baseHeaders,
       body: new URLSearchParams({ upload_type: "image" })
     });
     const text = await resp.text();
+    // 5xx 视为服务端瞬时错误，可重试；4xx 及以下（含 302 跳登录页）按凭据/参数错误处理。
     if (!resp.ok) {
+      if (resp.status >= 500) {
+        throw new FiftyoneCtoTransientError(`获取 51CTO 上传签名失败：HTTP ${resp.status}`);
+      }
       throw new FiftyoneCtoCredentialsError(`获取 51CTO 上传签名失败：HTTP ${resp.status}`);
     }
     let parsed: UploadSignResponse;
@@ -122,13 +196,18 @@ export class FiftyoneCtoImageUploader {
     // 发过去的 body 一起打到 error / status_note，排查时一眼能看到 send vs
     // response 的差异（避免盲改 upload_type / mime_type / file_size 等字段）。
     const sendBody = params.toString();
-    const resp = await this.fetcher(CONFIG_URL, {
+    const resp = await this.guardedFetch(CONFIG_URL, {
       method: "POST",
       headers: this.baseHeaders,
       body: params
     });
     const text = await resp.text();
     if (!resp.ok) {
+      if (resp.status >= 500) {
+        throw new FiftyoneCtoTransientError(
+          `获取 51CTO 上传配置失败：HTTP ${resp.status} (send=POST ${CONFIG_URL} body=${sendBody})`
+        );
+      }
       throw new FiftyoneCtoCredentialsError(
         `获取 51CTO 上传配置失败：HTTP ${resp.status} (send=POST ${CONFIG_URL} body=${sendBody})`
       );
@@ -178,9 +257,13 @@ export class FiftyoneCtoImageUploader {
     // FormData 自己设置 boundary，不能覆盖 content-type。
     delete headers["content-type"];
 
-    const resp = await this.fetcher(cosUrl, { method: "POST", headers, body: form as unknown as RequestInit["body"] });
+    const resp = await this.guardedFetch(cosUrl, { method: "POST", headers, body: form as unknown as RequestInit["body"] });
     if (!resp.ok && resp.status !== 204) {
       const body = await resp.text().catch(() => "");
+      // COS 5xx 视为服务端瞬时错误可重试；4xx（签名/策略错误）按参数错误处理，不重试。
+      if (resp.status >= 500) {
+        throw new FiftyoneCtoTransientError(`COS 图片上传失败：HTTP ${resp.status} ${body.slice(0, 200)}`);
+      }
       throw new FiftyoneCtoCredentialsError(`COS 图片上传失败：HTTP ${resp.status} ${body.slice(0, 200)}`);
     }
   }
