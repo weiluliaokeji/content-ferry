@@ -30,6 +30,11 @@ export interface MediaAccount {
   fiftyoneCtoPidOptions: Array<{ value: string; label: string }>;
   /** 51CTO 授权分类（cate_id）选项，从发布页读取后持久化，{value,label} 列表。 */
   fiftyoneCtoCateOptions: Array<{ value: string; label: string }>;
+  /**
+   * 51CTO 的「授权分类」随「一级栏目」联动，按 pid 分组保存：{ "<pid>": [{value,label}...] }。
+   * 老账号（抓取时尚未支持分组）此字段为空对象，渲染层需降级到 fiftyoneCtoCateOptions。
+   */
+  fiftyoneCtoCateOptionsByPid: Record<string, Array<{ value: string; label: string }>>;
 }
 
 export class AccountAlreadyExistsError extends Error {
@@ -69,7 +74,7 @@ export class AccountRepository {
              EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
              p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
              p.cnblogs_categories, p.cnblogs_tags,
-             p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options
+             p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options, p.fiftyone_cto_cate_options_by_pid
       FROM media_accounts a LEFT JOIN account_profiles p ON p.account_id = a.id
       WHERE a.workspace_id = ? AND a.deleted_at IS NULL ORDER BY a.created_at
     `).all(workspaceId) as Array<Record<string, string | null>>;
@@ -135,14 +140,27 @@ export class AccountRepository {
     return this.requireAccount(accountId);
   }
 
-  /** 持久化 51CTO 发布页抓取的一级栏目（pid）与授权分类（cate_id）选项，供发布设置下拉复用。 */
-  saveFiftyoneCtoOptions(accountId: string, pidOptions: Array<{ value: string; label: string }>, cateOptions: Array<{ value: string; label: string }>): MediaAccount {
+  /**
+   * 持久化 51CTO 发布页抓取的一级栏目（pid）与授权分类（cate_id）选项，供发布设置下拉复用。
+   * `cateOptionsByPid` 是按一级栏目分组的二级分类（联动关系）；留空表示老数据，渲染层会降级用 `cateOptions`。
+   */
+  saveFiftyoneCtoOptions(accountId: string, pidOptions: Array<{ value: string; label: string }>, cateOptions: Array<{ value: string; label: string }>, cateOptionsByPid: Record<string, Array<{ value: string; label: string }>> = {}): MediaAccount {
     this.requireAccount(accountId);
     const now = new Date().toISOString();
     const safePid = Array.isArray(pidOptions) ? pidOptions.filter((item) => item && String(item.value ?? "").trim() && String(item.label ?? "").trim()).map((item) => ({ value: String(item.value).slice(0, 12), label: String(item.label).slice(0, 60) })) : [];
     const safeCate = Array.isArray(cateOptions) ? cateOptions.filter((item) => item && String(item.value ?? "").trim() && String(item.label ?? "").trim()).map((item) => ({ value: String(item.value).slice(0, 12), label: String(item.label).slice(0, 60) })) : [];
-    const changed = this.db.prepare("UPDATE account_profiles SET fiftyone_cto_pid_options = ?, fiftyone_cto_cate_options = ?, updated_at = ? WHERE account_id = ?")
-      .run(JSON.stringify(safePid), JSON.stringify(safeCate), now, accountId);
+    // 只保留 pidOptions 里存在的 pid 分组，避免历史残留项在下拉里出现幽灵选项。
+    const knownPids = new Set(safePid.map((option) => option.value));
+    const safeByPid: Record<string, Array<{ value: string; label: string }>> = {};
+    for (const [pid, options] of Object.entries(cateOptionsByPid ?? {})) {
+      if (!knownPids.has(pid) || !Array.isArray(options)) continue;
+      const cleaned = options
+        .filter((item) => item && String(item.value ?? "").trim() && String(item.label ?? "").trim())
+        .map((item) => ({ value: String(item.value).slice(0, 12), label: String(item.label).slice(0, 60) }));
+      if (cleaned.length > 0) safeByPid[pid] = cleaned;
+    }
+    const changed = this.db.prepare("UPDATE account_profiles SET fiftyone_cto_pid_options = ?, fiftyone_cto_cate_options = ?, fiftyone_cto_cate_options_by_pid = ?, updated_at = ? WHERE account_id = ?")
+      .run(JSON.stringify(safePid), JSON.stringify(safeCate), JSON.stringify(safeByPid), now, accountId);
     if (changed.changes === 0) throw new Error("Account not found.");
     return this.requireAccount(accountId);
   }
@@ -168,7 +186,7 @@ export class AccountRepository {
       EXISTS(SELECT 1 FROM account_credentials ac WHERE ac.account_id = a.id) AS credentials_configured,
       p.positioning, p.target_audience, p.prohibited_topics, p.writing_style, p.regular_columns, p.article_signature,
       p.cnblogs_categories, p.cnblogs_tags,
-      p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options
+      p.fiftyone_cto_pid_options, p.fiftyone_cto_cate_options, p.fiftyone_cto_cate_options_by_pid
       FROM media_accounts a JOIN account_profiles p ON p.account_id = a.id WHERE a.id = ? AND a.deleted_at IS NULL`).get(id) as Record<string, string | null> | undefined;
     if (!row) throw new Error("Account not found.");
     return this.mapAccount(row);
@@ -225,7 +243,8 @@ export class AccountRepository {
       cnblogsCategories: parseJsonStringArray(row.cnblogs_categories),
       cnblogsTags: parseJsonStringArray(row.cnblogs_tags),
       fiftyoneCtoPidOptions: parseCategoryOptions(row.fiftyone_cto_pid_options),
-      fiftyoneCtoCateOptions: parseCategoryOptions(row.fiftyone_cto_cate_options)
+      fiftyoneCtoCateOptions: parseCategoryOptions(row.fiftyone_cto_cate_options),
+      fiftyoneCtoCateOptionsByPid: parseCategoryOptionsMap(row.fiftyone_cto_cate_options_by_pid)
     };
   }
 }
@@ -241,6 +260,29 @@ function parseCategoryOptions(value: string | null | undefined): Array<{ value: 
       .map((item) => ({ value: item.value, label: item.label }));
   } catch {
     return [];
+  }
+}
+
+/**
+ * 解析「按一级栏目分组的二级分类」列：JSON 对象 { "<pid>": [{value,label}...] }。
+ * 空/非法/结构不符一律回退空对象，由渲染层降级到未分组的 cateOptions。
+ */
+function parseCategoryOptionsMap(value: string | null | undefined): Record<string, Array<{ value: string; label: string }>> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: Record<string, Array<{ value: string; label: string }>> = {};
+    for (const [pid, options] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!pid || !Array.isArray(options)) continue;
+      const cleaned = options
+        .filter((item): item is { value: string; label: string } => !!item && typeof item === "object" && typeof (item as { value?: unknown }).value === "string" && typeof (item as { label?: unknown }).label === "string")
+        .map((item) => ({ value: item.value, label: item.label }));
+      if (cleaned.length > 0) result[pid] = cleaned;
+    }
+    return result;
+  } catch {
+    return {};
   }
 }
 

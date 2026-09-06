@@ -1042,6 +1042,7 @@ export function App() {
       onBack={() => { setFiftyoneCtoDraft(undefined); setFiftyoneCtoPublishJob(undefined); setFiftyoneCtoDraftSource(undefined); setFiftyoneCtoEntryChoices(null); }}
       fiftyoneCtoPidOptions={fiftyoneCtoAccount?.fiftyoneCtoPidOptions}
       fiftyoneCtoCateOptions={fiftyoneCtoAccount?.fiftyoneCtoCateOptions}
+      fiftyoneCtoCateOptionsByPid={fiftyoneCtoAccount?.fiftyoneCtoCateOptionsByPid}
       onLoadCategories={async (accountId) => {
         if (!window.contentFerry) throw new Error("本地桥接未就绪，请重启文渡后重试。");
         const result = await window.contentFerry.readFiftyoneCtoCategories(accountId);
@@ -1053,7 +1054,17 @@ export function App() {
 
   // 非微信平台（CSDN / 博客园 / 掘金 / 51CTO）的发布在渠道稿中进行：文章设置里
   // 选了这些平台后，交接给对应渠道稿，避免在这里维护第二份平台专属参数。
+  //
+  // 交接前必须先退出当前工作台：下面 `if (sourceArticle)` / `if (draftProject)` 都是
+  // early return，而渠道稿的「生成 / 选择已存在稿」弹窗渲染在它们之后。不先清掉这些
+  // 状态，调用 openXxxChannelDraft 只会设置渠道稿状态，界面仍停在文章设置页——用户要
+  // 手动点「返回归档库」才看得到弹窗。
   const enterChannelDraftFor = (relativePath: string) => (platform: AccountPlatform) => {
+    setSourceArticle(undefined);
+    draftAbortRef.current?.abort();
+    setDraftProject(undefined);
+    setDraft(undefined);
+    setDraftGenerationStatus("");
     switch (platform) {
       case "csdn": void openCsdnChannelDraft(relativePath); break;
       case "cnblogs": void openCnblogsChannelDraft(relativePath); break;

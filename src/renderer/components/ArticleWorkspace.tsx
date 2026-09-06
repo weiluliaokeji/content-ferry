@@ -360,7 +360,17 @@ export function ArticleWorkspace({
     : undefined;
   const enterChannelDraft = async () => {
     if (!channelHandoffPlatform || !onEnterChannel) return;
+    // 渠道稿是从文章库里**已保存**的正文生成的，所以交接前必须把设置和正文一起存盘，
+    // 否则用户刚改的正文不会出现在渠道稿里。任一步失败都中止交接，避免静默丢失改动。
     if (!await persistArticleSettings()) return;
+    const result = await onSave();
+    if (!result.success) {
+      setWorkspaceError(result.error ?? "文章保存失败，未能进入渠道稿。请修正后重试。");
+      return;
+    }
+    setSavedMarkdown(result.markdown ?? markdown);
+    setSavedSettings(articleSettings);
+    setWorkspaceError("");
     onEnterChannel(channelHandoffPlatform);
   };
   const generateArticleSummary = async () => {

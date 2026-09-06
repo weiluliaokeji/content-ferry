@@ -21,6 +21,8 @@ type FiftyoneCtoCategoryDebug = {
 type FiftyoneCtoCategoriesResult = {
   pidOptions: FiftyoneCtoCategoryOption[];
   cateOptions: FiftyoneCtoCategoryOption[];
+  /** 按一级栏目分组的二级分类：{ "<pid>": [...] }，切换一级栏目时联动刷新二级下拉。 */
+  cateOptionsByPid: Record<string, FiftyoneCtoCategoryOption[]>;
   debug?: FiftyoneCtoCategoryDebug;
 };
 

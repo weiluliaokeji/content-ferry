@@ -47,6 +47,8 @@ export type FiftyoneCtoCategoryDebug = {
 export type FiftyoneCtoLoadedCategories = {
   pidOptions: FiftyoneCtoCategoryOption[];
   cateOptions: FiftyoneCtoCategoryOption[];
+  /** 按一级栏目分组的二级分类：{ "<pid>": [...] }。老数据可能缺失，此时降级用 cateOptions。 */
+  cateOptionsByPid?: Record<string, FiftyoneCtoCategoryOption[]>;
   debug?: FiftyoneCtoCategoryDebug;
 };
 
@@ -69,6 +71,8 @@ interface FiftyoneCtoDraftWorkspaceProps {
   fiftyoneCtoPidOptions?: FiftyoneCtoCategoryOption[];
   /** 从账号本地缓存读取的 51CTO 授权分类（cate_id）选项；为空时下拉退化为手动输入。 */
   fiftyoneCtoCateOptions?: FiftyoneCtoCategoryOption[];
+  /** 按一级栏目分组的二级分类（联动关系）：{ "<pid>": [...] }；为空表示老数据，降级用 fiftyoneCtoCateOptions。 */
+  fiftyoneCtoCateOptionsByPid?: Record<string, FiftyoneCtoCategoryOption[]>;
   /** 点击「加载分类」时调用：打开 51CTO 发布页抓取选项并持久化到本地，返回最新选项与页面 DOM 调试结构。 */
   onLoadCategories: (accountId: string) => Promise<FiftyoneCtoLoadedCategories>;
 }
@@ -147,7 +151,7 @@ function renderCategoryControl(props: {
   );
 }
 
-export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack, fiftyoneCtoPidOptions, fiftyoneCtoCateOptions, onLoadCategories }: FiftyoneCtoDraftWorkspaceProps) {
+export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack, fiftyoneCtoPidOptions, fiftyoneCtoCateOptions, fiftyoneCtoCateOptionsByPid, onLoadCategories }: FiftyoneCtoDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("settings");
   const [dirty, setDirty] = useState(false);
@@ -248,6 +252,22 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id]);
 
+  // 二级分类随一级栏目联动：选中某个一级栏目后，只展示它名下的二级分类。
+  // 51CTO 发布页上二级列表是点开一级才加载的，抓取时已按 pid 分组保存（cateOptionsByPid）；
+  // 老数据没有这份分组映射，此时降级为未分组的 cateOptions，行为与升级前一致。
+  const activeCateOptionsByPid = loadedCategories?.cateOptionsByPid ?? fiftyoneCtoCateOptionsByPid ?? {};
+  const hasPidGroups = Object.keys(activeCateOptionsByPid).length > 0;
+  const activeCateOptions = useMemo(() => {
+    if (hasPidGroups) return publishPid ? activeCateOptionsByPid[publishPid] ?? [] : [];
+    return loadedCategories?.cateOptions ?? fiftyoneCtoCateOptions ?? [];
+  }, [hasPidGroups, publishPid, activeCateOptionsByPid, loadedCategories, fiftyoneCtoCateOptions]);
+  /** 等二级列表随一级栏目刷新时给出说明，避免用户以为没有分类可选。 */
+  const cateControlHint = hasPidGroups && !publishPid
+    ? "请先选择上方「一级栏目」，这里会列出该栏目下的授权分类。"
+    : hasPidGroups && activeCateOptions.length === 0
+      ? "当前一级栏目下没有抓到授权分类。可点击「加载分类」重新抓取，或手动填写分类 id。"
+      : "对应 51CTO 的授权分类；发布前必选。选项随上方「一级栏目」联动，切换栏目后需重新选择。";
+
   // 点击「加载分类」：从 51CTO 发布页抓取一级栏目/授权分类选项，保存本地后填充下拉。
   const handleLoadCategories = async () => {
     setCategoryLoading(true);
@@ -256,7 +276,15 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
       const result = await onLoadCategories(draft.accountId);
       setLoadedCategories(result);
       if (!result.pidOptions.some((option) => option.value === publishPid)) setPublishPid("");
-      if (!result.cateOptions.some((option) => option.value === publishCateId)) setPublishCateId("");
+      // 二级分类按 pid 分组校验：切换/重新抓取后，原先选中的分类若不在当前栏目下就必须清掉，
+      // 否则会把上一个栏目的 cate_id 提交给 51CTO。没分组数据时退回全局校验。
+      const groups = result.cateOptionsByPid ?? {};
+      if (Object.keys(groups).length > 0) {
+        const allowed = publishPid ? groups[publishPid] ?? [] : [];
+        if (!allowed.some((option) => option.value === publishCateId)) setPublishCateId("");
+      } else if (!result.cateOptions.some((option) => option.value === publishCateId)) {
+        setPublishCateId("");
+      }
       setPublishValidationError("");
     } catch (cause) {
       setCategoryLoadError(cause instanceof Error ? cause.message : "加载 51CTO 分类失败。");
@@ -273,7 +301,15 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
       return;
     }
     if (!publishCateId.trim()) {
-      setPublishValidationError("51CTO 要求必须选择「授权分类」。请先点击「加载分类」从 51CTO 拉取选项并选择；若下拉为空，可手动填写分类 id。");
+      setPublishValidationError("51CTO 要求必须选择「授权分类」。请先选择「一级栏目」，然后从联动出来的分类中选择；若下拉为空，可手动填写分类 id。");
+      setRightPanel("settings");
+      requestAnimationFrame(() => document.getElementById("fiftyone-cto-cate-input")?.focus());
+      return;
+    }
+    // 二级分类必须属于当前一级栏目：老任务回填的值可能在用户改了栏目后失效，
+    // 若不拦住就会把上一个栏目的 cate_id 提交给 51CTO。
+    if (hasPidGroups && activeCateOptions.length > 0 && !activeCateOptions.some((option) => option.value === publishCateId)) {
+      setPublishValidationError("当前「授权分类」不属于所选的一级栏目。请重新选择该栏目下的分类，或点击「加载分类」重新抓取。");
       setRightPanel("settings");
       requestAnimationFrame(() => document.getElementById("fiftyone-cto-cate-input")?.focus());
       return;
@@ -581,13 +617,14 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
             options: loadedCategories?.pidOptions ?? fiftyoneCtoPidOptions ?? [],
             value: publishPid,
             disabled: !canEditPublishOptions,
-            onChange: (value) => { setPublishPid(value); setPublishValidationError(""); }
+            // 切换一级栏目后，之前的二级分类不再属于新栏目，必须清空让用户重选。
+            onChange: (value) => { setPublishPid(value); setPublishCateId(""); setPublishValidationError(""); }
           })}
           {renderCategoryControl({
             id: "fiftyone-cto-cate-input",
             label: "授权分类 cate_id（必选）",
-            hint: "对应 51CTO 的授权分类；发布前必选。部分账号的「授权分类」在选定「一级栏目」后才会展开，若下拉为空可手动填写分类 id。",
-            options: loadedCategories?.cateOptions ?? fiftyoneCtoCateOptions ?? [],
+            hint: cateControlHint,
+            options: activeCateOptions,
             value: publishCateId,
             disabled: !canEditPublishOptions,
             onChange: (value) => { setPublishCateId(value); setPublishValidationError(""); }

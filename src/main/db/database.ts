@@ -67,7 +67,12 @@ export function initialiseDatabase(db: Database.Database): void {
       writing_style TEXT NOT NULL DEFAULT '',
       regular_columns TEXT NOT NULL DEFAULT '',
       article_signature TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      fiftyone_cto_pid_options TEXT NOT NULL DEFAULT '',
+      fiftyone_cto_cate_options TEXT NOT NULL DEFAULT '',
+      -- 51CTO 的「授权分类」随「一级栏目」联动：这里按 pid 分组保存
+      -- { "<pid>": [{value,label}...] }，切换一级栏目时只展示对应分组。
+      fiftyone_cto_cate_options_by_pid TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS credential_secrets (
@@ -505,6 +510,9 @@ export function initialiseDatabase(db: Database.Database): void {
   }
   if (!accountProfileColumns.some((column) => column.name === "fiftyone_cto_cate_options")) {
     db.exec("ALTER TABLE account_profiles ADD COLUMN fiftyone_cto_cate_options TEXT NOT NULL DEFAULT ''");
+  }
+  if (!accountProfileColumns.some((column) => column.name === "fiftyone_cto_cate_options_by_pid")) {
+    db.exec("ALTER TABLE account_profiles ADD COLUMN fiftyone_cto_cate_options_by_pid TEXT NOT NULL DEFAULT ''");
   }
 
   const projectColumns = db.prepare("PRAGMA table_info(content_projects)").all() as Array<{ name: string }>;

@@ -147,3 +147,48 @@ describe("fiftyone_cto_publish_jobs migration (old schema without pid/cate_id/ta
     expect(row.blog_type).toBeNull();
   });
 });
+
+describe("account_profiles migration (old schema without fiftyone_cto_cate_options_by_pid)", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("adds the pid-grouped category column without losing existing category options", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+
+    // 老库形态：有未分组的 pid/cate 选项，但没有按 pid 分组的列（二级分类联动是后加的）。
+    conn.exec("DROP TABLE IF EXISTS account_profiles");
+    conn.exec(`CREATE TABLE account_profiles (
+      account_id TEXT PRIMARY KEY REFERENCES media_accounts(id) ON DELETE CASCADE,
+      positioning TEXT NOT NULL DEFAULT '',
+      target_audience TEXT NOT NULL DEFAULT '',
+      prohibited_topics TEXT NOT NULL DEFAULT '',
+      writing_style TEXT NOT NULL DEFAULT '',
+      regular_columns TEXT NOT NULL DEFAULT '',
+      article_signature TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      fiftyone_cto_pid_options TEXT NOT NULL DEFAULT '',
+      fiftyone_cto_cate_options TEXT NOT NULL DEFAULT ''
+    )`);
+
+    conn.exec("INSERT INTO workspaces (id, display_name, timezone, created_at) VALUES ('w1', 'w', 'Asia/Shanghai', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO media_accounts (id, workspace_id, platform, display_name, created_at) VALUES ('a1', 'w1', '51cto', 'a', '2026-01-01T00:00:00Z')");
+    conn.exec(`INSERT INTO account_profiles
+      (account_id, fiftyone_cto_pid_options, fiftyone_cto_cate_options, updated_at)
+      VALUES ('a1', '[{"value":"176","label":"后端"}]', '[{"value":"200","label":"Java"}]', '2026-01-01T00:00:00Z')`);
+
+    initialiseDatabase(conn);
+
+    const columns = conn.prepare("PRAGMA table_info(account_profiles)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("fiftyone_cto_cate_options_by_pid");
+
+    // 旧数据不能丢：未分组选项原样保留，新列为空（渲染层据此降级到未分组选项）。
+    const row = conn.prepare(
+      "SELECT fiftyone_cto_pid_options, fiftyone_cto_cate_options, fiftyone_cto_cate_options_by_pid FROM account_profiles WHERE account_id = ?"
+    ).get("a1") as { fiftyone_cto_pid_options: string; fiftyone_cto_cate_options: string; fiftyone_cto_cate_options_by_pid: string };
+    expect(JSON.parse(row.fiftyone_cto_pid_options)).toEqual([{ value: "176", label: "后端" }]);
+    expect(JSON.parse(row.fiftyone_cto_cate_options)).toEqual([{ value: "200", label: "Java" }]);
+    expect(row.fiftyone_cto_cate_options_by_pid).toBe("");
+  });
+});

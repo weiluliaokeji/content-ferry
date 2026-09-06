@@ -309,13 +309,14 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     if (account.platform !== "51cto") throw new Error("该账号不是 51CTO 账号。");
     const categories = await readFiftyoneCtoCategories(account, accountRepository, vault);
     // 抓取成功后按账号持久化，弹窗再次打开时直接复用，无需重复抓取。
+    // cateOptionsByPid 保存「一级栏目 → 二级分类」的联动关系，供发布设置在切换栏目时刷新二级下拉。
     try {
-      accountRepository.saveFiftyoneCtoOptions(accountId, categories.pidOptions, categories.cateOptions);
+      accountRepository.saveFiftyoneCtoOptions(accountId, categories.pidOptions, categories.cateOptions, categories.cateOptionsByPid);
     } catch (error) {
       state.runtimeInfoLogger?.({ accountId, error: error instanceof Error ? error.message : String(error) }, "保存 51CTO 分类选项失败");
     }
     // 连同抓取时的页面 DOM 调试结构一起返回，便于前端在选项为空时展示，供校准选择器。
-    return { pidOptions: categories.pidOptions, cateOptions: categories.cateOptions, debug: categories.debug };
+    return { pidOptions: categories.pidOptions, cateOptions: categories.cateOptions, cateOptionsByPid: categories.cateOptionsByPid, debug: categories.debug };
   });
   ipcMain.handle("contentferry:open-contentany", async () => {
     const window = await getOrCreateContentAnyWindow();

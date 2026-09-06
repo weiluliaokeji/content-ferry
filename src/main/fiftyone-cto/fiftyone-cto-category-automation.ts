@@ -16,6 +16,13 @@ import type { CredentialVault } from "../security/credential-vault";
 
 const FIFTYONE_CTO_PUBLISH_URL = "https://blog.51cto.com/blogger/publish?old=1&orig=first-publish";
 const COOKIE_SETTLE_MS = 600;
+/**
+ * 抓取总预算。过去只抓「一级栏目 + 当前选中的二级分类」，20s 足够；
+ * 现在要逐个一级栏目触发联动并各抓一次二级分类，预算需覆盖多个 pid 的往返。
+ */
+const CATEGORY_SCRAPE_TIMEOUT_MS = 45_000;
+/** 单个一级栏目下等待二级列表刷新的上限；实际还会受总预算约束。 */
+const PER_PID_WAIT_MS = 2_500;
 
 export interface FiftyoneCtoCategoryOption {
   value: string;
@@ -25,6 +32,12 @@ export interface FiftyoneCtoCategoryOption {
 export interface FiftyoneCtoCategories {
   pidOptions: FiftyoneCtoCategoryOption[];
   cateOptions: FiftyoneCtoCategoryOption[];
+  /**
+   * 按一级栏目分组的二级分类：{ "<pid>": [{value,label}...] }。
+   * 51CTO 的「授权分类」是随「一级栏目」联动的，只有选中某个 pid 才能读到它名下的二级分类，
+   * 因此必须逐个 pid 抓取并分组保存；渲染层据此在切换一级栏目时刷新二级下拉。
+   */
+  cateOptionsByPid: Record<string, FiftyoneCtoCategoryOption[]>;
   /** 调试用：真实 DOM 结构与抓取到的分类相关文本节点，便于校准选择器。 */
   debug?: {
     selects: Array<{ name: string; id: string; label: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
@@ -52,7 +65,7 @@ export async function readFiftyoneCtoCategories(account: MediaAccount, accounts:
   await injectCookie(window, cookie);
   await window.loadURL(FIFTYONE_CTO_PUBLISH_URL).catch(() => { /* loadURL 在登录态保活/重定向下可能延迟 reject，下面用轮询兜底 */ });
 
-  const result = await scrapeWithRetry(window, 20_000);
+  const result = await scrapeWithRetry(window, CATEGORY_SCRAPE_TIMEOUT_MS);
   if (!window.isDestroyed()) window.close();
   return result;
 }
@@ -99,31 +112,99 @@ async function injectCookie(window: BrowserWindow, cookie: string): Promise<void
 }
 
 /**
- * 轮询抓取：发布页可能 SPA 异步填充分类下拉，给足等待时间。
- * 若「授权分类」在选了一级栏目后才出现（级联），会先选第一个 pid 触发级联再抓 cate。
+ * 抓取分类：
+ * 1. 轮询等「一级栏目(pid)」填充完成（发布页是 SPA，异步渲染）；
+ * 2. 逐个选中每个一级栏目，读取它名下的「授权分类(cate_id)」——51CTO 的二级分类是
+ *    随一级联动的，不逐个点开就只能拿到默认那一个 pid 的子集，会出现「二级分类写死」。
+ *
+ * 任一步超时都返回已抓到的部分，并保留 debug 供诊断，不抛错中断用户操作。
  */
 async function scrapeWithRetry(window: BrowserWindow, timeoutMs: number): Promise<FiftyoneCtoCategories> {
   const deadline = Date.now() + timeoutMs;
-  let last: FiftyoneCtoCategories = { pidOptions: [], cateOptions: [], debug: undefined };
-  let cascaded = false;
+  let last: FiftyoneCtoCategories = { pidOptions: [], cateOptions: [], cateOptionsByPid: {}, debug: undefined };
+
+  // 阶段一：等一级栏目出现。
   while (Date.now() < deadline && !window.isDestroyed()) {
-    const snapshot = await window.webContents.executeJavaScript(scrapeScript(), true) as unknown;
-    if (isCategories(snapshot)) {
+    const snapshot = await readSnapshot(window);
+    if (snapshot) {
       last = snapshot;
-      if (snapshot.pidOptions.length > 0 && snapshot.cateOptions.length > 0) return snapshot;
-      // pid 有选项但 cate 还没有：可能是级联，先点第一个一级分类触发二级加载，再等一轮。
-      if (snapshot.pidOptions.length > 0 && snapshot.cateOptions.length === 0 && !cascaded) {
-        await window.webContents.executeJavaScript(`(() => {
-          const one = document.getElementById('oneLever');
-          const first = one && one.querySelector('.select_item');
-          if (first) { first.click(); }
-        })()`, true).catch(() => {});
-        cascaded = true;
-      }
+      if (snapshot.pidOptions.length > 0) break;
     }
     await delay(800);
   }
-  return last;
+  if (last.pidOptions.length === 0 || window.isDestroyed()) return last;
+
+  // 阶段二：逐个选中一级栏目，抓各自名下的二级分类。
+  const cateOptionsByPid: Record<string, FiftyoneCtoCategoryOption[]> = {};
+  for (const pid of last.pidOptions) {
+    if (window.isDestroyed() || Date.now() >= deadline) break;
+    const clicked = await window.webContents
+      .executeJavaScript(selectPidScript(pid.value), true)
+      .then((ok) => ok === true)
+      .catch(() => false);
+    if (!clicked) continue;
+    const options = await waitForCateOptions(window, Math.min(PER_PID_WAIT_MS, Math.max(0, deadline - Date.now())));
+    if (options.length > 0) cateOptionsByPid[pid.value] = options;
+  }
+
+  // cateOptions 保留为所有分组的并集（去重），供老数据/降级路径使用：
+  // 没拿到分组映射时，至少还能像以前一样给出一份可用选项。
+  const merged = new Map<string, FiftyoneCtoCategoryOption>();
+  for (const options of Object.values(cateOptionsByPid)) {
+    for (const option of options) if (!merged.has(option.value)) merged.set(option.value, option);
+  }
+  // 若一个分组都没抓到（例如页面结构变了），退回阶段一读到的 cateOptions，避免清空已有缓存。
+  const fallbackCate = Object.keys(cateOptionsByPid).length > 0 ? [...merged.values()] : last.cateOptions;
+  return { pidOptions: last.pidOptions, cateOptions: fallbackCate, cateOptionsByPid, debug: last.debug };
+}
+
+/** 在页面上下文里读取当前已选一级栏目对应的二级分类列表。 */
+function waitForCateOptions(window: BrowserWindow, timeoutMs: number): Promise<FiftyoneCtoCategoryOption[]> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let last: FiftyoneCtoCategoryOption[] = [];
+  const attempt = async (): Promise<FiftyoneCtoCategoryOption[]> => {
+    while (Date.now() < deadline && !window.isDestroyed()) {
+      const options = await readCurrentCateOptions(window);
+      if (options.length > 0) return options;
+      last = options;
+      await delay(400);
+    }
+    return last;
+  };
+  return attempt();
+}
+
+async function readCurrentCateOptions(window: BrowserWindow): Promise<FiftyoneCtoCategoryOption[]> {
+  if (window.isDestroyed()) return [];
+  const value = await window.webContents.executeJavaScript(scrapeCateScript(), true).catch(() => null) as unknown;
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is FiftyoneCtoCategoryOption => !!item && typeof item === "object" && typeof (item as { value?: unknown }).value === "string" && typeof (item as { label?: unknown }).label === "string")
+    .map((item) => ({ value: item.value, label: item.label }));
+}
+
+async function readSnapshot(window: BrowserWindow): Promise<FiftyoneCtoCategories | null> {
+  if (window.isDestroyed()) return null;
+  const value = await window.webContents.executeJavaScript(scrapeScript(), true).catch(() => null) as unknown;
+  return isCategories(value) ? value : null;
+}
+
+/** 选中指定 value 的一级栏目：先展开下拉面板（若有触发区），再点击对应项。 */
+function selectPidScript(pidValue: string): string {
+  return `(() => {
+    const wanted = ${JSON.stringify(String(pidValue))};
+    const one = document.getElementById('oneLever');
+    if (!one) return false;
+    // 自定义下拉通常需要先点开面板，选项才可见/可点（不同页面实现不同，两步都试）。
+    const trigger = one.querySelector('.select_header, .select-current, .select_current, .current, .select_box, .select_trigger');
+    if (trigger) trigger.click();
+    const items = [...one.querySelectorAll('.select_item')];
+    const target = items.find((el) => (el.getAttribute('value') || (el.dataset && el.dataset.value) || '') === wanted)
+      || items.find((el) => ((el.textContent || '').trim()) === wanted);
+    if (!target) return false;
+    target.click();
+    return true;
+  })()`;
 }
 
 function isCategories(value: unknown): value is FiftyoneCtoCategories {
@@ -183,5 +264,30 @@ function scrapeScript(): string {
       categoryTextNodes: [...document.querySelectorAll('*')].filter((n) => n.children.length === 0 && /栏目|分类|授权/.test(n.textContent || '')).slice(0, 20).map((n) => ({ tag: n.tagName, text: clean(n.textContent) }))
     };
     return { pidOptions: pid, cateOptions: cate, debug };
+  })()`;
+}
+
+/**
+ * 只读取当前已展开的二级分类列表（在选中某个一级栏目之后调用）。
+ * 选择器与 scrapeScript 保持一致，避免两处漂移。
+ */
+function scrapeCateScript(): string {
+  return `(() => {
+    const clean = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+    const twoLever = document.getElementById('twoLever');
+    const fromDiv = twoLever
+      ? [...twoLever.querySelectorAll('.second-types-item')].map((el) => ({
+          value: el.getAttribute('value') || el.dataset.value || '',
+          label: clean(el.textContent)
+        })).filter((o) => o.value && o.label && !/^(请选择|选择|不限|无)$/.test(o.label))
+      : [];
+    if (fromDiv.length > 0) return fromDiv;
+    // 兜底：原生 select
+    const selects = [...document.querySelectorAll('select')];
+    const cateSelect = selects.find((s) => /cate/.test((s.name || '').toLowerCase()) || /cate/.test((s.id || '').toLowerCase()));
+    if (!cateSelect) return [];
+    return [...cateSelect.querySelectorAll('option')]
+      .map((o) => ({ value: o.value, label: clean(o.textContent) }))
+      .filter((o) => o.value && o.label && !/^(请选择|选择|不限)/.test(o.label));
   })()`;
 }
