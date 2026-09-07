@@ -475,6 +475,47 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_fiftyone_cto_publish_job_events_job_created
       ON fiftyone_cto_publish_job_events(job_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS publish_lifecycle_jobs (
+      id TEXT PRIMARY KEY,
+      platform TEXT NOT NULL,
+      platform_job_id TEXT NOT NULL UNIQUE,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+      rendered_package_hash TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK(status IN (
+        'queued', 'preparing', 'waiting_user', 'ready', 'submitting',
+        'published', 'needs_credentials', 'failed',
+        'needs_manual_reconciliation', 'cancelled'
+      )),
+      remote_url TEXT,
+      remote_content_id TEXT,
+      status_note TEXT,
+      error_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system' CHECK(status_source IN ('system', 'manual', 'legacy_sync')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_publish_lifecycle_jobs_workspace_updated
+      ON publish_lifecycle_jobs(workspace_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_publish_lifecycle_jobs_platform_updated
+      ON publish_lifecycle_jobs(platform, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS publish_lifecycle_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES publish_lifecycle_jobs(id) ON DELETE CASCADE,
+      previous_status TEXT NOT NULL,
+      new_status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_publish_lifecycle_events_job_created
+      ON publish_lifecycle_events(job_id, created_at DESC);
+
     -- The public-account web UI is the source of truth. This table is only a
     -- per-account cache of collection names observed by the visible browser,
     -- so the editor can offer real previously-synchronised choices offline.

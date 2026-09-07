@@ -10,6 +10,15 @@ import { appendArticleSignature } from "../publishing/article-signature";
 import { CnblogsApiError, CnblogsClient, type CnblogsBlogInfo, type CnblogsPostPayload } from "./cnblogs-client";
 import { uploadCnblogsImages } from "./cnblogs-image-uploader";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
+import {
+  buildPublishIdempotencyKey,
+  computePublishSnapshotHash,
+  isRetryablePublishStatus,
+  publishResourceRefs,
+  toPublishLifecycleStatus,
+  type PublishLifecycleStatus
+} from "../publishing/publish-lifecycle";
+import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
 
 const cnblogsDraftSchema = {
   type: "object",
@@ -74,6 +83,7 @@ export interface CnblogsPublishJob {
   renderedPackageHash: string;
   idempotencyKey: string;
   status: CnblogsPublishJobStatus;
+  lifecycleStatus: PublishLifecycleStatus;
   remoteUrl: string | null;
   remoteContentId: string | null;
   statusNote: string | null;
@@ -93,6 +103,7 @@ export interface CnblogsPublishOptions {
 type FetchLike = typeof fetch;
 
 export class CnblogsChannelService {
+  private readonly lifecycle: PublishLifecycleService;
   /** 两段式发布的关键缓存：draft_created 阶段构建的完整 post 对象，公开阶段必须原样复用来避免 editPost 完全替换陷阱。 */
   private readonly payloadCache = new Map<string, CnblogsPostPayload>();
   private readonly publishOptionsCache = new Map<string, CnblogsPublishOptions>();
@@ -107,7 +118,9 @@ export class CnblogsChannelService {
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
     private readonly fetcher: FetchLike = fetch
-  ) {}
+  ) {
+    this.lifecycle = new PublishLifecycleService(db);
+  }
 
   capabilities(_accountId: string): PublishCapabilities {
     // 博客园走官方 MetaWeblog XML-RPC 纯 API 直发：草稿创建与最终公开都由主进程完成，
@@ -199,9 +212,8 @@ export class CnblogsChannelService {
     const ids = rows.map((row) => row.id);
     const placeholders = ids.map(() => "?").join(",");
     this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM cnblogs_publish_job_events WHERE job_id IN (SELECT id FROM cnblogs_publish_jobs WHERE channel_draft_id IN (${placeholders}))`).run(...ids);
-      this.db.prepare(`DELETE FROM cnblogs_publish_jobs WHERE channel_draft_id IN (${placeholders})`).run(...ids);
-      this.db.prepare(`DELETE FROM channel_drafts WHERE id IN (${placeholders})`).run(...ids);
+      this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id IN (${placeholders})`)
+        .run(new Date().toISOString(), ...ids);
     })();
     return ids.length;
   }
@@ -213,17 +225,16 @@ export class CnblogsChannelService {
       try { this.assetStore.deleteContext(id); } catch { /* 图片目录可能不存在，忽略 */ }
     }
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM cnblogs_publish_job_events WHERE job_id IN (SELECT id FROM cnblogs_publish_jobs WHERE channel_draft_id = ?)").run(id);
-      this.db.prepare("DELETE FROM cnblogs_publish_jobs WHERE channel_draft_id = ?").run(id);
-      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+      this.db.prepare("UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), id);
     })();
     return 1;
   }
 
   listDrafts(workspaceId: string, accountId?: string): CnblogsChannelDraft[] {
     const rows = accountId
-      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'cnblogs' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
+      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? AND status IN ('draft', 'approved') ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'cnblogs' AND a.deleted_at IS NULL AND d.status IN ('draft', 'approved') ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     // 与 CSDN 一致：显示层回填旧草稿缺失的继承字段。
     const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
@@ -277,15 +288,26 @@ export class CnblogsChannelService {
   createPublishJob(channelDraftId: string, options?: CnblogsPublishOptions): CnblogsPublishJob {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new CnblogsChannelError("请先审核并冻结博客园渠道稿，再创建发布任务。");
-    const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
-    let idempotencyKey = `cnblogs:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
-    const found = this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    const publishOptions = options ?? {};
+    const renderedPackageHash = computePublishSnapshotHash({
+      platform: "cnblogs",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      title: draft.title,
+      markdown: draft.markdown,
+      author: draft.author,
+      digest: draft.digest,
+      coverSource: draft.coverSource,
+      options: { categories: [...(publishOptions.categories ?? [])], tags: [...(publishOptions.tags ?? [])] },
+      resourceRefs: publishResourceRefs(draft.markdown)
+    });
+    let idempotencyKey = buildPublishIdempotencyKey("cnblogs", draft.accountId, draft.id, renderedPackageHash);
+    const legacyKey = `cnblogs:${draft.accountId}:${draft.id}:${digest(`${draft.title}\n${draft.markdown}`)}:publish`;
+    const found = (this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey)
+      ?? this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE idempotency_key = ?").get(legacyKey)) as Record<string, string | null> | undefined;
     if (found) {
       let foundJob = mapJob(found);
-      const restartable: CnblogsPublishJobStatus[] = [
-        "draft_creating", "draft_created", "confirming", "needs_credentials", "failed"
-      ];
-      if (restartable.includes(foundJob.status)) {
+      if (isRetryablePublishStatus(foundJob.lifecycleStatus)) {
         // 上次卡在草稿创建前的可重试态：保存发布选项并重新触发后台草稿创建。
         if (foundJob.status === "failed") {
           // 重试前先落库切回进行中状态：前端轮询 active 列表不含 failed，
@@ -296,7 +318,7 @@ export class CnblogsChannelService {
           });
         }
         if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
-          this.publishOptionsCache.set(foundJob.id, options ?? {});
+          this.publishOptionsCache.set(foundJob.id, publishOptions);
           void this.createRemoteDraft(foundJob.id).catch(() => {});
         }
         return foundJob;
@@ -316,15 +338,20 @@ export class CnblogsChannelService {
         VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
-    this.publishOptionsCache.set(id, options ?? {});
+    this.lifecycle.create({
+      id, platform: "cnblogs", workspaceId: draft.workspaceId, accountId: draft.accountId,
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
+      statusNote: "已创建博客园发布任务，正在创建博客园草稿。"
+    });
+    this.publishOptionsCache.set(id, publishOptions);
     // 后台创建草稿：所有失败路径都已在 createRemoteDraft 内部落库，这里仅作兜底防未处理拒绝。
     void this.createRemoteDraft(id).catch(() => {});
     return this.requireJob(id);
   }
 
   listJobs(workspaceId: string): CnblogsPublishJob[] {
-    return (this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
-      .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+    return (this.db.prepare("SELECT id FROM cnblogs_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
+      .all(workspaceId) as Array<{ id: string }>).map(({ id }) => this.requireJob(id));
   }
 
   getJob(jobId: string): CnblogsPublishJob {
@@ -427,6 +454,11 @@ export class CnblogsChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
+    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+      statusNote: note,
+      errorMessage: status === "failed" ? note : null,
+      statusSource: "manual"
+    }, normalizedReason || "人工校正博客园发布状态");
     return this.requireJob(jobId);
   }
 
@@ -674,6 +706,13 @@ export class CnblogsChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
+    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
+      statusNote,
+      errorMessage,
+      remoteUrl,
+      remoteContentId,
+      statusSource: "system"
+    }, patch.statusNote ?? `博客园状态变更为 ${nextStatus}`);
     return this.requireJob(job.id);
   }
 
@@ -686,7 +725,14 @@ export class CnblogsChannelService {
   private requireJob(id: string): CnblogsPublishJob {
     const row = this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new CnblogsChannelError("找不到对应的博客园发布任务。");
-    return mapJob(row);
+    const job = mapJob(row);
+    const lifecycle = this.lifecycle.ensure({
+      id: job.id, platform: "cnblogs", workspaceId: job.workspaceId, accountId: job.accountId,
+      channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
+      idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,
+      remoteContentId: job.remoteContentId, statusNote: job.statusNote, errorMessage: job.errorMessage
+    });
+    return { ...job, lifecycleStatus: lifecycle.status };
   }
 }
 
@@ -800,7 +846,7 @@ function mapJob(row: Record<string, string | null>): CnblogsPublishJob {
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
-    status: row.status as CnblogsPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
+    status: row.status as CnblogsPublishJobStatus, lifecycleStatus: toPublishLifecycleStatus(row.status ?? "failed"), remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
     statusNote: row.status_note, errorMessage: row.error_message,
     statusSource: row.status_source === "manual" ? "manual" : "system",
     createdAt: row.created_at!, updatedAt: row.updated_at!

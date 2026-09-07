@@ -11,6 +11,7 @@ import {
   type CsdnBrowserConfirmResult
 } from "./schemas";
 import type { ServerContext } from "./server-context";
+import { lifecycleStatusForOutcome, type PublishAdapterOutcome } from "../publishing/publish-lifecycle";
 
 export function registerChannelsRoutes(ctx: ServerContext): void {
   const { server, accounts, csdnChannels, cnblogsChannels, juejinChannels, fiftyoneCtoChannels, csdnBrowserConfirm } = ctx;
@@ -94,10 +95,12 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
     } catch (cause) {
       throw cause instanceof CsdnChannelError ? cause : new CsdnChannelError(cause instanceof Error ? cause.message : "CSDN 浏览器确认失败。");
     }
-    if (!receipt) {
+    const outcome: PublishAdapterOutcome = receipt ? "confirmed" : "uncertain";
+    const lifecycleStatus = lifecycleStatusForOutcome(outcome, "submit");
+    if (lifecycleStatus === "needs_manual_reconciliation") {
       return csdnChannels.recordSubmission(params.jobId, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation", reason: "未能自动读取 CSDN 文章链接。" });
     }
-    return reply.code(201).send(csdnChannels.recordSubmission(params.jobId, { ...receipt, state: "published" }));
+    return reply.code(201).send(csdnChannels.recordSubmission(params.jobId, { ...receipt!, state: "published" }));
   });
 
   server.post("/api/integrations/csdn/jobs/:jobId/record-submission", async (request, reply) => {

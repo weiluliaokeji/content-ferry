@@ -43,6 +43,7 @@ export type CsdnChannelDraft = {
 export type CsdnPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "queued" | "needs_login" | "filling" | "needs_user" | "ready_for_final_confirmation" | "submitting" | "published" | "needs_manual_reconciliation" | "failed_before_submit" | "failed" | "cancelled";
+  lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
@@ -56,6 +57,7 @@ export type CnblogsChannelDraft = {
 export type CnblogsPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
@@ -74,6 +76,7 @@ export type JuejinChannelDraft = {
 export type JuejinPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;
@@ -91,6 +94,7 @@ export type FiftyoneCtoChannelDraft = {
 export type FiftyoneCtoPublishJob = {
   id: string; accountId: string; channelDraftId: string;
   status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
   remoteUrl: string | null; remoteContentId: string | null;

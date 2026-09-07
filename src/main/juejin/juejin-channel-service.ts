@@ -23,6 +23,15 @@ import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
 import { JUEJIN_CATEGORIES, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
+import {
+  buildPublishIdempotencyKey,
+  computePublishSnapshotHash,
+  isRetryablePublishStatus,
+  publishResourceRefs,
+  toPublishLifecycleStatus,
+  type PublishLifecycleStatus
+} from "../publishing/publish-lifecycle";
+import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
 
 const juejinDraftSchema = {
   type: "object",
@@ -94,6 +103,7 @@ export interface JuejinPublishJob {
   renderedPackageHash: string;
   idempotencyKey: string;
   status: JuejinPublishJobStatus;
+  lifecycleStatus: PublishLifecycleStatus;
   remoteUrl: string | null;
   remoteContentId: string | null;
   statusNote: string | null;
@@ -106,6 +116,7 @@ export interface JuejinPublishJob {
 type FetchLike = typeof fetch;
 
 export class JuejinChannelService {
+  private readonly lifecycle: PublishLifecycleService;
   /** 缓存分类 ID 和 tag IDs 以避免重复 lookup。 */
   private readonly publishOptionsCache = new Map<string, { categoryId: string; tagIds: string[] }>();
   /** 草稿创建并发去重。 */
@@ -119,7 +130,9 @@ export class JuejinChannelService {
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
     private readonly fetcher: FetchLike = fetch
-  ) {}
+  ) {
+    this.lifecycle = new PublishLifecycleService(db);
+  }
 
   /** 掘金走纯 API 直发，不需要浏览器辅助。 */
   capabilities(_accountId: string): PublishCapabilities {
@@ -282,9 +295,8 @@ export class JuejinChannelService {
     const ids = rows.map((row) => row.id);
     const placeholders = ids.map(() => "?").join(",");
     this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM juejin_publish_job_events WHERE job_id IN (SELECT id FROM juejin_publish_jobs WHERE channel_draft_id IN (${placeholders}))`).run(...ids);
-      this.db.prepare(`DELETE FROM juejin_publish_jobs WHERE channel_draft_id IN (${placeholders})`).run(...ids);
-      this.db.prepare(`DELETE FROM channel_drafts WHERE id IN (${placeholders})`).run(...ids);
+      this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id IN (${placeholders})`)
+        .run(new Date().toISOString(), ...ids);
     })();
     return ids.length;
   }
@@ -296,17 +308,16 @@ export class JuejinChannelService {
       try { this.assetStore.deleteContext(id); } catch { /* ignore */ }
     }
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM juejin_publish_job_events WHERE job_id IN (SELECT id FROM juejin_publish_jobs WHERE channel_draft_id = ?)").run(id);
-      this.db.prepare("DELETE FROM juejin_publish_jobs WHERE channel_draft_id = ?").run(id);
-      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+      this.db.prepare("UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), id);
     })();
     return 1;
   }
 
   listDrafts(workspaceId: string, accountId?: string): JuejinChannelDraft[] {
     const rows = accountId
-      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'juejin' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
+      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? AND status IN ('draft', 'approved') ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'juejin' AND a.deleted_at IS NULL AND d.status IN ('draft', 'approved') ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
     if (needBackfill.length > 0) {
@@ -358,15 +369,26 @@ export class JuejinChannelService {
   createPublishJob(channelDraftId: string, options?: { categoryId?: string; tagIds?: string[] }): JuejinPublishJob {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new JuejinChannelError("请先审核并冻结掘金渠道稿，再创建发布任务。");
-    const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
-    let idempotencyKey = `juejin:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
-    const found = this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    const publishOptions = { categoryId: options?.categoryId ?? "", tagIds: [...(options?.tagIds ?? [])] };
+    const renderedPackageHash = computePublishSnapshotHash({
+      platform: "juejin",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      title: draft.title,
+      markdown: draft.markdown,
+      author: draft.author,
+      digest: draft.digest,
+      coverSource: draft.coverSource,
+      options: publishOptions,
+      resourceRefs: publishResourceRefs(draft.markdown)
+    });
+    let idempotencyKey = buildPublishIdempotencyKey("juejin", draft.accountId, draft.id, renderedPackageHash);
+    const legacyKey = `juejin:${draft.accountId}:${draft.id}:${digest(`${draft.title}\n${draft.markdown}`)}:publish`;
+    const found = (this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey)
+      ?? this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE idempotency_key = ?").get(legacyKey)) as Record<string, string | null> | undefined;
     if (found) {
       let foundJob = mapJob(found);
-      const restartable: JuejinPublishJobStatus[] = [
-        "draft_creating", "draft_created", "confirming", "needs_credentials", "failed"
-      ];
-      if (restartable.includes(foundJob.status)) {
+      if (isRetryablePublishStatus(foundJob.lifecycleStatus)) {
         if (foundJob.status === "failed") {
           foundJob = this.transitionJob(foundJob, "draft_creating", {
             statusNote: "正在重新创建掘金草稿。",
@@ -374,7 +396,7 @@ export class JuejinChannelService {
           });
         }
         if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
-          this.publishOptionsCache.set(foundJob.id, { categoryId: options?.categoryId ?? "", tagIds: options?.tagIds ?? [] });
+          this.publishOptionsCache.set(foundJob.id, publishOptions);
           void this.createRemoteDraft(foundJob.id).catch(() => {});
         }
         return foundJob;
@@ -394,14 +416,19 @@ export class JuejinChannelService {
         VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
-    this.publishOptionsCache.set(id, { categoryId: options?.categoryId ?? "", tagIds: options?.tagIds ?? [] });
+    this.lifecycle.create({
+      id, platform: "juejin", workspaceId: draft.workspaceId, accountId: draft.accountId,
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
+      statusNote: "已创建掘金发布任务，正在创建掘金草稿。"
+    });
+    this.publishOptionsCache.set(id, publishOptions);
     void this.createRemoteDraft(id).catch(() => {});
     return this.requireJob(id);
   }
 
   listJobs(workspaceId: string): JuejinPublishJob[] {
-    return (this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
-      .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+    return (this.db.prepare("SELECT id FROM juejin_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
+      .all(workspaceId) as Array<{ id: string }>).map(({ id }) => this.requireJob(id));
   }
 
   getJob(jobId: string): JuejinPublishJob {
@@ -497,6 +524,11 @@ export class JuejinChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
+    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+      statusNote: note,
+      errorMessage: status === "failed" ? note : null,
+      statusSource: "manual"
+    }, normalizedReason || "人工校正掘金发布状态");
     return this.requireJob(jobId);
   }
 
@@ -693,6 +725,13 @@ export class JuejinChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
+    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
+      statusNote,
+      errorMessage,
+      remoteUrl,
+      remoteContentId,
+      statusSource: "system"
+    }, patch.statusNote ?? `掘金状态变更为 ${nextStatus}`);
     return this.requireJob(job.id);
   }
 
@@ -705,7 +744,14 @@ export class JuejinChannelService {
   private requireJob(id: string): JuejinPublishJob {
     const row = this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new JuejinChannelError("找不到对应的掘金发布任务。");
-    return mapJob(row);
+    const job = mapJob(row);
+    const lifecycle = this.lifecycle.ensure({
+      id: job.id, platform: "juejin", workspaceId: job.workspaceId, accountId: job.accountId,
+      channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
+      idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,
+      remoteContentId: job.remoteContentId, statusNote: job.statusNote, errorMessage: job.errorMessage
+    });
+    return { ...job, lifecycleStatus: lifecycle.status };
   }
 }
 
@@ -860,7 +906,7 @@ function mapJob(row: Record<string, string | null>): JuejinPublishJob {
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
-    status: row.status as JuejinPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
+    status: row.status as JuejinPublishJobStatus, lifecycleStatus: toPublishLifecycleStatus(row.status ?? "failed"), remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
     statusNote: row.status_note, errorMessage: row.error_message,
     statusSource: row.status_source === "manual" ? "manual" : "system",
     createdAt: row.created_at!, updatedAt: row.updated_at!

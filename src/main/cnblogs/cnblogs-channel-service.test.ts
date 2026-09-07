@@ -191,6 +191,18 @@ describe("CnblogsChannelService", () => {
     })).toThrow(/公众号引流/);
   });
 
+  it("soft deletes a channel draft while retaining its publish history", async () => {
+    const { account, service, database: db } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+
+    expect(service.deleteDraft(approved.id)).toBe(1);
+    expect(service.listDrafts(approved.workspaceId, account.id)).toHaveLength(0);
+    expect(service.getJob(job.id).id).toBe(job.id);
+    expect((db.connection.prepare("SELECT COUNT(*) AS count FROM cnblogs_publish_job_events WHERE job_id = ?").get(job.id) as { count: number }).count).toBeGreaterThan(0);
+  });
+
   it("creates an idempotent publish job that reaches draft_created", async () => {
     const { account, service, calls } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
@@ -198,6 +210,7 @@ describe("CnblogsChannelService", () => {
 
     const first = service.createPublishJob(approved.id);
     expect(first.status).toBe("draft_creating");
+    expect(first.lifecycleStatus).toBe("preparing");
 
     // 等待后台草稿创建完成后再验证幂等：draft_created 是已创建态，再次调用不会重启草稿创建。
     await waitForJob(service, first.id, "draft_created");
@@ -207,6 +220,7 @@ describe("CnblogsChannelService", () => {
     expect(again.id).toBe(first.id);
 
     const job = await waitForJob(service, first.id, "draft_created");
+    expect(job.lifecycleStatus).toBe("ready");
     expect(job.remoteContentId).toBe("post-123");
     expect(job.remoteUrl).toContain("EditPosts.aspx?postid=post-123");
     expect(job.errorMessage).toBeNull();
@@ -229,6 +243,7 @@ describe("CnblogsChannelService", () => {
     await service.confirmPublish(first.id);
     const published = service.getJob(first.id);
     expect(published.status).toBe("published");
+    expect(published.lifecycleStatus).toBe("published");
 
     // 已发布任务不再复用；新任务使用带 retry 后缀的幂等键重新走两段式。
     const retry = service.createPublishJob(approved.id);

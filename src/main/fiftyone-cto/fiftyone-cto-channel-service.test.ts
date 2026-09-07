@@ -195,6 +195,18 @@ describe("FiftyoneCtoChannelService", () => {
     })).toThrow(/公众号引流/);
   });
 
+  it("soft deletes a channel draft while retaining its publish history", async () => {
+    const { account, service, database: db } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id);
+
+    expect(service.deleteDraft(approved.id)).toBe(1);
+    expect(service.listDrafts(approved.workspaceId, account.id)).toHaveLength(0);
+    expect(service.getJob(job.id).id).toBe(job.id);
+    expect((db.connection.prepare("SELECT COUNT(*) AS count FROM fiftyone_cto_publish_job_events WHERE job_id = ?").get(job.id) as { count: number }).count).toBeGreaterThan(0);
+  });
+
   it("single-shot publish creates a job then reaches published with remote URL", async () => {
     const { account, service, calls } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
@@ -202,10 +214,12 @@ describe("FiftyoneCtoChannelService", () => {
 
     const job = service.createPublishJob(approved.id);
     expect(job.status).toBe("draft_creating");
+    expect(job.lifecycleStatus).toBe("preparing");
 
     const published = await waitForJob(service, job.id, "published");
     expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);
     expect(published.remoteContentId).toBe("999999");
+    expect(published.lifecycleStatus).toBe("published");
     expect(published.errorMessage).toBeNull();
 
     // 单步发布：先抓发布页（CSRF），再 POST 发布接口。

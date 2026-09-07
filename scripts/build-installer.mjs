@@ -656,7 +656,8 @@ async function main() {
 
   // 4) Tests (optional).
   if (!skipTests) {
-    await npmExec("test");
+    // Native modules were rebuilt in the previous step; avoid rebuilding a second time inside npm test.
+    await npmExec("test:electron");
   } else {
     console.log("  \x1b[33m! --skip-tests set, skipping vitest\x1b[0m");
   }

@@ -5,6 +5,15 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
+import {
+  buildPublishIdempotencyKey,
+  computePublishSnapshotHash,
+  isRetryablePublishStatus,
+  publishResourceRefs,
+  toPublishLifecycleStatus,
+  type PublishLifecycleStatus
+} from "../publishing/publish-lifecycle";
+import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
 import { resolveCsdnImagesForBrowser, resolveCoverToDataUrl } from "./csdn-image-inliner";
 import { appendArticleSignature } from "../publishing/article-signature";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
@@ -67,6 +76,7 @@ export interface CsdnPublishJob {
   renderedPackageHash: string;
   idempotencyKey: string;
   status: CsdnPublishJobStatus;
+  lifecycleStatus: PublishLifecycleStatus;
   remoteUrl: string | null;
   remoteContentId: string | null;
   statusNote: string | null;
@@ -77,13 +87,16 @@ export interface CsdnPublishJob {
 }
 
 export class CsdnChannelService {
+  private readonly lifecycle: PublishLifecycleService;
   constructor(
     private readonly db: Database.Database,
     private readonly accounts: AccountRepository,
     private readonly contentSources: ContentSourceService,
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore
-  ) {}
+  ) {
+    this.lifecycle = new PublishLifecycleService(db);
+  }
 
   capabilities(_accountId: string): PublishCapabilities {
     // CSDN 一期通过受控可见浏览器完成登录预检、表单填充与人工最终确认后的单次提交。
@@ -177,9 +190,8 @@ export class CsdnChannelService {
     const ids = rows.map((row) => row.id);
     const placeholders = ids.map(() => "?").join(",");
     this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM csdn_publish_job_events WHERE job_id IN (SELECT id FROM csdn_publish_jobs WHERE channel_draft_id IN (${placeholders}))`).run(...ids);
-      this.db.prepare(`DELETE FROM csdn_publish_jobs WHERE channel_draft_id IN (${placeholders})`).run(...ids);
-      this.db.prepare(`DELETE FROM channel_drafts WHERE id IN (${placeholders})`).run(...ids);
+      // 软删除渠道稿但保留发布任务/事件，避免本地文章删除后无法解释历史发布结果。
+      this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id IN (${placeholders})`).run(new Date().toISOString(), ...ids);
     })();
     return ids.length;
   }
@@ -192,17 +204,16 @@ export class CsdnChannelService {
       try { this.assetStore.deleteContext(id); } catch { /* 图片目录可能不存在，忽略 */ }
     }
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM csdn_publish_job_events WHERE job_id IN (SELECT id FROM csdn_publish_jobs WHERE channel_draft_id = ?)").run(id);
-      this.db.prepare("DELETE FROM csdn_publish_jobs WHERE channel_draft_id = ?").run(id);
-      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+      // 软删除渠道稿但保留发布任务/事件，发布记录仍需可追溯。
+      this.db.prepare("UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
     })();
     return 1;
   }
 
   listDrafts(workspaceId: string, accountId?: string): CsdnChannelDraft[] {
     const rows = accountId
-      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'csdn' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
+      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? AND status IN ('draft', 'approved') ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = 'csdn' AND a.deleted_at IS NULL AND d.status IN ('draft', 'approved') ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     // 兼容“继承功能上线前的旧空草稿”：草稿态且作者/摘要/封面任一为空时，从最新原文设置回填，
     // 保证进入现有草稿即可看到原文封面/摘要/作者（仅在显示层补默认值，不改写已编辑内容）。
@@ -252,18 +263,26 @@ export class CsdnChannelService {
   createPublishJob(channelDraftId: string): CsdnPublishJob {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new CsdnChannelError("请先审核并冻结 CSDN 渠道稿，再创建发布任务。");
-    const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
-    let idempotencyKey = `csdn:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
-    const found = this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    const renderedPackageHash = computePublishSnapshotHash({
+      platform: "csdn",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      title: draft.title,
+      markdown: draft.markdown,
+      author: draft.author,
+      digest: draft.digest,
+      coverSource: draft.coverSource,
+      resourceRefs: publishResourceRefs(draft.markdown)
+    });
+    let idempotencyKey = buildPublishIdempotencyKey("csdn", draft.accountId, draft.id, renderedPackageHash);
+    // 兼容升级前只按标题+正文生成的幂等键，避免升级后重复创建同一冻结任务。
+    const legacyKey = `csdn:${draft.accountId}:${draft.id}:${digest(`${draft.title}\n${draft.markdown}`)}:publish`;
+    const found = (this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey)
+      ?? this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE idempotency_key = ?").get(legacyKey)) as Record<string, string | null> | undefined;
     if (found) {
       const foundJob = mapJob(found);
-      // 只有“可重启”的任务才复用，避免把上次卡在终态（提交超时/失败/已发布/取消）的旧任务
-      // 反复返回给用户。否则用户再次点击“发布到 CSDN”会命中这个不可重启的旧任务，
-      // startBrowserAssist 直接抛“任务已结束”，浏览器根本不会打开。终态任务一律新建一个重新开始。
-      const restartable: CsdnPublishJobStatus[] = [
-        "queued", "needs_login", "filling", "ready_for_final_confirmation", "failed_before_submit"
-      ];
-      if (restartable.includes(foundJob.status)) return foundJob;
+      // 只复用仍可恢复的任务；已发布、取消或结果不确定的任务创建新的重新发布任务。
+      if (isRetryablePublishStatus(foundJob.lifecycleStatus)) return foundJob;
       // 终态：放弃复用，改用带 retry 后缀的新幂等键，避免与旧任务的 UNIQUE 约束冲突。
       idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
     }
@@ -280,12 +299,17 @@ export class CsdnChannelService {
         VALUES (?, ?, '', 'queued', 'system', '创建冻结版本的发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
+    this.lifecycle.create({
+      id, platform: "csdn", workspaceId: draft.workspaceId, accountId: draft.accountId,
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
+      statusNote: "已创建 CSDN 发布任务，等待在浏览器中完成登录、填充与最终确认发布。"
+    });
     return this.requireJob(id);
   }
 
   listJobs(workspaceId: string): CsdnPublishJob[] {
-    return (this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
-      .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+    return (this.db.prepare("SELECT id FROM csdn_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
+      .all(workspaceId) as Array<{ id: string }>).map(({ id }) => this.requireJob(id));
   }
 
   getJob(jobId: string): CsdnPublishJob {
@@ -358,7 +382,7 @@ export class CsdnChannelService {
   startBrowserAssist(jobId: string): CsdnPublishJob {
     const job = this.requireJob(jobId);
     const restartable: CsdnPublishJobStatus[] = [
-      "queued", "needs_login", "filling", "ready_for_final_confirmation", "failed_before_submit"
+      "queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "failed"
     ];
     if (!restartable.includes(job.status)) {
       throw new CsdnChannelError("该 CSDN 发布任务已经结束或正在提交，无法重新进入浏览器辅助流程。");
@@ -483,6 +507,11 @@ export class CsdnChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
+    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+      statusNote: note,
+      errorMessage: status === "failed" ? note : null,
+      statusSource: "manual"
+    }, normalizedReason || "人工校正 CSDN 发布状态");
     return this.requireJob(jobId);
   }
 
@@ -511,6 +540,13 @@ export class CsdnChannelService {
         VALUES (?, ?, ?, ?, 'browser', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
+    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
+      statusNote: patch.statusNote,
+      errorMessage: patch.errorMessage,
+      remoteUrl: patch.remoteUrl,
+      remoteContentId: patch.remoteContentId,
+      statusSource: "system"
+    }, patch.statusNote ?? `CSDN 状态变更为 ${nextStatus}`);
     return this.requireJob(job.id);
   }
 
@@ -523,7 +559,14 @@ export class CsdnChannelService {
   private requireJob(id: string): CsdnPublishJob {
     const row = this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new CsdnChannelError("找不到对应的 CSDN 发布任务。");
-    return mapJob(row);
+    const job = mapJob(row);
+    const lifecycle = this.lifecycle.ensure({
+      id: job.id, platform: "csdn", workspaceId: job.workspaceId, accountId: job.accountId,
+      channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
+      idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,
+      remoteContentId: job.remoteContentId, statusNote: job.statusNote, errorMessage: job.errorMessage
+    });
+    return { ...job, lifecycleStatus: lifecycle.status };
   }
 }
 
@@ -606,7 +649,7 @@ function mapJob(row: Record<string, string | null>): CsdnPublishJob {
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
-    status: row.status as CsdnPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
+    status: row.status as CsdnPublishJobStatus, lifecycleStatus: toPublishLifecycleStatus(row.status ?? "failed"), remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
     statusNote: row.status_note, errorMessage: row.error_message,
     statusSource: row.status_source === "manual" ? "manual" : "system",
     createdAt: row.created_at!, updatedAt: row.updated_at!

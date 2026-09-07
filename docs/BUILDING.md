@@ -12,7 +12,7 @@
 1. **依赖锁定** — `npm install`（如 `node_modules` 不存在）。
 2. **类型检查** — `tsc --noEmit` 同时校验 `tsconfig.main.json` 和 `tsconfig.renderer.json`。
 3. **原生模块重建** — `electron-rebuild -f -w better-sqlite3`，先让 SQLite 与 Electron 测试运行时的 ABI 一致。
-4. **单元测试** — `npm test`（与开发共用同一条 vitest + Electron 运行时命令）。
+4. **单元测试** — `npm test` 会先执行原生模块重建，再运行 vitest + Electron；打包流水线已完成重建时直接调用内部的 `npm run test:electron`，避免重复编译。
 5. **生产构建** — `tsc -p tsconfig.main.json` + `vite build`。
 6. **打包** — `electron-builder`，按 `package.json#build` 配置产出 NSIS 安装包 + Portable EXE。
 7. **后置校验** — `scripts/verify-installer.mjs` 检查 `app.asar` 完整性、`better_sqlite3.node`、`codex.exe`、内置技能目录和独立用户手册是否正确进入安装资源。

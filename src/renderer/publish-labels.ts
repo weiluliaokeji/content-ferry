@@ -44,7 +44,7 @@ export function csdnJobLabel(job: CsdnPublishJob): string {
 }
 
 export function csdnJobCanStart(job: CsdnPublishJob): boolean {
-  return ["queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "needs_manual_reconciliation"].includes(job.status);
+  return ["queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "failed", "needs_manual_reconciliation"].includes(job.status);
 }
 
 export function csdnJobCanConfirm(job: CsdnPublishJob): boolean {
@@ -134,4 +134,3 @@ export function publishRecordBadge(job: PublishJobLike): { text: string; tone: "
   if (job.status === "failed") return { text: "已失败", tone: "danger" };
   return { text: "已完成", tone: "success" };
 }
-

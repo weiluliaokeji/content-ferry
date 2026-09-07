@@ -167,3 +167,17 @@ npm run verify:installer
 - 通过关闭安全隔离、忽略证书、记录密钥或绕过平台风控来“快速打通”功能。
 - 把未完成能力展示成可用，或把任务提交状态展示成最终成功。
 - 为修复一个界面问题无关地重写整页、格式化全仓库或改动用户文章。
+
+## Agent skills
+
+### Issue tracker
+
+本仓库的问题和设计事项统一记录在 GitHub Issues 中，使用 `gh` CLI 操作。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认 triage 标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human` 和 `wontfix`。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本仓库采用 single-context 结构：根目录使用 `CONTEXT.md`，架构决策记录放在 `docs/adr/`。详见 `docs/agents/domain.md`。

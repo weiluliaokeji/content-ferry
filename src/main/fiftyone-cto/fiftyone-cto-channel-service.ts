@@ -26,6 +26,15 @@ import { CTOClient, mdToHtml51 } from "./fiftyone-cto-client";
 import { uploadFiftyoneCtoLocalImages } from "./fiftyone-cto-image-inliner";
 import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
 import { FiftyoneCtoChannelError, FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
+import {
+  buildPublishIdempotencyKey,
+  computePublishSnapshotHash,
+  isRetryablePublishStatus,
+  publishResourceRefs,
+  toPublishLifecycleStatus,
+  type PublishLifecycleStatus
+} from "../publishing/publish-lifecycle";
+import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
 
 export { FiftyoneCtoChannelError, FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
 
@@ -77,6 +86,7 @@ export interface FiftyoneCtoPublishJob {
   renderedPackageHash: string;
   idempotencyKey: string;
   status: FiftyoneCtoPublishJobStatus;
+  lifecycleStatus: PublishLifecycleStatus;
   remoteUrl: string | null;
   remoteContentId: string | null;
   statusNote: string | null;
@@ -104,6 +114,7 @@ export interface FiftyoneCtoPublishOptions {
 type FetchLike = typeof fetch;
 
 export class FiftyoneCtoChannelService {
+  private readonly lifecycle: PublishLifecycleService;
   private readonly publishOptionsCache = new Map<string, FiftyoneCtoPublishOptions>();
 
   constructor(
@@ -114,7 +125,9 @@ export class FiftyoneCtoChannelService {
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
     private readonly fetcher: FetchLike = fetch
-  ) {}
+  ) {
+    this.lifecycle = new PublishLifecycleService(db);
+  }
 
   capabilities(_accountId: string): PublishCapabilities {
     return {
@@ -203,9 +216,8 @@ export class FiftyoneCtoChannelService {
     const ids = rows.map((row) => row.id);
     const placeholders = ids.map(() => "?").join(",");
     this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM fiftyone_cto_publish_job_events WHERE job_id IN (SELECT id FROM fiftyone_cto_publish_jobs WHERE channel_draft_id IN (${placeholders}))`).run(...ids);
-      this.db.prepare(`DELETE FROM fiftyone_cto_publish_jobs WHERE channel_draft_id IN (${placeholders})`).run(...ids);
-      this.db.prepare(`DELETE FROM channel_drafts WHERE id IN (${placeholders})`).run(...ids);
+      this.db.prepare(`UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id IN (${placeholders})`)
+        .run(new Date().toISOString(), ...ids);
     })();
     return ids.length;
   }
@@ -217,17 +229,16 @@ export class FiftyoneCtoChannelService {
       try { this.assetStore.deleteContext(id); } catch { /* ignore */ }
     }
     this.db.transaction(() => {
-      this.db.prepare("DELETE FROM fiftyone_cto_publish_job_events WHERE job_id IN (SELECT id FROM fiftyone_cto_publish_jobs WHERE channel_draft_id = ?)").run(id);
-      this.db.prepare("DELETE FROM fiftyone_cto_publish_jobs WHERE channel_draft_id = ?").run(id);
-      this.db.prepare("DELETE FROM channel_drafts WHERE id = ?").run(id);
+      this.db.prepare("UPDATE channel_drafts SET status = 'superseded', updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), id);
     })();
     return 1;
   }
 
   listDrafts(workspaceId: string, accountId?: string): FiftyoneCtoChannelDraft[] {
     const rows = accountId
-      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
-      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = '51cto' AND a.deleted_at IS NULL ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
+      ? this.db.prepare("SELECT * FROM channel_drafts WHERE workspace_id = ? AND account_id = ? AND status IN ('draft', 'approved') ORDER BY updated_at DESC LIMIT 100").all(workspaceId, accountId)
+      : this.db.prepare("SELECT d.* FROM channel_drafts d JOIN media_accounts a ON a.id = d.account_id WHERE d.workspace_id = ? AND a.platform = '51cto' AND a.deleted_at IS NULL AND d.status IN ('draft', 'approved') ORDER BY d.updated_at DESC LIMIT 100").all(workspaceId);
     const drafts = (rows as Array<Record<string, string | null>>).map(mapDraft);
     const needBackfill = drafts.filter((d) => d.status === "draft" && (!d.author || !d.digest || !d.coverSource));
     if (needBackfill.length > 0) {
@@ -310,18 +321,35 @@ export class FiftyoneCtoChannelService {
       blogType: options?.blogType ?? inherited?.blogType ?? "1"
     };
 
-    const renderedPackageHash = digest(`${draft.title}\n${draft.markdown}`);
-    let idempotencyKey = `fiftyonecto:${draft.accountId}:${draft.id}:${renderedPackageHash}:publish`;
+    const renderedPackageHash = computePublishSnapshotHash({
+      platform: "51cto",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      title: draft.title,
+      markdown: draft.markdown,
+      author: draft.author,
+      digest: draft.digest,
+      coverSource: draft.coverSource,
+      options: {
+        pid: finalOptions.pid ?? "",
+        cateId: finalOptions.cateId ?? "",
+        tags: [...(finalOptions.tags ?? [])],
+        blogType: finalOptions.blogType ?? "1"
+      },
+      resourceRefs: publishResourceRefs(draft.markdown)
+    });
+    let idempotencyKey = buildPublishIdempotencyKey("51cto", draft.accountId, draft.id, renderedPackageHash);
+    const legacyKey = `fiftyonecto:${draft.accountId}:${draft.id}:${digest(`${draft.title}\n${draft.markdown}`)}:publish`;
     // republishFromJobId 模式（用户主动再发）必然生成全新任务：直接给 idempotency_key
     // 拼一个随机后缀，既绕开 idempotency 命中，也满足 UNIQUE(idempotency_key) 约束。
     if (republishFromJobId) {
       idempotencyKey = `${idempotencyKey}:republish:${randomUUID()}`;
     }
-    const found = republishFromJobId ? undefined : this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
+    const found = republishFromJobId ? undefined : (this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE idempotency_key = ?").get(idempotencyKey)
+      ?? this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE idempotency_key = ?").get(legacyKey)) as Record<string, string | null> | undefined;
     if (found) {
       let foundJob = mapJob(found);
-      const restartable: FiftyoneCtoPublishJobStatus[] = ["draft_creating", "needs_credentials", "failed"];
-      if (restartable.includes(foundJob.status)) {
+      if (isRetryablePublishStatus(foundJob.lifecycleStatus)) {
         if (foundJob.status === "failed") {
           foundJob = this.transitionJob(foundJob, "draft_creating", {
             statusNote: "正在重新发布到 51CTO。",
@@ -352,14 +380,19 @@ export class FiftyoneCtoChannelService {
         VALUES (?, ?, '', 'draft_creating', 'system', ?, ?)`)
         .run(randomUUID(), id, republishFromJobId ? `重新发布（参考旧任务 ${republishFromJobId.slice(0, 8)}）` : '创建发布任务', now);
     })();
+    this.lifecycle.create({
+      id, platform: "51cto", workspaceId: draft.workspaceId, accountId: draft.accountId,
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
+      statusNote: initialNote
+    });
     this.publishOptionsCache.set(id, finalOptions);
     void this.executePublish(id).catch(() => {});
     return this.requireJob(id);
   }
 
   listJobs(workspaceId: string): FiftyoneCtoPublishJob[] {
-    return (this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
-      .all(workspaceId) as Array<Record<string, string | null>>).map(mapJob);
+    return (this.db.prepare("SELECT id FROM fiftyone_cto_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
+      .all(workspaceId) as Array<{ id: string }>).map(({ id }) => this.requireJob(id));
   }
 
   getJob(jobId: string): FiftyoneCtoPublishJob {
@@ -433,6 +466,11 @@ export class FiftyoneCtoChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
+    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+      statusNote: note,
+      errorMessage: status === "failed" ? note : null,
+      statusSource: "manual"
+    }, normalizedReason || "人工校正 51CTO 发布状态");
     return this.requireJob(jobId);
   }
 
@@ -567,6 +605,13 @@ export class FiftyoneCtoChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
+    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
+      statusNote,
+      errorMessage,
+      remoteUrl,
+      remoteContentId,
+      statusSource: "system"
+    }, patch.statusNote ?? `51CTO 状态变更为 ${nextStatus}`);
     return this.requireJob(job.id);
   }
 
@@ -579,7 +624,14 @@ export class FiftyoneCtoChannelService {
   private requireJob(id: string): FiftyoneCtoPublishJob {
     const row = this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new FiftyoneCtoChannelError("找不到对应的 51CTO 发布任务。");
-    return mapJob(row);
+    const job = mapJob(row);
+    const lifecycle = this.lifecycle.ensure({
+      id: job.id, platform: "51cto", workspaceId: job.workspaceId, accountId: job.accountId,
+      channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
+      idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,
+      remoteContentId: job.remoteContentId, statusNote: job.statusNote, errorMessage: job.errorMessage
+    });
+    return { ...job, lifecycleStatus: lifecycle.status };
   }
 }
 
@@ -668,7 +720,7 @@ function mapJob(row: Record<string, string | null>): FiftyoneCtoPublishJob {
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, channelDraftId: row.channel_draft_id!,
     renderedPackageHash: row.rendered_package_hash!, idempotencyKey: row.idempotency_key!,
-    status: row.status as FiftyoneCtoPublishJobStatus, remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
+    status: row.status as FiftyoneCtoPublishJobStatus, lifecycleStatus: toPublishLifecycleStatus(row.status ?? "failed"), remoteUrl: row.remote_url, remoteContentId: row.remote_content_id,
     statusNote: row.status_note, errorMessage: row.error_message,
     statusSource: row.status_source === "manual" ? "manual" : "system",
     pid: row.pid, cateId: row.cate_id, tags: parseTags(row.tags), blogType: parseBlogType(row.blog_type),

@@ -66,9 +66,12 @@ publish: false
     const approved = service.approveDraft(draft.id);
     expect(approved.status).toBe("approved");
     const job = service.createPublishJob(draft.id);
-    expect(job).toMatchObject({ channelDraftId: draft.id, status: "queued" });
+    expect(job).toMatchObject({ channelDraftId: draft.id, status: "queued", lifecycleStatus: "queued" });
     expect(service.createPublishJob(draft.id).id).toBe(job.id);
     expect(service.capabilities(account.id)).toMatchObject({ canCreateRemoteDraft: true, canSubmitAfterConfirmation: true, supportsScheduledPublish: false });
+    service.deleteDraft(draft.id);
+    expect(service.listDrafts(workspace.id)).toHaveLength(0);
+    expect(service.getJob(job.id).status).toBe("queued");
   });
 
   it("does not reuse a job stuck in a terminal state; creates a fresh one instead", async () => {

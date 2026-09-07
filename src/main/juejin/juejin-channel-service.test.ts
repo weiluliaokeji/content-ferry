@@ -163,6 +163,18 @@ describe("JuejinChannelService", () => {
     })).toThrow(/公众号引流/);
   });
 
+  it("soft deletes a channel draft while retaining its publish history", async () => {
+    const { account, service, database: db } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const approved = service.approveDraft(draft.id);
+    const job = service.createPublishJob(approved.id, { categoryId: "6809637769959178254", tagIds: ["tag-1"] });
+
+    expect(service.deleteDraft(approved.id)).toBe(1);
+    expect(service.listDrafts(approved.workspaceId, account.id)).toHaveLength(0);
+    expect(service.getJob(job.id).id).toBe(job.id);
+    expect((db.connection.prepare("SELECT COUNT(*) AS count FROM juejin_publish_job_events WHERE job_id = ?").get(job.id) as { count: number }).count).toBeGreaterThan(0);
+  });
+
   it("recommends category and tags from official lists via AI, constraining to valid ids", async () => {
     const tagHandler = () => apiResponse([
       { tag: { tag_id: "tag-1", tag_name: "Docker" } },
@@ -260,6 +272,7 @@ describe("JuejinChannelService", () => {
 
     const first = service.createPublishJob(approved.id);
     expect(first.status).toBe("draft_creating");
+    expect(first.lifecycleStatus).toBe("preparing");
 
     await waitForJob(service, first.id, "draft_created");
 
@@ -268,6 +281,7 @@ describe("JuejinChannelService", () => {
     expect(again.id).toBe(first.id);
 
     const job = await waitForJob(service, first.id, "draft_created");
+    expect(job.lifecycleStatus).toBe("ready");
     expect(job.remoteContentId).toBe("draft-123");
     expect(job.remoteUrl).toContain("https://juejin.cn/editor/drafts?id=draft-123");
     expect(job.errorMessage).toBeNull();
@@ -287,6 +301,7 @@ describe("JuejinChannelService", () => {
     await service.confirmPublish(first.id);
     const published = service.getJob(first.id);
     expect(published.status).toBe("published");
+    expect(published.lifecycleStatus).toBe("published");
 
     // 已发布任务不再复用；新任务使用带 retry 后缀的幂等键重新走两段式。
     const retry = service.createPublishJob(approved.id);
