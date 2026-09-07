@@ -3,6 +3,7 @@ import type { ModelConnectionRepository, ModelProviderId } from "../ai/model-con
 import type { AiAuditLog } from "../ai/ai-audit-log";
 import type { LocalAssetStore } from "./local-asset-store";
 import type { ContentSourceService } from "./content-source-service";
+import { delay } from "../automation/delay";
 
 type ImageMime = "image/jpeg" | "image/png" | "image/webp";
 type ExternalExchange = { method: string; url: string; request: string | null; response: string | null; error: string | null };
@@ -249,8 +250,4 @@ function normalizeImageMime(value: string | null): ImageMime {
   if (value?.includes("jpeg")) return "image/jpeg";
   if (value?.includes("webp")) return "image/webp";
   return "image/png";
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

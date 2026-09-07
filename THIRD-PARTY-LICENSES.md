@@ -15,7 +15,7 @@
 
 以下依赖均为 OSI 批准的宽松许可证，可在遵守其署名条款的前提下随本项目分发：
 
-- **MIT**：`@fastify/cors`、`@github/copilot-sdk`、`better-sqlite3`、`fastify`、`react`、`react-dom`、`undici`、`zod`、`@milkdown/crepe`、`@milkdown/kit`、`@milkdown/react`、`@electron/rebuild`、`@types/*`、`@vitejs/plugin-react`、`concurrently`、`cross-env`、`electron`、`electron-builder`、`typescript`、`vite`、`vitest`、`wait-on`
+- **MIT**：`@fastify/cors`、`better-sqlite3`、`fastify`、`react`、`react-dom`、`undici`、`zod`、`@milkdown/crepe`、`@milkdown/kit`、`@milkdown/react`、`@electron/rebuild`、`@types/*`、`@vitejs/plugin-react`、`concurrently`、`cross-env`、`electron`、`electron-builder`、`typescript`、`vite`、`vitest`、`wait-on`
 - **Apache-2.0**：`@openai/codex-sdk`
 
 完整依赖及其精确版本以 `package.json` 与 `package-lock.json` 为准。新增依赖前须按 [AGENTS.md](AGENTS.md) 检查直接与传递许可证。

@@ -1,4 +1,4 @@
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow } from "electron";
 import { state } from "./state";
 import { createWenduWindowIcon } from "./windows";
 import { delay } from "./delay";
