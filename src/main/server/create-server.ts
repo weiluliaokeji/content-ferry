@@ -58,6 +58,15 @@ import { registerAccountsRoutes } from "./routes-accounts";
 import { registerSettingsRoutes } from "./routes-settings";
 import { registerChatRoutes } from "./routes-chat";
 import { registerWechatRoutes } from "./routes-wechat";
+import { registerExecutionRoutes } from "./routes-execution";
+import { ExecutionPolicyError, ExecutionService } from "../agent/execution-service";
+import { ExecutionRepository } from "../agent/execution-repository";
+import { AgentMemoryRepository } from "../ai/agent-memory-repository";
+import { ResearchTaskRepository } from "../content/research-task-repository";
+import { ResearchTaskRunner } from "../content/research-task-runner";
+import { SystemToolRegistry } from "../agent/system-tool-registry";
+import { PermissionGrantRepository } from "../agent/permission-grant-repository";
+import { GitSourceService } from "../agent/git-source-service";
 
 const LEGACY_ARCHIVE_CUTOFF = "2026-08-11 00:00:00";
 
@@ -118,6 +127,7 @@ export function buildServer(
   const contentOutlines = new ContentOutlineRepository(database.connection);
   const contentDrafts = new ContentDraftRepository(database.connection);
   const contentResearch = new ContentResearchRepository(database.connection);
+  const researchTasks = new ResearchTaskRepository(database.connection);
   const contentReviews = new ContentReviewRepository(database.connection);
   const remoteImages = new RemoteImageImportService(assetStore, contentSources);
   const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
@@ -154,6 +164,15 @@ export function buildServer(
     ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const fiftyoneCtoChannels = new FiftyoneCtoChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
+  const execution = new ExecutionService();
+  const executionRuns = new ExecutionRepository(database.connection);
+  const interruptedExecutionRuns = executionRuns.recoverInterrupted();
+  if (interruptedExecutionRuns > 0) server.log.warn({ interruptedExecutionRuns }, "Execution runs marked interrupted after restart");
+  const researchTaskRunner = new ResearchTaskRunner(database, researchTasks, contentProjects, contentResearch, aiContent, server.log);
+  server.addHook("onClose", async () => researchTaskRunner.stop());
+  const systemTools = new SystemToolRegistry();
+  const permissionGrants = new PermissionGrantRepository(database.connection);
+  const gitSources = new GitSourceService(execution, executionRuns);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
@@ -191,6 +210,16 @@ export function buildServer(
     }
     if (error instanceof FiftyoneCtoChannelError) {
       return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof ExecutionPolicyError) {
+      request.log.warn({ err: error }, "Code execution policy rejected request");
+      const executionRunId = (error as { executionRunId?: unknown }).executionRunId;
+      return reply.code(400).send({ error: error.message, ...(typeof executionRunId === "string" ? { executionRunId } : {}) });
+    }
+    const executionRunId = (error as { executionRunId?: unknown }).executionRunId;
+    if (typeof executionRunId === "string") {
+      request.log.error({ err: error, executionRunId }, "Code execution failed");
+      return reply.code(500).send({ error: "代码执行失败。", executionRunId });
     }
     if (error instanceof z.ZodError) {
       const fields = [...new Set(error.issues.map((issue) => issue.path.join(".") || "请求内容"))];
@@ -325,7 +354,14 @@ export function buildServer(
     cnblogsChannels,
     juejinChannels,
     fiftyoneCtoChannels,
-    coverGenerator
+    coverGenerator,
+    execution,
+    executionRuns,
+    researchTasks,
+    researchTaskRunner,
+    systemTools,
+    permissionGrants,
+    gitSources
   };
 
   registerSystemRoutes(ctx);
@@ -338,6 +374,24 @@ export function buildServer(
   registerSettingsRoutes(ctx);
   registerChatRoutes(ctx);
   registerWechatRoutes(ctx);
+  registerExecutionRoutes(ctx);
+
+  // Memory maintenance is derived data; it must never delay server startup or
+  // article editing. A failed pass is retained in memory_maintenance_state.
+  setTimeout(() => {
+    try {
+      if (!database.connection.open) return;
+      const result = new AgentMemoryRepository(database.connection).maintain();
+      if (result.expired || result.consolidated) server.log.info({ ...result }, "Agent memory maintenance completed");
+    } catch (error) {
+      server.log.warn({ err: error }, "Agent memory maintenance failed");
+    }
+  }, 0);
+
+  setTimeout(() => {
+    if (!database.connection.open) return;
+    researchTaskRunner.start();
+  }, 0);
 
   if (options?.runMigrations) {
     runLegacyArchiveMigration(contentSources, accounts, server.log);

@@ -2,20 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppDatabase } from "../db/database";
-import { articleChatSuggestion, selectionEditInput } from "./schemas";
-
-export function mergeArticleMemory(database: AppDatabase, contextKey: string, candidate: string): string {
-  const normalized = candidate.replace(/\s+/g, " ").trim();
-  if (!normalized) return (database.connection.prepare("SELECT memory FROM article_chat_threads WHERE context_key = ?").get(contextKey) as { memory: string } | undefined)?.memory ?? "";
-  const row = database.connection.prepare("SELECT memory FROM article_chat_threads WHERE context_key = ?").get(contextKey) as { memory: string } | undefined;
-  const entries = (row?.memory ?? "").split("\n").map((item) => item.replace(/^-\s*/, "").trim()).filter(Boolean);
-  if (!entries.some((item) => item === normalized)) entries.push(normalized);
-  const memory = entries.slice(-20).map((item) => `- ${item}`).join("\n").slice(0, 6000);
-  database.connection.prepare(`INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, ?, ?)
-    ON CONFLICT(context_key) DO UPDATE SET memory = excluded.memory, updated_at = excluded.updated_at`)
-    .run(contextKey, memory, new Date().toISOString());
-  return memory;
-}
+import { selectionEditInput } from "./schemas";
 
 export function persistResearchConversation(
   database: AppDatabase,
@@ -40,29 +27,6 @@ export function persistResearchConversation(
       .run(randomUUID(), contextKey, `【补研结果】\n${planMarkdown.trim()}${sourceSummary}`, assistantCreatedAt);
   });
   save();
-}
-
-export function mergeWritingMemory(database: AppDatabase, scopeKey: string, candidate: string): string {
-  const normalized = candidate.replace(/\s+/g, " ").trim();
-  const row = database.connection.prepare("SELECT memory FROM writing_memories WHERE scope_key = ?").get(scopeKey) as { memory: string } | undefined;
-  if (!normalized) return row?.memory ?? "";
-  const entries = (row?.memory ?? "").split("\n").map((item) => item.replace(/^-\s*/, "").trim()).filter(Boolean);
-  if (!entries.includes(normalized)) entries.push(normalized);
-  const memory = entries.slice(-30).map((item) => `- ${item}`).join("\n").slice(0, 8000);
-  database.connection.prepare(`INSERT INTO writing_memories (scope_key, memory, updated_at) VALUES (?, ?, ?)
-    ON CONFLICT(scope_key) DO UPDATE SET memory = excluded.memory, updated_at = excluded.updated_at`)
-    .run(scopeKey, memory, new Date().toISOString());
-  return memory;
-}
-
-export function isUniqueArticleSuggestion(markdown: string, original: string): boolean {
-  const first = markdown.indexOf(original);
-  return first >= 0 && markdown.indexOf(original, first + original.length) < 0;
-}
-
-export function parseChatSuggestions(value: string): Array<{ original: string; replacement: string; reason: string; status: "pending" | "accepted" | "rejected" | "unavailable" }> {
-  try { return z.array(articleChatSuggestion).parse(JSON.parse(value)); }
-  catch { return []; }
 }
 
 export function persistSelectionEditConversation(
@@ -182,12 +146,24 @@ export async function streamResearchGeneration(
   reply: FastifyReply,
   projectId: string,
   generate: (onStatus: (message: string) => void) => Promise<{ value: unknown; provider: string; model: string | null; usage: unknown }>,
-  save: (value: unknown) => unknown
+  save: (value: unknown) => unknown,
+  lifecycle: {
+    taskId?: string;
+    onStatus?: (message: string) => void;
+    isCancelled?: () => boolean;
+    isPaused?: () => boolean;
+    saveCheckpoint?: (value: unknown) => void;
+    onPaused?: () => void;
+    onComplete?: (value: unknown) => void;
+    onError?: (error: unknown, cancelled: boolean) => void;
+    onFinally?: () => void;
+  } = {}
 ) {
   const controller = new AbortController();
+  let clientDisconnected = false;
   const abort = () => {
-    if (!controller.signal.aborted) request.log.warn({ projectId }, "research stream aborted by client connection");
-    controller.abort();
+    clientDisconnected = true;
+    request.log.warn({ projectId, taskId: lifecycle.taskId }, "research stream subscription disconnected; task continues");
   };
   request.raw.once("aborted", abort);
   reply.hijack();
@@ -205,21 +181,55 @@ export async function streamResearchGeneration(
   };
   const startedAt = Date.now();
   let latestPhase = "正在处理…";
+  let pauseReported = false;
+  send("status", { phase: "researching", taskId: lifecycle.taskId, elapsedSeconds: 0, message: "正在准备补研任务…" });
   const reportStatus = (message: string) => {
+    if (lifecycle.isCancelled?.()) {
+      controller.abort();
+      throw new Error("研究任务已取消。");
+    }
+    if (lifecycle.isPaused?.()) {
+      if (!pauseReported) {
+        pauseReported = true;
+        send("status", { phase: "paused", taskId: lifecycle.taskId, elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message: "已请求暂停；当前联网请求完成后保存检查点。" });
+      }
+      return;
+    }
     latestPhase = message;
-    send("status", { phase: "researching", elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message });
+    lifecycle.onStatus?.(message);
+    send("status", { phase: "researching", taskId: lifecycle.taskId, elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message });
   };
   const progressTimer = setInterval(() => {
     const elapsedSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
-    send("status", { phase: "researching", elapsedSeconds, message: `${latestPhase}（已等待 ${elapsedSeconds} 秒）` });
+    send("status", { phase: "researching", taskId: lifecycle.taskId, elapsedSeconds, message: `${latestPhase}（已等待 ${elapsedSeconds} 秒）` });
   }, 2_000);
   try {
     const generated = await generate(reportStatus);
+    if (controller.signal.aborted || lifecycle.isCancelled?.()) {
+      lifecycle.onError?.(new Error("研究任务已取消。"), true);
+      send("error", { error: "研究任务已取消。", cancelled: true, taskId: lifecycle.taskId });
+      return;
+    }
+    if (lifecycle.isPaused?.()) {
+      lifecycle.saveCheckpoint?.(generated.value);
+      lifecycle.onPaused?.();
+      if (!clientDisconnected) send("paused", { message: "研究任务已暂停，可稍后继续。", taskId: lifecycle.taskId });
+      return;
+    }
     const research = save(generated.value) as Record<string, unknown>;
-    send("complete", { ...research, provider: generated.provider, model: generated.model, usage: generated.usage });
+    lifecycle.onComplete?.(research);
+    send("complete", { ...research, taskId: lifecycle.taskId, provider: generated.provider, model: generated.model, usage: generated.usage });
   } catch (error) {
-    send("error", { error: error instanceof Error ? error.message : "资料补研失败。", cancelled: controller.signal.aborted });
+    const cancelled = controller.signal.aborted || Boolean(lifecycle.isCancelled?.());
+    const paused = Boolean(lifecycle.isPaused?.());
+    if (paused) lifecycle.onPaused?.();
+    else lifecycle.onError?.(error, cancelled);
+    if (!clientDisconnected) {
+      if (paused) send("paused", { message: "研究任务已暂停，可稍后继续。", taskId: lifecycle.taskId });
+      else send("error", { error: error instanceof Error ? error.message : "资料补研失败。", cancelled, taskId: lifecycle.taskId });
+    }
   } finally {
+    lifecycle.onFinally?.();
     clearInterval(progressTimer);
     request.raw.off("aborted", abort);
     reply.raw.end();

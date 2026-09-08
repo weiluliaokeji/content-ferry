@@ -11,6 +11,7 @@ import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider
 import type { ResearchCard, WebResearchContext } from "../ai/research-prompts";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { stageDirectoryDeletion } from "../content/content-source-service";
+import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 
 // Under `ELECTRON_RUN_AS_NODE=1` the real electron `app` is not initialised,
 // so `app.getPath("userData")` is undefined and any code path that reads app
@@ -65,6 +66,7 @@ describe("local API scaffold", () => {
     database = undefined;
     for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   function createTestServer(modelProvider?: ModelProvider, assetStore?: LocalAssetStore): FastifyInstance {
@@ -78,6 +80,90 @@ describe("local API scaffold", () => {
       .run("local-default", sourceDirectory, now);
     return buildServer("2026-07-19T00:00:00.000Z", database, testVault, modelProvider, assetStore);
   }
+
+  it("exposes a guarded execution preflight without host fallback", async () => {
+    server = createTestServer();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-execution-route-"));
+    temporaryDirectories.push(cwd);
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/execution/preflight",
+      payload: {
+        targetType: "wsl", runtime: "node", targetOptions: { wslDistribution: "__contentferry_missing_distribution__" }, args: ["-e", ""], cwd,
+        directoryGrants: [{ path: cwd, access: "write" }], networkPolicy: "disabled"
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ available: false, targetType: "wsl" });
+    expect(response.json().reason).toContain("不会自动回退");
+
+    const tools = await server.inject({ method: "GET", url: "/api/tools/system" });
+    expect(tools.statusCode).toBe(200);
+    expect(tools.json().items).toBeInstanceOf(Array);
+
+    const grant = await server.inject({
+      method: "POST",
+      url: "/api/agent/permissions",
+      payload: { scope: "global", decision: "allow", toolId: "execution:git", action: "read", targetPrefix: cwd }
+    });
+    expect(grant.statusCode).toBe(201);
+    const grants = await server.inject({ method: "GET", url: "/api/agent/permissions" });
+    expect(grants.json().items).toEqual(expect.arrayContaining([expect.objectContaining({ id: grant.json().id, toolId: "execution:git" })]));
+    const removedGrant = await server.inject({ method: "DELETE", url: `/api/agent/permissions/${grant.json().id}` });
+    expect(removedGrant.statusCode).toBe(204);
+  });
+
+  it("enforces execution permissions and records the confirmation decision", async () => {
+    server = createTestServer();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-execution-audit-"));
+    temporaryDirectories.push(cwd);
+    const denied = await server.inject({
+      method: "POST",
+      url: "/api/agent/permissions",
+      payload: { scope: "global", decision: "deny", toolId: "execution:node", action: "read", targetPrefix: cwd }
+    });
+    expect(denied.statusCode).toBe(201);
+
+    const rejected = await server.inject({
+      method: "POST",
+      url: "/api/execution/run",
+      payload: {
+        targetType: "host_trusted", runtime: "node", args: ["-e", "console.log('should not run')"], cwd,
+        directoryGrants: [{ path: cwd, access: "read" }], networkPolicy: "disabled", confirmed: true, acknowledgeHostRisk: true
+      }
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("拒绝");
+
+    await server.inject({ method: "DELETE", url: `/api/agent/permissions/${denied.json().id}` });
+    const completed = await server.inject({
+      method: "POST",
+      url: "/api/execution/run",
+      payload: {
+        targetType: "host_trusted", runtime: "node", args: ["-e", "process.stdout.write('ok')"], cwd,
+        directoryGrants: [{ path: cwd, access: "read" }], networkPolicy: "disabled", confirmed: true, acknowledgeHostRisk: true
+      }
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().run).toMatchObject({ status: "completed", authorization: { confirmed: true, checks: [{ action: "read", decision: "ask" }] } });
+
+    const allowed = await server.inject({
+      method: "POST",
+      url: "/api/agent/permissions",
+      payload: { scope: "global", decision: "allow", toolId: "execution:node", action: "read", targetPrefix: cwd }
+    });
+    expect(allowed.statusCode).toBe(201);
+    const missingRunConfirmation = await server.inject({
+      method: "POST",
+      url: "/api/execution/run",
+      payload: {
+        targetType: "host_trusted", runtime: "node", args: ["-e", "process.stdout.write('should not run')"], cwd,
+        directoryGrants: [{ path: cwd, access: "read" }], networkPolicy: "disabled", confirmed: false, acknowledgeHostRisk: true
+      }
+    });
+    expect(missingRunConfirmation.statusCode).toBe(400);
+    expect(missingRunConfirmation.json().error).toContain("每次执行都需要重新确认");
+  });
 
   it("manages editable skills and model connections separately", async () => {
     database = openInMemoryDatabase();
@@ -167,6 +253,7 @@ describe("local API scaffold", () => {
   }, 30_000);
 
   it("stores Tavily configuration locally and can test or remove it", async () => {
+    vi.stubEnv("TAVILY_API_KEY", "");
     server = createTestServer();
     const before = await server.inject({ method: "GET", url: "/api/web-search/settings" });
     expect(before.json()).toMatchObject({ tavilyConfigured: false, tavilyCredentialSource: "none" });
@@ -250,6 +337,24 @@ describe("local API scaffold", () => {
     const userMessageCount = database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE id = ?")
       .get(payload.clientMessageId) as { count: number };
     expect(userMessageCount.count).toBe(1);
+  });
+
+  it("exposes scoped memory management without deleting source events", async () => {
+    server = createTestServer();
+    const memory = new AgentMemoryRepository(database!.connection);
+    const eventId = memory.appendEvent({ scopeKey: "account:memory-test", eventType: "test", payload: { text: "短句" } });
+    const candidateId = memory.addCandidate({ scopeKey: "account:memory-test", kind: "writing_preference", content: "偏好短句。", sourceEventIds: [eventId] });
+    const promoted = await server.inject({ method: "POST", url: `/api/agent-memory/candidates/${candidateId}/promote` });
+    expect(promoted.statusCode).toBe(200);
+    const listed = await server.inject({ method: "GET", url: "/api/agent-memory?scopeKey=account%3Amemory-test" });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().memories).toHaveLength(1);
+    const memoryId = promoted.json().memoryId as string;
+    const disabled = await server.inject({ method: "PATCH", url: `/api/agent-memory/${memoryId}`, payload: { status: "deleted" } });
+    expect(disabled.statusCode).toBe(200);
+    const forgotten = await server.inject({ method: "POST", url: "/api/agent-memory/forget", payload: { scopeKey: "account:memory-test", mode: "derived" } });
+    expect(forgotten.statusCode).toBe(200);
+    expect((database!.connection.prepare("SELECT COUNT(*) AS count FROM agent_events WHERE scope_key = ?").get("account:memory-test") as { count: number }).count).toBe(1);
   });
 
   it("generates a platform-aware article summary through the managed summary skill", async () => {
@@ -662,9 +767,12 @@ describe("local API scaffold", () => {
     expect(createdMarkdown).toContain("# AI Agent 如何改变个人开发者工作流");
     const listed = await server.inject({ method: "GET", url: "/api/content-projects" });
     expect(listed.json().items).toHaveLength(1);
+    const memory = new AgentMemoryRepository(database!.connection);
+    memory.appendEvent({ scopeKey: `source:${relativePath}`, eventType: "test.article", payload: { ok: true } });
     const deleted = await server.inject({ method: "DELETE", url: `/api/content-projects/${created.json().id}` });
     expect(deleted.statusCode).toBe(204);
     expect(fs.existsSync(path.dirname(path.join(rootPath, ...relativePath.split("/"))))).toBe(false);
+    expect((database!.connection.prepare("SELECT COUNT(*) AS count FROM agent_events WHERE scope_key = ?").get(`source:${relativePath}`) as { count: number }).count).toBe(0);
     expect((await server.inject({ method: "GET", url: "/api/content-projects" })).json().items).toHaveLength(0);
   });
 
@@ -829,6 +937,9 @@ describe("local API scaffold", () => {
       sources: Array<{ id: string; title: string; selected: boolean }>;
     };
     expect(researchResult).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: true }] });
+    const researchTasks = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research/tasks` });
+    expect(researchTasks.statusCode).toBe(200);
+    expect(researchTasks.json().items[0]).toMatchObject({ projectId: project.json().id, kind: "generate", status: "completed" });
     const researchSourceId = researchResult.sources[0].id;
     const deselected = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { selected: false } });
     expect(deselected.statusCode).toBe(200);
@@ -912,6 +1023,20 @@ describe("local API scaffold", () => {
       expect.objectContaining({ role: "user", content: expect.stringContaining("继续核查调用限额") }),
       expect.objectContaining({ role: "assistant", content: expect.stringContaining("本轮补研结论") })
     ]);
+  });
+
+  it("accepts a manually entered research card for later writing", async () => {
+    server = createTestServer();
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "手工资料卡测试" } });
+    const projectId = project.json().id as string;
+    const response = await server.inject({
+      method: "POST",
+      url: `/api/content-projects/${projectId}/research/sources`,
+      payload: { title: "官方说明摘录", excerpt: "这是用户核实后的资料。", keyClaims: ["结论一"] }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ projectId, sources: [{ title: "官方说明摘录", excerpt: "这是用户核实后的资料。", selected: true, sourceType: "public" }] });
+    expect(response.json().sources[0].url).toMatch(/^manual:\/\//);
   });
 
   it("accepts the development UI's local cross-origin request", async () => {

@@ -63,6 +63,7 @@ export async function streamGeneration<T>(path: string, signal: AbortSignal, onE
         if (!raw) continue;
         const data = JSON.parse(raw) as Record<string, unknown>;
         onEvent(event, data);
+        if (event === "paused") throw new Error("补研已暂停，可点击“继续补研”恢复。");
         if (event === "error") throw new Error(String(data.error ?? "AI 生成失败。"));
         if (event === "complete") completed = data as T;
       }
@@ -81,4 +82,3 @@ export async function streamGeneration<T>(path: string, signal: AbortSignal, onE
 }
 
 export const platformName = (platform: AccountPlatform) => ({ wechat_official: "微信公众号", csdn: "CSDN", cnblogs: "博客园", juejin: "掘金", "51cto": "51CTO" } as const)[platform];
-

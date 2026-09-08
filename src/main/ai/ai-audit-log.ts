@@ -21,6 +21,8 @@ const RETENTION_DAYS = 30;
 const FILE_NAME_PREFIX = "ai-audit-";
 
 export interface AiAuditCall {
+  /** Correlates all model/tool calls belonging to one workflow run. */
+  correlationId?: string;
   task: string;
   skillId: string | undefined;
   provider: string | null;

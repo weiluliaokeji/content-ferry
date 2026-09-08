@@ -75,6 +75,7 @@ function ProjectRow({
       <span className="account-badge">{account ? `${platformName(account.platform)} · ${account.displayName}` : "未选发布账号"}</span>
       {project.briefReady && <button className="secondary-button" onClick={() => void openBrief(project)}>{project.outlineReady || project.draftReady ? "查看创作方向" : "编辑创作方向"}</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
+      {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>继续补研</button>}
       {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}
       {!project.draftReady && <button onClick={action}>{label}</button>}
       {project.draftReady && canPrepare && <button className="secondary-button" onClick={() => openPublishPreparation(project)}>准备发布</button>}

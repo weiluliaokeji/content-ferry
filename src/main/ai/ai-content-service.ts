@@ -26,7 +26,7 @@ export interface CreationContext {
   writingStyle: string;
   regularColumns: string;
   outlineMarkdown: string | null;
-  researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public" }>;
+  researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; provenanceNote?: string }>;
 }
 
 export class AiContentService {
@@ -168,7 +168,7 @@ export class AiContentService {
     `).get(projectId) as Record<string, string | null> | undefined;
 
     if (!row) throw new Error("Content project not found.");
-    const sources = this.db.prepare(`SELECT title, url, excerpt, claims_json, source_type
+    const sources = this.db.prepare(`SELECT title, url, excerpt, claims_json, provenance_json, source_type
       FROM content_research_sources WHERE project_id = ? AND selected = 1 ORDER BY retrieved_at DESC`).all(projectId) as Array<Record<string, string>>;
     return {
       topic: row.topic ?? "",
@@ -187,10 +187,21 @@ export class AiContentService {
         url: source.url,
         excerpt: source.excerpt,
         keyClaims: parseResearchClaims(source.claims_json),
-        sourceType: source.source_type === "official" ? "official" : "public"
+        sourceType: source.source_type === "official" ? "official" : "public",
+        provenanceNote: parseObservationNote(source.provenance_json)
       }))
     };
   }
+}
+
+function parseObservationNote(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { kind?: string; executionRunId?: string; targetType?: string; runtime?: string };
+    return parsed.kind === "execution_observation"
+      ? `仅表示执行记录 ${parsed.executionRunId ?? ""} 在 ${parsed.targetType ?? "指定目标"} / ${parsed.runtime ?? "指定运行时"} 下的观察，不是通用保证。`
+      : undefined;
+  } catch { return undefined; }
 }
 
 export function buildOutlinePrompt(context: CreationContext): string {

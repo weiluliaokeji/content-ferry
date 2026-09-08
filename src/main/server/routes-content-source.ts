@@ -11,7 +11,8 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
 
   server.get("/api/content-source", async () => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
-    return { rootPath: contentSources.getSource(workspace.id) };
+    const source = contentSources.getSourceConfig(workspace.id);
+    return source ? { rootPath: source.rootPath, sourceType: source.sourceType, pattern: source.pattern } : { rootPath: null };
   });
 
   server.post("/api/content-assets", async (request, reply) => {
@@ -42,7 +43,8 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
 
   server.put("/api/content-source", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
-    return { rootPath: contentSources.setSource(workspace.id, contentSourceInput.parse(request.body).rootPath) };
+    const input = contentSourceInput.parse(request.body);
+    return { rootPath: contentSources.setSource(workspace.id, input.rootPath, input.sourceType, input.pattern), sourceType: input.sourceType };
   });
 
   server.get("/api/content-source/preview", async () => {

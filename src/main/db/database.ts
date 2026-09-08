@@ -121,6 +121,8 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS content_sources (
       workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
       root_path TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'vitepress',
+      pattern_json TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
 
@@ -169,6 +171,7 @@ export function initialiseDatabase(db: Database.Database): void {
       url TEXT NOT NULL,
       excerpt TEXT NOT NULL DEFAULT '',
       claims_json TEXT NOT NULL DEFAULT '[]',
+      provenance_json TEXT NOT NULL DEFAULT '{}',
       source_type TEXT NOT NULL CHECK(source_type IN ('official', 'public')),
       retrieved_at TEXT NOT NULL,
       selected INTEGER NOT NULL DEFAULT 1
@@ -176,6 +179,53 @@ export function initialiseDatabase(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_content_research_sources_project
       ON content_research_sources(project_id, retrieved_at DESC);
+
+    CREATE TABLE IF NOT EXISTS experimental_observations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+      execution_run_id TEXT NOT NULL UNIQUE REFERENCES execution_runs(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      claim TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+      provenance_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_experimental_observations_project
+      ON experimental_observations(project_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS research_tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('generate', 'follow_up')),
+      request_hash TEXT NOT NULL,
+      request_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'waiting_user', 'paused', 'completed', 'completed_with_warnings', 'failed', 'cancelled')),
+      result_state TEXT NOT NULL DEFAULT 'proposed',
+      current_step_id TEXT,
+      cancel_requested INTEGER NOT NULL DEFAULT 0,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      last_checkpoint TEXT NOT NULL DEFAULT '',
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_heartbeat_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_tasks_project_updated
+      ON research_tasks(project_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS research_task_events (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_task_events_task_created
+      ON research_task_events(task_id, created_at ASC);
 
     CREATE TABLE IF NOT EXISTS article_settings (
       context_key TEXT PRIMARY KEY,
@@ -221,6 +271,129 @@ export function initialiseDatabase(db: Database.Database): void {
       memory TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS agent_events (
+      id TEXT PRIMARY KEY,
+      scope_key TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_events_scope_created
+      ON agent_events(scope_key, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+      id TEXT PRIMARY KEY,
+      scope_key TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'candidate',
+      support_count INTEGER NOT NULL DEFAULT 1,
+      confidence REAL NOT NULL DEFAULT 0,
+      importance REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      promoted_memory_id TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_candidates_scope_hash
+      ON memory_candidates(scope_key, content_hash);
+    CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope_status
+      ON memory_candidates(scope_key, status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_memories (
+      id TEXT PRIMARY KEY,
+      scope_key TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      confidence REAL NOT NULL DEFAULT 0,
+      importance REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_used_at TEXT,
+      recall_count INTEGER NOT NULL DEFAULT 0,
+      expires_at TEXT,
+      conflict_group TEXT,
+      superseded_by TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_scope_hash
+      ON agent_memories(scope_key, content_hash);
+    CREATE INDEX IF NOT EXISTS idx_agent_memories_scope_status
+      ON agent_memories(scope_key, status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_uses (
+      id TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL REFERENCES agent_memories(id) ON DELETE CASCADE,
+      task_key TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_uses_memory_created
+      ON memory_uses(memory_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_maintenance_state (
+      scope_key TEXT PRIMARY KEY,
+      watermark TEXT,
+      status TEXT NOT NULL DEFAULT 'idle',
+      updated_at TEXT NOT NULL,
+      last_error TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS execution_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT REFERENCES content_projects(id) ON DELETE SET NULL,
+      request_json TEXT NOT NULL,
+      preflight_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      exit_code INTEGER,
+      signal TEXT,
+      stdout TEXT NOT NULL DEFAULT '',
+      stderr TEXT NOT NULL DEFAULT '',
+      truncated INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_execution_runs_project_created
+      ON execution_runs(project_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS execution_artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES execution_runs(id) ON DELETE CASCADE,
+      relative_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_execution_artifacts_run
+      ON execution_artifacts(run_id, relative_path);
+
+    CREATE TABLE IF NOT EXISTS agent_permission_grants (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL CHECK(scope IN ('global', 'project', 'run')),
+      decision TEXT NOT NULL CHECK(decision IN ('allow', 'ask', 'deny')),
+      tool_id TEXT,
+      action TEXT,
+      project_id TEXT REFERENCES content_projects(id) ON DELETE CASCADE,
+      target_prefix TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_permission_grants_scope
+      ON agent_permission_grants(scope, project_id, created_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_article_chat_messages_context_created
       ON article_chat_messages(context_key, created_at ASC);
@@ -560,6 +733,13 @@ export function initialiseDatabase(db: Database.Database): void {
   if (!projectColumns.some((column) => column.name === "source_relative_path")) {
     db.exec("ALTER TABLE content_projects ADD COLUMN source_relative_path TEXT");
   }
+  const contentSourceColumns = db.prepare("PRAGMA table_info(content_sources)").all() as Array<{ name: string }>;
+  if (!contentSourceColumns.some((column) => column.name === "source_type")) {
+    db.exec("ALTER TABLE content_sources ADD COLUMN source_type TEXT NOT NULL DEFAULT 'vitepress'");
+  }
+  if (!contentSourceColumns.some((column) => column.name === "pattern_json")) {
+    db.exec("ALTER TABLE content_sources ADD COLUMN pattern_json TEXT NOT NULL DEFAULT ''");
+  }
 
   const articleSettingColumns = db.prepare("PRAGMA table_info(article_settings)").all() as Array<{ name: string }>;
   if (!articleSettingColumns.some((column) => column.name === "account_id")) {
@@ -592,6 +772,15 @@ export function initialiseDatabase(db: Database.Database): void {
   const contentBriefColumns = db.prepare("PRAGMA table_info(content_briefs)").all() as Array<{ name: string }>;
   if (!contentBriefColumns.some((column) => column.name === "topic")) {
     db.exec("ALTER TABLE content_briefs ADD COLUMN topic TEXT NOT NULL DEFAULT ''");
+  }
+
+  const researchTaskColumns = db.prepare("PRAGMA table_info(research_tasks)").all() as Array<{ name: string }>;
+  if (!researchTaskColumns.some((column) => column.name === "request_json")) {
+    db.exec("ALTER TABLE research_tasks ADD COLUMN request_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  const researchSourceColumns = db.prepare("PRAGMA table_info(content_research_sources)").all() as Array<{ name: string }>;
+  if (!researchSourceColumns.some((column) => column.name === "provenance_json")) {
+    db.exec("ALTER TABLE content_research_sources ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;

@@ -13,6 +13,7 @@ import {
   type WebSearchClient,
   WebSearchError
 } from "./web-search";
+import { ToolRunner } from "../agent/tool-runner";
 import {
   buildPlannerPrompt,
   buildResearchSynthesisPrompt,
@@ -26,8 +27,10 @@ import {
 } from "./research-prompts";
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { randomUUID } from "node:crypto";
 
 const MAX_RESEARCH_ROUNDS = 5;
+type AuditMeta = { task: string; skillId: string; prompt: string; provider?: string; model?: string; correlationId?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null };
 
 export class ConfiguredModelProvider implements ModelProvider {
   readonly id = "configured";
@@ -38,7 +41,19 @@ export class ConfiguredModelProvider implements ModelProvider {
     private readonly codexProvider: ModelProvider,
     private readonly auditLog?: AiAuditLog,
     private readonly webSearch?: WebSearchClient
-  ) {}
+  ) {
+    this.researchTools = new ToolRunner([{
+      id: "web_search",
+      run: async (input) => {
+        const query = String((input as { query?: unknown }).query ?? "").trim();
+        if (!query) throw new WebSearchError("缺少检索词。");
+        if (!this.webSearch) throw new WebSearchError("联网检索服务未初始化。");
+        return this.webSearch.search(query);
+      }
+    }]);
+  }
+
+  private readonly researchTools: ToolRunner;
 
   /** Calls the OpenAI-compatible /chat/completions endpoint. Honors the connection's
    *  proxyUrl (via undici ProxyAgent) and surfaces the underlying network error cause
@@ -70,41 +85,49 @@ export class ConfiguredModelProvider implements ModelProvider {
     // The audit envelope wraps the whole call, so failures that happen *before*
     // the model call (skill disabled) are recorded too — not just errors
     // coming back from the model.
-    const meta: { task: string; skillId: string; prompt: string; provider?: string; model?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null } = { task: request.task, skillId, prompt: request.prompt };
-    return this.withAudit(meta, async () => {
-      const skill = this.skills.get(skillId);
-      if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
-      const provider = skill.provider ?? "openai_codex";
-      meta.provider = provider;
-      meta.model = this.modelIdFor(provider);
-      return this.dispatchStructured(provider, request, meta);
-    });
+    const meta: AuditMeta = { task: request.task, skillId, prompt: request.prompt, correlationId: randomUUID() };
+    const skill = this.skills.get(skillId);
+    if (!skill.enabled) {
+      return this.withAudit(meta, async () => {
+        throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
+      });
+    }
+    const provider = skill.provider ?? "openai_codex";
+    meta.provider = provider;
+    meta.model = this.modelIdFor(provider);
+    return provider.startsWith(CUSTOM_PROVIDER_PREFIX) && this.connections.get(provider).enabled
+      ? this.dispatchStructured(provider, request, meta)
+      : this.withAudit(meta, () => this.dispatchStructured(provider, request, meta));
   }
 
   async generateMarkdownStream(request: GenerateMarkdownStreamRequest): Promise<GenerateStructuredResult<{ markdown: string }>> {
     const skillId = request.skillId ?? "wechat-writing";
-    const meta: { task: string; skillId: string; prompt: string; provider?: string; model?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null } = { task: request.task, skillId, prompt: request.prompt };
-    return this.withAudit(meta, async () => {
-      const skill = this.skills.get(skillId);
-      if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
-      meta.provider = skill.provider ?? "openai_codex";
-      meta.model = this.modelIdFor(meta.provider);
-      const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${this.skills.instructionsFor(skillId, request.prompt)}\n\n本次任务：\n${request.prompt}` };
-      if (skill.provider === "openai_codex" || !skill.provider) {
-        if (!this.codexProvider.generateMarkdownStream) throw new ModelProviderUnavailableError("当前 Codex 连接不支持流式生成。");
-        return this.codexProvider.generateMarkdownStream!({ ...enriched, modelId: this.connections.get("openai_codex").modelId });
-      }
-      const generated = await this.generateStructured({
-        task: request.task,
-        skillId,
-        prompt: request.prompt,
-        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"], additionalProperties: false },
-        parse: (value) => value as { markdown: string },
-        timeoutMs: request.timeoutMs
+    const meta: AuditMeta = { task: request.task, skillId, prompt: request.prompt, correlationId: randomUUID() };
+    const skill = this.skills.get(skillId);
+    if (!skill.enabled) {
+      return this.withAudit(meta, async () => {
+        throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
       });
-      request.onDelta(generated.value.markdown);
-      return generated;
+    }
+    meta.provider = skill.provider ?? "openai_codex";
+    meta.model = this.modelIdFor(meta.provider);
+    if (skill.provider === "openai_codex" || !skill.provider) {
+      return this.withAudit(meta, async () => {
+        if (!this.codexProvider.generateMarkdownStream) throw new ModelProviderUnavailableError("当前 Codex 连接不支持流式生成。");
+        const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${this.skills.instructionsFor(skillId, request.prompt)}\n\n本次任务：\n${request.prompt}` };
+        return this.codexProvider.generateMarkdownStream!({ ...enriched, modelId: this.connections.get("openai_codex").modelId });
+      });
+    }
+    const generated = await this.generateStructured({
+      task: request.task,
+      skillId,
+      prompt: request.prompt,
+      outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"], additionalProperties: false },
+      parse: (value) => value as { markdown: string },
+      timeoutMs: request.timeoutMs
     });
+    request.onDelta(generated.value.markdown);
+    return generated;
   }
 
   /** Model-agnostic web research: app-owned retrieval + LLM synthesis.
@@ -113,70 +136,63 @@ export class ConfiguredModelProvider implements ModelProvider {
    *  provider supports tools, and falls back to scheme B if it stalls. */
   async webResearch(context: WebResearchContext, onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
     const skillId = "web-research";
-    const meta: { task: string; skillId: string; prompt: string; provider?: string; model?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null } = { task: "research", skillId, prompt: "" };
-    return this.withAudit(meta, async () => {
-      if (!this.webSearch) throw new ModelProviderUnavailableError("联网检索服务未初始化。");
-      const skill = this.skills.get(skillId);
-      if (!skill.enabled) throw new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`);
-      // After the web-research decoupling, synthesis can run on ANY configured
-      // text model — there is no reason to silently fall back to Codex. Require
-      // an explicit per-skill provider so the model used always matches what the
-      // user picked in 技能与模型.
-      if (!skill.provider) throw new ModelProviderUnavailableError(`“${skill.name}”尚未指定模型。请在“技能与模型”中为该技能选择一个模型连接后再试。`);
-      const provider = skill.provider;
-      meta.provider = provider;
-      meta.model = this.modelIdFor(provider);
-      const instructions = this.skills.instructionsFor(skillId, "");
-      const onStatusHook = onStatus ?? (() => {});
+    const correlationId = randomUUID();
+    const meta: AuditMeta = { task: "research-orchestration", skillId, prompt: JSON.stringify(context), correlationId };
+    if (!this.webSearch) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索服务未初始化。"));
+    const skill = this.skills.get(skillId);
+    if (!skill.enabled) return this.failResearch(meta, new ModelProviderUnavailableError(`“${skill.name}”技能已停用。`));
+    // After the web-research decoupling, synthesis can run on ANY configured
+    // text model — there is no reason to silently fall back to Codex. Require
+    // an explicit per-skill provider so the model used always matches what the
+    // user picked in 技能与模型.
+    if (!skill.provider) return this.failResearch(meta, new ModelProviderUnavailableError(`“${skill.name}”尚未指定模型。请在“技能与模型”中为该技能选择一个模型连接后再试。`));
+    const provider = skill.provider;
+    meta.provider = provider;
+    meta.model = this.modelIdFor(provider);
+    const instructions = this.skills.instructionsFor(skillId, "");
+    const onStatusHook = onStatus ?? (() => {});
 
-      // Codex built-in search path: when the Codex connection's built-in search
-      // toggle is on, let Codex perform its own retrieval + synthesis in one
-      // call (network enabled at the SDK level). This bypasses the app-owned
-      // WebSearchClient, so it also bypasses the global research proxy and the
-      // app-fetched-URL traceability guarantee — an explicit, on-by-default
-      // trade-off the user opted into for Codex.
-      if (provider === "openai_codex" && this.connections.get("openai_codex").builtInSearch) {
-        const card = await this.gatherCodexBuiltIn(context, instructions, onStatusHook, options);
-        meta.retrieval = { rounds: 1, sources: card.value.sources.length, provider: "openai_codex" };
-        return card;
+    // Codex built-in search path: when the Codex connection's built-in search
+    // toggle is on, let Codex perform its own retrieval + synthesis in one
+    // call (network enabled at the SDK level). This bypasses the app-owned
+    // WebSearchClient, so it also bypasses the global research proxy and the
+    // app-fetched-URL traceability guarantee — an explicit, on-by-default
+    // trade-off the user opted into for Codex.
+    if (provider === "openai_codex" && this.connections.get("openai_codex").builtInSearch) {
+      return this.gatherCodexBuiltIn(context, instructions, onStatusHook, options, correlationId);
+    }
+
+    const accumulated: SearchSourceForPrompt[] = [];
+    let rounds = 0;
+
+    if (this.providerSupportsTools(provider)) {
+      try {
+        rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook, correlationId);
+      } catch {
+        onStatusHook("工具调用检索未成功，改用规划式检索继续补充资料…");
       }
+    }
+    if (accumulated.length === 0) {
+      rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, MAX_RESEARCH_ROUNDS - rounds, correlationId);
+    }
 
-      const accumulated: SearchSourceForPrompt[] = [];
-      let rounds = 0;
+    if (accumulated.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
 
-      if (this.providerSupportsTools(provider)) {
-        try {
-          rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook);
-        } catch {
-          onStatusHook("工具调用检索未成功，改用规划式检索继续补充资料…");
-        }
-      }
-      if (accumulated.length === 0) {
-        rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, MAX_RESEARCH_ROUNDS - rounds);
-      }
-
-      if (accumulated.length === 0) {
-        throw new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。");
-      }
-
-      const synthesisPrompt = options?.instruction
-        ? buildResearchFollowUpSynthesisPrompt(context, accumulated, options.instruction, instructions)
-        : buildResearchSynthesisPrompt(context, accumulated, instructions);
-      meta.prompt = synthesisPrompt;
-      const card = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook);
-      meta.retrieval = { rounds, sources: accumulated.length, provider: this.webSearch.activeProviderId };
-      return card;
-    });
+    const synthesisPrompt = options?.instruction
+      ? buildResearchFollowUpSynthesisPrompt(context, accumulated, options.instruction, instructions)
+      : buildResearchSynthesisPrompt(context, accumulated, instructions);
+    meta.retrieval = { rounds, sources: accumulated.length, provider: this.webSearch.activeProviderId };
+    return this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
   }
 
   // --- research retrieval schemes -------------------------------------------
 
   /** Scheme B: app drives the loop; the model returns a JSON plan each round. */
-  private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number): Promise<number> {
+  private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string): Promise<number> {
     let rounds = 0;
     for (let round = 1; round <= maxRounds; round++) {
       onStatus(`第 ${round} 轮研究：规划检索方向…`);
-      const plan = await this.dispatchPlanner(provider, context, accumulated, round, maxRounds, onStatus);
+      const plan = await this.dispatchPlanner(provider, context, accumulated, round, maxRounds, onStatus, correlationId);
       if (plan.action === "done") break;
       const query = (plan.query ?? "").trim();
       if (!query) break;
@@ -191,7 +207,7 @@ export class ConfiguredModelProvider implements ModelProvider {
 
   /** Scheme A: the model calls our web_search tool; we execute it and feed
    *  results back, looping until the model stops calling tools. */
-  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void): Promise<number> {
+  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, correlationId: string): Promise<number> {
     const tool = {
       name: "web_search",
       description: "检索网页，返回相关结果的标题、URL 与摘要，用于为文章补研查找官方与公开资料。",
@@ -204,13 +220,22 @@ export class ConfiguredModelProvider implements ModelProvider {
       tools: [tool],
       maxRounds: MAX_RESEARCH_ROUNDS,
       onStatus,
+      correlationId,
       toolHandler: async (name, args) => {
         if (name !== "web_search") return "未知工具。";
         const query = String((args as { query?: string }).query ?? "").trim();
         if (!query) return "缺少检索词。";
         rounds++;
         onStatus(`第 ${rounds} 轮检索：正在搜索「${query}」`);
-        const results = await this.webSearch!.search(query);
+        const execution = await this.researchTools.run({
+          toolId: "web_search",
+          action: "network_read",
+          risk: "low",
+          defaultAllow: true,
+          input: { query }
+        }, []);
+        if (execution.status !== "completed") return execution.status === "denied" ? "当前任务未获联网检索授权。" : "等待用户授权联网检索。";
+        const results = execution.output as Awaited<ReturnType<WebSearchClient["search"]>>;
         onStatus(`第 ${rounds} 轮检索：找到 ${results.length} 条资料`);
         for (const r of results) accumulated.push({ title: r.title, url: r.url, snippet: r.snippet, sourceType: "public" });
         return JSON.stringify(results.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })));
@@ -223,25 +248,26 @@ export class ConfiguredModelProvider implements ModelProvider {
    *  single structured call (network enabled at the SDK level). The prompt asks
    *  it to search and return the same ResearchCard schema as the app-owned
    *  synthesis path. */
-  private async gatherCodexBuiltIn(context: WebResearchContext, instructions: string, onStatus: (m: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+  private async gatherCodexBuiltIn(context: WebResearchContext, instructions: string, onStatus: (m: string) => void, options: WebResearchOptions | undefined, correlationId: string): Promise<GenerateStructuredResult<ResearchCard>> {
     onStatus("正在使用 Codex 内置检索联网补研…");
     const prompt = buildCodexBuiltInResearchPrompt(context, instructions, options?.instruction ? { instruction: options.instruction } : {});
-    return this.codexProvider.generateStructured<ResearchCard>({
-      task: "research",
-      skillId: "web-research",
-      prompt,
-      outputSchema: RESEARCH_SCHEMA as object,
-      timeoutMs: 240_000,
-      parse: (value) => researchOutput.parse(value) as ResearchCard,
-      prependInstructions: false,
-      onStatus,
-      webSearch: true
-    });
+    const meta: AuditMeta = { task: "research", skillId: "web-research", prompt, provider: "openai_codex", model: this.modelIdFor("openai_codex"), correlationId };
+    return this.withAudit(meta, () => this.codexProvider.generateStructured<ResearchCard>({
+        task: "research",
+        skillId: "web-research",
+        prompt,
+        outputSchema: RESEARCH_SCHEMA as object,
+        timeoutMs: 240_000,
+        parse: (value) => researchOutput.parse(value) as ResearchCard,
+        prependInstructions: false,
+        onStatus,
+        webSearch: true
+      }), { retrieval: (result) => ({ rounds: 1, sources: result.value.sources.length, provider: "openai_codex" }) });
   }
 
-  private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void): Promise<{ action: "search" | "done"; query?: string }> {
+  private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string): Promise<{ action: "search" | "done"; query?: string }> {
     const prompt = buildPlannerPrompt(context, accumulated, round, maxRounds);
-    const result = await this.dispatchStructured<{ action: string; query?: string }>(provider, {
+    const request: GenerateStructuredRequest<{ action: string; query?: string }> = {
       task: "research",
       skillId: "web-research",
       prompt,
@@ -255,13 +281,17 @@ export class ConfiguredModelProvider implements ModelProvider {
       parse: (value) => value as { action: string; query?: string },
       prependInstructions: true,
       onStatus
-    });
+    };
+    const meta: AuditMeta = { task: "research", skillId: "web-research", prompt, provider, model: this.modelIdFor(provider), correlationId };
+    const result = provider.startsWith(CUSTOM_PROVIDER_PREFIX)
+      ? await this.dispatchStructured(provider, request, meta)
+      : await this.withAudit(meta, () => this.dispatchStructured(provider, request, meta));
     const value = result.value;
     return { action: value.action === "done" ? "done" : "search", query: value.query };
   }
 
-  private async dispatchResearchSynthesis(provider: string, prompt: string, onStatus: (m: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
-    return this.dispatchStructured<ResearchCard>(provider, {
+  private async dispatchResearchSynthesis(provider: string, prompt: string, onStatus: (m: string) => void, retrieval: { rounds: number; sources: number; provider: string | null } | undefined, correlationId: string): Promise<GenerateStructuredResult<ResearchCard>> {
+    const request: GenerateStructuredRequest<ResearchCard> = {
       task: "research",
       skillId: "web-research",
       prompt,
@@ -270,7 +300,11 @@ export class ConfiguredModelProvider implements ModelProvider {
       parse: (value) => researchOutput.parse(value) as ResearchCard,
       prependInstructions: false,
       onStatus
-    });
+    };
+    const meta: AuditMeta = { task: "research", skillId: "web-research", prompt, provider, model: this.modelIdFor(provider), retrieval: retrieval ?? null, correlationId };
+    return provider.startsWith(CUSTOM_PROVIDER_PREFIX)
+      ? this.dispatchStructured(provider, request, meta)
+      : this.withAudit(meta, () => this.dispatchStructured(provider, request, meta));
   }
 
   private providerSupportsTools(provider: string): boolean {
@@ -288,6 +322,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       toolHandler: (name: string, args: unknown) => Promise<string>;
       maxRounds?: number;
       onStatus: (message: string) => void;
+      correlationId: string;
     }
   ): Promise<{ finalText: string }> {
     const connection = this.connections.get(provider);
@@ -299,43 +334,52 @@ export class ConfiguredModelProvider implements ModelProvider {
     ];
     const maxRounds = params.maxRounds ?? MAX_RESEARCH_ROUNDS;
     for (let i = 0; i < maxRounds; i++) {
-      const res = await this.callChatCompletions(connection, {
-        method: "POST",
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          model: connection.modelId,
-          messages,
-          tools: params.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
-          tool_choice: "auto"
-        }),
-        signal: AbortSignal.timeout(180_000)
-      });
-      if (!res.ok) throw new WebSearchError(`${connection.displayName} 工具调用失败（HTTP ${res.status}）。`);
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }> };
-      const msg = data.choices?.[0]?.message;
-      if (!msg) throw new WebSearchError("工具调用未返回有效响应。");
-      messages.push(msg as Record<string, unknown>);
-      if (msg.tool_calls && msg.tool_calls.length) {
-        for (const tc of msg.tool_calls) {
-          let args: unknown = {};
-          try {
-            args = JSON.parse(tc.function.arguments || "{}");
-          } catch {
-            args = {};
+      const startedAt = Date.now();
+      const prompt = JSON.stringify({ messages, tools: params.tools, tool_choice: "auto" });
+      let responseText: string | null = null;
+      let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+      let failure: unknown = null;
+      try {
+        const res = await this.callChatCompletions(connection, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: connection.modelId, messages, tools: params.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: "auto" }),
+          signal: AbortSignal.timeout(180_000)
+        });
+        responseText = await res.text();
+        if (!res.ok) throw new WebSearchError(`${connection.displayName} 工具调用失败（HTTP ${res.status}）。`);
+        const data = JSON.parse(responseText) as { choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>; usage?: typeof usage };
+        usage = data.usage;
+        const msg = data.choices?.[0]?.message;
+        if (!msg) throw new WebSearchError("工具调用未返回有效响应。");
+        messages.push(msg as Record<string, unknown>);
+        if (msg.tool_calls && msg.tool_calls.length) {
+          for (const tc of msg.tool_calls) {
+            let args: unknown = {};
+            try {
+              args = JSON.parse(tc.function.arguments || "{}");
+            } catch {
+              args = {};
+            }
+            const resultText = await params.toolHandler(tc.function.name, args);
+            messages.push({ role: "tool", tool_call_id: tc.id, content: resultText });
           }
-          const resultText = await params.toolHandler(tc.function.name, args);
-          messages.push({ role: "tool", tool_call_id: tc.id, content: resultText });
+          continue;
         }
-        continue;
+        return { finalText: msg.content ?? "" };
+      } catch (error) {
+        failure = error;
+        throw error;
+      } finally {
+        this.recordRawAudit({ task: "research-tool-call", skillId: "web-research", provider, model: connection.modelId || null, prompt, response: responseText, usage, error: failure, durationMs: Date.now() - startedAt, correlationId: params.correlationId });
       }
-      return { finalText: msg.content ?? "" };
     }
     throw new WebSearchError("工具调用检索超过最大轮数。");
   }
 
   // --- dispatch ---------------------------------------------------------------
 
-  private async dispatchStructured<T>(provider: string, request: GenerateStructuredRequest<T>, meta?: { prompt: string }): Promise<GenerateStructuredResult<T>> {
+  private async dispatchStructured<T>(provider: string, request: GenerateStructuredRequest<T>, meta?: AuditMeta): Promise<GenerateStructuredResult<T>> {
     const enrichedPrompt = request.prependInstructions === false
       ? request.prompt
       : `请遵循以下 ContentFerry 技能说明：\n\n${this.skills.instructionsFor(request.skillId ?? "wechat-writing", request.prompt)}\n\n本次任务：\n${request.prompt}`;
@@ -347,27 +391,25 @@ export class ConfiguredModelProvider implements ModelProvider {
       return this.codexProvider.generateStructured({ ...enriched, modelId: this.connections.get("openai_codex").modelId, onStatus: request.onStatus });
     }
     if (provider.startsWith(CUSTOM_PROVIDER_PREFIX)) {
-      return this.generateOpenAiCompatible(provider, enriched);
+      return this.generateOpenAiCompatible(provider, enriched, meta);
     }
     throw new ModelProviderUnavailableError(`当前选择的 ${provider} 不能用于文本生成。`);
   }
 
-  /** Wraps a model call so the full prompt/response are recorded when audit is on.
-   *  Re-entrancy is guarded so the structured fallback inside generateMarkdownStream
-   *  is not double-logged. */
-  private auditInFlight = false;
+  /** Wraps one model call so the full prompt/response are recorded when audit is on. */
   private async withAudit<T>(
-    meta: { task: string; skillId: string; prompt: string; provider?: string; model?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null },
-    body: () => Promise<GenerateStructuredResult<T>>
+    meta: AuditMeta,
+    body: () => Promise<GenerateStructuredResult<T>>,
+    options?: { retrieval?: (result: GenerateStructuredResult<T>) => AuditMeta["retrieval"] }
   ): Promise<GenerateStructuredResult<T>> {
-    if (!this.auditLog || this.auditInFlight) return body();
+    if (!this.auditLog) return body();
     const start = Date.now();
-    this.auditInFlight = true;
     try {
       const result = await body();
       this.auditLog.record({
         task: meta.task,
         skillId: meta.skillId,
+        correlationId: meta.correlationId,
         prompt: meta.prompt,
         provider: result.provider ?? meta.provider ?? null,
         model: result.model ?? (meta.model || null),
@@ -379,13 +421,14 @@ export class ConfiguredModelProvider implements ModelProvider {
         ok: true,
         response: JSON.stringify(result.value),
         error: null,
-        retrieval: meta.retrieval ?? null
+        retrieval: options?.retrieval?.(result) ?? meta.retrieval ?? null
       });
       return result;
     } catch (error) {
       this.auditLog.record({
         task: meta.task,
         skillId: meta.skillId,
+        correlationId: meta.correlationId,
         prompt: meta.prompt,
         provider: meta.provider ?? null,
         model: meta.model || null,
@@ -402,9 +445,66 @@ export class ConfiguredModelProvider implements ModelProvider {
         retrieval: meta.retrieval ?? null
       });
       throw error;
-    } finally {
-      this.auditInFlight = false;
     }
+  }
+
+  private recordRawAudit(input: {
+    task: string;
+    skillId: string;
+    correlationId?: string;
+    retrieval?: AuditMeta["retrieval"];
+    provider: string;
+    model: string | null;
+    prompt: string;
+    response: string | null;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    error: unknown;
+    durationMs: number;
+  }): void {
+    if (!this.auditLog) return;
+    this.auditLog.record({
+      task: input.task,
+      skillId: input.skillId,
+      correlationId: input.correlationId,
+      provider: input.provider,
+      model: input.model,
+      inputTokens: input.usage?.prompt_tokens ?? null,
+      outputTokens: input.usage?.completion_tokens ?? null,
+      cachedInputTokens: null,
+      reasoningOutputTokens: null,
+      durationMs: input.durationMs,
+      ok: !input.error,
+      prompt: input.prompt,
+      response: input.response,
+      error: input.error instanceof Error ? input.error.message : input.error ? String(input.error) : null,
+      retrieval: input.retrieval ?? null
+    });
+  }
+
+  private recordAuditFailure(meta: AuditMeta, error: unknown): void {
+    if (!this.auditLog) return;
+    this.auditLog.record({
+      task: meta.task,
+      skillId: meta.skillId,
+      correlationId: meta.correlationId,
+      provider: meta.provider ?? null,
+      model: meta.model ?? null,
+      inputTokens: null,
+      outputTokens: null,
+      cachedInputTokens: null,
+      reasoningOutputTokens: null,
+      durationMs: 0,
+      ok: false,
+      prompt: meta.prompt,
+      response: null,
+      error: error instanceof Error ? error.message : String(error),
+      retrieval: meta.retrieval ?? null
+    });
+  }
+
+  private failResearch(meta: AuditMeta, error: Error): never {
+    this.recordAuditFailure(meta, error);
+    throw error;
   }
 
   /** Resolves the configured model id for a provider so the audit log can show
@@ -415,7 +515,8 @@ export class ConfiguredModelProvider implements ModelProvider {
 
   private async generateOpenAiCompatible<T>(
     provider: string,
-    request: GenerateStructuredRequest<T>
+    request: GenerateStructuredRequest<T>,
+    auditMeta?: AuditMeta
   ): Promise<GenerateStructuredResult<T>> {
     const connection = this.connections.get(provider);
     if (!connection.enabled) throw new ModelProviderUnavailableError(`${connection.displayName} 连接已停用。`);
@@ -451,16 +552,41 @@ export class ConfiguredModelProvider implements ModelProvider {
       } : {})
     });
     const post = async (withSchema: boolean, compactRetry = false): Promise<{ response: Response; text: string }> => {
-      const response = await this.callChatCompletions(connection, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json"
-        },
-        body: buildBody(withSchema, compactRetry),
-        signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
-      });
-      return { response, text: await response.text() };
+      const body = buildBody(withSchema, compactRetry);
+      const startedAt = Date.now();
+      let responseText: string | null = null;
+      let failure: unknown = null;
+      try {
+        const response = await this.callChatCompletions(connection, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json"
+          },
+          body,
+          signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
+        });
+        responseText = await response.text();
+        if (!response.ok) failure = new ModelProviderUnavailableError(`${connection.displayName} 请求失败（HTTP ${response.status}）。`);
+        return { response, text: responseText };
+      } catch (error) {
+        failure = error;
+        throw error;
+      } finally {
+        this.recordRawAudit({
+          task: request.task,
+          skillId: request.skillId ?? "wechat-writing",
+          correlationId: auditMeta?.correlationId,
+          retrieval: auditMeta?.retrieval,
+          provider,
+          model: connection.modelId || null,
+          prompt: body,
+          response: responseText,
+          usage: readUsage(responseText),
+          error: failure,
+          durationMs: Date.now() - startedAt
+        });
+      }
     };
 
     let { response, text } = await post(true);
@@ -515,6 +641,21 @@ function maxTokensForTask(task: GenerateStructuredRequest<unknown>["task"]): num
       return 2_000;
     default:
       return 1_600;
+  }
+}
+
+function readUsage(text: string | null): { prompt_tokens?: number; completion_tokens?: number } | undefined {
+  if (!text) return undefined;
+  try {
+    const usage = (JSON.parse(text) as { usage?: unknown }).usage;
+    if (!usage || typeof usage !== "object") return undefined;
+    const value = usage as { prompt_tokens?: unknown; completion_tokens?: unknown };
+    return {
+      ...(typeof value.prompt_tokens === "number" ? { prompt_tokens: value.prompt_tokens } : {}),
+      ...(typeof value.completion_tokens === "number" ? { completion_tokens: value.completion_tokens } : {})
+    };
+  } catch {
+    return undefined;
   }
 }
 

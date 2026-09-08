@@ -103,6 +103,33 @@ describe("ContentSourceService.readArticleResource rasterize option", () => {
   });
 });
 
+describe("ContentSourceService plain Markdown source", () => {
+  it("scans and creates nested index articles without a posts directory", async () => {
+    const database = openInMemoryDatabase();
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-plain-source-"));
+    try {
+      const articleDirectory = path.join(sourceDirectory, "已有文章", "assets");
+      fs.mkdirSync(articleDirectory, { recursive: true });
+      fs.writeFileSync(path.join(articleDirectory, "cover.png"), "image");
+      fs.writeFileSync(path.join(sourceDirectory, "已有文章", "index.md"), "---\ntitle: 已有文章\nstatus: published\ntags: [AI]\n---\n正文\n");
+      const service = new ContentSourceService(database.connection);
+      const workspaceId = new AccountRepository(database.connection).getOrCreateDefaultWorkspace().id;
+      service.setSource(workspaceId, sourceDirectory, "plain");
+      expect(service.preview(workspaceId).items.map((item) => item.relativePath)).toEqual(["已有文章/index.md"]);
+      expect(service.preview(workspaceId).items[0]).toMatchObject({ status: "published", tags: ["AI"] });
+      const created = service.createArticle(workspaceId, "新文章");
+      expect(created.relativePath).toBe("新文章/index.md");
+      expect(fs.readFileSync(path.join(sourceDirectory, "新文章", "index.md"), "utf8")).toContain("status: draft");
+      const resource = service.readArticleResource(workspaceId, "已有文章/index.md", "./assets/cover.png");
+      expect(resource.mimeType).toBe("image/png");
+      await readStreamToBuffer(resource.stream);
+    } finally {
+      fs.rmSync(sourceDirectory, { recursive: true, force: true });
+      database.close();
+    }
+  });
+});
+
 async function readStreamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));

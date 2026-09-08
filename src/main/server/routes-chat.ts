@@ -1,28 +1,31 @@
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
-  articleChatInput, articleChatMemoryInput, articleChatOutput, articleChatQuery,
+  articleChatInput, articleChatMemoryInput, articleChatQuery,
   articleChatSuggestionParams, articleChatSuggestionStatusInput, articleSummaryInput,
+  agentMemoryCandidateParams, agentMemoryExportQuery, agentMemoryForgetInput, agentMemoryImportInput, agentMemoryParams, agentMemoryQuery, agentMemoryStatusInput,
   articleSummaryOutput, coverPromptInput, coverPromptOutput, selectionEditInput,
   selectionEditOutput
 } from "./schemas";
 import {
-  isUniqueArticleSuggestion, mergeArticleMemory, mergeWritingMemory,
-  parseChatSuggestions, persistSelectionEditConversation
+  persistSelectionEditConversation
 } from "./helpers";
 import type { ServerContext } from "./server-context";
+import { AwenConversationService } from "../ai/awen-conversation-service";
+import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 
 export function registerChatRoutes(ctx: ServerContext): void {
   const { server, database, accounts, skills, effectiveModelProvider, coverGenerator } = ctx;
+  const awen = new AwenConversationService(
+    database.connection,
+    effectiveModelProvider,
+    skills,
+    (error) => server.log.error({ err: error }, "Agent memory maintenance failed")
+  );
+  const agentMemory = new AgentMemoryRepository(database.connection);
 
   server.get("/api/article-chat", async (request) => {
     const { contextKey } = articleChatQuery.parse(request.query);
-    const thread = database.connection.prepare("SELECT memory, updated_at FROM article_chat_threads WHERE context_key = ?")
-      .get(contextKey) as { memory: string; updated_at: string } | undefined;
-    const rows = database.connection.prepare(`SELECT id, role, content, memory_suggestion AS memorySuggestion, suggestions_json AS suggestionsJson, created_at AS createdAt
-      FROM article_chat_messages WHERE context_key = ? ORDER BY created_at ASC LIMIT 100`).all(contextKey) as Array<{ id: string; role: "user" | "assistant"; content: string; memorySuggestion: string; suggestionsJson: string; createdAt: string }>;
-    const messages = rows.map((item) => ({ ...item, suggestions: parseChatSuggestions(item.suggestionsJson) }));
-    return { memory: thread?.memory ?? "", updatedAt: thread?.updated_at ?? null, messages };
+    return awen.getThread(contextKey);
   });
 
   // A suggestion remains part of the conversation after a decision. Only its
@@ -30,14 +33,8 @@ export function registerChatRoutes(ctx: ServerContext): void {
   server.patch("/api/article-chat/messages/:messageId/suggestions/:suggestionIndex", async (request, reply) => {
     const { messageId, suggestionIndex } = articleChatSuggestionParams.parse(request.params);
     const { status } = articleChatSuggestionStatusInput.parse(request.body);
-    const row = database.connection.prepare("SELECT suggestions_json AS suggestionsJson FROM article_chat_messages WHERE id = ? AND role = 'assistant'")
-      .get(messageId) as { suggestionsJson: string } | undefined;
-    if (!row) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
-    const suggestions = parseChatSuggestions(row.suggestionsJson);
-    if (!suggestions[suggestionIndex]) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
-    suggestions[suggestionIndex] = { ...suggestions[suggestionIndex], status };
-    database.connection.prepare("UPDATE article_chat_messages SET suggestions_json = ? WHERE id = ?")
-      .run(JSON.stringify(suggestions), messageId);
+    const suggestions = awen.updateSuggestion(messageId, suggestionIndex, status);
+    if (!suggestions) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
     return { messageId, suggestions };
   });
 
@@ -46,49 +43,54 @@ export function registerChatRoutes(ctx: ServerContext): void {
     const skill = skills.get("awen-assistant");
     if (!skill.enabled) return reply.code(409).send({ error: "“阿文 · 文章顾问”技能已停用。" });
     const input = articleChatInput.parse(request.body);
-    const now = new Date().toISOString();
-    database.connection.prepare(`INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)
-      ON CONFLICT(context_key) DO UPDATE SET updated_at = excluded.updated_at`).run(input.contextKey, now);
-    const userMessage = { id: input.clientMessageId ?? randomUUID(), role: "user" as const, content: input.message, memorySuggestion: "", createdAt: now };
-    const existingUserMessage = database.connection.prepare("SELECT id FROM article_chat_messages WHERE id = ? AND context_key = ? AND role = 'user'")
-      .get(userMessage.id, input.contextKey) as { id: string } | undefined;
-    if (!existingUserMessage) {
-      database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, created_at)
-        VALUES (?, ?, ?, ?, '', ?)`).run(userMessage.id, input.contextKey, userMessage.role, userMessage.content, now);
-    }
-    const thread = database.connection.prepare("SELECT memory FROM article_chat_threads WHERE context_key = ?").get(input.contextKey) as { memory: string };
-    const writingMemoryScope = input.accountId ? `account:${input.accountId}` : "workspace:default";
-    const writingMemory = database.connection.prepare("SELECT memory FROM writing_memories WHERE scope_key = ?").get(writingMemoryScope) as { memory: string } | undefined;
-    const history = database.connection.prepare(`SELECT role, content FROM article_chat_messages
-      WHERE context_key = ? ORDER BY created_at DESC LIMIT 16`).all(input.contextKey) as Array<{ role: "user" | "assistant"; content: string }>;
-    const historyText = history.reverse().map((item) => `${item.role === "user" ? "用户" : "阿文"}：${item.content}`).join("\n\n");
-    const article = input.markdown.length > 100000 ? `${input.markdown.slice(0, 100000)}\n\n[正文过长，已截取前 100000 个字符]` : input.markdown;
-    const generated = await effectiveModelProvider.generateStructured({
-      task: "assistant",
-      skillId: "awen-assistant",
-      prompt: `你正在和作者讨论一篇文章。只基于文章、会话与记忆给出专业、具体、可执行的建议；不虚构事实。\n\n文章标题：${input.title || "未命名"}\n\n写作能力记忆（跨本账号文章，用于持续优化表达与修改策略）：\n${writingMemory?.memory || "暂无"}\n\n本文记忆（由系统从已完成会话自动提炼）：\n${thread.memory || "暂无"}\n\n最近会话：\n${historyText}\n\n当前文章全文：\n${article}\n\n请回答用户最后的问题。输出本文记忆摘要：只记录本篇可复用且已明确的事实、决定或未解决事项。输出写作能力记忆摘要：只记录跨文章稳定有效的风格偏好、读者反馈、修改取舍或表达策略；临时想法、未经核实的信息与闲聊必须留空。若用户明确要求修改、改写、优化或给出可执行文字建议，再返回最多 5 条建议。每条建议的 original 必须是正文中一段完全相同且唯一出现的原文，replacement 是替换文本，reason 说明理由；否则 suggestions 为空。`,
-      outputSchema: { type: "object", properties: { reply: { type: "string" }, memorySuggestion: { type: "string" }, writingMemorySuggestion: { type: "string" }, suggestions: { type: "array", items: { type: "object", properties: { original: { type: "string" }, replacement: { type: "string" }, reason: { type: "string" } }, required: ["original", "replacement", "reason"], additionalProperties: false } } }, required: ["reply", "memorySuggestion", "writingMemorySuggestion", "suggestions"], additionalProperties: false },
-      parse: (value) => articleChatOutput.parse(value)
-    });
-    const suggestions = generated.value.suggestions.filter((item) => isUniqueArticleSuggestion(input.markdown, item.original));
-    const assistantMessage = { id: randomUUID(), role: "assistant" as const, content: generated.value.reply, memorySuggestion: generated.value.memorySuggestion, suggestions, createdAt: new Date().toISOString() };
-    database.connection.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(assistantMessage.id, input.contextKey, assistantMessage.role, assistantMessage.content, assistantMessage.memorySuggestion, JSON.stringify(suggestions), assistantMessage.createdAt);
-    const memory = assistantMessage.memorySuggestion
-      ? mergeArticleMemory(database, input.contextKey, assistantMessage.memorySuggestion)
-      : thread.memory;
-    const writingMemoryResult = generated.value.writingMemorySuggestion
-      ? mergeWritingMemory(database, writingMemoryScope, generated.value.writingMemorySuggestion)
-      : writingMemory?.memory ?? "";
-    return { message: assistantMessage, memory, writingMemory: writingMemoryResult, provider: generated.provider, model: generated.model, usage: generated.usage };
+    return awen.send(input);
   });
 
   server.post("/api/article-chat/memory", async (request) => {
     const input = articleChatMemoryInput.parse(request.body);
-    const memory = mergeArticleMemory(database, input.contextKey, input.memory);
+    const memory = awen.mergeArticleMemory(input.contextKey, input.memory);
     return { memory };
   });
+
+  server.get("/api/agent-memory", async (request) => {
+    const input = agentMemoryQuery.parse(request.query);
+    const scopeKeys = input.scopeKey.split(",").map((value) => value.trim()).filter(Boolean);
+    return {
+      memories: agentMemory.listMemories(scopeKeys, input.status),
+      candidates: agentMemory.listCandidates(scopeKeys, input.status)
+    };
+  });
+
+  server.get("/api/agent-memory/export", async (request) => {
+    const input = agentMemoryExportQuery.parse(request.query);
+    const scopeKeys = input.scopeKey.split(",").map((value) => value.trim()).filter(Boolean);
+    return agentMemory.exportSnapshot(scopeKeys, input.includeEvents === "1");
+  });
+
+  server.post("/api/agent-memory/import", async (request) => {
+    const input = agentMemoryImportInput.parse(request.body);
+    return agentMemory.importSnapshot(input.snapshot, input.mode);
+  });
+
+  server.post("/api/agent-memory/candidates/:candidateId/promote", async (request) => {
+    const { candidateId } = agentMemoryCandidateParams.parse(request.params);
+    return { memoryId: agentMemory.promoteCandidate(candidateId) };
+  });
+
+  server.patch("/api/agent-memory/:memoryId", async (request, reply) => {
+    const { memoryId } = agentMemoryParams.parse(request.params);
+    const { status } = agentMemoryStatusInput.parse(request.body);
+    if (!agentMemory.setMemoryStatus(memoryId, status)) return reply.code(404).send({ error: "未找到这条记忆。" });
+    return { memoryId, status };
+  });
+
+  server.post("/api/agent-memory/forget", async (request) => {
+    const input = agentMemoryForgetInput.parse(request.body);
+    agentMemory.forget(input.scopeKey, input.mode);
+    return { scopeKey: input.scopeKey, mode: input.mode, forgotten: true };
+  });
+
+  server.post("/api/agent-memory/maintain", async () => agentMemory.maintain());
 
   server.post("/api/skills/article-summary/run", async (request, reply) => {
     if (!skills) return reply.code(503).send({ error: "技能目录尚未启用。" });

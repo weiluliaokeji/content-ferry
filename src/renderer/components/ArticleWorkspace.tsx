@@ -3,11 +3,12 @@ import { apiBase, platformName, request } from "../api";
 import { extractMarkdownImages, renderPhonePreview, resolveArticleImageUrl } from "../markdown-preview";
 import { locateMarkdownSelection } from "../markdown-selection";
 import { markdownOffsetAtTextareaTop, readImageUrl, scrollEditorToHeading, scrollTextareaToMarkdownOffset } from "../utils";
-import { AwenBottomPanel, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
+import { AwenBottomPanel, AwenMemoryManager, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
 import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "../types";
+import { ExecutionPanel } from "./ExecutionPanel";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord } from "../types";
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -57,7 +58,8 @@ export function ArticleWorkspace({
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const [modeScrollOffset, setModeScrollOffset] = useState(0);
   const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
-  const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images">("body");
+  const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images" | "execution">("body");
+  const [executionOpen, setExecutionOpen] = useState(false);
   const [articleSettings, setArticleSettings] = useState<ArticleSettings>({
     author: "",
     digest: "",
@@ -102,6 +104,10 @@ export function ArticleWorkspace({
   const [awenInput, setAwenInput] = useState("");
   const [awenLoading, setAwenLoading] = useState(false);
   const [awenLoaded, setAwenLoaded] = useState(false);
+  const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
+  const [memoryManagerBusy, setMemoryManagerBusy] = useState(false);
+  const [formalMemories, setFormalMemories] = useState<AgentMemoryRecord[]>([]);
+  const [memoryCandidates, setMemoryCandidates] = useState<AgentMemoryCandidateRecord[]>([]);
   const [awenSuggestionOffsets, setAwenSuggestionOffsets] = useState<Record<string, { x: number; y: number }>>({});
   const [savedMarkdown, setSavedMarkdown] = useState(markdown);
   const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
@@ -187,6 +193,56 @@ export function ArticleWorkspace({
       const result = await request<{ memory: string }>("/article-chat/memory", { method: "POST", body: JSON.stringify({ contextKey, memory }) });
       setAwenMemory(result.memory);
     } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存本文记忆。"); }
+  };
+  const openMemoryManager = async () => {
+    setMemoryManagerOpen(true);
+    setMemoryManagerBusy(true);
+    try {
+      const data = await request<{ memories: AgentMemoryRecord[]; candidates: AgentMemoryCandidateRecord[] }>(`/agent-memory?scopeKey=${encodeURIComponent(contextKey)}&status=all`);
+      setFormalMemories(data.memories.filter((item) => item.status === "active"));
+      setMemoryCandidates(data.candidates.filter((item) => item.status === "candidate"));
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法读取本文记忆。"); }
+    finally { setMemoryManagerBusy(false); }
+  };
+  const promoteMemoryCandidate = async (candidateId: string) => {
+    setMemoryManagerBusy(true);
+    try { await request(`/agent-memory/candidates/${encodeURIComponent(candidateId)}/promote`, { method: "POST" }); await openMemoryManager(); }
+    catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法启用记忆候选。"); }
+    finally { setMemoryManagerBusy(false); }
+  };
+  const updateFormalMemory = async (memoryId: string, status: "active" | "expired" | "deleted") => {
+    setMemoryManagerBusy(true);
+    try { await request(`/agent-memory/${encodeURIComponent(memoryId)}`, { method: "PATCH", body: JSON.stringify({ status }) }); await openMemoryManager(); }
+    catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法更新记忆状态。"); }
+    finally { setMemoryManagerBusy(false); }
+  };
+  const forgetArticleMemory = async (mode: "derived" | "all") => {
+    setMemoryManagerBusy(true);
+    try { await request("/agent-memory/forget", { method: "POST", body: JSON.stringify({ scopeKey: contextKey, mode }) }); setAwenMemory(""); await openMemoryManager(); }
+    catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法删除本文记忆。"); }
+    finally { setMemoryManagerBusy(false); }
+  };
+  const exportArticleMemory = async () => {
+    setMemoryManagerBusy(true);
+    try {
+      const snapshot = await request<unknown>(`/agent-memory/export?scopeKey=${encodeURIComponent(contextKey)}&includeEvents=1`);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `wendu-memory-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法导出本文记忆。"); }
+    finally { setMemoryManagerBusy(false); }
+  };
+  const importArticleMemory = async (file: File) => {
+    setMemoryManagerBusy(true);
+    try {
+      const snapshot = JSON.parse(await file.text()) as unknown;
+      await request("/agent-memory/import", { method: "POST", body: JSON.stringify({ snapshot, mode: "merge" }) });
+      await openMemoryManager();
+    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法导入记忆备份。"); }
+    finally { setMemoryManagerBusy(false); }
   };
   useEffect(() => {
     void Promise.all([
@@ -616,6 +672,7 @@ export function ArticleWorkspace({
         <button className={`workspace-tool${leftTool === "structure" ? " active" : ""}`} onClick={() => setLeftTool("structure")}>文章结构</button>
         <button className={`workspace-tool${leftTool === "sources" ? " active" : ""}`} onClick={() => setLeftTool("sources")}>资料来源</button>
         <button className={`workspace-tool${leftTool === "images" ? " active" : ""}`} onClick={() => setLeftTool("images")}>图片素材</button>
+        <button className={`workspace-tool${leftTool === "execution" ? " active" : ""}`} onClick={() => { setLeftTool("execution"); setExecutionOpen(true); }} aria-expanded={executionOpen}>代码与工具</button>
         {leftTool === "body" && <div className="editor-stats"><span>{wordCount} 字</span><span>{images.length} 张图片</span><span>约 {Math.max(1, Math.ceil(wordCount / 500))} 分钟阅读</span></div>}
         {leftTool === "structure" && <div className="tool-detail"><strong>文章结构</strong>{headings.length ? headings.map((heading, index) => <button className="structure-link" key={index} style={{ paddingLeft: `${(heading[1].length - 1) * 10}px` }} onClick={() => scrollEditorToHeading(heading[2], index, markdown, editorMode)}>{heading[2]}</button>) : <small>正文中还没有标题。</small>}</div>}
         {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>) : <small>暂未识别到链接来源。</small>}</div>}
@@ -734,7 +791,9 @@ export function ArticleWorkspace({
         </div>}
       </aside>
     </div>
-    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onClose={() => setAwenOpen(false)} />}
+    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onOpenMemoryManager={() => void openMemoryManager()} onClose={() => setAwenOpen(false)} />}
+    {memoryManagerOpen && <AwenMemoryManager memories={formalMemories} candidates={memoryCandidates} busy={memoryManagerBusy} onPromote={(candidateId) => void promoteMemoryCandidate(candidateId)} onStatus={(memoryId, status) => void updateFormalMemory(memoryId, status)} onForget={(mode) => void forgetArticleMemory(mode)} onExport={() => void exportArticleMemory()} onImport={(file) => void importArticleMemory(file)} onClose={() => setMemoryManagerOpen(false)} />}
+    {executionOpen && <div className="execution-modal-backdrop" role="presentation"><section className="execution-modal" role="dialog" aria-modal="true" aria-label="代码与工具执行"><div className="execution-modal-header"><div><p className="eyebrow">文章工具</p><h2>代码与工具</h2><p className="hint compact-hint">需要执行 Demo 或分析源码时再打开；授权目录可以跨文章复用。</p></div><button type="button" className="text-button" onClick={() => setExecutionOpen(false)}>关闭</button></div><ExecutionPanel projectId={projectId} onError={setWorkspaceError} onInsertCitation={(citation) => onChange(`${markdown}\n\n${citation}\n`)} onClose={() => setExecutionOpen(false)} /></section></div>}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
   </div>;

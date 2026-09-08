@@ -25,6 +25,13 @@ import type { CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
 import type { JuejinChannelService } from "../juejin/juejin-channel-service";
 import type { FiftyoneCtoChannelService } from "../fiftyone-cto/fiftyone-cto-channel-service";
 import type { CsdnBrowserConfirmResult } from "./schemas";
+import type { ExecutionService } from "../agent/execution-service";
+import type { ExecutionRepository } from "../agent/execution-repository";
+import type { SystemToolRegistry } from "../agent/system-tool-registry";
+import type { PermissionGrantRepository } from "../agent/permission-grant-repository";
+import type { GitSourceService } from "../agent/git-source-service";
+import type { ResearchTaskRepository } from "../content/research-task-repository";
+import type { ResearchTaskRunner } from "../content/research-task-runner";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
 export interface ServerContext {
@@ -60,4 +67,11 @@ export interface ServerContext {
   juejinChannels: JuejinChannelService;
   fiftyoneCtoChannels: FiftyoneCtoChannelService;
   coverGenerator: CoverGenerationService;
+  execution: ExecutionService;
+  executionRuns: ExecutionRepository;
+  researchTasks: ResearchTaskRepository;
+  researchTaskRunner?: ResearchTaskRunner;
+  systemTools: SystemToolRegistry;
+  permissionGrants: PermissionGrantRepository;
+  gitSources: GitSourceService;
 }

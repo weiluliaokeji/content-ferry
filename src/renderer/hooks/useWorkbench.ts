@@ -43,6 +43,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   } = params;
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [sourcePath, setSourcePath] = useState("");
+  const [sourceType, setSourceType] = useState<"vitepress" | "plain">("vitepress");
   const [sourcePreview, setSourcePreview] = useState<ContentSourcePreview>();
   const [libraryPage, setLibraryPage] = useState(1);
   const [publishPendingPage, setPublishPendingPage] = useState(1);
@@ -96,8 +97,17 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [researchGenerating, setResearchGenerating] = useState(false);
   const [researchFollowUp, setResearchFollowUp] = useState("");
   const [researchFollowingUp, setResearchFollowingUp] = useState(false);
+  const [researchTaskId, setResearchTaskId] = useState<string>();
+  const [researchPaused, setResearchPaused] = useState(false);
+  const researchPauseRequestedRef = useRef(false);
+  const researchAbortRef = useRef<AbortController | undefined>(undefined);
+  const setResearchAbortRef = (value: AbortController | undefined) => { researchAbortRef.current = value; };
   const [researchStatus, setResearchStatus] = useState("");
   const [researchError, setResearchError] = useState("");
+  const [manualSourceTitle, setManualSourceTitle] = useState("");
+  const [manualSourceUrl, setManualSourceUrl] = useState("");
+  const [manualSourceExcerpt, setManualSourceExcerpt] = useState("");
+  const [manualSourceClaims, setManualSourceClaims] = useState("");
   const [draftProject, setDraftProject] = useState<ContentProject>();
   const [draft, setDraft] = useState<ContentDraft>();
   const [draftGenerating, setDraftGenerating] = useState(false);
@@ -137,8 +147,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setSourceModalOpen(true);
     setSourcePreview(undefined);
     try {
-      const source = await request<{ rootPath: string | null }>("/content-source");
+      const source = await request<{ rootPath: string | null; sourceType?: "vitepress" | "plain" }>("/content-source");
       setSourcePath(source.rootPath ?? "");
+      setSourceType(source.sourceType ?? "vitepress");
       if (source.rootPath) setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章库设置。"); }
   };
@@ -147,7 +158,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (!sourcePath.trim()) { setError("请填写文章库路径。"); return; }
     setSaving(true);
     try {
-      await request<{ rootPath: string }>("/content-source", { method: "PUT", body: JSON.stringify({ rootPath: sourcePath.trim() }) });
+      await request<{ rootPath: string }>("/content-source", { method: "PUT", body: JSON.stringify({ rootPath: sourcePath.trim(), sourceType }) });
       setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
       setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "文章库扫描失败。"); }
@@ -319,29 +330,75 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
   };
   const changeBrief = (field: keyof Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">, value: string) => setBrief((current) => current ? { ...current, [field]: value } : current);
+  const waitForResearchTask = async (project: ContentProject, taskId: string, signal: AbortSignal): Promise<ContentResearch> => {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      if (signal.aborted) throw new Error("已停止本次补研；已保存的资料卡仍保留，可以稍后重试。");
+      const result = await request<{ items: Array<{ id: string; status: string; lastCheckpoint: string; lastError: string }> }>(`/content-projects/${project.id}/research/tasks`);
+      const task = result.items.find((item) => item.id === taskId);
+      if (!task) throw new Error("找不到补研任务，可能已被清理。");
+      setResearchTaskId(task.id);
+      setResearchStatus(task.lastCheckpoint || "阿文正在后台补研…");
+      if (task.status === "paused") {
+        setResearchPaused(true);
+        throw new Error("补研已暂停，可点击“继续补研”恢复。");
+      }
+      if (task.status === "completed" || task.status === "completed_with_warnings") return request<ContentResearch>(`/content-projects/${project.id}/research`);
+      if (task.status === "failed" || task.status === "cancelled") throw new Error(task.lastError || (task.status === "cancelled" ? "本次补研已取消。" : "后台补研失败。"));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+    }
+    throw new Error("后台补研等待时间过长，请稍后重新打开资料窗口查看。");
+  };
   const openResearch = async (project: ContentProject, generate = false) => {
     setResearchProject(project);
     setResearch(undefined);
     setResearchFollowUp("");
+    setResearchTaskId(undefined);
+    setResearchPaused(false);
+    researchPauseRequestedRef.current = false;
+    setManualSourceTitle("");
+    setManualSourceUrl("");
+    setManualSourceExcerpt("");
+    setManualSourceClaims("");
     setResearchError("");
     try {
       if (generate) {
         setResearchGenerating(true);
         setResearchStatus("阿文正在检索官方与公开网页，并整理可追溯资料卡…");
-        const research = await streamGeneration<ContentResearch>(`/content-projects/${project.id}/research/generate`, new AbortController().signal, (event, data) => {
+        const controller = new AbortController();
+        researchAbortRef.current = controller;
+        const research = await streamGeneration<ContentResearch>(`/content-projects/${project.id}/research/generate`, controller.signal, (event, data) => {
+          if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
           if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
+          if (event === "paused") setResearchPaused(true);
           if (event === "complete") setResearch(data as unknown as ContentResearch);
         });
         setResearch(research);
         setResearchStatus("");
         await loadProjects();
       } else {
-        setResearch(await request<ContentResearch>(`/content-projects/${project.id}/research`));
+        const [savedResearch, taskResult] = await Promise.all([
+          request<ContentResearch>(`/content-projects/${project.id}/research`),
+          request<{ items: Array<{ id: string; status: string }> }>(`/content-projects/${project.id}/research/tasks`)
+        ]);
+        const activeTask = taskResult.items.find((task) => ["queued", "running", "paused"].includes(task.status));
+        if (!activeTask) {
+          setResearch(savedResearch);
+        } else {
+          setResearch(savedResearch);
+          setResearchGenerating(true);
+          const controller = new AbortController();
+          researchAbortRef.current = controller;
+          const recovered = await waitForResearchTask(project, activeTask.id, controller.signal);
+          setResearch(recovered);
+          await loadProjects();
+        }
       }
     } catch (cause) {
-      setResearchError(cause instanceof Error ? cause.message : "联网补研失败。");
+      setResearchError(researchPauseRequestedRef.current ? "补研已暂停，可点击“继续补研”恢复。已保存的资料卡仍保留。" : researchAbortRef.current?.signal.aborted ? "已停止本次补研；已保存的资料卡仍保留，可以稍后重试。" : cause instanceof Error ? cause.message : "联网补研失败。");
     } finally {
       setResearchGenerating(false);
+      researchAbortRef.current = undefined;
+      researchPauseRequestedRef.current = false;
       setResearchStatus("");
     }
   };
@@ -362,8 +419,12 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setResearchError("");
     setResearchStatus("阿文正在针对你的补充继续联网补研…");
     try {
-      const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, new AbortController().signal, (event, data) => {
+      const controller = new AbortController();
+      researchAbortRef.current = controller;
+      const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
+        if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
         if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
+        if (event === "paused") setResearchPaused(true);
         if (event === "complete") setResearch(data as unknown as ContentResearch);
       }, JSON.stringify({ message: researchFollowUp.trim() }));
       setResearch(next);
@@ -371,11 +432,58 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setResearchStatus("");
       await loadProjects();
     } catch (cause) {
-      setResearchError(cause instanceof Error ? cause.message : "补充资料失败。请检查模型连接后重试。");
+      setResearchError(researchPauseRequestedRef.current ? "补研已暂停，可点击“继续补研”恢复。已保存的资料卡仍保留。" : researchAbortRef.current?.signal.aborted ? "已停止本次补研；已保存的资料卡仍保留，可以稍后重试。" : cause instanceof Error ? cause.message : "补充资料失败。请检查模型连接后重试。");
     } finally {
       setResearchFollowingUp(false);
+      researchAbortRef.current = undefined;
+      researchPauseRequestedRef.current = false;
       setResearchStatus("");
     }
+  };
+  const cancelResearch = async () => {
+    if (!researchTaskId || !researchProject) return;
+    try {
+      await request(`/content-projects/${researchProject.id}/research/tasks/${researchTaskId}/cancel`, { method: "POST" });
+      researchAbortRef.current?.abort();
+    } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "无法取消补研任务。"); }
+  };
+  const pauseResearch = async () => {
+    if (!researchTaskId || !researchProject) return;
+    try {
+      await request(`/content-projects/${researchProject.id}/research/tasks/${researchTaskId}/pause`, { method: "POST" });
+      setResearchPaused(true);
+      setResearchError("补研已暂停，可点击“继续补研”恢复。已保存的资料卡仍保留。");
+      researchPauseRequestedRef.current = true;
+      researchAbortRef.current?.abort();
+    } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "无法暂停补研任务。"); }
+  };
+  const resumeResearch = async () => {
+    if (!researchTaskId || !researchProject) return;
+    try {
+      await request(`/content-projects/${researchProject.id}/research/tasks/${researchTaskId}/resume`, { method: "POST" });
+      setResearchPaused(false);
+      researchPauseRequestedRef.current = false;
+      setResearchError("");
+      void openResearch(researchProject, false);
+    } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "无法恢复补研任务。"); }
+  };
+  const addManualResearchSource = async () => {
+    if (!researchProject || !manualSourceTitle.trim() || !manualSourceExcerpt.trim()) return;
+    setResearchFollowingUp(true);
+    try {
+      const updated = await request<ContentResearch>(`/content-projects/${researchProject.id}/research/sources`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: manualSourceTitle.trim(),
+          ...(manualSourceUrl.trim() ? { url: manualSourceUrl.trim() } : {}),
+          excerpt: manualSourceExcerpt.trim(),
+          keyClaims: manualSourceClaims.split(/\r?\n/).map((claim) => claim.trim()).filter(Boolean)
+        })
+      });
+      setResearch(updated);
+      setManualSourceTitle(""); setManualSourceUrl(""); setManualSourceExcerpt(""); setManualSourceClaims("");
+    } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "手工资料卡保存失败。"); }
+    finally { setResearchFollowingUp(false); }
   };
   const generateOutline = async (project: ContentProject) => {
     setOutlineProject(project); setOutline(undefined); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…");
@@ -523,6 +631,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setSourceModalOpen,
     sourcePath,
     setSourcePath,
+    sourceType,
+    setSourceType,
     sourcePreview,
     setSourcePreview,
     libraryPage,
@@ -599,10 +709,23 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setResearchFollowUp,
     researchFollowingUp,
     setResearchFollowingUp,
+    researchTaskId,
+    setResearchTaskId,
+    researchPaused,
+    researchAbortRef,
+    setResearchAbortRef,
     researchStatus,
     setResearchStatus,
     researchError,
     setResearchError,
+    manualSourceTitle,
+    setManualSourceTitle,
+    manualSourceUrl,
+    setManualSourceUrl,
+    manualSourceExcerpt,
+    setManualSourceExcerpt,
+    manualSourceClaims,
+    setManualSourceClaims,
     draftProject,
     setDraftProject,
     draft,
@@ -640,6 +763,10 @@ export function useWorkbench(params: UseWorkbenchParams) {
     openResearch,
     toggleResearchSource,
     continueResearch,
+    cancelResearch,
+    pauseResearch,
+    resumeResearch,
+    addManualResearchSource,
     generateOutline,
     openOutline,
     switchOutlineToMarkdown,

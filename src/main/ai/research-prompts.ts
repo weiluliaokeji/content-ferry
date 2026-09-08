@@ -55,6 +55,7 @@ export interface WebResearchSourceRef {
   excerpt: string;
   keyClaims: string[];
   sourceType: "official" | "public";
+  provenanceNote?: string;
 }
 
 export interface WebResearchContext {
@@ -98,7 +99,7 @@ export function pushField(lines: string[], label: string, value: string | undefi
 export function formatResearchSources(sources: WebResearchSourceRef[]): string {
   if (sources.length === 0) return "（暂无已确认资料卡）";
   return sources
-    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}`)
+    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : source.provenanceNote ? "实验观察" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}${source.provenanceNote ? `\n证据边界: ${source.provenanceNote}` : ""}`)
     .join("\n\n");
 }
 

@@ -93,10 +93,13 @@ describe("ConfiguredModelProvider.webResearch", () => {
 
     expect(result.value.sources).toHaveLength(1);
     expect(result.provider).toBe("openai_codex");
-    expect(record).toHaveBeenCalledTimes(1);
-    const call = record.mock.calls[0][0];
+    const call = record.mock.calls.map(([entry]) => entry).find((entry) => entry.task === "research" && entry.retrieval);
+    expect(call).toBeDefined();
+    expect(record).toHaveBeenCalled();
     expect(call.ok).toBe(true);
     expect(call.retrieval).toEqual({ rounds: 1, sources: 1, provider: "duckduckgo" });
+    expect(call.correlationId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(new Set(record.mock.calls.map(([entry]) => entry.correlationId))).toEqual(new Set([call.correlationId]));
   });
 
   it("scheme A: model tool-calling retrieves sources, audit records retrieval", async () => {
@@ -130,8 +133,9 @@ describe("ConfiguredModelProvider.webResearch", () => {
       const provider = new ConfiguredModelProvider(openaiConnections(), openaiSkills(), {} as ModelProvider, auditLog, fakeWebSearch());
       const result = await provider.webResearch(context, () => {});
       expect(result.value.sources).toHaveLength(1);
-      expect(record).toHaveBeenCalledTimes(1);
-      const call = record.mock.calls[0][0];
+      const call = record.mock.calls.map(([entry]) => entry).find((entry) => entry.task === "research" && entry.retrieval);
+      expect(call).toBeDefined();
+      expect(record).toHaveBeenCalled();
       expect(call.ok).toBe(true);
       expect(call.retrieval).toEqual({ rounds: 1, sources: 1, provider: "duckduckgo" });
       expect(toolRound).toBe(2);
@@ -169,7 +173,8 @@ describe("ConfiguredModelProvider.webResearch", () => {
       const provider = new ConfiguredModelProvider(openaiConnections(), openaiSkills(), {} as ModelProvider, auditLog, fakeWebSearch());
       const result = await provider.webResearch(context, () => {});
       expect(result.value.sources).toHaveLength(1);
-      const call = record.mock.calls[0][0];
+      const call = record.mock.calls.map(([entry]) => entry).find((entry) => entry.task === "research" && entry.retrieval);
+      expect(call).toBeDefined();
       expect(call.ok).toBe(true);
       // scheme A contributed 0 rounds (it threw); scheme B contributed 1.
       expect(call.retrieval).toEqual({ rounds: 1, sources: 1, provider: "duckduckgo" });
@@ -198,7 +203,8 @@ describe("ConfiguredModelProvider.webResearch", () => {
     const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as unknown as ModelProvider, auditLog, emptySearch);
 
     await expect(provider.webResearch(context, () => {})).rejects.toThrow(/未获取到任何可用资料/);
-    const call = record.mock.calls[0][0];
+    const call = record.mock.calls.map(([entry]) => entry).find((entry) => entry.task === "research-orchestration" && !entry.ok);
+    expect(call).toBeDefined();
     expect(call.ok).toBe(false);
     expect(call.error).toMatch(/未获取到任何可用资料/);
   });

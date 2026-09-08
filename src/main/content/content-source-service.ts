@@ -11,6 +11,7 @@ export interface ContentSourcePreviewItem {
   frontMatterKeys: string[];
   tags: string[];
   createdAt: string | null;
+  status: "draft" | "published" | null;
   archived: boolean;
 }
 
@@ -21,6 +22,21 @@ export interface ContentSourcePreview {
   items: ContentSourcePreviewItem[];
   truncated: boolean;
   warnings: string[];
+}
+
+export type ContentSourceType = "vitepress" | "plain";
+
+export interface ArticlePathPattern {
+  baseDir: string;
+  entryFile: string;
+  assetDir: string;
+  extraIgnoreDirs: string[];
+}
+
+export interface ContentSourceConfig {
+  rootPath: string;
+  sourceType: ContentSourceType;
+  pattern: ArticlePathPattern;
 }
 
 export interface ContentSourceArticle {
@@ -39,7 +55,11 @@ type DeletionFileSystem = Pick<typeof fs,
   "renameSync" | "copyFileSync" | "unlinkSync" | "mkdirSync" | "existsSync" |
   "readdirSync" | "rmdirSync">;
 
-const ignoredDirectories = new Set([".git", "node_modules", "dist", ".vitepress", ".contentferry-trash"]);
+const defaultPattern: Record<ContentSourceType, ArticlePathPattern> = {
+  vitepress: { baseDir: "posts", entryFile: "index.md", assetDir: "assets", extraIgnoreDirs: [".vitepress"] },
+  plain: { baseDir: "", entryFile: "index.md", assetDir: "assets", extraIgnoreDirs: [] }
+};
+const ignoredDirectories = new Set([".git", "node_modules", "dist", ".contentferry-trash"]);
 const maxPreviewItems = 200;
 
 export class ContentSourceError extends Error {
@@ -50,47 +70,56 @@ export class ContentSourceService {
   constructor(private readonly db: Database.Database) {}
 
   getSource(workspaceId: string): string | null {
-    const row = this.db.prepare("SELECT root_path FROM content_sources WHERE workspace_id = ?").get(workspaceId) as { root_path: string } | undefined;
-    return row?.root_path ?? null;
+    return this.getSourceConfig(workspaceId)?.rootPath ?? null;
   }
 
-  setSource(workspaceId: string, rootPath: string): string {
+  getSourceConfig(workspaceId: string): ContentSourceConfig | null {
+    const row = this.db.prepare("SELECT root_path AS rootPath, source_type AS sourceType, pattern_json AS patternJson FROM content_sources WHERE workspace_id = ?")
+      .get(workspaceId) as { rootPath: string; sourceType?: string; patternJson?: string } | undefined;
+    if (!row) return null;
+    const sourceType = row.sourceType === "plain" ? "plain" : "vitepress";
+    return { rootPath: row.rootPath, sourceType, pattern: readPattern(row.patternJson, sourceType) };
+  }
+
+  setSource(workspaceId: string, rootPath: string, sourceType: ContentSourceType = "vitepress", pattern?: Partial<ArticlePathPattern>): string {
     const resolved = path.resolve(rootPath);
     const stats = this.requireReadableDirectory(resolved);
     if (!stats.isDirectory()) throw new ContentSourceError("文章库路径必须是一个文件夹。");
-    this.db.prepare(`INSERT INTO content_sources (workspace_id, root_path, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(workspace_id) DO UPDATE SET root_path = excluded.root_path, updated_at = excluded.updated_at`)
-      .run(workspaceId, resolved, new Date().toISOString());
+    const nextPattern = normalizePattern(sourceType, pattern);
+    this.db.prepare(`INSERT INTO content_sources (workspace_id, root_path, source_type, pattern_json, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(workspace_id) DO UPDATE SET root_path = excluded.root_path, source_type = excluded.source_type, pattern_json = excluded.pattern_json, updated_at = excluded.updated_at`)
+      .run(workspaceId, resolved, sourceType, JSON.stringify(nextPattern), new Date().toISOString());
     return resolved;
   }
 
   preview(workspaceId: string): ContentSourcePreview {
-    const rootPath = this.getSource(workspaceId);
-    if (!rootPath) throw new ContentSourceError("尚未设置文章库路径。");
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("尚未设置文章库路径。");
+    const { rootPath, pattern } = config;
     this.requireReadableDirectory(rootPath);
 
     const files: string[] = [];
     const walk = (directory: string) => {
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         if (entry.isDirectory()) {
-          if (!ignoredDirectories.has(entry.name)) walk(path.join(directory, entry.name));
+          if (!ignoredDirectories.has(entry.name) && !pattern.extraIgnoreDirs.includes(entry.name)) walk(path.join(directory, entry.name));
         } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
           files.push(path.join(directory, entry.name));
         }
       }
     };
     walk(rootPath);
-    const articleFiles = files.filter((filePath) => isArticlePath(path.relative(rootPath, filePath)));
+    const articleFiles = files.filter((filePath) => isArticlePath(path.relative(rootPath, filePath), pattern));
     const warnings: string[] = [];
     const allItems = articleFiles.map((filePath) => {
       const relativePath = path.relative(rootPath, filePath).split(path.sep).join("/");
       try {
-        const parsed = parseFrontMatter(fs.readFileSync(filePath, "utf8"));
+        const parsed = parseFrontMatter(fs.readFileSync(filePath, "utf8"), config.sourceType);
         const fallbackCreatedAt = fs.statSync(filePath).birthtime.toISOString();
         return { relativePath, ...parsed, createdAt: parsed.createdAt ?? fallbackCreatedAt };
       } catch {
         warnings.push(`无法读取：${relativePath}`);
-        return { relativePath, title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
+        return { relativePath, title: null, frontMatterKeys: [], tags: [], createdAt: null, status: null, archived: false };
       }
     });
     allItems.sort((left, right) => {
@@ -108,7 +137,7 @@ export class ContentSourceService {
     const parts = splitFrontMatter(source);
     return {
       relativePath: toPortablePath(path.relative(this.getSource(workspaceId)!, filePath)),
-      title: parseFrontMatter(source).title,
+      title: parseFrontMatter(source, this.getSourceConfig(workspaceId)?.sourceType ?? "vitepress").title,
       markdown: parts.body,
       frontMatter: parts.frontMatter
     };
@@ -123,11 +152,12 @@ export class ContentSourceService {
 
   saveArticle(workspaceId: string, relativePath: string, markdown: string): ContentSourceArticle {
     const filePath = this.resolveArticlePath(workspaceId, relativePath);
-    const rootPath = this.getSource(workspaceId)!;
+    const config = this.getSourceConfig(workspaceId)!;
+    const { rootPath, pattern } = config;
     const source = fs.readFileSync(filePath, "utf8");
     const parts = splitFrontMatter(source);
     const normalizedBody = normalizeSavedMarkdown(markdown).replace(/^\s+/, "").replace(/\s+$/, "");
-    const currentTitle = parseFrontMatter(source).title;
+    const currentTitle = parseFrontMatter(source, config.sourceType).title;
     const nextTitle = extractLeadingArticleTitle(normalizedBody) ?? currentTitle;
     const nextFrontMatter = nextTitle && parts.frontMatter
       ? replaceFrontMatterTitle(parts.frontMatter, nextTitle)
@@ -139,8 +169,8 @@ export class ContentSourceService {
     let nextRelativePath = relativePath;
     if (nextTitle && currentTitle && normalizeArticleTitle(nextTitle) !== normalizeArticleTitle(currentTitle)) {
       const articleDirectory = path.dirname(filePath);
-      const postsRoot = path.resolve(rootPath, "posts");
-      if (path.basename(filePath).toLowerCase() === "index.md" && isPathInside(postsRoot, articleDirectory)) {
+      const articleRoot = pattern.baseDir ? path.resolve(rootPath, pattern.baseDir) : path.resolve(rootPath);
+      if (path.basename(filePath).toLowerCase() === pattern.entryFile.toLowerCase() && isPathInside(articleRoot, articleDirectory)) {
         const nextDirectory = path.join(path.dirname(articleDirectory), sanitizeArticleDirectoryName(nextTitle));
         if (path.resolve(nextDirectory).toLowerCase() !== path.resolve(articleDirectory).toLowerCase()) {
           if (fs.existsSync(nextDirectory)) throw new ContentSourceError(`文章标题对应的目录已存在：${path.basename(nextDirectory)}`);
@@ -155,7 +185,7 @@ export class ContentSourceService {
               throw new ContentSourceError("文章目录正在被其他程序占用，逐文件迁移也未能完成。请关闭 Obsidian 或资源管理器预览后重试。", { cause: fallbackError });
             }
           }
-          nextFilePath = path.join(nextDirectory, "index.md");
+          nextFilePath = path.join(nextDirectory, pattern.entryFile);
           nextRelativePath = toPortablePath(path.relative(rootPath, nextFilePath));
           const now = new Date().toISOString();
           this.db.transaction(() => {
@@ -199,31 +229,35 @@ export class ContentSourceService {
   }
 
   createArticle(workspaceId: string, title: string): ContentSourceArticle {
-    const rootPath = this.getSource(workspaceId);
-    if (!rootPath) throw new ContentSourceError("请先配置 VitePress 文章库，再新建文章。");
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("请先配置本地文章库，再新建文章。");
+    const { rootPath, pattern } = config;
     this.requireReadableDirectory(rootPath);
     const safeTitle = sanitizeArticleDirectoryName(title);
     let directoryName = safeTitle;
     let suffix = 2;
-    while (fs.existsSync(path.join(rootPath, "posts", directoryName))) {
+    const articleRoot = path.join(rootPath, pattern.baseDir);
+    while (fs.existsSync(path.join(articleRoot, directoryName))) {
       directoryName = `${safeTitle}-${suffix++}`;
     }
-    const articleDirectory = path.join(rootPath, "posts", directoryName);
-    fs.mkdirSync(path.join(articleDirectory, "assets"), { recursive: true });
-    const relativePath = toPortablePath(path.join("posts", directoryName, "index.md"));
+    const articleDirectory = path.join(articleRoot, directoryName);
+    fs.mkdirSync(path.join(articleDirectory, pattern.assetDir), { recursive: true });
+    const relativePath = toPortablePath(path.join(pattern.baseDir, directoryName, pattern.entryFile));
     const created = formatLocalDateTime(new Date());
-    const source = `---\ntitle: '${escapeYamlSingleQuoted(title.trim())}'\ncreated: '${created}'\ntags: []\npublish: false\n---\n\n# ${title.trim()}\n`;
-    fs.writeFileSync(path.join(articleDirectory, "index.md"), source, { encoding: "utf8", flag: "wx" });
+    const publicationField = config.sourceType === "vitepress" ? "publish: false" : "status: draft";
+    const source = `---\ntitle: '${escapeYamlSingleQuoted(title.trim())}'\ncreated: '${created}'\ntags: []\n${publicationField}\n---\n\n# ${title.trim()}\n`;
+    fs.writeFileSync(path.join(articleDirectory, pattern.entryFile), source, { encoding: "utf8", flag: "wx" });
     return this.getArticle(workspaceId, relativePath);
   }
 
   stageArticleDeletion(workspaceId: string, relativePath: string): StagedArticleDeletion {
     const articlePath = this.resolveArticlePath(workspaceId, relativePath);
     const rootPath = this.getSource(workspaceId)!;
-    const postsRoot = path.resolve(rootPath, "posts");
+    const config = this.getSourceConfig(workspaceId)!;
+    const postsRoot = path.resolve(rootPath, config.pattern.baseDir);
     const articleDirectory = path.dirname(articlePath);
-    if (!isPathInside(postsRoot, articleDirectory) || path.dirname(articleDirectory) === postsRoot && path.basename(articlePath).toLowerCase() !== "index.md") {
-      throw new ContentSourceError("只能删除文章库 posts 目录中的标准文章目录。");
+    if (!isPathInside(postsRoot, articleDirectory) || path.dirname(articleDirectory) === postsRoot && path.basename(articlePath).toLowerCase() !== config.pattern.entryFile.toLowerCase()) {
+      throw new ContentSourceError("只能删除文章库中的标准文章目录。");
     }
     const trashRoot = path.resolve(rootPath, ".contentferry-trash");
     if (!isPathInside(rootPath, trashRoot)) throw new ContentSourceError("无法创建安全删除暂存目录。");
@@ -238,17 +272,17 @@ export class ContentSourceService {
     if (!extension) throw new ContentSourceError("仅支持 JPG、PNG、GIF 和 WebP 图片。");
     const bytes = Buffer.from(base64, "base64");
     if (bytes.length === 0 || bytes.length > 15 * 1024 * 1024) throw new ContentSourceError("图片必须小于 15 MB。");
-    const assetsDirectory = path.join(path.dirname(filePath), "assets");
+    const assetsDirectory = path.join(path.dirname(filePath), this.getSourceConfig(workspaceId)!.pattern.assetDir);
     fs.mkdirSync(assetsDirectory, { recursive: true });
     const fileName = `${randomUUID()}${extension}`;
     fs.writeFileSync(path.join(assetsDirectory, fileName), bytes);
-    return { assetUrl: `./assets/${fileName}` };
+    return { assetUrl: `./${patternAssetDirectory(this.getSourceConfig(workspaceId)!.pattern)}/${fileName}` };
   }
 
   readArticleAsset(workspaceId: string, relativePath: string, fileName: string): { stream: fs.ReadStream; mimeType: string } {
     const filePath = this.resolveArticlePath(workspaceId, relativePath);
     if (!/^[A-Fa-f0-9-]{36}\.(jpg|png|gif|webp)$/.test(fileName)) throw new ContentSourceError("图片路径不合法。");
-    const assetPath = path.join(path.dirname(filePath), "assets", fileName);
+    const assetPath = path.join(path.dirname(filePath), this.getSourceConfig(workspaceId)!.pattern.assetDir, fileName);
     if (!fs.existsSync(assetPath)) throw new ContentSourceError("找不到图片。");
     const mimeType = { ".jpg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" }[path.extname(fileName).toLowerCase()] ?? "application/octet-stream";
     return { stream: fs.createReadStream(assetPath), mimeType };
@@ -256,20 +290,20 @@ export class ContentSourceService {
 
   readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string, options: { rasterize?: boolean } = {}): { stream: NodeJS.ReadableStream; mimeType: string } {
     const articlePath = this.resolveArticlePath(workspaceId, relativePath);
-    const rootPath = this.getSource(workspaceId)!;
+    const config = this.getSourceConfig(workspaceId)!;
+    const rootPath = config.rootPath;
     const cleanSource = decodeResourcePath(sourceUrl);
     const isBareFileName = !cleanSource.includes("/") && !cleanSource.includes("\\");
     const candidates = cleanSource.startsWith("/")
-      ? [
-          path.resolve(rootPath, "public", cleanSource.slice(1)),
-          path.resolve(rootPath, cleanSource.slice(1))
-        ]
+      ? (config.sourceType === "vitepress"
+        ? [path.resolve(rootPath, "public", cleanSource.slice(1)), path.resolve(rootPath, cleanSource.slice(1))]
+        : [path.resolve(rootPath, cleanSource.slice(1))])
       : [
           path.resolve(path.dirname(articlePath), cleanSource),
-          ...(isBareFileName ? [path.resolve(path.dirname(articlePath), "assets", cleanSource)] : [])
+          ...(isBareFileName ? [path.resolve(path.dirname(articlePath), config.pattern.assetDir, cleanSource)] : [])
         ];
     const resourcePath = candidates.find((candidate) => isPathInside(rootPath, candidate) && fs.existsSync(candidate) && fs.statSync(candidate).isFile());
-    if (!resourcePath) throw new ContentSourceError(`找不到文章引用的本地图片：${sourceUrl}。请将文件放回文章同级或 assets 目录，或删除这处图片引用后重试。`);
+    if (!resourcePath) throw new ContentSourceError(`找不到文章引用的本地图片：${sourceUrl}。请将文件放回文章同级或 ${config.pattern.assetDir} 目录，或删除这处图片引用后重试。`);
     const extension = path.extname(resourcePath).toLowerCase();
     const mimeType = {
       ".jpg": "image/jpeg",
@@ -307,7 +341,8 @@ export class ContentSourceService {
     const rootPath = this.getSource(workspaceId);
     if (!rootPath) throw new ContentSourceError("尚未设置文章库路径。");
     const normalizedRelativePath = relativePath.replaceAll("/", path.sep);
-    if (!isArticlePath(normalizedRelativePath)) throw new ContentSourceError("所选文件不是文章库中的文章。");
+    const config = this.getSourceConfig(workspaceId);
+    if (!config || !isArticlePath(normalizedRelativePath, config.pattern)) throw new ContentSourceError("所选文件不是文章库中的文章。");
     const resolved = path.resolve(rootPath, normalizedRelativePath);
     const relativeToRoot = path.relative(rootPath, resolved);
     if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
@@ -511,16 +546,51 @@ function isPathInside(rootPath: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function isArticlePath(relativePath: string): boolean {
+function isArticlePath(relativePath: string, pattern: ArticlePathPattern): boolean {
   const segments = relativePath.split(path.sep);
-  // Existing VitePress convention: posts/<article title>/index.md.
-  return segments[0] === "posts" && segments.length >= 3 && segments.at(-1)?.toLowerCase() === "index.md";
+  const hasBase = pattern.baseDir ? segments[0] === pattern.baseDir : true;
+  const minimumSegments = pattern.baseDir ? 3 : 2;
+  return hasBase && segments.length >= minimumSegments && segments.at(-1)?.toLowerCase() === pattern.entryFile.toLowerCase();
 }
 
-function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "tags" | "createdAt" | "archived"> {
-  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
+function normalizePattern(sourceType: ContentSourceType, pattern?: Partial<ArticlePathPattern>): ArticlePathPattern {
+  const defaults = defaultPattern[sourceType];
+  return {
+    baseDir: safePatternSegment(pattern?.baseDir ?? defaults.baseDir, defaults.baseDir),
+    entryFile: safePatternFile(pattern?.entryFile ?? defaults.entryFile, defaults.entryFile),
+    assetDir: safePatternSegment(pattern?.assetDir ?? defaults.assetDir, defaults.assetDir),
+    extraIgnoreDirs: [...new Set((pattern?.extraIgnoreDirs ?? defaults.extraIgnoreDirs).map((value) => safePatternSegment(value, "")).filter(Boolean))]
+  };
+}
+
+function readPattern(serialized: string | undefined, sourceType: ContentSourceType): ArticlePathPattern {
+  if (!serialized) return normalizePattern(sourceType);
+  try {
+    const value = JSON.parse(serialized) as Partial<ArticlePathPattern>;
+    return normalizePattern(sourceType, value);
+  } catch {
+    return normalizePattern(sourceType);
+  }
+}
+
+function patternAssetDirectory(pattern: ArticlePathPattern): string {
+  return pattern.assetDir.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "") || "assets";
+}
+
+function safePatternSegment(value: string, fallback: string): string {
+  const normalized = value.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").trim();
+  return normalized && normalized !== "." && normalized !== ".." && !normalized.includes("/") ? normalized : fallback;
+}
+
+function safePatternFile(value: string, fallback: string): string {
+  const normalized = value.replaceAll("\\", "/").trim();
+  return normalized && !normalized.includes("/") && normalized !== "." && normalized !== ".." ? normalized : fallback;
+}
+
+function parseFrontMatter(markdown: string, sourceType: ContentSourceType = "vitepress"): Pick<ContentSourcePreviewItem, "title" | "frontMatterKeys" | "tags" | "createdAt" | "status" | "archived"> {
+  if (!markdown.startsWith("---")) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, status: null, archived: false };
   const closing = markdown.indexOf("\n---", 3);
-  if (closing < 0) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, archived: false };
+  if (closing < 0) return { title: null, frontMatterKeys: [], tags: [], createdAt: null, status: null, archived: false };
   const lines = markdown.slice(3, closing).split(/\r?\n/);
   const frontMatterKeys = lines.map((line) => /^([A-Za-z][\w-]*):/.exec(line.trim())?.[1]).filter((key): key is string => Boolean(key));
   const title = lines.map((line) => /^title:\s*["']?(.+?)["']?\s*$/.exec(line.trim())?.[1]).find((value): value is string => Boolean(value)) ?? null;
@@ -528,7 +598,18 @@ function parseFrontMatter(markdown: string): Pick<ContentSourcePreviewItem, "tit
   const archivedLine = lines.map((line) => /^archived:\s*(.+?)\s*$/.exec(line.trim())?.[1]).find((value): value is string | undefined => Boolean(value));
   const archived = archivedLine ? /^(true|yes|1)$/i.test(archivedLine) : false;
   const tags = parseFrontMatterTags(markdown.slice(3, closing));
-  return { title, frontMatterKeys, tags, createdAt, archived };
+  const publicationLine = sourceType === "vitepress"
+    ? lines.map((line) => /^publish:\s*(.+?)\s*$/.exec(line.trim())?.[1]).find((value): value is string | undefined => Boolean(value))
+    : lines.map((line) => /^status:\s*(.+?)\s*$/.exec(line.trim())?.[1]).find((value): value is string | undefined => Boolean(value));
+  const status = parsePublicationStatus(publicationLine, sourceType);
+  return { title, frontMatterKeys, tags, createdAt, status, archived };
+}
+
+function parsePublicationStatus(value: string | undefined, sourceType: ContentSourceType): "draft" | "published" | null {
+  if (!value) return null;
+  const normalized = value.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  if (sourceType === "vitepress") return /^(true|yes|1|published)$/.test(normalized) ? "published" : /^(false|no|0|draft)$/.test(normalized) ? "draft" : null;
+  return /^(published|publish|true|yes|1)$/.test(normalized) ? "published" : /^(draft|false|no|0)$/.test(normalized) ? "draft" : null;
 }
 
 /**
@@ -559,14 +640,14 @@ export function parseFrontMatterTags(frontMatter: string): string[] {
       break;
     }
     if (/^tags\s*:/.test(trimmed)) {
-      const scalar = /^tags\s*:\s*["']?(.+?)["']?\s*$/.exec(trimmed);
-      if (scalar) {
-        raw.push(...scalar[1].split(/[,，]/));
-        break;
-      }
       const inline = /^tags\s*:\s*\[([^\]]*)\]/.exec(trimmed);
       if (inline) {
         raw.push(...inline[1].split(/[,，]/));
+        break;
+      }
+      const scalar = /^tags\s*:\s*["']?(.+?)["']?\s*$/.exec(trimmed);
+      if (scalar) {
+        raw.push(...scalar[1].split(/[,，]/));
         break;
       }
       inTags = true;

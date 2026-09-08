@@ -18,12 +18,12 @@ export type RootState =
 export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin" | "51cto";
 export type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string; articleSignature: string };
 export type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile; cnblogsCategories: string[]; cnblogsTags: string[]; fiftyoneCtoPidOptions: Array<{ value: string; label: string }>; fiftyoneCtoCateOptions: Array<{ value: string; label: string }>; fiftyoneCtoCateOptionsByPid: Record<string, Array<{ value: string; label: string }>> };
-export type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; createdAt: string | null; archived: boolean }>; truncated: boolean; warnings: string[] };
+export type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; tags: string[]; createdAt: string | null; status: "draft" | "published" | null; archived: boolean }>; truncated: boolean; warnings: string[] };
 export type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
 export type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; createdAt: string; updatedAt: string; briefReady: boolean; researchReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
 export type ContentBrief = { projectId: string; topic: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
-export type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; retrievedAt: string; selected: boolean };
-export type ContentResearch = { projectId: string; planMarkdown: string; sources: ResearchSource[]; updatedAt: string | null; provider?: string; model?: string | null };
+export type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; retrievedAt: string; selected: boolean; provenance?: { kind: "execution_observation"; executionRunId: string; observationId: string; status: "pending" | "accepted" | "rejected"; targetType: string; runtime: string; command: string[]; networkPolicy: string; artifacts: Array<{ path: string; sha256: string }> } };
+export type ContentResearch = { projectId: string; planMarkdown: string; sources: ResearchSource[]; updatedAt: string | null; taskId?: string; provider?: string; model?: string | null };
 export type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
 export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
 export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };
@@ -160,6 +160,8 @@ export type ArticleChatMessage = {
   createdAt: string;
   deliveryState?: "sending" | "failed";
 };
+export type AgentMemoryRecord = { id: string; scopeKey: string; kind: string; content: string; sourceEventIds: string[]; status: string; confidence: number; importance: number; recallCount: number; createdAt: string; updatedAt: string; expiresAt: string | null };
+export type AgentMemoryCandidateRecord = { id: string; scopeKey: string; kind: string; content: string; sourceEventIds: string[]; status: string; supportCount: number; confidence: number; importance: number; promotedMemoryId: string | null; createdAt: string; updatedAt: string; expiresAt: string | null };
 export type ZhuqueReport = {
   verdict: string;
   humanPercent: number | null;
