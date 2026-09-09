@@ -3,6 +3,7 @@ import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, serializerCtx } from "@milkdown/kit/core";
 import { redo, undo } from "@milkdown/kit/prose/history";
 import { replaceAll } from "@milkdown/kit/utils";
+import { useHighlight } from "../milkdown-highlight";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic.css";
 
@@ -254,6 +255,10 @@ export function VisualMarkdownEditor({
         }
       }
     });
+    // 注册 Obsidian 风格高亮（==文本==）。必须在 crepe.create() 之前：plugin
+    // 列表在 create 阶段才冻结，remarkStringifyOptionsCtx 也在 InitReady 时被
+    // 读取——晚于这里就会变成「能进不能出」或直接抛错。
+    useHighlight(crepe.editor);
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown, previousMarkdown) => {
         // Crepe may normalize Markdown while constructing the document. That is

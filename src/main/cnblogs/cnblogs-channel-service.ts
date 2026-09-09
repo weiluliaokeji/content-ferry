@@ -9,6 +9,9 @@ import type { PublishCapabilities } from "../publishing/platform-publisher-conne
 import { appendArticleSignature } from "../publishing/article-signature";
 import { CnblogsApiError, CnblogsClient, type CnblogsBlogInfo, type CnblogsPostPayload } from "./cnblogs-client";
 import { uploadCnblogsImages } from "./cnblogs-image-uploader";
+// 博客园走 metaweblog 提交 Markdown 原文（分类里带 [Markdown]），高亮需转成
+// 行内 <mark>，平台渲染器会保留该标签。
+import { convertHighlightMarkdown } from "../../shared/markdown-highlight";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 import {
   buildPublishIdempotencyKey,
@@ -659,7 +662,7 @@ export class CnblogsChannelService {
     }
     return {
       title: draft.title,
-      description: uploaded.markdown,
+      description: convertHighlightMarkdown(uploaded.markdown),
       categories,
       mt_keywords: keywords,
       mt_excerpt: digestText.slice(0, 200),

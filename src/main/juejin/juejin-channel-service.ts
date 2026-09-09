@@ -11,6 +11,9 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
+// 掘金收 Markdown 原文且不支持 Obsidian 的 `==高亮==` 语法（typora/CSDN 支持），
+// 但支持行内 <mark>，因此提交前统一转换。
+import { convertHighlightMarkdown } from "../../shared/markdown-highlight";
 import type Database from "better-sqlite3";
 import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
 import type { CredentialVault } from "../security/credential-vault";
@@ -627,7 +630,7 @@ export class JuejinChannelService {
 
       // 掘金 title 字段已单独提交文章标题，正文首行的 "# {title}"（本地预览
       // 需要）会在页内再渲染一次大标题，形成双标题，发布时剥离开头标题。
-      const markContent = stripLeadingTitleHeading(inlineResult.markdown);
+      const markContent = stripLeadingTitleHeading(convertHighlightMarkdown(inlineResult.markdown));
 
       const payload: JuejinDraftPayload = {
         title: draft.title.slice(0, 80),

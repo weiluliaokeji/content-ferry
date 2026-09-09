@@ -477,6 +477,8 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .preview-code-block pre { margin: 0; padding: .75rem; overflow-x: auto; white-space: pre; }
 .preview-code-block code { font: .72rem/1.6 Consolas, "Microsoft YaHei UI", monospace; }
 .preview-inline-code { padding: .1rem .25rem; border-radius: 3px; background: #edf1f7; color: #c13d52; font: .8em Consolas, monospace; }
+/* Obsidian 风格高亮（==文本==）：预览与 Milkdown 编辑器内统一黄底，与 Obsidian 默认一致。 */
+.preview-highlight, .milkdown mark { padding: 0 .12em; border-radius: 2px; background: #ffe58f; color: inherit; }
 .preview-article-image { display: block; width: 100%; height: auto; margin: .8rem 0; border-radius: 4px; background: #eef2f8; }
 .settings-cover-preview { display: block; width: 100%; max-height: 150px; margin: .45rem 0; border-radius: 8px; object-fit: cover; background: #eef2f7; }
 .article-cover-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; margin: .55rem 0; }

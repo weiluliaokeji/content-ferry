@@ -107,6 +107,13 @@ describe("mdToHtml51", () => {
     expect(html.trimEnd().endsWith("</div>")).toBe(true);
   });
 
+  it("把 ==高亮== 转成 <mark>，代码块里的 == 保持不变", () => {
+    const html = mdToHtml51("这是 ==重点== 内容\n\n```js\nif (a == b) {}\n```");
+    expect(html).toContain("<mark>重点</mark>");
+    expect(html).toContain("if (a == b) {}");
+    expect(html).not.toContain("<mark>a</mark>");
+  });
+
   it("不嵌套未识别 HTML，标题 / 段落 / 引用 / 列表 / 代码块标签保持原样", () => {
     // 防止以后有人重新加上包装 div 引入回归
     const html = mdToHtml51([

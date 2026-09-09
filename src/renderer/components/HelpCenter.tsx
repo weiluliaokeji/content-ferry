@@ -120,6 +120,11 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <p>如果图表没能转成图片，文渡会保留原始代码块，不会丢失内容。可在「运行日志」搜索“mermaid 渲染失败”查看不支持的语法和原因。</p>
         </details>
         <details>
+          <summary>怎样给正文加高亮？发布后还会在吗？</summary>
+          <p>用 <code>==</code> 把要强调的文字包起来，例如 <code>这是 ==重点== 内容</code>，和 Obsidian 的用法一致。所见即所得模式下直接显示黄底，保存回文件后仍是 <code>==重点==</code>，来回切换不会丢失。选中文字后按 <code>Ctrl+Shift+H</code> 也可以直接加高亮。</p>
+          <p><code>==</code> 需要紧贴文字，<code>a == b == c</code> 这类写法不会被当成高亮；代码块和行内代码里的 <code>==</code> 也保持原样。发布时文渡会按平台能力自动转换，你看到的效果保持一致：微信公众号用带背景色的样式，其余平台用标准高亮标签，CSDN 直接使用原生的 <code>==</code> 语法。</p>
+        </details>
+        <details>
           <summary>技能与模型有什么区别？</summary>
           <p>技能决定任务规则，例如公众号撰写、去 AI 味和封面提示词；模型连接决定由哪个服务执行。腾讯朱雀和 ContentAny 使用浏览器自动化，不需要大模型。“联网检索服务”则独立于模型连接：可选配置 Tavily，以提升阿文补研公开资料时的稳定性。</p>
           <p>技能按模型依赖分成三组：文本类（创作、改写，用 OpenAI 系列）、图像类（用 ModelScope / Agnes AI）、无模型（朱雀、ContentAny 走浏览器自动化）。想给同一类里的部分技能统一换模型时，不必逐个点开编辑：先在技能卡片右上角勾选要改的技能，再在该组标题栏的“批量设置模型”里选好目标模型，点“应用到选中的 N 个技能”即可一次改完。</p>

@@ -42,6 +42,21 @@ describe("Wechat article typography", () => {
   });
 });
 
+describe("Wechat highlight rendering", () => {
+  it("用带背景色的 span 表达高亮，因为清洗器会剥掉 <mark>", () => {
+    const html = markdownToWechatHtml("这是 ==重点== 内容");
+    expect(html).not.toContain("<mark>");
+    expect(html).toContain("background-color:#ffe58f");
+    expect(html).toContain(">重点</span>");
+  });
+
+  it("代码块里的 == 不当高亮处理", () => {
+    const html = markdownToWechatHtml("```\nif (a == b) {}\n```");
+    expect(html).not.toContain("#ffe58f");
+    expect(html).toContain("a == b");
+  });
+});
+
 describe("Wechat code-block rendering", () => {
   it("emits WeChat-native code-block markup so the editor renders a real block", () => {
     const html = markdownToWechatHtml("```ts\nconst first = 1;\nconst second = 2;\n```");

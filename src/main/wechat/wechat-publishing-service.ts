@@ -6,6 +6,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { CredentialVault } from "../security/credential-vault";
 import { appendArticleSignature } from "../publishing/article-signature";
 import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
+import { convertHighlightInline } from "../../shared/markdown-highlight";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 
 type FetchLike = typeof fetch;
@@ -704,7 +705,10 @@ function inlineMarkdown(value: string, uploadedImages: Map<string, string>, inTa
     images.push(`<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" style="display:block;max-width:100%;height:auto;margin:1em auto;" />`);
     return token;
   });
-  text = escapeHtml(unescapeMarkdownEscapes(text))
+  // 高亮必须在 escapeHtml 之后（否则 <mark> 会被转义成字面文本）、在行内代码
+  // 替换之前（转换内部会先把 `...` 摘成占位符，保证代码里的 == 不被改写）。
+  // 微信清洗器会剥掉 <mark> 语义标签，只保留内联 style，因此用带背景色的 span。
+  text = convertHighlightInline(escapeHtml(unescapeMarkdownEscapes(text)), "wechat")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, '<code style="padding:.15em .35em;background:#f2f3f5;border-radius:3px;">$1</code>')

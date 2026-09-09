@@ -1,3 +1,4 @@
+import { convertHighlightInline } from "../../shared/markdown-highlight";
 import { FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
 
 type FetchLike = typeof fetch;
@@ -197,8 +198,10 @@ export function mdToHtml51(md: string): string {
 
   const isDividerRow = (line: string): boolean => /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(line);
 
+  // `==高亮==` 先转成 <mark>：放在最前面，转换内部会先把行内代码摘成占位符，
+  // 因此代码块/行内代码里的 == 不会被误改。
   const inline = (text: string): string =>
-    text
+    convertHighlightInline(text)
       .replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (_m, alt: string, url: string) => `<img src="${url}" alt="${alt}">`)
       .replace(/\[([^\]]+)]\(([^)\s]+)\)/g, (_m, label: string, url: string) => `<a href="${url}">${label}</a>`)
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")

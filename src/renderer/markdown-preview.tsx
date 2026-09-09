@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { apiBase } from "./api";
+import { matchHighlightToken } from "../shared/markdown-highlight";
 
 // 手机预览与图片地址解析（自 main.tsx 拆分）
 export function extractMarkdownImages(markdown: string): Array<{ alt: string; src: string }> {
@@ -96,10 +97,16 @@ export function cleanPreviewText(value: string): string {
 }
 
 export function renderPreviewInline(value: string): ReactNode[] {
-  return value.split(/(`[^`]+`)/g).filter(Boolean).map((part, index) =>
-    part.startsWith("`") && part.endsWith("`")
-      ? <code className="preview-inline-code" key={index}>{part.slice(1, -1)}</code>
-      : <span key={index}>{cleanPreviewText(part)}</span>
-  );
+  // 行内代码与 `==高亮==` 一起切分：代码块里的 == 属于代码内容，不能当高亮渲染。
+  return value.split(/(`[^`]+`|==[^=\n]+==)/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      return <code className="preview-inline-code" key={index}>{part.slice(1, -1)}</code>;
+    }
+    const highlighted = matchHighlightToken(part);
+    if (highlighted !== null) {
+      return <mark className="preview-highlight" key={index}>{cleanPreviewText(highlighted)}</mark>;
+    }
+    return <span key={index}>{cleanPreviewText(part)}</span>;
+  });
 }
 
