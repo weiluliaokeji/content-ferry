@@ -479,6 +479,18 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .preview-inline-code { padding: .1rem .25rem; border-radius: 3px; background: #edf1f7; color: #c13d52; font: .8em Consolas, monospace; }
 /* Obsidian 风格高亮（==文本==）：预览与 Milkdown 编辑器内统一黄底，与 Obsidian 默认一致。 */
 .preview-highlight, .milkdown mark { padding: 0 .12em; border-radius: 2px; background: #ffe58f; color: inherit; }
+
+/* mermaid 实时预览：编辑器里 code_block[language=mermaid] 被装饰层替换成图片。
+   `.cf-mermaid-src-hidden` 只隐藏源码，不动文档结构——存盘仍是代码块。 */
+.milkdown .cf-mermaid-src-hidden { display: none; }
+.cf-mermaid-live { margin: .9rem 0; padding: .6rem; border: 1px dashed #d6dcea; border-radius: 7px; background: #fbfcfe; cursor: pointer; }
+.cf-mermaid-live:hover { border-color: #9fb2d4; background: #f5f8fd; }
+.cf-mermaid-live__image { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.cf-mermaid-live__placeholder { padding: .6rem; color: #7c8aa3; font-size: .78rem; text-align: center; }
+.cf-mermaid-live__error { padding: .5rem .6rem; border-radius: 5px; background: #fdf2f4; color: #a8445a; font-size: .76rem; }
+/* 手机预览里 mermaid 同样渲染成图；失败时回落为代码块并附一行原因。 */
+.preview-mermaid { display: block; max-width: 100%; height: auto; margin: .9rem 0; }
+.preview-mermaid-error { margin: .9rem 0; padding: .5rem .65rem; border-radius: 6px; background: #fdf2f4; color: #a8445a; font-size: .76rem; }
 .preview-article-image { display: block; width: 100%; height: auto; margin: .8rem 0; border-radius: 4px; background: #eef2f8; }
 .settings-cover-preview { display: block; width: 100%; max-height: 150px; margin: .45rem 0; border-radius: 8px; object-fit: cover; background: #eef2f7; }
 .article-cover-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; margin: .55rem 0; }

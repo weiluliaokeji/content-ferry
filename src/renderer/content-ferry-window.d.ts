@@ -26,6 +26,9 @@ type FiftyoneCtoCategoriesResult = {
   debug?: FiftyoneCtoCategoryDebug;
 };
 
+/** 编辑器/预览实时渲染 mermaid 的结果。语法不完整时 ok=false，调用方回落到源码。 */
+type MermaidRenderResult = { ok: true; dataUrl: string; width?: number; height?: number } | { ok: false; error: string };
+
 declare global {
   interface Window {
     contentFerry?: {
@@ -38,6 +41,7 @@ declare global {
       openCsdnPublisher: (jobId: string) => Promise<void>;
       readCnblogsPersonalOptions: (accountId: string) => Promise<{ categories: string[]; tags: string[] }>;
       readFiftyoneCtoCategories: (accountId: string) => Promise<FiftyoneCtoCategoriesResult>;
+      renderMermaid: (source: string) => Promise<MermaidRenderResult>;
       openUserGuide: () => Promise<void>;
       showLogFile: (date?: string) => Promise<void>;
       runZhuqueDetection: (markdown: string) => Promise<{

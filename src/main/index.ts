@@ -32,7 +32,7 @@ import { confirmCsdnBrowserPublish, driveCsdnBrowserPublish, logCsdnBrowserAssis
 import { driveWechatBackendToDrafts, getOrCreateWechatBackendWindow, logWechatBrowserAssist } from "./automation/wechat-automation";
 import { readCnblogsPersonalOptions } from "./automation/cnblogs-options-automation";
 import { readFiftyoneCtoCategories } from "./fiftyone-cto/fiftyone-cto-category-automation";
-import { disposeMermaidRenderer } from "./mermaid/mermaid-render";
+import { disposeMermaidRenderer, renderMermaidToDataUrl } from "./mermaid/mermaid-render";
 
 function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
   const escapedBinary = binaryPath.replace(/'/g, "''");
@@ -302,6 +302,12 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
       }
     }
     return options;
+  });
+  ipcMain.handle("contentferry:render-mermaid", async (_event, source?: unknown) => {
+    if (typeof source !== "string") return { ok: false, error: "缺少 mermaid 源码。" };
+    // 编辑器一边打字一边请求，语法不完整是常态，所以这里返回结构化的失败
+    // 而不是抛错——调用方据此显示源码，而不是弹错误。
+    return renderMermaidToDataUrl(source);
   });
   ipcMain.handle("contentferry:read-fiftyone-cto-categories", async (_event, accountId?: unknown) => {
     if (typeof accountId !== "string" || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(accountId)) throw new Error("缺少有效的 51CTO 账号标识。");

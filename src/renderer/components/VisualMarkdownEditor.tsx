@@ -4,6 +4,7 @@ import { editorViewCtx, serializerCtx } from "@milkdown/kit/core";
 import { redo, undo } from "@milkdown/kit/prose/history";
 import { replaceAll } from "@milkdown/kit/utils";
 import { useHighlight } from "../milkdown-highlight";
+import { useMermaidPreview } from "../milkdown-mermaid";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic.css";
 
@@ -259,6 +260,8 @@ export function VisualMarkdownEditor({
     // 列表在 create 阶段才冻结，remarkStringifyOptionsCtx 也在 InitReady 时被
     // 读取——晚于这里就会变成「能进不能出」或直接抛错。
     useHighlight(crepe.editor);
+    // 同理，mermaid 预览也是装饰层插件，必须在 create() 之前挂上。
+    useMermaidPreview(crepe.editor);
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown, previousMarkdown) => {
         // Crepe may normalize Markdown while constructing the document. That is

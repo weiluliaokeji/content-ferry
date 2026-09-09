@@ -1,6 +1,64 @@
-import { type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { apiBase } from "./api";
 import { matchHighlightToken } from "../shared/markdown-highlight";
+
+/** 与 `content-ferry-window.d.ts` 的 MermaidRenderResult 同构，从 API 签名推导避免漂移。 */
+type MermaidOutcome = Awaited<ReturnType<NonNullable<typeof window.contentFerry>["renderMermaid"]>>;
+/** 预览与编辑器共用同一份缓存键规则：相同源码只渲染一次。 */
+const mermaidCache = new Map<string, MermaidOutcome>();
+
+/**
+ * 手机预览里的 mermaid 块：异步渲染成 PNG，失败时回落为代码块。
+ * 只在 ```mermaid 上生效，其它语言走原来的代码块渲染。
+ */
+function MermaidPreviewBlock({ source }: { source: string }): ReactNode {
+  const [outcome, setOutcome] = useState<MermaidOutcome | null>(() => mermaidCache.get(source) ?? null);
+
+  useEffect(() => {
+    const cached = mermaidCache.get(source);
+    if (cached) {
+      setOutcome(cached);
+      return;
+    }
+    let cancelled = false;
+    setOutcome(null);
+    // 打字时源码一直在变，防抖避免每个字符都开一次渲染窗口。
+    const timer = setTimeout(() => {
+      const render = window.contentFerry?.renderMermaid;
+      if (!render) {
+        const fallback: MermaidOutcome = { ok: false, error: "当前环境不支持 mermaid 预览。" };
+        mermaidCache.set(source, fallback);
+        if (!cancelled) setOutcome(fallback);
+        return;
+      }
+      void render(source)
+        .then((result) => {
+          mermaidCache.set(source, result);
+          if (!cancelled) setOutcome(result);
+        })
+        .catch((error: unknown) => {
+          const failed: MermaidOutcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
+          if (!cancelled) setOutcome(failed);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [source]);
+
+  if (outcome?.ok) return <img className="preview-mermaid" src={outcome.dataUrl} alt="mermaid 图" />;
+  if (outcome && !outcome.ok) {
+    return (
+      <div className="preview-code-block">
+        <small>mermaid</small>
+        <pre><code>{source}</code></pre>
+        <div className="preview-mermaid-error">图表暂时无法渲染：{outcome.error}</div>
+      </div>
+    );
+  }
+  return <div className="preview-mermaid-error">正在渲染图表…</div>;
+}
 
 // 手机预览与图片地址解析（自 main.tsx 拆分）
 export function extractMarkdownImages(markdown: string): Array<{ alt: string; src: string }> {
@@ -48,6 +106,11 @@ export function renderPhonePreview(markdown: string, assetContextId: string, sou
       while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
         code.push(lines[index]);
         index += 1;
+      }
+      // mermaid 实时渲染成图，与编辑器里的所见即所得保持一致。
+      if (language === "mermaid") {
+        result.push(<MermaidPreviewBlock key={`mermaid-${index}`} source={code.join("\n")} />);
+        continue;
       }
       result.push(<div className="preview-code-block" key={`code-${index}`}>{language && <small>{language}</small>}<pre><code>{code.join("\n")}</code></pre></div>);
       continue;

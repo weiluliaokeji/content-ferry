@@ -236,6 +236,50 @@ function jsString(value: string): string {
   return JSON.stringify(value);
 }
 
+export type MermaidRenderResult =
+  | { ok: true; dataUrl: string; width?: number; height?: number }
+  | { ok: false; error: string };
+
+/**
+ * Render a Mermaid diagram to a PNG **data URL** ready to be used as an
+ * `<img src>` in the renderer.
+ *
+ * Unlike `renderMermaidToPng` this never throws: a malformed diagram is a
+ * normal editing state (the author is still typing), so the caller shows the
+ * source instead of surfacing an exception.
+ */
+export async function renderMermaidToDataUrl(source: string): Promise<MermaidRenderResult> {
+  if (!source.trim()) return { ok: false, error: "空的 mermaid 源码。" };
+  try {
+    const win = await getRenderWindow();
+    const id = "mermaid-" + Math.random().toString(36).slice(2);
+    const result: unknown = await withTimeout(
+      win.webContents.executeJavaScript(`(${RASTER_FN})(${jsString(id)}, ${jsString(source)})`),
+      RENDER_TIMEOUT_MS,
+      "mermaid 渲染"
+    );
+    if (!result || typeof result !== "object") {
+      return { ok: false, error: "mermaid 渲染返回了非对象结果。" };
+    }
+    const r = result as RasterResult;
+    if (!r.ok) {
+      const detail = (r.error ?? "未知错误") + (r.stack ? `\n${r.stack}` : "");
+      return { ok: false, error: `mermaid 渲染失败：${detail}` };
+    }
+    if (typeof r.dataUrl !== "string" || r.dataUrl.length === 0) {
+      return { ok: false, error: "mermaid 渲染未返回有效的 PNG dataURL。" };
+    }
+    return {
+      ok: true,
+      dataUrl: `data:image/png;base64,${r.dataUrl}`,
+      width: r.width,
+      height: r.height
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * Render a Mermaid diagram definition to a PNG buffer. Throws if mermaid fails
  * to parse or render the diagram (callers decide whether to keep the raw

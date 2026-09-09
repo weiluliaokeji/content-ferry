@@ -26,6 +26,8 @@ type AppSettingsContract = {
 
 type CodexStatusContract = { ok: boolean; binaryPath: string | null; authenticated: boolean; authMethod?: string; reason?: string };
 
+type MermaidRenderContract = { ok: true; dataUrl: string; width?: number; height?: number } | { ok: false; error: string };
+
 type FiftyoneCtoCategoryOption = { value: string; label: string };
 type FiftyoneCtoCategoryDebug = {
   selects: Array<{ name: string; id: string; label: string; count: number; sample: FiftyoneCtoCategoryOption[] }>;
@@ -52,6 +54,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
     ipcRenderer.invoke("contentferry:read-cnblogs-personal-options", accountId) as Promise<{ categories: string[]; tags: string[] }>,
   readFiftyoneCtoCategories: (accountId: string): Promise<FiftyoneCtoCategoriesContract> =>
     ipcRenderer.invoke("contentferry:read-fiftyone-cto-categories", accountId) as Promise<FiftyoneCtoCategoriesContract>,
+  renderMermaid: (source: string): Promise<MermaidRenderContract> =>
+    ipcRenderer.invoke("contentferry:render-mermaid", source) as Promise<MermaidRenderContract>,
   openUserGuide: (): Promise<void> => ipcRenderer.invoke("contentferry:open-user-guide") as Promise<void>,
   showLogFile: (date?: string): Promise<void> => ipcRenderer.invoke("contentferry:show-log-file", date) as Promise<void>,
   runZhuqueDetection: (markdown: string): Promise<ZhuqueDetectionResponse> =>
