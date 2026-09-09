@@ -62,4 +62,15 @@ describe("convertHighlightMarkdown", () => {
   it("代码块外的多处高亮都能转换", () => {
     expect(convertHighlightMarkdown("==甲==\n\n==乙==")).toBe("<mark>甲</mark>\n\n<mark>乙</mark>");
   });
+
+  it("高亮跨行内代码时，代码片段原样保留在高亮内", () => {
+    const markdown = "==`computer_use` 是 GPT-6 Astra 在 Responses API 下的原生内置工具==";
+    expect(convertHighlightInline(markdown, "mark")).toBe(
+      "<mark>`computer_use` 是 GPT-6 Astra 在 Responses API 下的原生内置工具</mark>"
+    );
+  });
+
+  it("高亮内只含行内代码也能转换", () => {
+    expect(convertHighlightInline("==`code`==", "mark")).toBe("<mark>`code`</mark>");
+  });
 });

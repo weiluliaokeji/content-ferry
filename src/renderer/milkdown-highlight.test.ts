@@ -86,6 +86,42 @@ describe("remarkHighlight", () => {
   });
 
   it("高亮里嵌套强调也能原样回来", () => {
-    expect(roundTrip("==**粗体重点**==")).toBe("==**粗体重点**==");
+    const result = roundTrip("==**粗体重点**==");
+    // 调试用：先把真实值打出来。
+    if (result !== "==**粗体重点**==") {
+      const proc = makeProcessor();
+      const tree = proc.runSync(proc.parse("==**粗体重点**=="));
+      throw new Error(
+        `[debug] roundTrip=${JSON.stringify(result)} len=${result.length}\n` +
+        `tree=${JSON.stringify(tree, null, 2)}`
+      );
+    }
+    expect(result).toBe("==**粗体重点**==");
+  });
+
+  // 新增：「高亮跨 inline code」的实测。用户截图里的写法是
+  // `==\`computer_use\` 是...原生内置工具==`，外面 `==` 是高亮标记，
+  // 中间 `\`computer_use\`` 是 inline code。这里要确认当前实现到底把它当
+  // 成高亮还是落空；只有先看到真实行为，才能判断要不要动 matchSpan 或
+  // inlineCode 的原子节点策略。
+  it("高亮跨 inline code：当前 collectTypes 实测", () => {
+    const markdown = "==`computer_use` 是 GPT-6 Astra 在 Responses API 下的原生内置工具==";
+    const types = collectTypes(markdown);
+    expect(types).toContain(HIGHLIGHT_NODE_TYPE);
+    expect(types).toContain("inlineCode");
+    expect(roundTrip(markdown)).toBe(markdown);
+  });
+
+  it("高亮里只包一个 inline code，==仍能正确成对", () => {
+    // `==\`code\`==` 是常见的写法（高亮内只含代码标识）。
+    const markdown = "==`code`==";
+    expect(collectTypes(markdown)).toContain(HIGHLIGHT_NODE_TYPE);
+    expect(roundTrip(markdown)).toBe(markdown);
+  });
+
+  it("单节点路径下 a == b == c 仍不被误判", () => {
+    // 防御性回归：放宽跨节点分支不能破单节点分支的老合同。
+    expect(collectTypes("a == b == c")).not.toContain(HIGHLIGHT_NODE_TYPE);
+    expect(roundTrip("a == b == c")).toBe("a == b == c");
   });
 });

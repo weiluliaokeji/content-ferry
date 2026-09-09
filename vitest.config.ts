@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  esbuild: {
+    // 渲染进程代码（*.tsx）在 Vite 下默认 automatic JSX runtime；vitest 的
+    // esbuild 默认是 classic，import 含 JSX 的 .tsx 会报 React is not defined。
+    // 仅测试环境启用 automatic，不影响产品构建。
+    jsx: "automatic"
+  },
   test: {
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],

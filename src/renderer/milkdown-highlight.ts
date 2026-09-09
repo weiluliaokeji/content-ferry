@@ -38,11 +38,17 @@ function isTextNode(node: MdastNode | undefined): node is MdastNode & { value: s
 }
 
 /**
- * 内容需非空且两侧不贴空白，否则 `a == b == c` 这类判等文本会被误判成高亮。
- * 跨节点时（`==**粗**==`）正文由其它节点承载，此时 body 可以是空串。
+ * 内容需非空且单节点情况下两侧不贴空白，否则 `a == b == c` 这类判等文本会被
+ * 误判成高亮。跨节点时（`==**粗**==` 或 `==\`code\` 内容==`）正文由其它节点
+ * 承载，正文里包含的空白属于合法内容——`==` 字符对已经界定边界，因此 inline
+ * code 后的标准分隔空白不再触发拒识。空 body 仅在已经有其它 inline 节点承载
+ * 时合法（`==\`code\`==`）。
  */
 function isValidBody(body: string, hasOtherContent: boolean): boolean {
-  if (body) return Boolean(body.trim()) && body === body.trim();
+  if (body) {
+    if (hasOtherContent) return true;
+    return body === body.trim();
+  }
   return hasOtherContent;
 }
 
