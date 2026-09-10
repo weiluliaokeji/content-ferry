@@ -1107,6 +1107,68 @@ describe("local API scaffold", () => {
     ]);
   });
 
+  it("persists a visible research plan and reports budget exhaustion as partial research", async () => {
+    const requestedDepths: string[] = [];
+    const fakeProvider: ModelProvider = {
+      id: "test-research-plan-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ markdown: "# 测试" }), provider: "test-research-plan-ai", model: null, usage: null };
+      },
+      async webResearch(_context: WebResearchContext, _onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+        requestedDepths.push(options?.depth ?? "balanced");
+        return {
+          value: {
+            planMarkdown: "## 本次补研结论\n\n- 已找到一条可追溯资料。",
+            sources: [{
+              title: "官方说明", url: "https://example.com/docs", excerpt: "用于验证研究计划状态。",
+              keyClaims: ["页面包含当前接入说明。"], sourceType: "official"
+            }],
+            execution: {
+              rounds: options?.depth === "quick" ? 1 : 2,
+              maxRounds: options?.depth === "quick" ? 1 : 5,
+              budgetExhausted: options?.depth === "quick"
+            }
+          } as unknown as ResearchCard,
+          provider: "test-research-plan-ai",
+          model: null,
+          usage: null
+        };
+      }
+    };
+    server = createTestServer(fakeProvider);
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
+      topic: "当前 AI Agent 的接入限制", objective: "帮助读者判断能否采用", angle: "同时说明风险和反例"
+    } });
+    const projectId = project.json().id as string;
+
+    const initial = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/research/generate`, payload: { depth: "quick" } });
+    expect(initial.statusCode).toBe(200);
+    expect(parseSseCompleteEvent(initial.body)).toMatchObject({
+      plan: {
+        depth: "quick",
+        partial: true,
+        execution: { budgetExhausted: true },
+        questions: expect.arrayContaining([expect.stringContaining("当前 AI Agent")]),
+        freshnessRisks: expect.arrayContaining([expect.any(String)]),
+        gaps: expect.arrayContaining([expect.stringContaining("执行预算")])
+      }
+    });
+
+    const followUp = await server.inject({
+      method: "POST",
+      url: `/api/content-projects/${projectId}/research/follow-up`,
+      payload: { message: "请补充个人开发者的实际踩坑经验", depth: "deep" }
+    });
+    expect(followUp.statusCode).toBe(200);
+    expect(parseSseCompleteEvent(followUp.body)).toMatchObject({
+      plan: {
+        depth: "deep",
+        questions: expect.arrayContaining([expect.stringContaining("实际踩坑经验")])
+      }
+    });
+    expect(requestedDepths).toEqual(["quick", "deep"]);
+  });
+
   it("accepts a manually entered research card for later writing", async () => {
     server = createTestServer();
     const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "手工资料卡测试" } });

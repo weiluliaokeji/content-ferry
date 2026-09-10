@@ -141,20 +141,20 @@ export async function streamMarkdownGeneration(
   }
 }
 
-export async function streamResearchGeneration(
+export async function streamResearchGeneration<T, S extends object>(
   request: FastifyRequest,
   reply: FastifyReply,
   projectId: string,
-  generate: (onStatus: (message: string) => void) => Promise<{ value: unknown; provider: string; model: string | null; usage: unknown }>,
-  save: (value: unknown) => unknown,
+  generate: (onStatus: (message: string) => void) => Promise<{ value: T; provider: string; model: string | null; usage: unknown }>,
+  save: (value: T) => S,
   lifecycle: {
     taskId?: string;
     onStatus?: (message: string) => void;
     isCancelled?: () => boolean;
     isPaused?: () => boolean;
-    saveCheckpoint?: (value: unknown) => void;
+    saveCheckpoint?: (value: T) => void;
     onPaused?: () => void;
-    onComplete?: (value: unknown) => void;
+    onComplete?: (value: S) => void;
     onError?: (error: unknown, cancelled: boolean) => void;
     onFinally?: () => void;
   } = {}
@@ -216,7 +216,7 @@ export async function streamResearchGeneration(
       if (!clientDisconnected) send("paused", { message: "研究任务已暂停，可稍后继续。", taskId: lifecycle.taskId });
       return;
     }
-    const research = save(generated.value) as Record<string, unknown>;
+    const research = save(generated.value);
     lifecycle.onComplete?.(research);
     send("complete", { ...research, taskId: lifecycle.taskId, provider: generated.provider, model: generated.model, usage: generated.usage });
   } catch (error) {

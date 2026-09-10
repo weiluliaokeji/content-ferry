@@ -1,4 +1,5 @@
 // 应用与业务类型定义（自 main.tsx 拆分，语义保持不变）
+import type { ResearchPlan } from "../shared/research-state";
 export type AppSettingsContract = {
   schemaVersion: 1;
   dataDir: string;
@@ -22,9 +23,10 @@ export type ContentSourcePreview = { rootPath: string; articleCount: number; sit
 export type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
 export type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; createdAt: string; updatedAt: string; briefReady: boolean; researchReady: boolean; outlineReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
 export type ContentBrief = { projectId: string; topic: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
+export type { ResearchDepth, ResearchPlan } from "../shared/research-state";
 export type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; retrievedAt: string; selected: boolean; provenance?: { kind: "execution_observation"; executionRunId: string; observationId: string; status: "pending" | "accepted" | "rejected"; targetType: string; runtime: string; command: string[]; networkPolicy: string; artifacts: Array<{ path: string; sha256: string }> } };
 export type SpecifiedSource = { id: string; url: string; status: "pending_manual_verification" | "verified" | "rejected" | "failed"; verificationNote: string; failureReason: string; createdAt: string; updatedAt: string };
-export type ContentResearch = { projectId: string; planMarkdown: string; sources: ResearchSource[]; specifiedSources: SpecifiedSource[]; updatedAt: string | null; taskId?: string; provider?: string; model?: string | null };
+export type ContentResearch = { projectId: string; planMarkdown: string; plan: ResearchPlan | null; sources: ResearchSource[]; specifiedSources: SpecifiedSource[]; updatedAt: string | null; taskId?: string; provider?: string; model?: string | null };
 export type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
 export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
 export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };

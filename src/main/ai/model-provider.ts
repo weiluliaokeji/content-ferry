@@ -1,4 +1,5 @@
 import type { ResearchCard, WebResearchContext } from "./research-prompts";
+import type { ResearchDepth } from "../../shared/research-state";
 
 export interface AiUsage {
   inputTokens: number;
@@ -49,6 +50,8 @@ export interface GenerateMarkdownStreamRequest {
 export interface WebResearchOptions {
   /** Incremental follow-up instruction (第二轮增量补研). */
   instruction?: string;
+  /** Execution budget only; research completeness is tracked by the application. */
+  depth?: ResearchDepth;
 }
 
 export interface ModelProvider {

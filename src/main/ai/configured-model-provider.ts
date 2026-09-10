@@ -28,8 +28,10 @@ import {
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { randomUUID } from "node:crypto";
+import type { ResearchDepth, ResearchExecution } from "../../shared/research-state";
 
-const MAX_RESEARCH_ROUNDS = 5;
+const RESEARCH_ROUNDS_BY_DEPTH: Record<ResearchDepth, number> = { quick: 1, balanced: 3, deep: 5 };
+const CODEX_RESEARCH_TIMEOUT_BY_DEPTH: Record<ResearchDepth, number> = { quick: 75_000, balanced: 150_000, deep: 240_000 };
 type AuditMeta = { task: string; skillId: string; prompt: string; provider?: string; model?: string; correlationId?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null };
 
 export class ConfiguredModelProvider implements ModelProvider {
@@ -151,6 +153,7 @@ export class ConfiguredModelProvider implements ModelProvider {
     meta.model = this.modelIdFor(provider);
     const instructions = this.skills.instructionsFor(skillId, "");
     const onStatusHook = onStatus ?? (() => {});
+    const maxRounds = RESEARCH_ROUNDS_BY_DEPTH[options?.depth ?? "balanced"];
 
     // Codex built-in search path: when the Codex connection's built-in search
     // toggle is on, let Codex perform its own retrieval + synthesis in one
@@ -167,13 +170,13 @@ export class ConfiguredModelProvider implements ModelProvider {
 
     if (this.providerSupportsTools(provider)) {
       try {
-        rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook, correlationId);
+        rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook, maxRounds, correlationId);
       } catch {
         onStatusHook("工具调用检索未成功，改用规划式检索继续补充资料…");
       }
     }
     if (accumulated.length === 0) {
-      rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, MAX_RESEARCH_ROUNDS - rounds, correlationId);
+      rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, maxRounds - rounds, correlationId);
     }
 
     if (accumulated.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
@@ -182,7 +185,8 @@ export class ConfiguredModelProvider implements ModelProvider {
       ? buildResearchFollowUpSynthesisPrompt(context, accumulated, options.instruction, instructions)
       : buildResearchSynthesisPrompt(context, accumulated, instructions);
     meta.retrieval = { rounds, sources: accumulated.length, provider: this.webSearch.activeProviderId };
-    return this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
+    const generated = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
+    return withResearchExecution(generated, { rounds, maxRounds, budgetExhausted: rounds >= maxRounds });
   }
 
   // --- research retrieval schemes -------------------------------------------
@@ -207,7 +211,7 @@ export class ConfiguredModelProvider implements ModelProvider {
 
   /** Scheme A: the model calls our web_search tool; we execute it and feed
    *  results back, looping until the model stops calling tools. */
-  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, correlationId: string): Promise<number> {
+  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string): Promise<number> {
     const tool = {
       name: "web_search",
       description: "检索网页，返回相关结果的标题、URL 与摘要，用于为文章补研查找官方与公开资料。",
@@ -218,7 +222,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       system: `你是阿文，正在为一篇中文自媒体文章做联网补研。你拥有 web_search 工具，主动调用它查找官方与公开资料，必要时多次检索，覆盖事实、限制、反例与使用路径。资料足够时，停止调用工具，用一段中文说明本次补研结论。\n文章主题：${context.topic}\n写作目标：${context.objective}\n核心角度：${context.angle}`,
       user: `请开始检索：主题「${context.topic}」`,
       tools: [tool],
-      maxRounds: MAX_RESEARCH_ROUNDS,
+      maxRounds,
       onStatus,
       correlationId,
       toolHandler: async (name, args) => {
@@ -252,17 +256,18 @@ export class ConfiguredModelProvider implements ModelProvider {
     onStatus("正在使用 Codex 内置检索联网补研…");
     const prompt = buildCodexBuiltInResearchPrompt(context, instructions, options?.instruction ? { instruction: options.instruction } : {});
     const meta: AuditMeta = { task: "research", skillId: "web-research", prompt, provider: "openai_codex", model: this.modelIdFor("openai_codex"), correlationId };
-    return this.withAudit(meta, () => this.codexProvider.generateStructured<ResearchCard>({
+    const generated = await this.withAudit(meta, () => this.codexProvider.generateStructured<ResearchCard>({
         task: "research",
         skillId: "web-research",
         prompt,
         outputSchema: RESEARCH_SCHEMA as object,
-        timeoutMs: 240_000,
+        timeoutMs: CODEX_RESEARCH_TIMEOUT_BY_DEPTH[options?.depth ?? "balanced"],
         parse: (value) => researchOutput.parse(value) as ResearchCard,
         prependInstructions: false,
         onStatus,
         webSearch: true
       }), { retrieval: (result) => ({ rounds: 1, sources: result.value.sources.length, provider: "openai_codex" }) });
+    return withResearchExecution(generated, { rounds: null, maxRounds: null, budgetExhausted: false });
   }
 
   private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string): Promise<{ action: "search" | "done"; query?: string }> {
@@ -332,7 +337,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       { role: "system", content: params.system },
       { role: "user", content: params.user }
     ];
-    const maxRounds = params.maxRounds ?? MAX_RESEARCH_ROUNDS;
+    const maxRounds = params.maxRounds ?? RESEARCH_ROUNDS_BY_DEPTH.balanced;
     for (let i = 0; i < maxRounds; i++) {
       const startedAt = Date.now();
       const prompt = JSON.stringify({ messages, tools: params.tools, tool_choice: "auto" });
@@ -729,6 +734,13 @@ function parseStructured<T>(content: string, parse: (value: unknown) => T): T {
   } catch (error) {
     throw new ModelProviderUnavailableError("模型返回的结构不完整，请重新生成。", { cause: error });
   }
+}
+
+function withResearchExecution(
+  generated: GenerateStructuredResult<ResearchCard>,
+  execution: ResearchExecution
+): GenerateStructuredResult<ResearchCard> {
+  return { ...generated, value: { ...generated.value, execution } };
 }
 
 /** True when a failed chat/completions call is due to the model not supporting

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { ResearchExecution, ResearchPlan } from "../../shared/research-state";
+import { mergeResearchPlan } from "./research-plan";
 
 export interface ResearchSource {
   id: string;
@@ -40,6 +42,7 @@ export interface ResearchProvenance {
 export interface ContentResearch {
   projectId: string;
   planMarkdown: string;
+  plan: ResearchPlan | null;
   sources: ResearchSource[];
   specifiedSources: SpecifiedSource[];
   updatedAt: string | null;
@@ -57,9 +60,12 @@ export class ContentResearchRepository {
       FROM content_research_sources WHERE project_id = ? ORDER BY retrieved_at DESC, id DESC`).all(projectId) as Array<Record<string, string | number>>;
     const specifiedSources = this.db.prepare(`SELECT id, url, status, verification_note, failure_reason, created_at, updated_at
       FROM content_specified_sources WHERE project_id = ? ORDER BY created_at ASC, id ASC`).all(projectId) as Array<Record<string, string>>;
+    const planState = this.db.prepare("SELECT state_json FROM content_research_plan_states WHERE project_id = ?")
+      .get(projectId) as { state_json: string } | undefined;
     return {
       projectId,
       planMarkdown: plan?.plan_markdown ?? "",
+      plan: parsePlan(planState?.state_json),
       sources: sources.map((source) => ({
         id: source.id as string,
         title: source.title as string,
@@ -82,6 +88,59 @@ export class ContentResearchRepository {
       })),
       updatedAt: plan?.updated_at ?? null
     };
+  }
+
+  beginPlan(projectId: string, plan: ResearchPlan): ContentResearch {
+    const now = new Date().toISOString();
+    const current = this.get(projectId).plan;
+    const next = mergeResearchPlan(current, { ...plan, updatedAt: now });
+    this.db.prepare(`INSERT INTO content_research_plan_states (project_id, state_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`)
+      .run(projectId, JSON.stringify(next), now);
+    return this.get(projectId);
+  }
+
+  completePlan(projectId: string, execution?: ResearchExecution): ContentResearch {
+    const current = this.get(projectId).plan;
+    if (!current) return this.get(projectId);
+    const sources = this.db.prepare("SELECT source_type, claims_json FROM content_research_sources WHERE project_id = ?")
+      .all(projectId) as Array<{ source_type: string; claims_json: string }>;
+    const officialCount = sources.filter((source) => source.source_type === "official").length;
+    const publicCount = sources.length - officialCount;
+    const allClaims = sources.flatMap((source) => parseClaims(source.claims_json)).join("\n");
+    const covered = [
+      sources.length ? `已保留 ${sources.length} 个可追溯来源（官方 ${officialCount}，公开 ${publicCount}）。` : "",
+      officialCount ? "已获得官方原始资料。" : "",
+      publicCount ? "已获得公开资料。" : "",
+      /限制|反例|风险|不适用|边界/i.test(allClaims) ? "已获得限制、反例或适用边界的线索。" : ""
+    ].filter(Boolean);
+    const evidenceGaps = current.evidenceDimensions.flatMap((dimension) => {
+      if (dimension === "官方原始资料" && officialCount) return [];
+      if (dimension === "独立实践、评论或案例" && publicCount) return [];
+      if (dimension === "限制、反例或适用边界" && /限制|反例|风险|不适用|边界/i.test(allClaims)) return [];
+      if (dimension === "当前版本、价格、限额或规则") return [`待人工核对：${dimension}的发布时间、版本和适用地区。`];
+      return [`待补充：${dimension}`];
+    });
+    const gaps = [...evidenceGaps];
+    for (const question of current.questions) {
+      gaps.push(`待核验：现有材料是否足以回答「${question}」`);
+    }
+    const nextExecution = execution ?? current.execution;
+    const budgetExhausted = Boolean(nextExecution?.budgetExhausted);
+    if (budgetExhausted) gaps.push("本轮执行预算已耗尽；以下材料为部分调研结果，请围绕缺口继续补研。");
+    if (sources.length === 0) gaps.push("尚未获得可追溯资料卡；请检查网络、指定来源或补研方向。");
+    const next: ResearchPlan = {
+      ...current,
+      covered,
+      gaps: [...new Set(gaps)],
+      partial: evidenceGaps.length > 0 || budgetExhausted || sources.length === 0,
+      execution: nextExecution ?? null,
+      updatedAt: new Date().toISOString()
+    };
+    this.db.prepare(`INSERT INTO content_research_plan_states (project_id, state_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`)
+      .run(projectId, JSON.stringify(next), next.updatedAt);
+    return this.get(projectId);
   }
 
   addSpecifiedSources(projectId: string, urls: string[]): ContentResearch {
@@ -190,7 +249,7 @@ export class ContentResearchRepository {
       .run(randomUUID(), projectId, input.title.trim(), url, input.excerpt.trim(), JSON.stringify(input.keyClaims.map((claim) => claim.trim()).filter(Boolean)), now);
     this.db.prepare(`INSERT INTO content_research_plans (project_id, plan_markdown, updated_at) VALUES (?, '', ?)
       ON CONFLICT(project_id) DO UPDATE SET updated_at = excluded.updated_at`).run(projectId, now);
-    return this.get(projectId);
+    return this.completePlan(projectId);
   }
 
   addExecutionObservation(projectId: string, input: {
@@ -269,4 +328,40 @@ function parseProvenance(value: string | number | undefined): ResearchProvenance
   } catch {
     return undefined;
   }
+}
+
+function parsePlan(value: string | undefined): ResearchPlan | null {
+  if (!value) return null;
+  try {
+    const plan = JSON.parse(value) as Partial<ResearchPlan>;
+    if (!plan || !["quick", "balanced", "deep"].includes(String(plan.depth))) return null;
+    return {
+      depth: plan.depth as ResearchPlan["depth"],
+      questions: stringList(plan.questions),
+      evidenceDimensions: stringList(plan.evidenceDimensions),
+      freshnessRisks: stringList(plan.freshnessRisks),
+      pendingConflicts: stringList(plan.pendingConflicts),
+      covered: stringList(plan.covered),
+      gaps: stringList(plan.gaps),
+      partial: Boolean(plan.partial),
+      execution: parseExecution(plan.execution),
+      updatedAt: typeof plan.updatedAt === "string" ? plan.updatedAt : ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function parseExecution(value: unknown): ResearchExecution | null {
+  if (!value || typeof value !== "object") return null;
+  const execution = value as Partial<ResearchExecution>;
+  return {
+    rounds: typeof execution.rounds === "number" ? execution.rounds : null,
+    maxRounds: typeof execution.maxRounds === "number" ? execution.maxRounds : null,
+    budgetExhausted: Boolean(execution.budgetExhausted)
+  };
 }

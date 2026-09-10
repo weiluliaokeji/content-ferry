@@ -3,7 +3,7 @@ import { ContentSourceError } from "../content/content-source-service";
 import {
   contentBriefInput, contentDraftInput, contentOutlineInput, contentProjectInput,
   contentProjectTitleInput, contentReviewInput, contentRevisionInput,
-  researchFollowUpInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
+  researchFollowUpInput, researchGenerateInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
 } from "./schemas";
 import {
   extractHistoricalSeries, initialArticleTitle, persistResearchConversation,
@@ -11,6 +11,7 @@ import {
 } from "./helpers";
 import type { ServerContext } from "./server-context";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
+import { buildResearchPlan } from "../content/research-plan";
 
 export function registerProjectsRoutes(ctx: ServerContext): void {
   const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks } = ctx;
@@ -53,6 +54,9 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
         });
       }
       contentResearch.addSpecifiedSources(created.id, input.specifiedSources);
+      contentResearch.beginPlan(created.id, buildResearchPlan({
+        topic: input.topic, objective: input.objective ?? "", angle: input.angle ?? "", sourceNotes: input.sourceNotes ?? "", depth: input.researchDepth
+      }));
       return created;
     })();
     return reply.code(201).send(project);
@@ -142,12 +146,21 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
 
   server.post("/api/content-projects/:projectId/research/generate", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    const task = researchTasks.create(params.projectId, "generate", { kind: "generate" });
+    const input = researchGenerateInput.parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    const brief = contentBriefs.get(params.projectId);
+    contentResearch.beginPlan(params.projectId, buildResearchPlan({
+      topic: brief.topic || project.topic, objective: brief.objective, angle: brief.angle, sourceNotes: brief.sourceNotes, depth: input.depth
+    }));
+    const task = researchTasks.create(params.projectId, "generate", { kind: "generate", depth: input.depth });
     researchTasks.transition(task.id, "running");
     ctx.researchTaskRunner?.registerActive(task.id);
     return streamResearchGeneration(request, reply, params.projectId,
-      (onStatus) => aiContent.generateResearch(params.projectId, onStatus),
-      (value) => contentResearch.save(params.projectId, value as never),
+      (onStatus) => aiContent.generateResearch(params.projectId, onStatus, { depth: input.depth }),
+      (value) => {
+        contentResearch.save(params.projectId, value);
+        return contentResearch.completePlan(params.projectId, value.execution);
+      },
       {
         taskId: task.id,
         onStatus: (message) => researchTasks.heartbeat(task.id, message),
@@ -168,14 +181,20 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     const project = contentProjects.require(params.projectId);
     contentResearch.addSpecifiedSources(params.projectId, input.specifiedSources);
     if (!input.message) return contentResearch.get(params.projectId);
-    const task = researchTasks.create(params.projectId, "follow_up", { kind: "follow_up", message: input.message });
+    const brief = contentBriefs.get(params.projectId);
+    contentResearch.beginPlan(params.projectId, buildResearchPlan({
+      topic: brief.topic || project.topic, objective: brief.objective, angle: brief.angle, sourceNotes: brief.sourceNotes,
+      instruction: input.message, depth: input.depth
+    }));
+    const task = researchTasks.create(params.projectId, "follow_up", { kind: "follow_up", message: input.message, depth: input.depth });
     researchTasks.transition(task.id, "running");
     ctx.researchTaskRunner?.registerActive(task.id);
     return streamResearchGeneration(request, reply, params.projectId,
-      (onStatus) => aiContent.generateResearchFollowUp(params.projectId, input.message, onStatus),
+      (onStatus) => aiContent.generateResearchFollowUp(params.projectId, input.message, onStatus, { depth: input.depth }),
       (value) => {
-        const research = contentResearch.append(params.projectId, value as never);
-        persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, (value as { planMarkdown: string }).planMarkdown, (value as { sources: Array<{ title: string; url: string }> }).sources);
+        contentResearch.append(params.projectId, value);
+        const research = contentResearch.completePlan(params.projectId, value.execution);
+        persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, value.planMarkdown, value.sources);
         return research;
       },
       {

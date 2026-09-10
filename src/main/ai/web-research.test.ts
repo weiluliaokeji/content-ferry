@@ -102,6 +102,28 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(new Set(record.mock.calls.map(([entry]) => entry.correlationId))).toEqual(new Set([call.correlationId]));
   });
 
+  it("uses the selected depth as an app-owned retrieval budget and exposes exhaustion", async () => {
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), undefined, fakeWebSearch());
+
+    const result = await provider.webResearch(context, () => {}, { depth: "quick" });
+
+    expect(result.value.execution).toEqual({ rounds: 1, maxRounds: 1, budgetExhausted: true });
+  });
+
+  it("uses depth only as a timeout budget for Codex built-in search", async () => {
+    const generateStructured = vi.fn(async () => ({ value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null }));
+    const builtInConnections = {
+      get: () => ({ modelId: "gpt-test", enabled: true, credentialConfigured: true, displayName: "测试", baseUrl: "https://api.openai.com/v1", proxyUrl: "", builtInSearch: true }),
+      getCredential: () => "test-key"
+    } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+    const provider = new ConfiguredModelProvider(builtInConnections, codexSkills(), { id: "codex", generateStructured } as unknown as ModelProvider, undefined, fakeWebSearch());
+
+    const result = await provider.webResearch(context, () => {}, { depth: "quick" });
+
+    expect(generateStructured).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 75_000, webSearch: true }));
+    expect(result.value.execution).toEqual({ rounds: null, maxRounds: null, budgetExhausted: false });
+  });
+
   it("scheme A: model tool-calling retrieves sources, audit records retrieval", async () => {
     const { auditLog, record } = fakeAuditLog();
     let toolRound = 0;

@@ -1,7 +1,7 @@
 import { FormEvent, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
-import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
+import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
   accounts: MediaAccount[];
@@ -62,6 +62,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [projectAngle, setProjectAngle] = useState("");
   const [projectSourceNotes, setProjectSourceNotes] = useState("");
   const [projectSpecifiedSources, setProjectSpecifiedSources] = useState("");
+  const [projectResearchDepth, setProjectResearchDepth] = useState<ResearchDepth>("balanced");
   const [briefProject, setBriefProject] = useState<ContentProject>();
   const [brief, setBrief] = useState<ContentBrief>();
   const briefRequestVersionRef = useRef(0);
@@ -95,6 +96,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   };
   const [researchProject, setResearchProject] = useState<ContentProject>();
   const [research, setResearch] = useState<ContentResearch>();
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>("balanced");
   const [researchGenerating, setResearchGenerating] = useState(false);
   const [researchFollowUp, setResearchFollowUp] = useState("");
   const [researchSpecifiedSources, setResearchSpecifiedSources] = useState("");
@@ -238,12 +240,13 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
     setSaving(true);
     try {
-      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), specifiedSources, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
+      const depth = projectResearchDepth;
+      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), specifiedSources, researchDepth: depth, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
       setProjectTopic(""); setProjectTitle(""); setProjectAccountId("");
-      setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes(""); setProjectSpecifiedSources("");
+      setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes(""); setProjectSpecifiedSources(""); setProjectResearchDepth("balanced");
       setProjectModalOpen(false);
       await loadProjects();
-      await openResearch(project, true);
+      await openResearch(project, true, depth);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "内容项目创建失败。"); }
     finally { setSaving(false); }
   };
@@ -353,7 +356,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
     throw new Error("后台补研等待时间过长，请稍后重新打开资料窗口查看。");
   };
-  const openResearch = async (project: ContentProject, generate = false) => {
+  const openResearch = async (project: ContentProject, generate = false, requestedDepth: ResearchDepth = "balanced") => {
     setResearchProject(project);
     setResearch(undefined);
     setResearchFollowUp("");
@@ -365,6 +368,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setManualSourceExcerpt("");
     setManualSourceClaims("");
     setResearchError("");
+    setResearchDepth(requestedDepth);
     try {
       if (generate) {
         setResearchGenerating(true);
@@ -376,8 +380,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
           if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
           if (event === "paused") setResearchPaused(true);
           if (event === "complete") setResearch(data as unknown as ContentResearch);
-        });
+        }, JSON.stringify({ depth: requestedDepth }));
         setResearch(research);
+        setResearchDepth(research.plan?.depth ?? requestedDepth);
         setResearchStatus("");
         await loadProjects();
       } else {
@@ -388,6 +393,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
         const activeTask = taskResult.items.find((task) => ["queued", "running", "paused"].includes(task.status));
         if (!activeTask) {
           setResearch(savedResearch);
+          setResearchDepth(savedResearch.plan?.depth ?? requestedDepth);
         } else {
           setResearch(savedResearch);
           setResearchGenerating(true);
@@ -395,6 +401,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
           researchAbortRef.current = controller;
           const recovered = await waitForResearchTask(project, activeTask.id, controller.signal);
           setResearch(recovered);
+          setResearchDepth(recovered.plan?.depth ?? requestedDepth);
           await loadProjects();
         }
       }
@@ -440,7 +447,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     try {
       const controller = new AbortController();
       researchAbortRef.current = controller;
-      const payload = JSON.stringify({ message: researchFollowUp.trim(), specifiedSources });
+      const payload = JSON.stringify({ message: researchFollowUp.trim(), specifiedSources, depth: researchDepth });
       const next = researchFollowUp.trim()
         ? await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
         if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
@@ -692,6 +699,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setProjectSourceNotes,
     projectSpecifiedSources,
     setProjectSpecifiedSources,
+    projectResearchDepth,
+    setProjectResearchDepth,
     briefProject,
     setBriefProject,
     brief,
@@ -728,6 +737,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setResearchProject,
     research,
     setResearch,
+    researchDepth,
+    setResearchDepth,
     researchGenerating,
     setResearchGenerating,
     researchFollowUp,

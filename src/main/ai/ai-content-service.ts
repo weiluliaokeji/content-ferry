@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type Database from "better-sqlite3";
-import type { GenerateStructuredResult, ModelProvider } from "./model-provider";
+import type { GenerateStructuredResult, ModelProvider, WebResearchOptions } from "./model-provider";
 import { pushField, formatResearchSources, type WebResearchContext, type ResearchCard } from "./research-prompts";
 
 const markdownOutput = z.object({ markdown: z.string().trim().min(1) });
@@ -47,7 +47,7 @@ export class AiContentService {
     return normalizeOutlineTitle(generated, context.topic);
   }
 
-  async generateResearch(projectId: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
+  async generateResearch(projectId: string, onStatus?: (message: string) => void, options?: Pick<WebResearchOptions, "depth">): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
     const researchContext: WebResearchContext = {
       topic: context.creationTopic,
@@ -58,10 +58,10 @@ export class AiContentService {
       sourceNotes: context.sourceNotes
     };
     onStatus?.("阿文正在规划检索方向并联网补研…");
-    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)));
+    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)), options);
   }
 
-  async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void): Promise<GenerateStructuredResult<ResearchCard>> {
+  async generateResearchFollowUp(projectId: string, instruction: string, onStatus?: (message: string) => void, options?: Pick<WebResearchOptions, "depth">): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
     const researchContext: WebResearchContext = {
       topic: context.creationTopic,
@@ -73,7 +73,7 @@ export class AiContentService {
       existingSources: context.researchSources
     };
     onStatus?.("阿文正在针对你的补充继续联网补研…");
-    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)), { instruction });
+    return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)), { instruction, ...options });
   }
 
   async suggestTitles(

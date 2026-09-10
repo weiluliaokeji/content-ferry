@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RESEARCH_DEPTHS } from "../../shared/research-state";
 
 export const accountInput = z.object({
   platform: z.enum(["wechat_official", "csdn", "cnblogs", "juejin", "51cto"]),
@@ -48,6 +49,7 @@ const specifiedSourceUrlInput = z.string().trim().min(1).max(4000).superRefine((
     ctx.addIssue({ code: "custom", message: "指定资料链接必须是有效的 HTTP(S) 地址。" });
   }
 });
+const researchDepthInput = z.enum(RESEARCH_DEPTHS).default("balanced");
 export const contentProjectInput = z.object({
   topic: z.string().trim().min(1).max(12000),
   title: z.string().trim().min(1).max(120).optional(),
@@ -56,7 +58,8 @@ export const contentProjectInput = z.object({
   audience: z.string().max(4000).optional(),
   angle: z.string().max(4000).optional(),
   sourceNotes: z.string().max(12000).optional(),
-  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([])
+  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([]),
+  researchDepth: researchDepthInput
 });
 export const contentProjectTitleInput = z.object({ title: z.string().trim().min(1).max(120) });
 export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
@@ -66,12 +69,14 @@ export const contentDraftInput = z.object({ markdown: z.string().trim().min(1).m
 export const researchSelectionInput = z.object({ selected: z.boolean() });
 export const researchFollowUpInput = z.object({
   message: z.string().trim().max(4000).default(""),
-  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([])
+  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([]),
+  depth: researchDepthInput
 }).superRefine((value, ctx) => {
   if (!value.message && value.specifiedSources.length === 0) {
     ctx.addIssue({ code: "custom", message: "请填写补研要求或至少提供一条指定资料链接。", path: ["message"] });
   }
 });
+export const researchGenerateInput = z.object({ depth: researchDepthInput }).default({ depth: "balanced" });
 export const specifiedSourceStatusInput = z.object({
   status: z.enum(["pending_manual_verification", "verified", "rejected", "failed"]),
   verificationNote: z.string().trim().max(5000).default(""),

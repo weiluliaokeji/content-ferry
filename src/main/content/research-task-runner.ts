@@ -5,6 +5,8 @@ import type { ContentProjectRepository } from "./content-project-repository";
 import type { ContentResearchRepository } from "./content-research-repository";
 import { persistResearchConversation } from "../server/helpers";
 import { ResearchTaskRepository } from "./research-task-repository";
+import type { ResearchDepth } from "../../shared/research-state";
+import type { ResearchCard } from "../ai/research-prompts";
 
 /** Resumes queued research after a desktop restart; active requests remain user-cancellable. */
 export class ResearchTaskRunner {
@@ -66,8 +68,9 @@ export class ResearchTaskRunner {
     this.active.add(taskId);
     try {
       const task = this.tasks.require(taskId);
-      const request = task.request && typeof task.request === "object" ? task.request as { message?: unknown } : {};
+      const request = task.request && typeof task.request === "object" ? task.request as { message?: unknown; depth?: unknown } : {};
       const instruction = typeof request.message === "string" ? request.message.trim() : "";
+      const depth: ResearchDepth = request.depth === "quick" || request.depth === "deep" ? request.depth : "balanced";
       if (task.kind === "follow_up" && !instruction) throw new Error("补充资料任务缺少补充说明，无法恢复。 ");
       const onStatus = (message: string) => {
         if (this.stopping) return;
@@ -76,10 +79,10 @@ export class ResearchTaskRunner {
         // of forcing a full network/model rerun after resume.
         if (!this.tasks.isPaused(taskId) && !this.tasks.isCancelRequested(taskId)) this.tasks.heartbeat(taskId, message);
       };
-      const checkpoint = this.tasks.getCheckpoint<{ planMarkdown: string; sources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public" }> }>(taskId, "generated");
+      const checkpoint = this.tasks.getCheckpoint<ResearchCard>(taskId, "generated");
       const generatedValue = checkpoint ?? (task.kind === "follow_up"
-        ? (await this.aiContent.generateResearchFollowUp(task.projectId, instruction, onStatus)).value
-        : (await this.aiContent.generateResearch(task.projectId, onStatus)).value);
+        ? (await this.aiContent.generateResearchFollowUp(task.projectId, instruction, onStatus, { depth })).value
+        : (await this.aiContent.generateResearch(task.projectId, onStatus, { depth })).value);
       if (!checkpoint) {
         try { this.tasks.saveCheckpoint(taskId, "generated", generatedValue); }
         catch (checkpointError) {
@@ -97,9 +100,9 @@ export class ResearchTaskRunner {
         return;
       }
       const value = generatedValue;
-      const saved = task.kind === "follow_up"
-        ? this.research.append(task.projectId, value)
-        : this.research.save(task.projectId, value);
+      if (task.kind === "follow_up") this.research.append(task.projectId, value);
+      else this.research.save(task.projectId, value);
+      const saved = this.research.completePlan(task.projectId, value.execution);
       if (task.kind === "follow_up") {
         const project = this.projects.require(task.projectId);
         persistResearchConversation(

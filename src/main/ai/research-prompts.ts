@@ -8,6 +8,7 @@
  * sources into traceable research cards.
  */
 import { z } from "zod";
+import type { ResearchExecution } from "../../shared/research-state";
 
 export const researchOutput = z.object({
   planMarkdown: z.string().trim().min(1).max(12000),
@@ -72,6 +73,8 @@ export interface WebResearchContext {
 export interface ResearchCard {
   planMarkdown: string;
   sources: WebResearchSourceRef[];
+  /** App-owned execution metadata, added after structured model output is parsed. */
+  execution?: ResearchExecution;
 }
 
 const MAX_PROMPT_SEARCH_SOURCES = 10;
