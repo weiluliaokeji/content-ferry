@@ -27,6 +27,7 @@ export interface CreationContext {
   regularColumns: string;
   outlineMarkdown: string | null;
   researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; provenanceNote?: string }>;
+  researchGaps: string[];
 }
 
 export class AiContentService {
@@ -55,7 +56,8 @@ export class AiContentService {
       audience: context.audience,
       angle: context.angle,
       positioning: context.positioning,
-      sourceNotes: context.sourceNotes
+      sourceNotes: context.sourceNotes,
+      coverageGaps: context.researchGaps
     };
     onStatus?.("阿文正在规划检索方向并联网补研…");
     return this.provider.webResearch(researchContext, (message) => onStatus?.(translateResearchStatus(message)), options);
@@ -70,6 +72,7 @@ export class AiContentService {
       angle: context.angle,
       positioning: context.positioning,
       sourceNotes: context.sourceNotes,
+      coverageGaps: context.researchGaps,
       existingSources: context.researchSources
     };
     onStatus?.("阿文正在针对你的补充继续联网补研…");
@@ -182,6 +185,7 @@ export class AiContentService {
       writingStyle: row.writing_style ?? "",
       regularColumns: row.regular_columns ?? "",
       outlineMarkdown: row.outline_markdown,
+      researchGaps: parseResearchGaps((this.db.prepare("SELECT state_json FROM content_research_plan_states WHERE project_id = ?").get(projectId) as { state_json?: string } | undefined)?.state_json),
       researchSources: sources.map((source) => ({
         title: source.title,
         url: source.url,
@@ -192,6 +196,13 @@ export class AiContentService {
       }))
     };
   }
+}
+
+function parseResearchGaps(value: string | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value ?? "{}") as { gaps?: unknown };
+    return Array.isArray(parsed.gaps) ? parsed.gaps.filter((gap): gap is string => typeof gap === "string" && gap.trim().length > 0) : [];
+  } catch { return []; }
 }
 
 function parseObservationNote(value: string | undefined): string | undefined {

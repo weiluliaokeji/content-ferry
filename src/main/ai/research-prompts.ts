@@ -89,6 +89,8 @@ export interface WebResearchContext {
   angle: string;
   positioning: string;
   sourceNotes: string;
+  /** App-owned unresolved coverage gaps. The provider, not the planner, decides when these are exhausted. */
+  coverageGaps?: string[];
   /** Already-selected sources, supplied on incremental (follow-up) research. */
   existingSources?: WebResearchSourceRef[];
 }
@@ -162,7 +164,10 @@ export function buildPlannerPrompt(context: WebResearchContext, rawSourcesSoFar:
 ${contextBlock(context)}
 
 已检索到第 ${round} 轮，共计划最多 ${maxRounds} 轮。已得资料（${sourcesSoFar.length} 条）：
-${sourcesSoFar.length === 0 ? "（暂无）" : sourcesSoFar.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n摘要: ${s.snippet}`).join("\n\n")}`;
+${sourcesSoFar.length === 0 ? "（暂无）" : sourcesSoFar.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n摘要: ${s.snippet}`).join("\n\n")}
+
+应用仍需补足的覆盖缺口：
+${context.coverageGaps?.length ? context.coverageGaps.map((gap) => `- ${gap}`).join("\n") : "（无；应用可结束本轮）"}`;
 }
 
 /**

@@ -164,7 +164,7 @@ export class ConfiguredModelProvider implements ModelProvider {
         onStatusHook("工具调用检索未成功，改用规划式检索继续补充资料…");
       }
     }
-    if (accumulated.length === 0) {
+    if (accumulated.length === 0 || (context.coverageGaps?.length && rounds < maxRounds)) {
       rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, maxRounds - rounds, correlationId);
     }
 
@@ -185,11 +185,13 @@ export class ConfiguredModelProvider implements ModelProvider {
   /** Scheme B: app drives the loop; the model returns a JSON plan each round. */
   private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string): Promise<number> {
     let rounds = 0;
+    const gaps = [...(context.coverageGaps ?? [])];
     for (let round = 1; round <= maxRounds; round++) {
       onStatus(`第 ${round} 轮研究：规划检索方向…`);
       const plan = await this.dispatchPlanner(provider, context, accumulated, round, maxRounds, onStatus, correlationId);
-      if (plan.action === "done") break;
-      const query = (plan.query ?? "").trim();
+      const gap = gaps.shift();
+      if (plan.action === "done" && !gap) break;
+      const query = gap ? coverageQuery(context.topic, gap) : (plan.query ?? "").trim();
       if (!query) break;
       rounds++;
       onStatus(`第 ${round} 轮研究：检索「${query}」`);
@@ -783,6 +785,10 @@ function canonicalUrl(value: string): string {
   } catch {
     return value.trim();
   }
+}
+
+function coverageQuery(topic: string, gap: string): string {
+  return `${topic} ${gap.replace(/^(待补充|待核验)：?/, "").trim()}`;
 }
 
 /** True when a failed chat/completions call is due to the model not supporting

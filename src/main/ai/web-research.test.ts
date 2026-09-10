@@ -117,6 +117,15 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(result.value.execution).toEqual({ rounds: 1, maxRounds: 1, budgetExhausted: true });
   });
 
+  it("continues for application-owned coverage gaps even when the planner says done", async () => {
+    const webSearch = fakeWebSearch();
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), undefined, webSearch);
+    await provider.webResearch({ ...context, coverageGaps: ["待补充：官方原始资料", "待补充：限制、反例或适用边界"] }, () => {}, { depth: "balanced" });
+    expect(webSearch.search).toHaveBeenCalledTimes(2);
+    expect(webSearch.search).toHaveBeenNthCalledWith(1, expect.stringContaining("官方原始资料"));
+    expect(webSearch.search).toHaveBeenNthCalledWith(2, expect.stringContaining("限制、反例"));
+  });
+
   it("uses the app-owned body verification path even when Codex built-in search is enabled", async () => {
     const generateStructured = vi.fn(async (request: { prependInstructions?: boolean }) => {
       if (request.prependInstructions) return { value: { action: "search", query: "核验词" }, provider: "openai_codex", model: "gpt-test", usage: null };

@@ -94,6 +94,7 @@ OpenAI API Key provider 与其他模型后续复用同一接口；切换 provide
 - 多轮主动探索在两个方案中都保留，由 `ConfiguredModelProvider.webResearch` 统一编排：
   - 方案 B（通用，任何不支持工具调用的模型都可用）：由应用驱动循环；每轮让模型按 JSON 协议 `{action:"search"|"done", query?}` 规划下一步检索方向，应用执行 `WebSearchClient.search` 并累积来源。快速核实、均衡调研、深入研究分别提供 1/3/5 轮的应用检索预算；预算只是成本上限，是否仍有缺口由研究状态判断。
   - 方案 A（模型支持工具调用时优先：openai / openrouter / nous / nvidia_build）：把 `web_search` 作为函数工具暴露给模型，由主进程执行工具循环（模型发工具调用 → 应用检索 → 回填结果 → 重复直至模型停止）。若方案 A 失败或无工具调用，自动降级到方案 B。
+- 完成条件由应用持有：`content_research_plan_states.gaps` 中仍有待补充维度时，编排器会用该缺口构造后续检索，即使规划模型返回 `done` 也不会提前结束；预算耗尽则保留这些缺口并标记部分调研。模型只决定如何辅助检索和综合，不能自行宣告覆盖完成。
 - 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
 - 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
 - 当前研究状态单独存入 `content_research_plan_states`：保存结构化问题、证据维度、时效风险、待比对冲突、覆盖与缺口，以及可获得时的执行预算信息。应用检索链以轮数控制深度。`content_research_plans` 继续保存面向作者的 Markdown 结论；两者都不替代来源采纳记录。
