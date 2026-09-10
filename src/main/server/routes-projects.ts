@@ -214,7 +214,18 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
   server.patch("/api/content-projects/:projectId/research/sources/:sourceId", async (request) => {
     const params = z.object({ projectId: z.string().uuid(), sourceId: z.string().uuid() }).parse(request.params);
     const input = researchSelectionInput.parse(request.body);
-    return contentResearch.updateSelection(params.projectId, params.sourceId, input.selected);
+    return contentResearch.updateAdoption(params.projectId, params.sourceId, input.adoptionStatus);
+  });
+
+  server.post("/api/content-projects/:projectId/research/sources/:sourceId/split", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), sourceId: z.string().uuid() }).parse(request.params);
+    return contentResearch.split(params.projectId, params.sourceId);
+  });
+
+  server.post("/api/content-projects/:projectId/research/sources/:sourceId/merge", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), sourceId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ targetId: z.string().uuid() }).parse(request.body);
+    return contentResearch.merge(params.projectId, input.targetId, params.sourceId);
   });
 
   server.patch("/api/content-projects/:projectId/research/specified-sources/:sourceId", async (request) => {

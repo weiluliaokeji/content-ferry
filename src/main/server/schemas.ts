@@ -66,7 +66,7 @@ export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(
 export const titleSuggestionInput = contentBriefInput;
 export const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
 export const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
-export const researchSelectionInput = z.object({ selected: z.boolean() });
+export const researchSelectionInput = z.object({ adoptionStatus: z.enum(["recommended", "adopted", "rejected", "pending_verification"]) });
 export const researchFollowUpInput = z.object({
   message: z.string().trim().max(4000).default(""),
   specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([]),

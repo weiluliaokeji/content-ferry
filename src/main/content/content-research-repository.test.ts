@@ -55,6 +55,22 @@ describe("ContentResearchRepository", () => {
     }
   });
 
+  it("keeps author adoption decisions separate from AI recommendations", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-adoption", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-adoption", "workspace-adoption", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const created = repository.save("project-adoption", { planMarkdown: "结论", sources: [{ title: "AI 推荐", url: "https://example.com/recommended", excerpt: "事实", keyClaims: ["主张"], sourceType: "official" }] });
+      expect(created.sources[0]).toMatchObject({ adoptionStatus: "recommended", selected: false });
+      const pending = repository.updateAdoption("project-adoption", created.sources[0].id, "pending_verification");
+      expect(pending.sources[0]).toMatchObject({ adoptionStatus: "pending_verification", selected: false });
+      const adopted = repository.updateAdoption("project-adoption", created.sources[0].id, "adopted");
+      expect(adopted.sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
+    } finally { database.close(); }
+  });
+
   it("stores a compact, hashed evidence snapshot for a manual card", () => {
     const database = openInMemoryDatabase();
     try {

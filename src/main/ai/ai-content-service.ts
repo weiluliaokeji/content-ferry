@@ -171,8 +171,8 @@ export class AiContentService {
     `).get(projectId) as Record<string, string | null> | undefined;
 
     if (!row) throw new Error("Content project not found.");
-    const sources = this.db.prepare(`SELECT title, url, excerpt, claims_json, provenance_json, source_type
-      FROM content_research_sources WHERE project_id = ? AND selected = 1 ORDER BY retrieved_at DESC`).all(projectId) as Array<Record<string, string>>;
+    const sources = this.db.prepare(`SELECT title, url, excerpt, claims_json, provenance_json, evidence_json, source_type
+      FROM content_research_sources WHERE project_id = ? AND adoption_status = 'adopted' ORDER BY retrieved_at DESC`).all(projectId) as Array<Record<string, string>>;
     return {
       topic: row.topic ?? "",
       creationTopic: row.creation_topic ?? row.topic ?? "",
@@ -192,7 +192,7 @@ export class AiContentService {
         excerpt: source.excerpt,
         keyClaims: parseResearchClaims(source.claims_json),
         sourceType: source.source_type === "official" ? "official" : "public",
-        provenanceNote: parseObservationNote(source.provenance_json)
+        provenanceNote: parseObservationNote(source.provenance_json) ?? parseEvidenceNote(source.evidence_json)
       }))
     };
   }
@@ -212,6 +212,14 @@ function parseObservationNote(value: string | undefined): string | undefined {
     return parsed.kind === "execution_observation"
       ? `仅表示执行记录 ${parsed.executionRunId ?? ""} 在 ${parsed.targetType ?? "指定目标"} / ${parsed.runtime ?? "指定运行时"} 下的观察，不是通用保证。`
       : undefined;
+  } catch { return undefined; }
+}
+
+function parseEvidenceNote(value: string | undefined): string | undefined {
+  try {
+    const evidence = JSON.parse(value ?? "{}") as { freshness?: unknown; boundary?: unknown };
+    const parts = [typeof evidence.freshness === "string" ? `时效：${evidence.freshness}` : "", typeof evidence.boundary === "string" ? `边界：${evidence.boundary}` : ""].filter(Boolean);
+    return parts.length ? parts.join("；") : undefined;
   } catch { return undefined; }
 }
 

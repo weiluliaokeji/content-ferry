@@ -414,17 +414,18 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setResearchStatus("");
     }
   };
-  const toggleResearchSource = async (source: ResearchSource) => {
+  const updateResearchAdoption = async (source: ResearchSource, adoptionStatus: ResearchSource["adoptionStatus"]) => {
     if (!researchProject) return;
     try {
       const next = await request<ContentResearch>(`/content-projects/${researchProject.id}/research/sources/${source.id}`, {
-        method: "PATCH", body: JSON.stringify({ selected: !source.selected })
+        method: "PATCH", body: JSON.stringify({ adoptionStatus })
       });
       setResearch(next);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "资料卡更新失败。");
     }
   };
+  const toggleResearchSource = async (source: ResearchSource) => updateResearchAdoption(source, source.adoptionStatus === "adopted" ? "rejected" : "adopted");
   const updateSpecifiedSource = async (source: SpecifiedSource, status: SpecifiedSource["status"]) => {
     if (!researchProject) return;
     const note = (specifiedSourceNotes[source.id] ?? (status === "failed" ? source.failureReason : source.verificationNote)).trim();
@@ -802,6 +803,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     changeBrief,
     openResearch,
     toggleResearchSource,
+    updateResearchAdoption,
     updateSpecifiedSource,
     continueResearch,
     cancelResearch,

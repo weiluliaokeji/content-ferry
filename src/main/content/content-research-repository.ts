@@ -12,6 +12,7 @@ export interface ResearchSource {
   keyClaims: string[];
   sourceType: "official" | "public";
   evidence?: ResearchEvidence;
+  adoptionStatus: "recommended" | "adopted" | "rejected" | "pending_verification";
   provenance?: ResearchProvenance;
   retrievedAt: string;
   selected: boolean;
@@ -58,7 +59,7 @@ export class ContentResearchRepository {
   get(projectId: string): ContentResearch {
     const plan = this.db.prepare("SELECT plan_markdown, updated_at FROM content_research_plans WHERE project_id = ?")
       .get(projectId) as { plan_markdown: string; updated_at: string } | undefined;
-    const sources = this.db.prepare(`SELECT id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected
+    const sources = this.db.prepare(`SELECT id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected
       FROM content_research_sources WHERE project_id = ? ORDER BY retrieved_at DESC, id DESC`).all(projectId) as Array<Record<string, string | number>>;
     const specifiedSources = this.db.prepare(`SELECT id, url, status, verification_note, failure_reason, created_at, updated_at
       FROM content_specified_sources WHERE project_id = ? ORDER BY created_at ASC, id ASC`).all(projectId) as Array<Record<string, string>>;
@@ -76,6 +77,7 @@ export class ContentResearchRepository {
         keyClaims: parseClaims(source.claims_json),
         sourceType: source.source_type === "official" ? "official" : "public",
         evidence: parseEvidence(source.evidence_json),
+        adoptionStatus: parseAdoptionStatus(source.adoption_status),
         provenance: parseProvenance(source.provenance_json),
         retrievedAt: source.retrieved_at as string,
         selected: Boolean(source.selected)
@@ -181,7 +183,7 @@ export class ContentResearchRepository {
       .run(verificationNote.trim(), new Date().toISOString(), projectId, normalizePublicResearchUrl(url));
   }
 
-  save(projectId: string, input: { planMarkdown: string; sources: Omit<ResearchSource, "id" | "retrievedAt" | "selected">[] }): ContentResearch {
+  save(projectId: string, input: { planMarkdown: string; sources: Omit<ResearchSource, "id" | "retrievedAt" | "selected" | "adoptionStatus">[] }): ContentResearch {
     const now = new Date().toISOString();
     const save = this.db.transaction(() => {
       this.db.prepare(`INSERT INTO content_research_plans (project_id, plan_markdown, updated_at) VALUES (?, ?, ?)
@@ -189,8 +191,8 @@ export class ContentResearchRepository {
         .run(projectId, input.planMarkdown, now);
       this.db.prepare("DELETE FROM content_research_sources WHERE project_id = ?").run(projectId);
       const insert = this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 1)`);
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'recommended', ?, ?, 0)`);
       const seen = new Set<string>();
       for (const source of input.sources) {
         const url = normalizeResearchUrl(source.url);
@@ -203,7 +205,7 @@ export class ContentResearchRepository {
     return this.get(projectId);
   }
 
-  append(projectId: string, input: { planMarkdown: string; sources: Omit<ResearchSource, "id" | "retrievedAt" | "selected">[] }): ContentResearch {
+  append(projectId: string, input: { planMarkdown: string; sources: Omit<ResearchSource, "id" | "retrievedAt" | "selected" | "adoptionStatus">[] }): ContentResearch {
     const now = new Date().toISOString();
     const append = this.db.transaction(() => {
       const existingPlan = this.db.prepare("SELECT plan_markdown FROM content_research_plans WHERE project_id = ?")
@@ -217,8 +219,8 @@ export class ContentResearchRepository {
       const existingSources = this.db.prepare("SELECT url FROM content_research_sources WHERE project_id = ?").all(projectId) as Array<{ url: string }>;
       const existingUrls = new Set(existingSources.map((row) => normalizeResearchUrl(row.url)));
       const insert = this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 1)`);
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'recommended', ?, ?, 0)`);
       for (const source of input.sources) {
         const url = normalizeResearchUrl(source.url);
         if (existingUrls.has(url)) continue;
@@ -233,8 +235,52 @@ export class ContentResearchRepository {
   updateSelection(projectId: string, sourceId: string, selected: boolean): ContentResearch {
     const exists = this.db.prepare("SELECT 1 FROM content_research_sources WHERE id = ? AND project_id = ?").get(sourceId, projectId);
     if (!exists) throw new Error("找不到这张资料卡。");
-    this.db.prepare("UPDATE content_research_sources SET selected = ? WHERE id = ? AND project_id = ?")
-      .run(selected ? 1 : 0, sourceId, projectId);
+    this.updateAdoption(projectId, sourceId, selected ? "adopted" : "rejected");
+    return this.get(projectId);
+  }
+
+  updateAdoption(projectId: string, sourceId: string, adoptionStatus: ResearchSource["adoptionStatus"]): ContentResearch {
+    const exists = this.db.prepare("SELECT 1 FROM content_research_sources WHERE id = ? AND project_id = ?").get(sourceId, projectId);
+    if (!exists) throw new Error("找不到这张资料卡。");
+    this.db.prepare("UPDATE content_research_sources SET adoption_status = ?, selected = ? WHERE id = ? AND project_id = ?")
+      .run(adoptionStatus, adoptionStatus === "adopted" ? 1 : 0, sourceId, projectId);
+    return this.get(projectId);
+  }
+
+  merge(projectId: string, targetId: string, sourceId: string): ContentResearch {
+    if (targetId === sourceId) throw new ContentResearchError("请选择另一张资料卡进行合并。");
+    const cards = this.get(projectId).sources;
+    const target = cards.find((card) => card.id === targetId);
+    const source = cards.find((card) => card.id === sourceId);
+    if (!target || !source) throw new ContentResearchError("找不到要合并的资料卡。");
+    const snapshots = [...(target.evidence?.snapshots ?? []), ...(source.evidence?.snapshots ?? [])]
+      .filter((snapshot, index, all) => all.findIndex((item) => item.url === snapshot.url) === index);
+    const evidence = target.evidence ? { ...target.evidence, sourceUrls: snapshots.map((snapshot) => snapshot.url), snapshots } : undefined;
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE content_research_sources SET claims_json = ?, evidence_json = ? WHERE id = ? AND project_id = ?")
+        .run(JSON.stringify([...new Set([...target.keyClaims, ...source.keyClaims])]), JSON.stringify(evidence ?? {}), targetId, projectId);
+      this.db.prepare("DELETE FROM content_research_sources WHERE id = ? AND project_id = ?").run(sourceId, projectId);
+    })();
+    return this.get(projectId);
+  }
+
+  split(projectId: string, sourceId: string): ContentResearch {
+    const source = this.get(projectId).sources.find((card) => card.id === sourceId);
+    const snapshots = source?.evidence?.snapshots ?? [];
+    if (!source || snapshots.length < 2) throw new ContentResearchError("这张资料卡没有可拆分的多个来源。");
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      for (const snapshot of snapshots.slice(1)) {
+        const evidence = { ...source.evidence!, sourceUrls: [snapshot.url], snapshots: [snapshot] };
+        this.db.prepare(`INSERT INTO content_research_sources (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected)
+          VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)`)
+          .run(randomUUID(), projectId, source.title, snapshot.url, source.excerpt, JSON.stringify(source.keyClaims), JSON.stringify(evidence), source.adoptionStatus, source.sourceType, now, source.adoptionStatus === "adopted" ? 1 : 0);
+      }
+      const first = snapshots[0];
+      const evidence = { ...source.evidence!, sourceUrls: [first.url], snapshots: [first] };
+      this.db.prepare("UPDATE content_research_sources SET url = ?, evidence_json = ? WHERE id = ? AND project_id = ?")
+        .run(first.url, JSON.stringify(evidence), sourceId, projectId);
+    })();
     return this.get(projectId);
   }
 
@@ -247,8 +293,8 @@ export class ContentResearchRepository {
       if (existing) return this.get(projectId);
     }
     this.db.prepare(`INSERT INTO content_research_sources
-      (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
-      VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'public', ?, 1)`)
+      (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected)
+      VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'adopted', 'public', ?, 1)`)
       .run(randomUUID(), projectId, input.title.trim(), url, input.excerpt.trim(), JSON.stringify(input.keyClaims.map((claim) => claim.trim()).filter(Boolean)), JSON.stringify(manualEvidence(input, url, now)), now);
     this.db.prepare(`INSERT INTO content_research_plans (project_id, plan_markdown, updated_at) VALUES (?, '', ?)
       ON CONFLICT(project_id) DO UPDATE SET updated_at = excluded.updated_at`).run(projectId, now);
@@ -273,8 +319,8 @@ export class ContentResearchRepository {
           provenance_json = excluded.provenance_json, updated_at = excluded.updated_at`)
         .run(input.observationId, projectId, input.executionRunId, input.title.trim(), input.claim.trim(), JSON.stringify(input.provenance), now, now);
       this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'public', ?, 1)
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_status, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'adopted', 'public', ?, 1)
         ON CONFLICT(id) DO UPDATE SET title = excluded.title, excerpt = excluded.excerpt,
           claims_json = excluded.claims_json, provenance_json = excluded.provenance_json, retrieved_at = excluded.retrieved_at`)
         .run(input.observationId, projectId, `实验观察 · ${input.title.trim()}`, url,
@@ -321,6 +367,10 @@ function parseClaims(value: string | number): string[] {
   } catch {
     return [];
   }
+}
+
+function parseAdoptionStatus(value: unknown): ResearchSource["adoptionStatus"] {
+  return value === "adopted" || value === "rejected" || value === "pending_verification" ? value : "recommended";
 }
 
 function parseProvenance(value: string | number | undefined): ResearchProvenance | undefined {

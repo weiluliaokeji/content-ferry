@@ -1016,16 +1016,16 @@ describe("local API scaffold", () => {
     expect(research.statusCode).toBe(200);
     const researchResult = parseSseCompleteEvent(research.body) as {
       planMarkdown: string;
-      sources: Array<{ id: string; title: string; selected: boolean }>;
+      sources: Array<{ id: string; title: string; selected: boolean; adoptionStatus: string }>;
     };
-    expect(researchResult).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: true }] });
+    expect(researchResult).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: false, adoptionStatus: "recommended" }] });
     const researchTasks = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research/tasks` });
     expect(researchTasks.statusCode).toBe(200);
     expect(researchTasks.json().items[0]).toMatchObject({ projectId: project.json().id, kind: "generate", status: "completed" });
     const researchSourceId = researchResult.sources[0].id;
-    const deselected = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { selected: false } });
+    const deselected = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { adoptionStatus: "pending_verification" } });
     expect(deselected.statusCode).toBe(200);
-    expect(deselected.json().sources[0]).toMatchObject({ id: researchSourceId, selected: false });
+    expect(deselected.json().sources[0]).toMatchObject({ id: researchSourceId, selected: false, adoptionStatus: "pending_verification" });
 
     const outline = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/outline/generate`, payload: {} });
     expect(outline.statusCode).toBe(200);
@@ -1034,11 +1034,15 @@ describe("local API scaffold", () => {
     expect(projectsBeforeSave.json().items[0].outlineReady).toBe(false);
 
     await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: outline.json().markdown } });
+    const adopted = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { adoptionStatus: "adopted" } });
+    expect(adopted.json().sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
     const draft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
     expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI Agent 如何改变开发流程\n\n这是一份由测试模型生成的正文。" });
     expect(prompts[0]).toContain("账号定位：帮助技术从业者理解 AI 工具");
     expect(prompts[0]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
     expect(prompts[1]).toContain("已确认提纲");
+    expect(prompts[0]).not.toContain("示例官方文档");
+    expect(prompts[1]).toContain("示例官方文档");
   });
 
   it("appends follow-up research and records it in the article's Awen conversation", async () => {

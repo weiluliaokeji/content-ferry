@@ -179,6 +179,7 @@ export function initialiseDatabase(db: Database.Database): void {
       claims_json TEXT NOT NULL DEFAULT '[]',
       provenance_json TEXT NOT NULL DEFAULT '{}',
       evidence_json TEXT NOT NULL DEFAULT '{}',
+      adoption_status TEXT NOT NULL DEFAULT 'recommended' CHECK(adoption_status IN ('recommended', 'adopted', 'rejected', 'pending_verification')),
       source_type TEXT NOT NULL CHECK(source_type IN ('official', 'public')),
       retrieved_at TEXT NOT NULL,
       selected INTEGER NOT NULL DEFAULT 1
@@ -806,6 +807,10 @@ export function initialiseDatabase(db: Database.Database): void {
   }
   if (!researchSourceColumns.some((column) => column.name === "evidence_json")) {
     db.exec("ALTER TABLE content_research_sources ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!researchSourceColumns.some((column) => column.name === "adoption_status")) {
+    db.exec("ALTER TABLE content_research_sources ADD COLUMN adoption_status TEXT NOT NULL DEFAULT 'recommended'");
+    db.exec("UPDATE content_research_sources SET adoption_status = CASE WHEN selected = 1 THEN 'adopted' ELSE 'rejected' END");
   }
 
   const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;
