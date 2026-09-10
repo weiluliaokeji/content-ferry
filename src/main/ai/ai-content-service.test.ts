@@ -72,6 +72,20 @@ describe("prompt builders omit empty optional fields", () => {
     expect(prompt).not.toContain("账号定位：");
   });
 
+  it("passes complete adopted evidence to writing without forcing public citations", () => {
+    const prompt = buildDraftPrompt(baseContext({
+      outlineMarkdown: "# 大纲\n- 一",
+      researchSources: [{ title: "评测", url: "https://example.com/review", excerpt: "摘录", keyClaims: ["主张"], sourceType: "public", evidence: {
+        claim: "适合新手", recommendation: "包含实践经验", qualityReason: "作者实测", freshness: "2026-09", boundary: "仅适用于当前版本", kind: "review",
+        sourceUrls: ["https://example.com/review", "https://example.com/second"], snapshots: []
+      } }]
+    }));
+    expect(prompt).toContain("可支持的主张: 适合新手");
+    expect(prompt).toContain("质量判断: 作者实测");
+    expect(prompt).toContain("同质来源: https://example.com/review；https://example.com/second");
+    expect(prompt).toContain("不要自动在正文插入脚注、外链或归因文字");
+  });
+
   it("revision prompt omits empty 目标读者/账号定位 etc.", () => {
     const prompt = buildRevisionPrompt(baseContext(), "正文", "朱雀低风险", "去套路化");
     expect(prompt).toContain("文章主题：AI 写作工具横评");

@@ -71,6 +71,34 @@ describe("ContentResearchRepository", () => {
     } finally { database.close(); }
   });
 
+  it("splits and merges homogeneous sources without losing author adoption", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-merge", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-merge", "workspace-merge", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const created = repository.save("project-merge", { planMarkdown: "结论", sources: [{
+        title: "合并资料", url: "https://example.com/one", excerpt: "事实", keyClaims: ["主张"], sourceType: "public", evidence: {
+          claim: "同一主张", recommendation: "便于对比", qualityReason: "正文可核验", freshness: "当前", boundary: "仅供参考", kind: "review",
+          sourceUrls: ["https://example.com/one", "https://example.com/two"], snapshots: [
+            { url: "https://example.com/one", excerpt: "一", capturedAt: now, sha256: "a".repeat(64) },
+            { url: "https://example.com/two", excerpt: "二", capturedAt: now, sha256: "b".repeat(64) }
+          ]
+        }
+      }] });
+      const adopted = repository.updateAdoption("project-merge", created.sources[0].id, "adopted");
+      const split = repository.split("project-merge", adopted.sources[0].id);
+      expect(split.sources).toHaveLength(2);
+      expect(split.sources.every((source) => source.adoptionStatus === "adopted" && source.selected)).toBe(true);
+      expect(split.sources.flatMap((source) => source.evidence?.snapshots ?? [])).toHaveLength(2);
+      const merged = repository.merge("project-merge", split.sources[0].id, split.sources[1].id);
+      expect(merged.sources).toHaveLength(1);
+      expect(merged.sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
+      expect(merged.sources[0].evidence?.snapshots).toHaveLength(2);
+    } finally { database.close(); }
+  });
+
   it("stores a compact, hashed evidence snapshot for a manual card", () => {
     const database = openInMemoryDatabase();
     try {

@@ -255,7 +255,8 @@ export class ContentResearchRepository {
     if (!target || !source) throw new ContentResearchError("找不到要合并的资料卡。");
     const snapshots = [...(target.evidence?.snapshots ?? []), ...(source.evidence?.snapshots ?? [])]
       .filter((snapshot, index, all) => all.findIndex((item) => item.url === snapshot.url) === index);
-    const evidence = target.evidence ? { ...target.evidence, sourceUrls: snapshots.map((snapshot) => snapshot.url), snapshots } : undefined;
+    const evidenceBase = target.evidence ?? source.evidence;
+    const evidence = evidenceBase ? { ...evidenceBase, sourceUrls: snapshots.map((snapshot) => snapshot.url), snapshots } : undefined;
     this.db.transaction(() => {
       this.db.prepare("UPDATE content_research_sources SET claims_json = ?, evidence_json = ? WHERE id = ? AND project_id = ?")
         .run(JSON.stringify([...new Set([...target.keyClaims, ...source.keyClaims])]), JSON.stringify(evidence ?? {}), targetId, projectId);

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type Database from "better-sqlite3";
 import type { GenerateStructuredResult, ModelProvider, WebResearchOptions } from "./model-provider";
 import { pushField, formatResearchSources, type WebResearchContext, type ResearchCard } from "./research-prompts";
+import type { ResearchEvidence } from "../../shared/research-evidence";
 
 const markdownOutput = z.object({ markdown: z.string().trim().min(1) });
 const titleSuggestionsOutput = z.object({ titles: z.array(z.string().trim().min(4).max(80)).min(1).max(3) });
@@ -26,7 +27,7 @@ export interface CreationContext {
   writingStyle: string;
   regularColumns: string;
   outlineMarkdown: string | null;
-  researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; provenanceNote?: string }>;
+  researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; evidence?: ResearchEvidence; provenanceNote?: string }>;
   researchGaps: string[];
 }
 
@@ -192,7 +193,8 @@ export class AiContentService {
         excerpt: source.excerpt,
         keyClaims: parseResearchClaims(source.claims_json),
         sourceType: source.source_type === "official" ? "official" : "public",
-        provenanceNote: parseObservationNote(source.provenance_json) ?? parseEvidenceNote(source.evidence_json)
+        evidence: parseResearchEvidence(source.evidence_json),
+        provenanceNote: parseObservationNote(source.provenance_json)
       }))
     };
   }
@@ -215,11 +217,15 @@ function parseObservationNote(value: string | undefined): string | undefined {
   } catch { return undefined; }
 }
 
-function parseEvidenceNote(value: string | undefined): string | undefined {
+function parseResearchEvidence(value: string | undefined): ResearchEvidence | undefined {
   try {
-    const evidence = JSON.parse(value ?? "{}") as { freshness?: unknown; boundary?: unknown };
-    const parts = [typeof evidence.freshness === "string" ? `时效：${evidence.freshness}` : "", typeof evidence.boundary === "string" ? `边界：${evidence.boundary}` : ""].filter(Boolean);
-    return parts.length ? parts.join("；") : undefined;
+    const evidence = JSON.parse(value ?? "{}") as Partial<ResearchEvidence>;
+    return typeof evidence.claim === "string" && typeof evidence.recommendation === "string"
+      && typeof evidence.qualityReason === "string" && typeof evidence.freshness === "string"
+      && typeof evidence.boundary === "string" && typeof evidence.kind === "string"
+      && Array.isArray(evidence.sourceUrls) && Array.isArray(evidence.snapshots)
+      ? evidence as ResearchEvidence
+      : undefined;
   } catch { return undefined; }
 }
 
@@ -233,6 +239,7 @@ export function buildOutlinePrompt(context: CreationContext): string {
 - 使用 4 至 7 个二级标题；每节用 2 至 4 条简短要点写清本节要回答的问题、核心判断和将展开的内容。结尾应落到读者可带走的判断或行动。
 - 不得出现“【待核查】”“作者”“写作重点”“建议作者”“此处应”“研究计划”“TODO”等面向创作过程的措辞，也不要输出研究问题、检索关键词或来源核查清单。
 - 不得虚构资料、数据、案例或引用。用户未提供且尚未核实的信息，不要写成确定事实；应改为不依赖该事实的结构性表达，或省略该细节。
+- 不要自动在文章中插入脚注、外链或归因文字；如有必要，只可作为作者可选的引用候选。
 - 遵守账号禁区，体现账号定位和写作风格。
 - 输出标准 Markdown，从一级标题开始；不要解释生成过程。
 
@@ -294,6 +301,7 @@ export function buildDraftPrompt(context: CreationContext): string {
 - 保留作者可继续加入个人经验和判断的空间。
 - 不得虚构事实、数字、案例、采访或引用。
 - 缺少证据的事实性内容以“【待核查：……】”标记，不要自行补造。
+- 不要自动在正文插入脚注、外链或归因文字；如有必要，只可作为作者可选的引用候选。
 - 符合账号定位、目标读者、禁用话题和写作风格。
 - 输出标准 Markdown 正文，从一级标题开始，不要输出创作说明或代码围栏。
 

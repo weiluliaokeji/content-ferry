@@ -261,6 +261,8 @@ export function App() {
     openResearch,
     toggleResearchSource,
     updateResearchAdoption,
+    splitResearchSource,
+    mergeResearchSources,
     updateSpecifiedSource,
     continueResearch,
     cancelResearch,
@@ -636,6 +638,8 @@ export function App() {
        openResearch,
        toggleResearchSource,
        updateResearchAdoption,
+       splitResearchSource,
+       mergeResearchSources,
        updateSpecifiedSource,
        continueResearch,
        cancelResearch,
@@ -1746,5 +1750,31 @@ export function App() {
       role="tooltip"
     >{sourceLinkTip.url}</div>
   ), document.body)}
+  {researchProject && research && !researchReadOnly && createPortal(
+    <ResearchCardCorrectionPanel sources={research.sources} onSplit={splitResearchSource} onMerge={mergeResearchSources} />,
+    document.body
+  )}
   </div>;
+}
+
+function ResearchCardCorrectionPanel({
+  sources,
+  onSplit,
+  onMerge
+}: {
+  sources: ResearchSource[];
+  onSplit: (source: ResearchSource) => Promise<void>;
+  onMerge: (target: ResearchSource, source: ResearchSource) => Promise<void>;
+}) {
+  const [sourceId, setSourceId] = useState("");
+  const [targetId, setTargetId] = useState("");
+  const source = sources.find((item) => item.id === sourceId);
+  const target = sources.find((item) => item.id === targetId);
+  return <aside aria-label="资料卡纠错" style={{ position: "fixed", right: 24, bottom: 24, zIndex: 10001, maxWidth: 360, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
+    <strong>资料卡纠错</strong><p className="hint">卡片聚合不准确时可拆分，或将同一主张合并；会保留来源和作者决定。</p>
+    <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">选择资料卡</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+    <div className="inline-actions"><button type="button" className="secondary-button" disabled={!source || (source.evidence?.snapshots.length ?? 0) < 2} onClick={() => source && void onSplit(source)}>拆分来源</button></div>
+    <select value={targetId} onChange={(event) => setTargetId(event.target.value)}><option value="">合并到哪张卡</option>{sources.filter((item) => item.id !== sourceId).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+    <div className="inline-actions"><button type="button" className="secondary-button" disabled={!source || !target} onClick={() => source && target && void onMerge(target, source)}>合并资料卡</button></div>
+  </aside>;
 }

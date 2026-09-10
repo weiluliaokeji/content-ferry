@@ -127,7 +127,7 @@ export function pushField(lines: string[], label: string, value: string | undefi
 export function formatResearchSources(sources: WebResearchSourceRef[]): string {
   if (sources.length === 0) return "（暂无已确认资料卡）";
   return sources
-    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : source.provenanceNote ? "实验观察" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}${source.evidence ? `\n推荐理由: ${source.evidence.recommendation}\n时效性: ${source.evidence.freshness}\n证据边界: ${source.evidence.boundary}` : source.provenanceNote ? `\n证据边界: ${source.provenanceNote}` : ""}`)
+    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : source.provenanceNote ? "实验观察" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}${source.evidence ? `\n可支持的主张: ${source.evidence.claim}\n推荐理由: ${source.evidence.recommendation}\n质量判断: ${source.evidence.qualityReason}\n时效性: ${source.evidence.freshness}\n证据边界: ${source.evidence.boundary}\n同质来源: ${source.evidence.sourceUrls.join("；")}` : source.provenanceNote ? `\n证据边界: ${source.provenanceNote}` : ""}`)
     .join("\n\n");
 }
 

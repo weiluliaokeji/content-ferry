@@ -425,6 +425,20 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setError(cause instanceof Error ? cause.message : "资料卡更新失败。");
     }
   };
+  const splitResearchSource = async (source: ResearchSource) => {
+    if (!researchProject) return;
+    try {
+      setResearch(await request<ContentResearch>(`/content-projects/${researchProject.id}/research/sources/${source.id}/split`, { method: "POST" }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "资料卡拆分失败。"); }
+  };
+  const mergeResearchSources = async (target: ResearchSource, source: ResearchSource) => {
+    if (!researchProject || target.id === source.id) return;
+    try {
+      setResearch(await request<ContentResearch>(`/content-projects/${researchProject.id}/research/sources/${source.id}/merge`, {
+        method: "POST", body: JSON.stringify({ targetId: target.id })
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "资料卡合并失败。"); }
+  };
   const toggleResearchSource = async (source: ResearchSource) => updateResearchAdoption(source, source.adoptionStatus === "adopted" ? "rejected" : "adopted");
   const updateSpecifiedSource = async (source: SpecifiedSource, status: SpecifiedSource["status"]) => {
     if (!researchProject) return;
@@ -804,6 +818,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     openResearch,
     toggleResearchSource,
     updateResearchAdoption,
+    splitResearchSource,
+    mergeResearchSources,
     updateSpecifiedSource,
     continueResearch,
     cancelResearch,
