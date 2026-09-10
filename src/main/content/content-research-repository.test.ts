@@ -55,6 +55,21 @@ describe("ContentResearchRepository", () => {
     }
   });
 
+  it("stores a compact, hashed evidence snapshot for a manual card", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-evidence", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-evidence", "workspace-evidence", "测试", now, now);
+      const result = new ContentResearchRepository(database.connection).addManual("project-evidence", { title: "手工资料", excerpt: "这是用户摘录的正文片段。", keyClaims: ["可供人工复核的主张"] });
+      expect(result.sources[0].evidence).toMatchObject({ kind: "manual", claim: "可供人工复核的主张" });
+      expect(result.sources[0].evidence?.snapshots[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(result.sources[0].evidence?.snapshots[0].excerpt).toBe("这是用户摘录的正文片段。");
+    } finally {
+      database.close();
+    }
+  });
+
   it("rejects unsafe manual source URL schemes", () => {
     const database = openInMemoryDatabase();
     try {

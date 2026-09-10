@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ResearchExecution, ResearchPlan } from "../../shared/research-state";
+import type { ResearchEvidence } from "../../shared/research-evidence";
 import { mergeResearchPlan } from "./research-plan";
 
 export interface ResearchSource {
@@ -10,6 +11,7 @@ export interface ResearchSource {
   excerpt: string;
   keyClaims: string[];
   sourceType: "official" | "public";
+  evidence?: ResearchEvidence;
   provenance?: ResearchProvenance;
   retrievedAt: string;
   selected: boolean;
@@ -56,7 +58,7 @@ export class ContentResearchRepository {
   get(projectId: string): ContentResearch {
     const plan = this.db.prepare("SELECT plan_markdown, updated_at FROM content_research_plans WHERE project_id = ?")
       .get(projectId) as { plan_markdown: string; updated_at: string } | undefined;
-    const sources = this.db.prepare(`SELECT id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected
+    const sources = this.db.prepare(`SELECT id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected
       FROM content_research_sources WHERE project_id = ? ORDER BY retrieved_at DESC, id DESC`).all(projectId) as Array<Record<string, string | number>>;
     const specifiedSources = this.db.prepare(`SELECT id, url, status, verification_note, failure_reason, created_at, updated_at
       FROM content_specified_sources WHERE project_id = ? ORDER BY created_at ASC, id ASC`).all(projectId) as Array<Record<string, string>>;
@@ -73,6 +75,7 @@ export class ContentResearchRepository {
         excerpt: source.excerpt as string,
         keyClaims: parseClaims(source.claims_json),
         sourceType: source.source_type === "official" ? "official" : "public",
+        evidence: parseEvidence(source.evidence_json),
         provenance: parseProvenance(source.provenance_json),
         retrievedAt: source.retrieved_at as string,
         selected: Boolean(source.selected)
@@ -186,14 +189,14 @@ export class ContentResearchRepository {
         .run(projectId, input.planMarkdown, now);
       this.db.prepare("DELETE FROM content_research_sources WHERE project_id = ?").run(projectId);
       const insert = this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, 1)`);
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 1)`);
       const seen = new Set<string>();
       for (const source of input.sources) {
         const url = normalizeResearchUrl(source.url);
         if (seen.has(url)) continue;
         seen.add(url);
-        insert.run(randomUUID(), projectId, source.title, url, source.excerpt, JSON.stringify(source.keyClaims), source.sourceType, now);
+        insert.run(randomUUID(), projectId, source.title, url, source.excerpt, JSON.stringify(source.keyClaims), JSON.stringify(source.evidence ?? {}), source.sourceType, now);
       }
     });
     save();
@@ -214,13 +217,13 @@ export class ContentResearchRepository {
       const existingSources = this.db.prepare("SELECT url FROM content_research_sources WHERE project_id = ?").all(projectId) as Array<{ url: string }>;
       const existingUrls = new Set(existingSources.map((row) => normalizeResearchUrl(row.url)));
       const insert = this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, 1)`);
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, 1)`);
       for (const source of input.sources) {
         const url = normalizeResearchUrl(source.url);
         if (existingUrls.has(url)) continue;
         existingUrls.add(url);
-        insert.run(randomUUID(), projectId, source.title, url, source.excerpt, JSON.stringify(source.keyClaims), source.sourceType, now);
+        insert.run(randomUUID(), projectId, source.title, url, source.excerpt, JSON.stringify(source.keyClaims), JSON.stringify(source.evidence ?? {}), source.sourceType, now);
       }
     });
     append();
@@ -244,9 +247,9 @@ export class ContentResearchRepository {
       if (existing) return this.get(projectId);
     }
     this.db.prepare(`INSERT INTO content_research_sources
-      (id, project_id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected)
-      VALUES (?, ?, ?, ?, ?, ?, '{}', 'public', ?, 1)`)
-      .run(randomUUID(), projectId, input.title.trim(), url, input.excerpt.trim(), JSON.stringify(input.keyClaims.map((claim) => claim.trim()).filter(Boolean)), now);
+      (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
+      VALUES (?, ?, ?, ?, ?, ?, '{}', ?, 'public', ?, 1)`)
+      .run(randomUUID(), projectId, input.title.trim(), url, input.excerpt.trim(), JSON.stringify(input.keyClaims.map((claim) => claim.trim()).filter(Boolean)), JSON.stringify(manualEvidence(input, url, now)), now);
     this.db.prepare(`INSERT INTO content_research_plans (project_id, plan_markdown, updated_at) VALUES (?, '', ?)
       ON CONFLICT(project_id) DO UPDATE SET updated_at = excluded.updated_at`).run(projectId, now);
     return this.completePlan(projectId);
@@ -270,8 +273,8 @@ export class ContentResearchRepository {
           provenance_json = excluded.provenance_json, updated_at = excluded.updated_at`)
         .run(input.observationId, projectId, input.executionRunId, input.title.trim(), input.claim.trim(), JSON.stringify(input.provenance), now, now);
       this.db.prepare(`INSERT INTO content_research_sources
-        (id, project_id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'public', ?, 1)
+        (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, source_type, retrieved_at, selected)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'public', ?, 1)
         ON CONFLICT(id) DO UPDATE SET title = excluded.title, excerpt = excluded.excerpt,
           claims_json = excluded.claims_json, provenance_json = excluded.provenance_json, retrieved_at = excluded.retrieved_at`)
         .run(input.observationId, projectId, `实验观察 · ${input.title.trim()}`, url,
@@ -328,6 +331,40 @@ function parseProvenance(value: string | number | undefined): ResearchProvenance
   } catch {
     return undefined;
   }
+}
+
+function parseEvidence(value: string | number | undefined): ResearchEvidence | undefined {
+  if (!value) return undefined;
+  try {
+    const evidence = JSON.parse(String(value)) as Partial<ResearchEvidence>;
+    if (!evidence || typeof evidence.claim !== "string" || !Array.isArray(evidence.sourceUrls) || !Array.isArray(evidence.snapshots)) return undefined;
+    return {
+      claim: evidence.claim,
+      recommendation: typeof evidence.recommendation === "string" ? evidence.recommendation : "",
+      qualityReason: typeof evidence.qualityReason === "string" ? evidence.qualityReason : "",
+      freshness: typeof evidence.freshness === "string" ? evidence.freshness : "",
+      boundary: typeof evidence.boundary === "string" ? evidence.boundary : "",
+      kind: ["official", "review", "experience", "counterexample", "manual"].includes(String(evidence.kind)) ? evidence.kind as ResearchEvidence["kind"] : "manual",
+      sourceUrls: evidence.sourceUrls.filter((item): item is string => typeof item === "string"),
+      snapshots: evidence.snapshots.filter((item): item is ResearchEvidence["snapshots"][number] => Boolean(item) && typeof item === "object" && typeof (item as { url?: unknown }).url === "string" && typeof (item as { excerpt?: unknown }).excerpt === "string" && typeof (item as { capturedAt?: unknown }).capturedAt === "string" && typeof (item as { sha256?: unknown }).sha256 === "string")
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function manualEvidence(input: { title: string; url?: string; excerpt: string; keyClaims: string[] }, url: string, capturedAt: string): ResearchEvidence {
+  const excerpt = input.excerpt.trim().slice(0, 1600);
+  return {
+    claim: input.keyClaims.map((claim) => claim.trim()).find(Boolean) ?? excerpt.slice(0, 200),
+    recommendation: "这是你手工补录的资料，可在确认原文语境后用于写作。",
+    qualityReason: "由用户提供摘要或摘录，未经过自动网页提取。",
+    freshness: "以手工补录时间为准，请自行核对原文发布日期和版本。",
+    boundary: "仅覆盖手工输入的摘要或摘录，不代表系统已验证整页内容。",
+    kind: "manual",
+    sourceUrls: [url],
+    snapshots: [{ url, excerpt, capturedAt, sha256: createHash("sha256").update(input.excerpt.trim()).digest("hex") }]
+  };
 }
 
 function parsePlan(value: string | undefined): ResearchPlan | null {

@@ -178,6 +178,7 @@ export function initialiseDatabase(db: Database.Database): void {
       excerpt TEXT NOT NULL DEFAULT '',
       claims_json TEXT NOT NULL DEFAULT '[]',
       provenance_json TEXT NOT NULL DEFAULT '{}',
+      evidence_json TEXT NOT NULL DEFAULT '{}',
       source_type TEXT NOT NULL CHECK(source_type IN ('official', 'public')),
       retrieved_at TEXT NOT NULL,
       selected INTEGER NOT NULL DEFAULT 1
@@ -802,6 +803,9 @@ export function initialiseDatabase(db: Database.Database): void {
   const researchSourceColumns = db.prepare("PRAGMA table_info(content_research_sources)").all() as Array<{ name: string }>;
   if (!researchSourceColumns.some((column) => column.name === "provenance_json")) {
     db.exec("ALTER TABLE content_research_sources ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!researchSourceColumns.some((column) => column.name === "evidence_json")) {
+    db.exec("ALTER TABLE content_research_sources ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;

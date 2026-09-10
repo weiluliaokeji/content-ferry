@@ -18,7 +18,6 @@ import {
   buildPlannerPrompt,
   buildResearchSynthesisPrompt,
   buildResearchFollowUpSynthesisPrompt,
-  buildCodexBuiltInResearchPrompt,
   type ResearchCard,
   type SearchSourceForPrompt,
   type WebResearchContext,
@@ -27,11 +26,11 @@ import {
 } from "./research-prompts";
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ResearchDepth, ResearchExecution } from "../../shared/research-state";
+import type { ResearchEvidence, ResearchEvidenceSnapshot } from "../../shared/research-evidence";
 
 const RESEARCH_ROUNDS_BY_DEPTH: Record<ResearchDepth, number> = { quick: 1, balanced: 3, deep: 5 };
-const CODEX_RESEARCH_TIMEOUT_BY_DEPTH: Record<ResearchDepth, number> = { quick: 75_000, balanced: 150_000, deep: 240_000 };
 type AuditMeta = { task: string; skillId: string; prompt: string; provider?: string; model?: string; correlationId?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null };
 
 export class ConfiguredModelProvider implements ModelProvider {
@@ -155,16 +154,6 @@ export class ConfiguredModelProvider implements ModelProvider {
     const onStatusHook = onStatus ?? (() => {});
     const maxRounds = RESEARCH_ROUNDS_BY_DEPTH[options?.depth ?? "balanced"];
 
-    // Codex built-in search path: when the Codex connection's built-in search
-    // toggle is on, let Codex perform its own retrieval + synthesis in one
-    // call (network enabled at the SDK level). This bypasses the app-owned
-    // WebSearchClient, so it also bypasses the global research proxy and the
-    // app-fetched-URL traceability guarantee — an explicit, on-by-default
-    // trade-off the user opted into for Codex.
-    if (provider === "openai_codex" && this.connections.get("openai_codex").builtInSearch) {
-      return this.gatherCodexBuiltIn(context, instructions, onStatusHook, options, correlationId);
-    }
-
     const accumulated: SearchSourceForPrompt[] = [];
     let rounds = 0;
 
@@ -181,12 +170,14 @@ export class ConfiguredModelProvider implements ModelProvider {
 
     if (accumulated.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
 
+    const verifiedSources = await this.extractResearchSources(accumulated, onStatusHook);
+    if (verifiedSources.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("已找到搜索候选，但无法提取可核验的网页正文；未生成资料卡。请检查网络、搜索服务或手工补录资料。"));
     const synthesisPrompt = options?.instruction
-      ? buildResearchFollowUpSynthesisPrompt(context, accumulated, options.instruction, instructions)
-      : buildResearchSynthesisPrompt(context, accumulated, instructions);
-    meta.retrieval = { rounds, sources: accumulated.length, provider: this.webSearch.activeProviderId };
+      ? buildResearchFollowUpSynthesisPrompt(context, verifiedSources, options.instruction, instructions)
+      : buildResearchSynthesisPrompt(context, verifiedSources, instructions);
+    meta.retrieval = { rounds, sources: verifiedSources.length, provider: this.webSearch.activeProviderId };
     const generated = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
-    return withResearchExecution(generated, { rounds, maxRounds, budgetExhausted: rounds >= maxRounds });
+    return withResearchExecution({ ...generated, value: { ...generated.value, sources: attachVerifiedEvidence(generated.value.sources, verifiedSources) } }, { rounds, maxRounds, budgetExhausted: rounds >= maxRounds });
   }
 
   // --- research retrieval schemes -------------------------------------------
@@ -248,26 +239,27 @@ export class ConfiguredModelProvider implements ModelProvider {
     return rounds;
   }
 
-  /** Codex built-in search path: Codex runs its own retrieval + synthesis in a
-   *  single structured call (network enabled at the SDK level). The prompt asks
-   *  it to search and return the same ResearchCard schema as the app-owned
-   *  synthesis path. */
-  private async gatherCodexBuiltIn(context: WebResearchContext, instructions: string, onStatus: (m: string) => void, options: WebResearchOptions | undefined, correlationId: string): Promise<GenerateStructuredResult<ResearchCard>> {
-    onStatus("正在使用 Codex 内置检索联网补研…");
-    const prompt = buildCodexBuiltInResearchPrompt(context, instructions, options?.instruction ? { instruction: options.instruction } : {});
-    const meta: AuditMeta = { task: "research", skillId: "web-research", prompt, provider: "openai_codex", model: this.modelIdFor("openai_codex"), correlationId };
-    const generated = await this.withAudit(meta, () => this.codexProvider.generateStructured<ResearchCard>({
-        task: "research",
-        skillId: "web-research",
-        prompt,
-        outputSchema: RESEARCH_SCHEMA as object,
-        timeoutMs: CODEX_RESEARCH_TIMEOUT_BY_DEPTH[options?.depth ?? "balanced"],
-        parse: (value) => researchOutput.parse(value) as ResearchCard,
-        prependInstructions: false,
-        onStatus,
-        webSearch: true
-      }), { retrieval: (result) => ({ rounds: 1, sources: result.value.sources.length, provider: "openai_codex" }) });
-    return withResearchExecution(generated, { rounds: null, maxRounds: null, budgetExhausted: false });
+  private async extractResearchSources(candidates: SearchSourceForPrompt[], onStatus: (message: string) => void): Promise<SearchSourceForPrompt[]> {
+    const unique = [...new Map(candidates.map((source) => [canonicalUrl(source.url), source])).values()];
+    const verified: SearchSourceForPrompt[] = [];
+    onStatus(`正在核验 ${unique.length} 个候选网页的正文…`);
+    for (const source of unique) {
+      try {
+        const content = (await this.webSearch!.extract(source.url)).content.trim();
+        if (!content) continue;
+        const capturedAt = new Date().toISOString();
+        verified.push({
+          ...source,
+          bodyExcerpt: content.slice(0, 1600),
+          capturedAt,
+          sha256: createHash("sha256").update(content).digest("hex")
+        });
+      } catch {
+        // A search hit is only discovery material; it cannot become a card without body verification.
+      }
+    }
+    onStatus(`已核验 ${verified.length} 个网页正文。`);
+    return verified;
   }
 
   private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string): Promise<{ action: "search" | "done"; query?: string }> {
@@ -541,7 +533,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       messages: compactRetry
         ? [...messages, {
           role: "user",
-          content: "上一次输出不是完整 JSON。请从头重新输出一个完整、紧凑的 JSON 对象；不要解释、不要 Markdown、不要展开推理。资料卡最多 4 条，每条摘要不超过 120 个汉字，每条最多 2 个 keyClaims。"
+          content: "上一次输出不是完整 JSON。请从头重新输出一个完整、紧凑的 JSON 对象；不要解释、不要 Markdown、不要展开推理。资料卡数量由独立证据决定，同质来源必须合并；每条摘要不超过 120 个汉字，每条最多 2 个 keyClaims。"
         }]
         : messages,
       // Do not leave the provider's output budget implicit. In particular,
@@ -741,6 +733,56 @@ function withResearchExecution(
   execution: ResearchExecution
 ): GenerateStructuredResult<ResearchCard> {
   return { ...generated, value: { ...generated.value, execution } };
+}
+
+function attachVerifiedEvidence(sources: ResearchCard["sources"], verified: SearchSourceForPrompt[]): ResearchCard["sources"] {
+  const byUrl = new Map(verified.map((source) => [canonicalUrl(source.url), source]));
+  const grouped = new Map<string, ResearchCard["sources"][number]>();
+  for (const source of sources) {
+    const matched = [...new Set(source.sourceUrls.map(canonicalUrl))]
+      .map((url) => byUrl.get(url))
+      .filter((item): item is SearchSourceForPrompt => Boolean(item));
+    if (matched.length === 0) continue;
+    const snapshots: ResearchEvidenceSnapshot[] = matched.map((item) => ({
+      url: item.url,
+      excerpt: item.bodyExcerpt ?? item.snippet,
+      capturedAt: item.capturedAt ?? "",
+      sha256: item.sha256 ?? ""
+    }));
+    const evidence: ResearchEvidence = {
+      claim: source.claim,
+      recommendation: source.recommendation,
+      qualityReason: source.qualityReason,
+      freshness: source.freshness,
+      boundary: source.boundary,
+      kind: source.evidenceKind,
+      sourceUrls: snapshots.map((snapshot) => snapshot.url),
+      snapshots
+    };
+    const card = { ...source, url: matched[0].url, evidence };
+    const key = `${evidence.kind}\u0000${evidence.claim}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, card);
+      continue;
+    }
+    const mergedSnapshots = [...existing.evidence!.snapshots, ...snapshots]
+      .filter((snapshot, index, all) => all.findIndex((item) => item.url === snapshot.url) === index);
+    existing.evidence = { ...existing.evidence!, sourceUrls: mergedSnapshots.map((snapshot) => snapshot.url), snapshots: mergedSnapshots };
+  }
+  return [...grouped.values()];
+}
+
+function canonicalUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return url.toString();
+  } catch {
+    return value.trim();
+  }
 }
 
 /** True when a failed chat/completions call is due to the model not supporting

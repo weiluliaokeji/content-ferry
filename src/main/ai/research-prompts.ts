@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import type { ResearchExecution } from "../../shared/research-state";
+import type { ResearchEvidence } from "../../shared/research-evidence";
 
 export const researchOutput = z.object({
   planMarkdown: z.string().trim().min(1).max(12000),
@@ -17,8 +18,15 @@ export const researchOutput = z.object({
     url: z.string().url().max(2000),
     excerpt: z.string().trim().min(1).max(2000),
     keyClaims: z.array(z.string().trim().min(1).max(500)).min(1).max(5),
-    sourceType: z.enum(["official", "public"])
-  })).min(0).max(10)
+    sourceType: z.enum(["official", "public"]),
+    sourceUrls: z.array(z.string().url().max(2000)).min(1),
+    claim: z.string().trim().min(1).max(500),
+    recommendation: z.string().trim().min(1).max(500),
+    qualityReason: z.string().trim().min(1).max(500),
+    freshness: z.string().trim().min(1).max(500),
+    boundary: z.string().trim().min(1).max(500),
+    evidenceKind: z.enum(["official", "review", "experience", "counterexample"])
+  })).min(0)
 });
 export type ResearchOutput = z.infer<typeof researchOutput>;
 
@@ -39,9 +47,13 @@ export const RESEARCH_SCHEMA = {
         properties: {
           title: { type: "string" }, url: { type: "string" }, excerpt: { type: "string" },
           keyClaims: { type: "array", minItems: 1, maxItems: 5, items: { type: "string" } },
-          sourceType: { type: "string", enum: ["official", "public"] }
+          sourceType: { type: "string", enum: ["official", "public"] },
+          sourceUrls: { type: "array", minItems: 1, items: { type: "string" } },
+          claim: { type: "string" }, recommendation: { type: "string" }, qualityReason: { type: "string" },
+          freshness: { type: "string" }, boundary: { type: "string" },
+          evidenceKind: { type: "string", enum: ["official", "review", "experience", "counterexample"] }
         },
-        required: ["title", "url", "excerpt", "keyClaims", "sourceType"],
+        required: ["title", "url", "excerpt", "keyClaims", "sourceType", "sourceUrls", "claim", "recommendation", "qualityReason", "freshness", "boundary", "evidenceKind"],
         additionalProperties: false
       }
     }
@@ -56,7 +68,18 @@ export interface WebResearchSourceRef {
   excerpt: string;
   keyClaims: string[];
   sourceType: "official" | "public";
+  evidence?: ResearchEvidence;
   provenanceNote?: string;
+}
+
+export interface GeneratedResearchSource extends WebResearchSourceRef {
+  sourceUrls: string[];
+  claim: string;
+  recommendation: string;
+  qualityReason: string;
+  freshness: string;
+  boundary: string;
+  evidenceKind: "official" | "review" | "experience" | "counterexample";
 }
 
 export interface WebResearchContext {
@@ -72,25 +95,25 @@ export interface WebResearchContext {
 
 export interface ResearchCard {
   planMarkdown: string;
-  sources: WebResearchSourceRef[];
+  sources: GeneratedResearchSource[];
   /** App-owned execution metadata, added after structured model output is parsed. */
   execution?: ResearchExecution;
 }
 
-const MAX_PROMPT_SEARCH_SOURCES = 10;
-const MAX_PROMPT_SOURCE_SNIPPET_CHARS = 900;
+const MAX_PROMPT_SOURCE_SNIPPET_CHARS = 1200;
 
 /**
  * A search result may contain a very long excerpt. Keep the stored research
- * result intact, but bound the material copied into a single model request.
- * This prevents multi-round research from growing the prompt without limit.
+ * result intact, but bound the material copied from each source into a single
+ * model request. Source count deliberately remains topic-driven so later
+ * homogeneous sources can be merged rather than silently discarded.
  */
 function limitSearchSourcesForPrompt(sources: SearchSourceForPrompt[]): SearchSourceForPrompt[] {
-  return sources.slice(0, MAX_PROMPT_SEARCH_SOURCES).map((source) => ({
+  return sources.map((source) => ({
     ...source,
-    snippet: source.snippet.length > MAX_PROMPT_SOURCE_SNIPPET_CHARS
-      ? `${source.snippet.slice(0, MAX_PROMPT_SOURCE_SNIPPET_CHARS)}…`
-      : source.snippet
+    bodyExcerpt: (source.bodyExcerpt ?? source.snippet).length > MAX_PROMPT_SOURCE_SNIPPET_CHARS
+      ? `${(source.bodyExcerpt ?? source.snippet).slice(0, MAX_PROMPT_SOURCE_SNIPPET_CHARS)}…`
+      : source.bodyExcerpt ?? source.snippet
   }));
 }
 
@@ -102,7 +125,7 @@ export function pushField(lines: string[], label: string, value: string | undefi
 export function formatResearchSources(sources: WebResearchSourceRef[]): string {
   if (sources.length === 0) return "（暂无已确认资料卡）";
   return sources
-    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : source.provenanceNote ? "实验观察" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}${source.provenanceNote ? `\n证据边界: ${source.provenanceNote}` : ""}`)
+    .map((source, index) => `${index + 1}. [${source.sourceType === "official" ? "官方" : source.provenanceNote ? "实验观察" : "公开"}] ${source.title}\nURL: ${source.url}\n摘要: ${source.excerpt}\n主张: ${source.keyClaims.join("；")}${source.evidence ? `\n推荐理由: ${source.evidence.recommendation}\n时效性: ${source.evidence.freshness}\n证据边界: ${source.evidence.boundary}` : source.provenanceNote ? `\n证据边界: ${source.provenanceNote}` : ""}`)
     .join("\n\n");
 }
 
@@ -161,18 +184,19 @@ export function buildResearchSynthesisPrompt(context: WebResearchContext, rawSou
 目标：找出能够支持文章判断的最新事实、限制、使用方式和反例，并形成可追溯资料卡。不要写正文、提纲或写作任务书。
 
 要求：
-- 每一张资料卡的 URL 必须是下方给出的直接页面，不能编造、不能给搜索页、不能使用无法核对的链接。
-  - 优先 2 至 4 个官方来源；仅在官方资料不足时补充公开来源。资料卡最多 4 张。
+- 每一张资料卡的 URL 必须是下方给出的已核验直接页面，不能编造、不能给搜索页、不能使用无法核对的链接。
+- 资料卡数量由独立、可用于写作的证据决定，禁止凑数量或套用固定上限；同一主题、同一证据类型的同质来源必须合并成一张卡，在 sourceUrls 中保留全部链接。
 - 为每个来源判断 sourceType：official 为官方原始资料（政府/机构/品牌官网等），public 为公开资料。
-  - excerpt 是不超过 120 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 2 条具体主张，标明适用条件与时间敏感性。
-  - planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，总长度不超过 800 字，简洁、可审核；不要混入文章章节或给作者的逐步指令。
+- excerpt 是不超过 120 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 2 条具体主张，标明适用条件与时间敏感性。
+- 每张卡必须给出 claim、recommendation（为什么值得看）、qualityReason、freshness、boundary，以及 evidenceKind（official/review/experience/counterexample）。
+- planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，总长度不超过 800 字，简洁、可审核；不要混入文章章节或给作者的逐步指令。
 - 不确定、互相矛盾或需要登录才能确认的内容必须明确说明，不能根据模型记忆补全。
 - 请遵循以下 ContentFerry 技能说明：\n\n${instructions}
 
 ${contextBlockText}
 
 已检索到的资料（${sources.length} 条）：
-${sources.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n摘要: ${s.snippet}`).join("\n\n")}`;
+${sources.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n正文核验摘录: ${s.bodyExcerpt}\n核验时间: ${s.capturedAt}\n内容指纹: ${s.sha256}`).join("\n\n")}`;
 }
 
 export interface SearchSourceForPrompt {
@@ -180,49 +204,9 @@ export interface SearchSourceForPrompt {
   url: string;
   snippet: string;
   sourceType: "official" | "public";
-}
-
-/**
- * Prompt for the Codex built-in search path: ask Codex to use its own web
- * search to research the topic and return the same structured ResearchCard as
- * the app-owned synthesis path. Traceability is weaker here (URLs are written
- * by the model rather than fetched by the app), so we stress "only URLs you
- * actually visited" and "don't invent". This is an explicit, on-by-default
- * trade-off for Codex connections; users who need app-fetched traceable URLs
- * can turn the connection's built-in search toggle off.
- */
-export function buildCodexBuiltInResearchPrompt(
-  context: WebResearchContext,
-  instructions: string,
-  options?: { instruction?: string }
-): string {
-  const contextLines: string[] = [];
-  pushField(contextLines, "文章主题", context.topic);
-  pushField(contextLines, "写作目标", context.objective);
-  pushField(contextLines, "目标读者", context.audience);
-  pushField(contextLines, "核心角度", context.angle);
-  pushField(contextLines, "账号定位", context.positioning);
-  pushField(contextLines, "用户已有资料", context.sourceNotes);
-  const contextBlockText = contextLines.join("\n");
-  const followUp = options?.instruction
-    ? `\n\n本轮是增量补研。用户的补研要求：\n${options.instruction}\n只针对该缺口补充事实、限制、反例或使用路径；不要重复已有资料。`
-    : "";
-  return `你是阿文，负责为一篇即将发布的中文自媒体文章做联网补研并整理可追溯资料卡。请直接使用你内置的联网检索能力主动搜索官方与公开资料，再综合成结构化资料卡。不要编造未访问过的链接。
-
-目标：找出能支持文章判断的最新事实、限制、使用方式和反例，并形成可追溯资料卡。不要写正文、提纲或写作任务书。
-
-要求：
-- 每张资料卡的 URL 必须是你实际访问过的直接页面，不能编造、不能给搜索结果聚合页；无法核对或需要登录才能确认的链接不要写。
-- 优先 2 至 4 个官方来源；仅在官方资料不足时补充公开来源。资料卡最多 4 张。
-- 为每个来源判断 sourceType：official 为官方原始资料（政府/机构/品牌官网等），public 为公开资料。
-- excerpt 是不超过 120 字的中文事实摘要，不要整页复制。keyClaims 是该来源能支持的 1 至 2 条具体主张，标明适用条件与时间敏感性。
-- planMarkdown 仅包含“本次补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三小节，总长度不超过 800 字，简洁、可审核；不要混入文章章节或给作者的逐步指令。
-- 不确定、互相矛盾或需要登录才能确认的内容必须明确说明，不能根据模型记忆补全。
-- 请遵循以下 ContentFerry 技能说明：\n\n${instructions}
-
-${contextBlockText}${followUp}
-
-直接返回符合 JSON Schema 的结果：{"planMarkdown":"...","sources":[{"title":"...","url":"...","excerpt":"...","keyClaims":["..."],"sourceType":"official"|"public"}]}`;
+  bodyExcerpt?: string;
+  capturedAt?: string;
+  sha256?: string;
 }
 
 /** Incremental (follow-up) synthesis prompt: only fill the stated gap. */
@@ -250,15 +234,15 @@ ${contextBlockText}
 ${formatResearchSources(context.existingSources ?? [])}
 
 本轮系统新检索到的资料（${newSources.length} 条）：
-${newSources.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n摘要: ${s.snippet}`).join("\n\n")}
+${newSources.map((s, i) => `${i + 1}. ${s.title}\nURL: ${s.url}\n正文核验摘录: ${s.bodyExcerpt}\n核验时间: ${s.capturedAt}\n内容指纹: ${s.sha256}`).join("\n\n")}
 
 输出要求：
 - 只补充本轮要求涉及的事实、限制、反例或使用路径；不要重新写文章、提纲或写作任务书。
-- 每张新资料卡必须是实际检索到的直接页面 URL，不能编造、不能给搜索结果页；不要重复已有 URL。
+- 每张新资料卡必须是实际检索且正文核验过的直接页面 URL，不能编造、不能给搜索结果页；不要重复已有 URL。同质来源必须合并并保留全部 sourceUrls。
 - 为每个来源判断 sourceType：official 为官方原始资料（政府/机构/品牌官网等），public 为公开资料。
 - 找不到可靠新增资料时，sources 可以为空，并在 planMarkdown 中明确说明未能确认的原因与建议的人工核查路径。
 - planMarkdown 仅包含“本轮补研结论”“仍需人工确认的边界”“建议如何在文章中使用资料”三个简短小节。
-- excerpt 是不超过 200 字的中文事实摘要；keyClaims 是该来源支持的 1 至 5 条具体主张，必须说明适用条件或时效性。
+- excerpt 是不超过 200 字的中文事实摘要；keyClaims 是该来源支持的 1 至 5 条具体主张，必须说明适用条件或时效性。每张卡必须给出 claim、recommendation、qualityReason、freshness、boundary 和 evidenceKind。
 - 不确定、互相矛盾或需要登录才能确认的内容必须明确标记，不能凭模型记忆补全。
 - 请遵循以下 ContentFerry 技能说明：\n\n${instructions}`;
 }

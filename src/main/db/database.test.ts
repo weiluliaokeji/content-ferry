@@ -13,6 +13,33 @@ describe("article settings schema", () => {
   });
 });
 
+describe("content_research_sources migration", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("adds evidence_json to an existing research-source table", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    conn.exec("DROP TABLE content_research_sources");
+    conn.exec(`CREATE TABLE content_research_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      excerpt TEXT NOT NULL DEFAULT '',
+      claims_json TEXT NOT NULL DEFAULT '[]',
+      provenance_json TEXT NOT NULL DEFAULT '{}',
+      source_type TEXT NOT NULL,
+      retrieved_at TEXT NOT NULL,
+      selected INTEGER NOT NULL DEFAULT 1
+    )`);
+    initialiseDatabase(conn);
+    const columns = conn.prepare("PRAGMA table_info(content_research_sources)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("evidence_json");
+  });
+});
+
 describe("csdn_publish_jobs migration (old schema without status_source)", () => {
   let database: AppDatabase | undefined;
 

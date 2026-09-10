@@ -96,9 +96,9 @@ OpenAI API Key provider 与其他模型后续复用同一接口；切换 provide
   - 方案 A（模型支持工具调用时优先：openai / openrouter / nous / nvidia_build）：把 `web_search` 作为函数工具暴露给模型，由主进程执行工具循环（模型发工具调用 → 应用检索 → 回填结果 → 重复直至模型停止）。若方案 A 失败或无工具调用，自动降级到方案 B。
 - 最终综合（synthesis）使用 `json_schema` 结构化输出，不再使用工具或 Codex 检索；模型只基于已检索来源整理资料卡，不得自行联网、不得编造链接。综合可在任意已配置文本模型上运行。
 - 审计：每次补研在审计日志中记录 `retrieval` 摘要（轮数、来源条数、实际使用的检索 provider），来源 URL 现在对审计可见、可追溯。
-- 当前研究状态单独存入 `content_research_plan_states`：保存结构化问题、证据维度、时效风险、待比对冲突、覆盖与缺口，以及可获得时的执行预算信息。应用检索链以轮数控制深度；Codex 内置检索不暴露内部轮次，以 75/150/240 秒超时分别限制快速/均衡/深入调研。`content_research_plans` 继续保存面向作者的 Markdown 结论；两者都不替代后续的正文核验与来源采纳记录。
-- 装配：`create-server.ts` 通过 `createWebSearchClient({ getTavilyApiKey })` 注入检索层；Tavily API Key 可在“技能与模型 → 联网检索服务”中配置，使用 `AppCredentialRepository` 加密保存，并在每次检索时动态读取，因此保存后无需重启本地服务。开发环境中的 `TAVILY_API_KEY` 仅作兼容兜底；本机保存的 Key 优先。`OpenAICodexProvider` 在研究流程中默认仅作为综合模型使用（`webSearchMode: "disabled"`，不自行联网）；但当 `web-research` 技能指派给 Codex 且该 Codex 连接的“内置搜索”开关打开时，`ConfiguredModelProvider.webResearch` 会改为走 `gatherCodexBuiltIn`，让 Codex 以 `webSearchMode: "live"` 自行完成检索与综合。
-- **Codex 内置搜索开关（连接级，默认开）**：`model_connections.built_in_search`（建表默认 1，旧库经迁移补列）控制 Codex 连接是否使用 SDK 内置检索。`web-research` 技能指派 Codex 时：开关开（默认）→ Codex 自行检索并综合（`gatherCodexBuiltIn`），绕过应用自有检索层，因此也绕过全局检索代理与“来源 URL 由应用真抓”的可追溯保证；开关关 → 仍走应用检索链（方案 A/B，综合由 Codex 在 `webSearchMode: "disabled"` 下基于已抓取来源完成）。其它 provider 没有内置检索能力，该开关对其无意义，UI 仅在 Codex 连接编辑表单展示。这是用户为换取 Codex 原生检索质量与开箱即用而显式选择的权衡。
+- 当前研究状态单独存入 `content_research_plan_states`：保存结构化问题、证据维度、时效风险、待比对冲突、覆盖与缺口，以及可获得时的执行预算信息。应用检索链以轮数控制深度。`content_research_plans` 继续保存面向作者的 Markdown 结论；两者都不替代来源采纳记录。
+- 自动资料卡不把搜索摘要当作证据：`ConfiguredModelProvider` 在搜索后逐 URL 提取正文，只有非空正文才会进入综合提示；综合模型只能从这些正文摘录对应的 URL 中选择卡片。应用保存不超过 1600 字的正文快照、提取时间和 SHA-256，模型给出的主张、推荐理由、质量/时效与边界连同同质来源 URL 一并写入 `content_research_sources.evidence_json`。手工卡保存输入摘录的同类快照，并明确标记为手工资料。卡片按证据类型和相同主张合并，没有产品层面的固定数量上限。
+- 装配：`create-server.ts` 通过 `createWebSearchClient({ getTavilyApiKey })` 注入检索层；Tavily API Key 可在“技能与模型 → 联网检索服务”中配置，使用 `AppCredentialRepository` 加密保存，并在每次检索时动态读取，因此保存后无需重启本地服务。开发环境中的 `TAVILY_API_KEY` 仅作兼容兜底；本机保存的 Key 优先。`OpenAICodexProvider` 在研究流程中仅作为综合模型使用（`webSearchMode: "disabled"`，不自行联网）；即使连接的内置搜索开关开启，资料卡仍统一经过应用检索、正文提取与证据快照保存。
 - **补研技能必须显式指定模型，不再默认 Codex**：`web-research` 技能的 `defaultProvider` 已改为 `null`，`ConfiguredModelProvider.webResearch` 在技能未指派 provider 时直接抛出明确提示（“请在技能与模型中为该技能选择一个模型连接”），不再静默回退到 `openai_codex`。UI 上“研究”类技能（分类 `研究`）已纳入“文本类技能”可切换模型分组（此前因分类不在任何分组中而不显示，导致用户无法改派、一直卡在默认 Codex）。补研实际使用的模型完全由用户在“技能与模型”里为该技能指派，与其直觉一致。
 
 本方案借鉴了 Hermes Agent 的“provider 注册表 + 能力标志 + 统一响应信封 + 回退链”思路，但检索工具为应用自有、网络访问不与任何模型绑定。
@@ -210,7 +210,7 @@ flowchart LR
 规则：
 
 - AI 补研必须记录来源、获取时间、建议用途和与主题的相关性；资料卡保存前将 URL 统一规范化（主机名大小写、默认端口、尾部斜杠、片段和常见跟踪参数）并在同一项目内去重，避免首次补研与增量补研重复展示同一来源。
-- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现把检索交给应用自有 `WebSearchClient`（Tavily / Bing RSS / DuckDuckGo 回退链），再由 `ConfiguredModelProvider.webResearch` 在任意已配置模型上完成多轮检索规划与综合，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间与用户选择状态；手工补录链接只允许不带凭据的 HTTP(S) 地址。`content_specified_sources` 独立保存用户明确提交的 HTTP(S) 链接，按规范化 URL 在项目内去重，状态为 `pending_manual_verification`、`verified`、`rejected` 或 `failed`；后两类人工结论分别要求核验说明或失败原因。它们不会进入 `content_research_sources` 或写作上下文，直至后续正文核验步骤形成资料卡。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按规范化 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。资料窗口还支持用户手工补录标题、摘要、关键主张和可选来源链接，供后续提纲和正文使用。首次补研和增量补研现在都会先创建 `research_tasks` 记录，并将请求、运行状态、心跳、检查点、取消请求和追加事件写入 SQLite；暂停不会中断已经发出的联网请求，结果返回后先写入不可变 checkpoint，再继续会优先消费该结果，避免重复联网；SSE 进度携带 taskId，用户可在资料窗口暂停、继续或停止当前任务，已保存资料不回滚；客户端断开 SSE 后，当前请求仍会继续完成并保存结果；应用重启时，过期的 `running` 任务会重新排队并由单进程恢复器续跑。逐来源正文核验、官方来源白名单和精确引用映射属于后续增强。
+- 研究计划与资料卡标记用户观点、用户资料、AI 补充资料和待核查项；文章提纲只呈现读者视角的结构、判断与论证角度，不混入检索任务或作者指令。当前实现把检索交给应用自有 `WebSearchClient`（Tavily / Bing RSS / DuckDuckGo 回退链），再由 `ConfiguredModelProvider.webResearch` 在任意已配置模型上完成多轮检索规划、正文核验与综合，将研究计划与资料卡写入 SQLite；写作任务始终关闭联网。资料卡必须保存直接 URL、标题、短摘要、具体主张、来源类型、获取时间、证据快照与用户选择状态；手工补录链接只允许不带凭据的 HTTP(S) 地址。`content_specified_sources` 独立保存用户明确提交的 HTTP(S) 链接，按规范化 URL 在项目内去重，状态为 `pending_manual_verification`、`verified`、`rejected` 或 `failed`；后两类人工结论分别要求核验说明或失败原因。它们不会进入 `content_research_sources` 或写作上下文，直至正文核验步骤形成资料卡。增量补研使用独立 `research/follow-up` 调用：保留既有资料和用户勾选状态，按规范化 URL 去重后追加新资料，并把补研指令与结论写入同一 `source:<relativePath>` 阿文会话。资料窗口还支持用户手工补录标题、摘要、关键主张和可选来源链接，供后续提纲和正文使用。首次补研和增量补研现在都会先创建 `research_tasks` 记录，并将请求、运行状态、心跳、检查点、取消请求和追加事件写入 SQLite；暂停不会中断已经发出的联网请求，结果返回后先写入不可变 checkpoint，再继续会优先消费该结果，避免重复联网；SSE 进度携带 taskId，用户可在资料窗口暂停、继续或停止当前任务，已保存资料不回滚；客户端断开 SSE 后，当前请求仍会继续完成并保存结果；应用重启时，过期的 `running` 任务会重新排队并由单进程恢复器续跑。官方来源白名单和精确引用映射属于后续增强。
 - 对 AI 提交物，审核者可以直接修改后批准，或要求 AI 在当前审核页修订；只有实质性返工才退回研究或提纲节点。
 
 ### 6.1 Agent 与技能执行契约
@@ -474,7 +474,7 @@ CSDN 渠道稿由主稿派生，但与主稿、微信公众号稿保持独立版
 ### 17.1 OpenAI 兼容模型的请求兼容性
 
 - 结构化任务由本地 schema 校验最终结果；并非所有 OpenAI 兼容端点都稳定支持 `response_format: json_schema`。Nous Research Portal 的免费模型默认走“提示词要求 JSON + 本地校验”的兼容路径，不发送原生 JSON Schema。
-- 每次调用显式传递与任务相称的 `max_tokens`，避免依赖服务端默认输出额度；调研需要 8192 token 的输出预算。Step 3.7 Flash 在 Nous 连接上额外请求低推理强度，避免把预算消耗在内部推理而未输出资料卡。调研链路同时限制单次送入模型的检索条目数和每条摘要长度。完整研究资料仍由应用保存，截断只作用于单次模型上下文。
+- 每次调用显式传递与任务相称的 `max_tokens`，避免依赖服务端默认输出额度；调研需要 8192 token 的输出预算。Step 3.7 Flash 在 Nous 连接上额外请求低推理强度，避免把预算消耗在内部推理而未输出资料卡。调研链路只限制每条正文摘录长度，不以固定条数截断来源，避免遗漏后续同质来源的合并机会。
 - OpenAI 兼容响应可采用普通字符串、内容分段数组或 delta 字段；统一归并为最终文本后再本地解析。若服务只返回推理字段、工具调用或因 `finish_reason=length` 未产生正文，错误信息必须标明该结构性原因，不记录或展示原始模型正文。
 - 资料综合结果允许 `sources` 为空：这表示模型认为当前检索结果不足以形成可引用资料卡，应用保留 `planMarkdown`，并在界面提示用户补研、人工补充资料或暂不采用该结论；不得因空数组把整次调研报为“结构不完整”。
 - 遇到连接被远端关闭、超时或限流时，界面应保留项目和已取得资料，并显示可重试的具体模型/端点错误；不得把该错误误报为“文章内容有问题”。

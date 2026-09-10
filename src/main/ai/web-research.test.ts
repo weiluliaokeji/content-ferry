@@ -19,7 +19,14 @@ const SINGLE_SOURCE = {
   url: "https://example.com/x",
   excerpt: "摘要",
   keyClaims: ["主张一"],
-  sourceType: "public" as const
+  sourceType: "public" as const,
+  sourceUrls: ["https://example.com/x"],
+  claim: "主张一",
+  recommendation: "解释这个主题的关键判断。",
+  qualityReason: "正文已由系统提取。",
+  freshness: "请核对页面更新时间。",
+  boundary: "仅适用于页面描述的版本。",
+  evidenceKind: "review" as const
 };
 
 function fakeAuditLog() {
@@ -30,7 +37,7 @@ function fakeAuditLog() {
 
 function fakeWebSearch(): WebSearchClient {
   const search = vi.fn(async (query: string): Promise<SearchResultItem[]> => [
-    { title: `结果 ${query}`, url: `https://example.com/${encodeURIComponent(query)}`, snippet: `摘要 ${query}` }
+    { title: `结果 ${query}`, url: "https://example.com/x", snippet: `摘要 ${query}` }
   ]);
   const extract = vi.fn(async () => ({ content: "正文" }));
   return { search, extract, activeProviderId: "duckduckgo" } as unknown as WebSearchClient;
@@ -110,8 +117,11 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(result.value.execution).toEqual({ rounds: 1, maxRounds: 1, budgetExhausted: true });
   });
 
-  it("uses depth only as a timeout budget for Codex built-in search", async () => {
-    const generateStructured = vi.fn(async () => ({ value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null }));
+  it("uses the app-owned body verification path even when Codex built-in search is enabled", async () => {
+    const generateStructured = vi.fn(async (request: { prependInstructions?: boolean }) => {
+      if (request.prependInstructions) return { value: { action: "search", query: "核验词" }, provider: "openai_codex", model: "gpt-test", usage: null };
+      return { value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null };
+    });
     const builtInConnections = {
       get: () => ({ modelId: "gpt-test", enabled: true, credentialConfigured: true, displayName: "测试", baseUrl: "https://api.openai.com/v1", proxyUrl: "", builtInSearch: true }),
       getCredential: () => "test-key"
@@ -120,8 +130,41 @@ describe("ConfiguredModelProvider.webResearch", () => {
 
     const result = await provider.webResearch(context, () => {}, { depth: "quick" });
 
-    expect(generateStructured).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 75_000, webSearch: true }));
-    expect(result.value.execution).toEqual({ rounds: null, maxRounds: null, budgetExhausted: false });
+    expect(generateStructured).toHaveBeenCalledWith(expect.objectContaining({ prependInstructions: true }));
+    expect(generateStructured).not.toHaveBeenCalledWith(expect.objectContaining({ webSearch: true }));
+    expect(result.value.sources[0].evidence?.snapshots[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.value.execution).toEqual({ rounds: 1, maxRounds: 1, budgetExhausted: true });
+  });
+
+  it("drops model-proposed links that do not have an extracted body", async () => {
+    const codex: Partial<ModelProvider> = {
+      generateStructured: vi.fn(async (req: { prependInstructions?: boolean }) => req.prependInstructions
+        ? { value: { action: "search", query: "q" }, provider: "openai_codex", model: "gpt-test", usage: null }
+        : { value: { planMarkdown: "结论", sources: [{ ...SINGLE_SOURCE, url: "https://not-verified.example/x", sourceUrls: ["https://not-verified.example/x"] }] }, provider: "openai_codex", model: "gpt-test", usage: null })
+    };
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as ModelProvider, undefined, fakeWebSearch());
+    const result = await provider.webResearch(context, () => {});
+    expect(result.value.sources).toEqual([]);
+  });
+
+  it("merges homogeneous cards and preserves every verified URL", async () => {
+    const twoSources = fakeWebSearch();
+    twoSources.search = vi.fn(async () => [
+      { title: "评论 A", url: "https://example.com/a", snippet: "A" },
+      { title: "评论 B", url: "https://example.com/b", snippet: "B" }
+    ]);
+    const codex: Partial<ModelProvider> = {
+      generateStructured: vi.fn(async (req: { prependInstructions?: boolean }) => req.prependInstructions
+        ? { value: { action: "search", query: "q" }, provider: "openai_codex", model: "gpt-test", usage: null }
+        : { value: { planMarkdown: "结论", sources: [
+          { ...SINGLE_SOURCE, url: "https://example.com/a", sourceUrls: ["https://example.com/a"], claim: "同一主张" },
+          { ...SINGLE_SOURCE, url: "https://example.com/b", sourceUrls: ["https://example.com/b"], claim: "同一主张" }
+        ] }, provider: "openai_codex", model: "gpt-test", usage: null })
+    };
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as ModelProvider, undefined, twoSources);
+    const result = await provider.webResearch(context, () => {});
+    expect(result.value.sources).toHaveLength(1);
+    expect(result.value.sources[0].evidence?.sourceUrls).toEqual(["https://example.com/a", "https://example.com/b"]);
   });
 
   it("scheme A: model tool-calling retrieves sources, audit records retrieval", async () => {

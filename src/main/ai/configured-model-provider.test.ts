@@ -349,7 +349,7 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
       });
       expect(result.value.title).toBe("恢复成功");
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(bodies[1]).toContain("资料卡最多 4 条");
+      expect(bodies[1]).toContain("资料卡数量由独立证据决定");
     } finally {
       globalThis.fetch = original;
     }
