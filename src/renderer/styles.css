@@ -357,6 +357,15 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .research-source-card { display: grid; gap: .45rem; padding: .85rem; border: 1px solid #dbe5f3; border-radius: 10px; background: #fff; }
 .research-source-card > label { width: fit-content; color: #3157bb; font-size: .82rem; }
 .research-source-card > a { width: fit-content; overflow-wrap: anywhere; }
+/* 打开来源链接的 URL tooltip：fixed + portal 挂到 body，不受任何祖先 overflow 裁剪。 */
+.source-link-tip { max-width: 420px; padding: .45rem .7rem; border-radius: 6px; background: #1f2937; color: #fff; font-size: .72rem; line-height: 1.45; font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; box-shadow: 0 4px 12px rgb(0 0 0 / 25%); }
+/* 不同方向的小箭头：border 三角形指向锚点。 */
+.source-link-tip-right::before, .source-link-tip-left::before,
+.source-link-tip-top::before, .source-link-tip-bottom::before { content: ""; position: absolute; width: 0; height: 0; }
+.source-link-tip-right::before { left: -5px; top: 50%; transform: translateY(-50%); border: 5px solid transparent; border-right-color: #1f2937; }
+.source-link-tip-left::before  { right: -5px; top: 50%; transform: translateY(-50%); border: 5px solid transparent; border-left-color: #1f2937; }
+.source-link-tip-top::before  { bottom: -5px; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: #1f2937; }
+.source-link-tip-bottom::before { top: -5px; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-bottom-color: #1f2937; }
 .research-source-card > p { margin: 0; line-height: 1.65; overflow-wrap: anywhere; }
 .research-source-card > ul { margin: 0; padding-left: 1.25rem; }
 .research-source-card small { color: #64748b; }
