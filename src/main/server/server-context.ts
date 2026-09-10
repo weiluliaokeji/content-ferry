@@ -32,6 +32,7 @@ import type { PermissionGrantRepository } from "../agent/permission-grant-reposi
 import type { GitSourceService } from "../agent/git-source-service";
 import type { ResearchTaskRepository } from "../content/research-task-repository";
 import type { ResearchTaskRunner } from "../content/research-task-runner";
+import type { ResearchRunRepository } from "../content/research-run-repository";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
 export interface ServerContext {
@@ -70,6 +71,7 @@ export interface ServerContext {
   execution: ExecutionService;
   executionRuns: ExecutionRepository;
   researchTasks: ResearchTaskRepository;
+  researchRuns: ResearchRunRepository;
   researchTaskRunner?: ResearchTaskRunner;
   systemTools: SystemToolRegistry;
   permissionGrants: PermissionGrantRepository;

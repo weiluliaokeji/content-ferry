@@ -77,6 +77,7 @@ export const researchFollowUpInput = z.object({
   }
 });
 export const researchGenerateInput = z.object({ depth: researchDepthInput }).default({ depth: "balanced" });
+export const researchRefreshInput = z.object({ depth: researchDepthInput }).default({ depth: "balanced" });
 export const specifiedSourceStatusInput = z.object({
   status: z.enum(["pending_manual_verification", "verified", "rejected", "failed"]),
   verificationNote: z.string().trim().max(5000).default(""),

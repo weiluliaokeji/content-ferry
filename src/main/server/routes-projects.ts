@@ -3,7 +3,7 @@ import { ContentSourceError } from "../content/content-source-service";
 import {
   contentBriefInput, contentDraftInput, contentOutlineInput, contentProjectInput,
   contentProjectTitleInput, contentReviewInput, contentRevisionInput,
-  researchFollowUpInput, researchGenerateInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
+  researchFollowUpInput, researchGenerateInput, researchRefreshInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
 } from "./schemas";
 import {
   extractHistoricalSeries, initialArticleTitle, persistResearchConversation,
@@ -14,7 +14,7 @@ import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { buildResearchPlan } from "../content/research-plan";
 
 export function registerProjectsRoutes(ctx: ServerContext): void {
-  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks } = ctx;
+  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks, researchRuns } = ctx;
   const agentMemory = new AgentMemoryRepository(database.connection);
 
   server.get("/api/content-projects", async () => {
@@ -114,6 +114,12 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return { items: researchTasks.list(params.projectId) };
   });
 
+  server.get("/api/content-projects/:projectId/research/runs", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    return { items: researchRuns.list(params.projectId) };
+  });
+
   server.post("/api/content-projects/:projectId/research/tasks/:taskId/cancel", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid() }).parse(request.params);
     contentProjects.require(params.projectId);
@@ -159,7 +165,9 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
       (onStatus) => aiContent.generateResearch(params.projectId, onStatus, { depth: input.depth }),
       (value) => {
         contentResearch.save(params.projectId, value);
-        return contentResearch.completePlan(params.projectId, value.execution);
+        const research = contentResearch.completePlan(params.projectId, value.execution);
+        researchRuns.record(params.projectId, task.id, "generate", research);
+        return research;
       },
       {
         taskId: task.id,
@@ -194,6 +202,7 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
       (value) => {
         contentResearch.append(params.projectId, value);
         const research = contentResearch.completePlan(params.projectId, value.execution);
+        researchRuns.record(params.projectId, task.id, "follow_up", research);
         persistResearchConversation(database, project.sourceRelativePath ? `source:${project.sourceRelativePath}` : `project:${project.id}`, input.message, value.planMarkdown, value.sources);
         return research;
       },
@@ -206,6 +215,40 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
         onPaused: () => researchTasks.transition(task.id, "paused", { checkpoint: "已暂停，等待用户继续。" }),
         onComplete: () => researchTasks.transition(task.id, "completed"),
         onError: (error, cancelled) => researchTasks.transition(task.id, cancelled ? "cancelled" : "failed", { error: error instanceof Error ? error.message : "资料补研失败。" }),
+        onFinally: () => ctx.researchTaskRunner?.releaseActive(task.id)
+      }
+    );
+  });
+
+  server.post("/api/content-projects/:projectId/research/refresh", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = researchRefreshInput.parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    const brief = contentBriefs.get(params.projectId);
+    const instruction = "仅刷新容易变化的事实：产品能力、价格、规则、版本、限额和适用条件；保留既有背景与经验材料，不要覆盖作者的采纳、拒绝或待核验决定。";
+    contentResearch.beginPlan(params.projectId, buildResearchPlan({
+      topic: brief.topic || project.topic, objective: brief.objective, angle: brief.angle, sourceNotes: brief.sourceNotes, instruction, depth: input.depth
+    }));
+    const task = researchTasks.create(params.projectId, "follow_up", { kind: "refresh", message: instruction, depth: input.depth });
+    researchTasks.transition(task.id, "running");
+    ctx.researchTaskRunner?.registerActive(task.id);
+    return streamResearchGeneration(request, reply, params.projectId,
+      (onStatus) => aiContent.generateResearchFollowUp(params.projectId, instruction, onStatus, { depth: input.depth }),
+      (value) => {
+        contentResearch.append(params.projectId, value);
+        const research = contentResearch.completePlan(params.projectId, value.execution);
+        researchRuns.record(params.projectId, task.id, "refresh", research);
+        return research;
+      },
+      {
+        taskId: task.id,
+        onStatus: (message) => researchTasks.heartbeat(task.id, message),
+        isCancelled: () => researchTasks.isCancelRequested(task.id),
+        isPaused: () => researchTasks.isPaused(task.id),
+        saveCheckpoint: (value) => researchTasks.saveCheckpoint(task.id, "generated", value),
+        onPaused: () => researchTasks.transition(task.id, "paused", { checkpoint: "已暂停，等待用户继续。" }),
+        onComplete: () => researchTasks.transition(task.id, "completed"),
+        onError: (error, cancelled) => researchTasks.transition(task.id, cancelled ? "cancelled" : "failed", { error: error instanceof Error ? error.message : "资料刷新失败。" }),
         onFinally: () => ctx.researchTaskRunner?.releaseActive(task.id)
       }
     );

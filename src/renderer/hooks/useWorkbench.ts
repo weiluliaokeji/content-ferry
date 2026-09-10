@@ -485,6 +485,31 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setResearchStatus("");
     }
   };
+  const refreshResearch = async () => {
+    if (!researchProject || researchFollowingUp) return;
+    setResearchFollowingUp(true);
+    setResearchError("");
+    setResearchStatus("阿文正在刷新产品能力、价格、规则和版本等易变事实…");
+    try {
+      const controller = new AbortController();
+      researchAbortRef.current = controller;
+      const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/refresh`, controller.signal, (event, data) => {
+        if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
+        if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在刷新资料…"));
+        if (event === "paused") setResearchPaused(true);
+        if (event === "complete") setResearch(data as unknown as ContentResearch);
+      }, JSON.stringify({ depth: researchDepth }));
+      setResearch(next);
+      await loadProjects();
+    } catch (cause) {
+      setResearchError(researchPauseRequestedRef.current ? "资料刷新已暂停，可点击“继续补研”恢复。已有资料仍保留。" : researchAbortRef.current?.signal.aborted ? "资料刷新已停止；已有资料仍保留。" : cause instanceof Error ? cause.message : "资料刷新失败。已有资料仍保留。");
+    } finally {
+      setResearchFollowingUp(false);
+      researchAbortRef.current = undefined;
+      researchPauseRequestedRef.current = false;
+      setResearchStatus("");
+    }
+  };
   const cancelResearch = async () => {
     if (!researchTaskId || !researchProject) return;
     try {
@@ -822,6 +847,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     mergeResearchSources,
     updateSpecifiedSource,
     continueResearch,
+    refreshResearch,
     cancelResearch,
     pauseResearch,
     resumeResearch,

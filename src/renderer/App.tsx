@@ -29,7 +29,7 @@ import { LibraryView } from "./views/LibraryView";
 import { LogsView } from "./views/LogsView";
 import { PublishView } from "./views/PublishView";
 import { SkillsView } from "./views/SkillsView";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, ResearchRun, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -265,6 +265,7 @@ export function App() {
     mergeResearchSources,
     updateSpecifiedSource,
     continueResearch,
+    refreshResearch,
     cancelResearch,
     pauseResearch,
     resumeResearch,
@@ -642,6 +643,7 @@ export function App() {
        mergeResearchSources,
        updateSpecifiedSource,
        continueResearch,
+       refreshResearch,
        cancelResearch,
        addManualResearchSource,
       generateOutline,
@@ -1754,7 +1756,24 @@ export function App() {
     <ResearchCardCorrectionPanel sources={research.sources} onSplit={splitResearchSource} onMerge={mergeResearchSources} />,
     document.body
   )}
+  {researchProject && research && !researchReadOnly && createPortal(
+    <aside aria-label="时效刷新" style={{ position: "fixed", left: 24, bottom: 24, zIndex: 10001, maxWidth: 320, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
+      <strong>时效刷新</strong><p className="hint">只复核产品能力、价格、规则、版本和限额；既有资料与作者决定不会被覆盖。</p>
+      <button type="button" className="secondary-button" disabled={researchFollowingUp} onClick={() => void refreshResearch()}>刷新易变事实</button>
+    </aside>,
+    document.body
+  )}
+  {researchProject && research && createPortal(<ResearchHistoryPanel projectId={researchProject.id} refreshKey={research.updatedAt} />, document.body)}
   </div>;
+}
+
+function ResearchHistoryPanel({ projectId, refreshKey }: { projectId: string; refreshKey: string | null }) {
+  const [runs, setRuns] = useState<ResearchRun[]>([]);
+  useEffect(() => { void request<{ items: ResearchRun[] }>(`/content-projects/${projectId}/research/runs`).then((result) => setRuns(result.items)).catch(() => setRuns([])); }, [projectId, refreshKey]);
+  return <aside aria-label="调研运行历史" style={{ position: "fixed", left: 24, top: 24, zIndex: 10001, maxWidth: 340, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
+    <strong>调研运行历史</strong><p className="hint">当前资料在窗口中展示；以下是不可变快照。</p>
+    {runs.length ? runs.map((run) => <details key={run.id}><summary>{run.kind === "refresh" ? "时效刷新" : run.kind === "follow_up" ? "继续补研" : "初始调研"} · {new Date(run.createdAt).toLocaleString()}</summary><p>{run.research.planMarkdown}</p><small>{run.research.sources.length} 张资料卡；采纳决定已随本次快照保留。</small></details>) : <small>尚无已完成的历史运行。</small>}
+  </aside>;
 }
 
 function ResearchCardCorrectionPanel({

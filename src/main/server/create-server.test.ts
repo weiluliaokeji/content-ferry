@@ -1043,6 +1043,13 @@ describe("local API scaffold", () => {
     expect(prompts[1]).toContain("已确认提纲");
     expect(prompts[0]).not.toContain("示例官方文档");
     expect(prompts[1]).toContain("示例官方文档");
+    const refresh = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/refresh`, payload: { depth: "quick" } });
+    expect(refresh.statusCode).toBe(200);
+    const current = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research` });
+    expect(current.json().sources[0]).toMatchObject({ id: researchSourceId, adoptionStatus: "adopted", selected: true });
+    const runs = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research/runs` });
+    expect(runs.json().items.map((run: { kind: string }) => run.kind)).toEqual(["refresh", "generate"]);
+    expect(runs.json().items[1].research.sources[0]).toMatchObject({ adoptionStatus: "recommended" });
   });
 
   it("appends follow-up research and records it in the article's Awen conversation", async () => {

@@ -250,6 +250,21 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_research_task_events_task_created
       ON research_task_events(task_id, created_at ASC);
 
+    CREATE TABLE IF NOT EXISTS research_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL UNIQUE REFERENCES research_tasks(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('generate', 'follow_up', 'refresh')),
+      plan_markdown TEXT NOT NULL,
+      plan_json TEXT NOT NULL DEFAULT '{}',
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      specified_sources_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_runs_project_created
+      ON research_runs(project_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS article_settings (
       context_key TEXT PRIMARY KEY,
       author TEXT NOT NULL DEFAULT '',

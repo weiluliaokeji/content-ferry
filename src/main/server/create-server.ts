@@ -64,6 +64,7 @@ import { ExecutionRepository } from "../agent/execution-repository";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { ResearchTaskRepository } from "../content/research-task-repository";
 import { ResearchTaskRunner } from "../content/research-task-runner";
+import { ResearchRunRepository } from "../content/research-run-repository";
 import { SystemToolRegistry } from "../agent/system-tool-registry";
 import { PermissionGrantRepository } from "../agent/permission-grant-repository";
 import { GitSourceService } from "../agent/git-source-service";
@@ -128,6 +129,7 @@ export function buildServer(
   const contentDrafts = new ContentDraftRepository(database.connection);
   const contentResearch = new ContentResearchRepository(database.connection);
   const researchTasks = new ResearchTaskRepository(database.connection);
+  const researchRuns = new ResearchRunRepository(database.connection);
   const contentReviews = new ContentReviewRepository(database.connection);
   const remoteImages = new RemoteImageImportService(assetStore, contentSources);
   const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
@@ -168,7 +170,7 @@ export function buildServer(
   const executionRuns = new ExecutionRepository(database.connection);
   const interruptedExecutionRuns = executionRuns.recoverInterrupted();
   if (interruptedExecutionRuns > 0) server.log.warn({ interruptedExecutionRuns }, "Execution runs marked interrupted after restart");
-  const researchTaskRunner = new ResearchTaskRunner(database, researchTasks, contentProjects, contentResearch, aiContent, server.log);
+  const researchTaskRunner = new ResearchTaskRunner(database, researchTasks, researchRuns, contentProjects, contentResearch, aiContent, server.log);
   server.addHook("onClose", async () => researchTaskRunner.stop());
   const systemTools = new SystemToolRegistry();
   const permissionGrants = new PermissionGrantRepository(database.connection);
@@ -362,6 +364,7 @@ export function buildServer(
     execution,
     executionRuns,
     researchTasks,
+    researchRuns,
     researchTaskRunner,
     systemTools,
     permissionGrants,
