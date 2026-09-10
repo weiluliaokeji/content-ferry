@@ -13,6 +13,18 @@ export interface ResearchSource {
   selected: boolean;
 }
 
+export type SpecifiedSourceStatus = "pending_manual_verification" | "verified" | "rejected" | "failed";
+
+export interface SpecifiedSource {
+  id: string;
+  url: string;
+  status: SpecifiedSourceStatus;
+  verificationNote: string;
+  failureReason: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ResearchProvenance {
   kind: "execution_observation";
   executionRunId: string;
@@ -29,8 +41,11 @@ export interface ContentResearch {
   projectId: string;
   planMarkdown: string;
   sources: ResearchSource[];
+  specifiedSources: SpecifiedSource[];
   updatedAt: string | null;
 }
+
+export class ContentResearchError extends Error {}
 
 export class ContentResearchRepository {
   constructor(private readonly db: Database.Database) {}
@@ -40,6 +55,8 @@ export class ContentResearchRepository {
       .get(projectId) as { plan_markdown: string; updated_at: string } | undefined;
     const sources = this.db.prepare(`SELECT id, title, url, excerpt, claims_json, provenance_json, source_type, retrieved_at, selected
       FROM content_research_sources WHERE project_id = ? ORDER BY retrieved_at DESC, id DESC`).all(projectId) as Array<Record<string, string | number>>;
+    const specifiedSources = this.db.prepare(`SELECT id, url, status, verification_note, failure_reason, created_at, updated_at
+      FROM content_specified_sources WHERE project_id = ? ORDER BY created_at ASC, id ASC`).all(projectId) as Array<Record<string, string>>;
     return {
       projectId,
       planMarkdown: plan?.plan_markdown ?? "",
@@ -54,8 +71,52 @@ export class ContentResearchRepository {
         retrievedAt: source.retrieved_at as string,
         selected: Boolean(source.selected)
       })),
+      specifiedSources: specifiedSources.map((source) => ({
+        id: source.id,
+        url: source.url,
+        status: source.status as SpecifiedSourceStatus,
+        verificationNote: source.verification_note,
+        failureReason: source.failure_reason,
+        createdAt: source.created_at,
+        updatedAt: source.updated_at
+      })),
       updatedAt: plan?.updated_at ?? null
     };
+  }
+
+  addSpecifiedSources(projectId: string, urls: string[]): ContentResearch {
+    const now = new Date().toISOString();
+    const normalizedUrls = [...new Set(urls.map(normalizePublicResearchUrl))];
+    const insert = this.db.prepare(`INSERT INTO content_specified_sources
+      (id, project_id, url, status, verification_note, failure_reason, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending_manual_verification', '', '', ?, ?)
+      ON CONFLICT(project_id, url) DO NOTHING`);
+    this.db.transaction(() => {
+      for (const url of normalizedUrls) insert.run(randomUUID(), projectId, url, now, now);
+    })();
+    return this.get(projectId);
+  }
+
+  updateSpecifiedSource(projectId: string, sourceId: string, input: {
+    status: SpecifiedSourceStatus;
+    verificationNote: string;
+    failureReason: string;
+  }): ContentResearch {
+    const exists = this.db.prepare("SELECT 1 FROM content_specified_sources WHERE id = ? AND project_id = ?").get(sourceId, projectId);
+    if (!exists) throw new ContentResearchError("找不到这条指定资料。");
+    this.db.prepare(`UPDATE content_specified_sources
+      SET status = ?, verification_note = ?, failure_reason = ?, updated_at = ?
+      WHERE id = ? AND project_id = ?`)
+      .run(input.status, input.verificationNote.trim(), input.failureReason.trim(), new Date().toISOString(), sourceId, projectId);
+    return this.get(projectId);
+  }
+
+  verifySpecifiedSourceFromManualCard(projectId: string, url: string | undefined, verificationNote: string): void {
+    if (!url?.trim()) return;
+    this.db.prepare(`UPDATE content_specified_sources
+      SET status = 'verified', verification_note = ?, failure_reason = '', updated_at = ?
+      WHERE project_id = ? AND url = ?`)
+      .run(verificationNote.trim(), new Date().toISOString(), projectId, normalizePublicResearchUrl(url));
   }
 
   save(projectId: string, input: { planMarkdown: string; sources: Omit<ResearchSource, "id" | "retrievedAt" | "selected">[] }): ContentResearch {
@@ -117,7 +178,7 @@ export class ContentResearchRepository {
 
   addManual(projectId: string, input: { title: string; url?: string; excerpt: string; keyClaims: string[] }): ContentResearch {
     const now = new Date().toISOString();
-    const url = input.url?.trim() ? normalizeManualResearchUrl(input.url) : `manual://${randomUUID()}`;
+    const url = input.url?.trim() ? normalizePublicResearchUrl(input.url) : `manual://${randomUUID()}`;
     if (!url.startsWith("manual://")) {
       const existing = this.db.prepare("SELECT 1 FROM content_research_sources WHERE project_id = ? AND url = ?")
         .get(projectId, url);
@@ -180,7 +241,7 @@ export function normalizeResearchUrl(value: string): string {
   }
 }
 
-function normalizeManualResearchUrl(value: string): string {
+export function normalizePublicResearchUrl(value: string): string {
   const normalized = normalizeResearchUrl(value);
   let parsed: URL;
   try { parsed = new URL(normalized); }

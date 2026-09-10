@@ -797,6 +797,88 @@ describe("local API scaffold", () => {
     expect(brief.json()).toMatchObject({ topic: "original idea", objective: "reader outcome" });
   });
 
+  it("keeps user-specified links separate until their verification outcome is recorded", async () => {
+    server = createTestServer();
+    const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
+      topic: "Matt Pocock 的 skills 介绍和推荐",
+      sourceNotes: "这是一条自己的选题笔记。",
+      specifiedSources: ["https://example.com/matt-pocock-skills?utm_source=test"]
+    } });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().id as string;
+
+    const research = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/research` });
+    expect(research.json()).toMatchObject({
+      sources: [],
+      specifiedSources: [{
+        url: "https://example.com/matt-pocock-skills",
+        status: "pending_manual_verification",
+        verificationNote: "",
+        failureReason: ""
+      }]
+    });
+
+    const sourceId = research.json().specifiedSources[0].id as string;
+    const verified = await server.inject({
+      method: "PATCH",
+      url: `/api/content-projects/${projectId}/research/specified-sources/${sourceId}`,
+      payload: { status: "verified", verificationNote: "已在浏览器核对正文与作者身份。" }
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json().specifiedSources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: sourceId, status: "verified", verificationNote: "已在浏览器核对正文与作者身份。" })
+    ]));
+
+    const badStatus = await server.inject({
+      method: "PATCH",
+      url: `/api/content-projects/${projectId}/research/specified-sources/${sourceId}`,
+      payload: { status: "failed" }
+    });
+    expect(badStatus.statusCode).toBe(400);
+
+    const missingSource = await server.inject({
+      method: "PATCH",
+      url: `/api/content-projects/${projectId}/research/specified-sources/00000000-0000-0000-0000-000000000000`,
+      payload: { status: "rejected" }
+    });
+    expect(missingSource.statusCode).toBe(400);
+
+    const linkOnlyFollowUp = await server.inject({
+      method: "POST",
+      url: `/api/content-projects/${projectId}/research/follow-up`,
+      payload: { specifiedSources: ["https://example.com/manual-source"] }
+    });
+    expect(linkOnlyFollowUp.statusCode).toBe(200);
+    const manualSpecifiedSource = linkOnlyFollowUp.json().specifiedSources.find((source: { url: string }) => source.url === "https://example.com/manual-source") as { id: string; status: string };
+    expect(manualSpecifiedSource).toMatchObject({ status: "pending_manual_verification" });
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/research/tasks` })).json().items).toHaveLength(0);
+
+    const manualCard = await server.inject({
+      method: "POST",
+      url: `/api/content-projects/${projectId}/research/sources`,
+      payload: { title: "手工核验来源", url: "https://example.com/manual-source", excerpt: "用户已经核验并补充的摘要。", keyClaims: ["可用于后续写作"] }
+    });
+    expect(manualCard.statusCode).toBe(200);
+    expect(manualCard.json().specifiedSources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: manualSpecifiedSource.id, status: "verified", verificationNote: "手工补录摘要：手工核验来源" })
+    ]));
+    const rejected = await server.inject({
+      method: "PATCH",
+      url: `/api/content-projects/${projectId}/research/specified-sources/${manualSpecifiedSource.id}`,
+      payload: { status: "rejected" }
+    });
+    expect(rejected.json().specifiedSources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: manualSpecifiedSource.id, status: "rejected" })
+    ]));
+
+    const invalidUrl = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
+      topic: "不应创建的项目",
+      specifiedSources: ["https://user:secret@example.com/private"]
+    } });
+    expect(invalidUrl.statusCode).toBe(400);
+    expect((await server.inject({ method: "GET", url: "/api/content-projects" })).json().items).toHaveLength(1);
+  });
+
   it("falls back to copy-and-remove when Windows blocks an article directory rename", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-busy-delete-"));
     temporaryDirectories.push(root);

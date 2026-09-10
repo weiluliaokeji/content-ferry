@@ -1,7 +1,7 @@
 import { FormEvent, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
-import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
+import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
   accounts: MediaAccount[];
@@ -61,6 +61,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [projectAudience, setProjectAudience] = useState("");
   const [projectAngle, setProjectAngle] = useState("");
   const [projectSourceNotes, setProjectSourceNotes] = useState("");
+  const [projectSpecifiedSources, setProjectSpecifiedSources] = useState("");
   const [briefProject, setBriefProject] = useState<ContentProject>();
   const [brief, setBrief] = useState<ContentBrief>();
   const briefRequestVersionRef = useRef(0);
@@ -96,6 +97,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [research, setResearch] = useState<ContentResearch>();
   const [researchGenerating, setResearchGenerating] = useState(false);
   const [researchFollowUp, setResearchFollowUp] = useState("");
+  const [researchSpecifiedSources, setResearchSpecifiedSources] = useState("");
+  const [specifiedSourceNotes, setSpecifiedSourceNotes] = useState<Record<string, string>>({});
   const [researchFollowingUp, setResearchFollowingUp] = useState(false);
   const [researchTaskId, setResearchTaskId] = useState<string>();
   const [researchPaused, setResearchPaused] = useState(false);
@@ -224,18 +227,20 @@ export function useWorkbench(params: UseWorkbenchParams) {
     const title = projectTitle.trim();
     const targetAccountId = projectAccountId.trim();
     const objective = projectObjective.trim();
+    const specifiedSources = projectSpecifiedSources.split(/\r?\n/).map((url) => url.trim()).filter(Boolean);
     if (!topic) { setError("请先填写文章主题或想法。"); return; }
     if (topic.length > 12000) { setError("文章主题或想法不能超过 12000 个字符，请拆分资料后再创建。"); return; }
     if (title.length > 120) { setError("文章标题不能超过 120 个字符，请精简后再创建。"); return; }
+    if (specifiedSources.length > 20) { setError("指定资料最多可填写 20 条链接，请分批补充。"); return; }
     if (targetAccountId && !accounts.some((account) => account.id === targetAccountId)) {
       setError("所选发布账号已不存在或刚被修改，请关闭后重新打开“新建文章”再选择。");
       return;
     }
     setSaving(true);
     try {
-      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
+      const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), specifiedSources, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
       setProjectTopic(""); setProjectTitle(""); setProjectAccountId("");
-      setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes("");
+      setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes(""); setProjectSpecifiedSources("");
       setProjectModalOpen(false);
       await loadProjects();
       await openResearch(project, true);
@@ -413,22 +418,40 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setError(cause instanceof Error ? cause.message : "资料卡更新失败。");
     }
   };
+  const updateSpecifiedSource = async (source: SpecifiedSource, status: SpecifiedSource["status"]) => {
+    if (!researchProject) return;
+    const note = (specifiedSourceNotes[source.id] ?? (status === "failed" ? source.failureReason : source.verificationNote)).trim();
+    try {
+      const next = await request<ContentResearch>(`/content-projects/${researchProject.id}/research/specified-sources/${source.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, verificationNote: status === "verified" ? note : "", failureReason: status === "failed" ? note : "" })
+      });
+      setResearch(next);
+      setSpecifiedSourceNotes((current) => ({ ...current, [source.id]: "" }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "指定资料状态更新失败。"); }
+  };
   const continueResearch = async () => {
-    if (!researchProject || !researchFollowUp.trim() || researchFollowingUp) return;
+    const specifiedSources = researchSpecifiedSources.split(/\r?\n/).map((url) => url.trim()).filter(Boolean);
+    if (!researchProject || (!researchFollowUp.trim() && specifiedSources.length === 0) || researchFollowingUp) return;
+    if (specifiedSources.length > 20) { setError("指定资料最多可填写 20 条链接，请分批补充。"); return; }
     setResearchFollowingUp(true);
     setResearchError("");
-    setResearchStatus("阿文正在针对你的补充继续联网补研…");
+    setResearchStatus(researchFollowUp.trim() ? "阿文正在针对你的补充继续联网补研…" : "正在保存指定资料…");
     try {
       const controller = new AbortController();
       researchAbortRef.current = controller;
-      const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
+      const payload = JSON.stringify({ message: researchFollowUp.trim(), specifiedSources });
+      const next = researchFollowUp.trim()
+        ? await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
         if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
         if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
         if (event === "paused") setResearchPaused(true);
         if (event === "complete") setResearch(data as unknown as ContentResearch);
-      }, JSON.stringify({ message: researchFollowUp.trim() }));
+        }, payload)
+        : await request<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, { method: "POST", body: payload, signal: controller.signal });
       setResearch(next);
       setResearchFollowUp("");
+      setResearchSpecifiedSources("");
       setResearchStatus("");
       await loadProjects();
     } catch (cause) {
@@ -667,6 +690,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setProjectAngle,
     projectSourceNotes,
     setProjectSourceNotes,
+    projectSpecifiedSources,
+    setProjectSpecifiedSources,
     briefProject,
     setBriefProject,
     brief,
@@ -707,6 +732,10 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setResearchGenerating,
     researchFollowUp,
     setResearchFollowUp,
+    researchSpecifiedSources,
+    setResearchSpecifiedSources,
+    specifiedSourceNotes,
+    setSpecifiedSourceNotes,
     researchFollowingUp,
     setResearchFollowingUp,
     researchTaskId,
@@ -762,6 +791,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     changeBrief,
     openResearch,
     toggleResearchSource,
+    updateSpecifiedSource,
     continueResearch,
     cancelResearch,
     pauseResearch,

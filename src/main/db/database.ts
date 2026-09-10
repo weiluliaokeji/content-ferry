@@ -180,6 +180,21 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_content_research_sources_project
       ON content_research_sources(project_id, retrieved_at DESC);
 
+    CREATE TABLE IF NOT EXISTS content_specified_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending_manual_verification', 'verified', 'rejected', 'failed')),
+      verification_note TEXT NOT NULL DEFAULT '',
+      failure_reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, url)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_content_specified_sources_project
+      ON content_specified_sources(project_id, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS experimental_observations (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,

@@ -38,6 +38,16 @@ export const contentSourceAssetInput = z.object({
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
   base64: z.string().min(1).max(21_000_000)
 });
+const specifiedSourceUrlInput = z.string().trim().min(1).max(4000).superRefine((value, ctx) => {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) {
+      ctx.addIssue({ code: "custom", message: "指定资料链接只支持不带凭据的 HTTP(S) 地址。" });
+    }
+  } catch {
+    ctx.addIssue({ code: "custom", message: "指定资料链接必须是有效的 HTTP(S) 地址。" });
+  }
+});
 export const contentProjectInput = z.object({
   topic: z.string().trim().min(1).max(12000),
   title: z.string().trim().min(1).max(120).optional(),
@@ -45,7 +55,8 @@ export const contentProjectInput = z.object({
   objective: z.string().max(4000).optional(),
   audience: z.string().max(4000).optional(),
   angle: z.string().max(4000).optional(),
-  sourceNotes: z.string().max(12000).optional()
+  sourceNotes: z.string().max(12000).optional(),
+  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([])
 });
 export const contentProjectTitleInput = z.object({ title: z.string().trim().min(1).max(120) });
 export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
@@ -53,7 +64,26 @@ export const titleSuggestionInput = contentBriefInput;
 export const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
 export const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
 export const researchSelectionInput = z.object({ selected: z.boolean() });
-export const researchFollowUpInput = z.object({ message: z.string().trim().min(1).max(4000) });
+export const researchFollowUpInput = z.object({
+  message: z.string().trim().max(4000).default(""),
+  specifiedSources: z.array(specifiedSourceUrlInput).max(20).default([])
+}).superRefine((value, ctx) => {
+  if (!value.message && value.specifiedSources.length === 0) {
+    ctx.addIssue({ code: "custom", message: "请填写补研要求或至少提供一条指定资料链接。", path: ["message"] });
+  }
+});
+export const specifiedSourceStatusInput = z.object({
+  status: z.enum(["pending_manual_verification", "verified", "rejected", "failed"]),
+  verificationNote: z.string().trim().max(5000).default(""),
+  failureReason: z.string().trim().max(5000).default("")
+}).superRefine((value, ctx) => {
+  if (value.status === "verified" && !value.verificationNote) {
+    ctx.addIssue({ code: "custom", message: "标记为已核验时需要填写核验说明。", path: ["verificationNote"] });
+  }
+  if (value.status === "failed" && !value.failureReason) {
+    ctx.addIssue({ code: "custom", message: "标记为无法访问时需要填写失败原因。", path: ["failureReason"] });
+  }
+});
 export const researchManualSourceInput = z.object({
   title: z.string().trim().min(1).max(300),
   url: z.string().trim().max(4000).optional(),

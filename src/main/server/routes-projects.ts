@@ -3,7 +3,7 @@ import { ContentSourceError } from "../content/content-source-service";
 import {
   contentBriefInput, contentDraftInput, contentOutlineInput, contentProjectInput,
   contentProjectTitleInput, contentReviewInput, contentRevisionInput,
-  researchFollowUpInput, researchManualSourceInput, researchSelectionInput, titleSuggestionInput
+  researchFollowUpInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
 } from "./schemas";
 import {
   extractHistoricalSeries, initialArticleTitle, persistResearchConversation,
@@ -52,6 +52,7 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
           sourceNotes: input.sourceNotes ?? ""
         });
       }
+      contentResearch.addSpecifiedSources(created.id, input.specifiedSources);
       return created;
     })();
     return reply.code(201).send(project);
@@ -165,6 +166,8 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const input = researchFollowUpInput.parse(request.body);
     const project = contentProjects.require(params.projectId);
+    contentResearch.addSpecifiedSources(params.projectId, input.specifiedSources);
+    if (!input.message) return contentResearch.get(params.projectId);
     const task = researchTasks.create(params.projectId, "follow_up", { kind: "follow_up", message: input.message });
     researchTasks.transition(task.id, "running");
     ctx.researchTaskRunner?.registerActive(task.id);
@@ -195,10 +198,19 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return contentResearch.updateSelection(params.projectId, params.sourceId, input.selected);
   });
 
+  server.patch("/api/content-projects/:projectId/research/specified-sources/:sourceId", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), sourceId: z.string().uuid() }).parse(request.params);
+    const input = specifiedSourceStatusInput.parse(request.body);
+    return contentResearch.updateSpecifiedSource(params.projectId, params.sourceId, input);
+  });
+
   server.post("/api/content-projects/:projectId/research/sources", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     contentProjects.require(params.projectId);
-    return contentResearch.addManual(params.projectId, researchManualSourceInput.parse(request.body));
+    const input = researchManualSourceInput.parse(request.body);
+    const research = contentResearch.addManual(params.projectId, input);
+    contentResearch.verifySpecifiedSourceFromManualCard(params.projectId, input.url, `手工补录摘要：${input.title}`);
+    return input.url?.trim() ? contentResearch.get(params.projectId) : research;
   });
 
   server.post("/api/content-projects/:projectId/title/suggest", async (request) => {

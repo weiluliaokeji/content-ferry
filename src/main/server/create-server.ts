@@ -9,7 +9,7 @@ import { ContentProjectRepository } from "../content/content-project-repository"
 import { ContentBriefRepository } from "../content/content-brief-repository";
 import { ContentOutlineRepository } from "../content/content-outline-repository";
 import { ContentDraftRepository } from "../content/content-draft-repository";
-import { ContentResearchRepository } from "../content/content-research-repository";
+import { ContentResearchError, ContentResearchRepository } from "../content/content-research-repository";
 import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
@@ -209,6 +209,10 @@ export function buildServer(
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof FiftyoneCtoChannelError) {
+      return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof ContentResearchError) {
+      request.log.warn({ err: error }, "Content research request rejected");
       return reply.code(400).send({ error: error.message });
     }
     if (error instanceof ExecutionPolicyError) {
