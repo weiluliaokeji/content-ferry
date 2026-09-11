@@ -47,6 +47,16 @@ function cosOkResponse(): Response {
   return new Response(null, { status: 204, headers: { Location: `${COS_URL}/${"images/blog/front/202608/fake.png"}` } });
 }
 
+/**
+ * 51CTO 部分接口（getUploadSign / getUploadConfig）会在合法 JSON 前原样回显本次请求体
+ * （形如 `upload_type=image&upload_sign=…{"code":0,…}`）。复现 2026/9/11 真实失败：
+ * 直接 JSON.parse 整段必然抛错，被误判为不可重试的凭据错误 → 整篇文章未发布。
+ */
+function okJsonWithEchoedPrefix(prefix: string, body: unknown): Response {
+  const payload = prefix + JSON.stringify(body);
+  return new Response(payload, { status: 200, headers: { "content-type": "application/json" } });
+}
+
 describe("FiftyoneCtoImageUploader", () => {
   it("returns CDN base + key after sign -> config -> cos multipart post", async () => {
     const fetcher = makeFetcher((url) => {
@@ -160,6 +170,53 @@ describe("FiftyoneCtoImageUploader", () => {
     expect(params.get("upload_sign")).toBe("sign-value");
     expect(params.get("ext")).toBe("image/jpeg"); // URLSearchParams 会把 / 编为 %2F，反解回来是 image/jpeg
     expect(params.get("name")).toBe("th (+).jpeg");
+  });
+
+  it("tolerates 51CTO echoing the request body before the JSON (getUploadSign)", async () => {
+    // 2026/9/11 真实失败：sign 响应为 `upload_type=image{"code":0,…}`，前缀等于请求体。
+    const fetcher = makeFetcher((url) => {
+      if (url === SIGN_URL) {
+        return okJsonWithEchoedPrefix(
+          "upload_type=image",
+          { code: 0, msg: "success", data: { url: "https://s2.51cto.com/", sign: "sign-value" } }
+        );
+      }
+      if (url === CONFIG_URL) return makeConfigResponse("images/echo1.png");
+      if (url === COS_URL) return cosOkResponse();
+      return new Response("unexpected", { status: 500 });
+    });
+    const url = await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "echo1.png");
+    expect(url).toBe("https://s2.51cto.com/images/echo1.png");
+  });
+
+  it("tolerates 51CTO echoing the request body before the JSON (getUploadConfig)", async () => {
+    // 2026/9/11 真实失败：config 响应前缀 = `upload_type=image&upload_sign=…&ext=…&name=…`。
+    const fetcher = makeFetcher((url, init) => {
+      if (url === SIGN_URL) return makeSignResponse();
+      if (url === CONFIG_URL) {
+        const body = init?.body;
+        const sent = body instanceof URLSearchParams ? body.toString() : typeof body === "string" ? body : "";
+        return okJsonWithEchoedPrefix(sent, {
+          code: 0,
+          msg: "success",
+          data: {
+            url: COS_URL,
+            fields: {
+              key: "images/echo2.png",
+              policy: "policy-value",
+              "x-amz-algorithm": "AWS4-HMAC-SHA256",
+              "x-amz-signature": "sig-value",
+              "x-amz-credential": "AKID/20260830/ap-beijing/s3/aws4_request",
+              "X-Amz-Date": "20260830T134341Z"
+            }
+          }
+        });
+      }
+      if (url === COS_URL) return cosOkResponse();
+      return new Response("unexpected", { status: 500 });
+    });
+    const url = await new FiftyoneCtoImageUploader("c", fetcher).upload(Buffer.from("a"), "image/png", "Pasted image 20260829162142.png");
+    expect(url).toBe("https://s2.51cto.com/images/echo2.png");
   });
 
   it("posts multipart form-data to COS with signature fields and file", async () => {

@@ -12,6 +12,25 @@ const IMAGE_UPLOAD_BACKOFF_BASE_MS = 500;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * 51CTO 部分接口（getUploadSign / getUploadConfig）会在合法 JSON 前原样回显本次
+ * 请求体（形如 `upload_type=image&upload_sign=…{"code":0,…}`），直接 JSON.parse 整段
+ * 必然抛错。此函数从首个 `{` 起切到末个 `}`，兼容「纯 JSON」与「回显前缀 + JSON」
+ * 两种形态；无 `{` 时原样返回，交给上层 JSON.parse 抛错走原 catch 文案。
+ */
+function extractJson(text: string): string {
+  const start = text.indexOf("{");
+  if (start === -1) return text;
+  const fromBrace = text.slice(start);
+  try {
+    JSON.parse(fromBrace);
+    return fromBrace;
+  } catch {
+    const end = text.lastIndexOf("}");
+    return end > start ? text.slice(start, end + 1) : fromBrace;
+  }
+}
+
 const UPLOAD_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0";
@@ -171,7 +190,7 @@ export class FiftyoneCtoImageUploader {
     }
     let parsed: UploadSignResponse;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(extractJson(text));
     } catch {
       throw new FiftyoneCtoCredentialsError(`51CTO 上传签名响应不是 JSON：${text.slice(0, 200)}`);
     }
@@ -214,7 +233,7 @@ export class FiftyoneCtoImageUploader {
     }
     let parsed: UploadConfigResponse;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(extractJson(text));
     } catch {
       throw new FiftyoneCtoCredentialsError(
         `51CTO 上传配置响应不是 JSON (send=POST ${CONFIG_URL} body=${sendBody})：${text.slice(0, 200)}`
