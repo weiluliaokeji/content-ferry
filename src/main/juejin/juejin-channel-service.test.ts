@@ -349,10 +349,12 @@ describe("JuejinChannelService", () => {
   it("sends the juejin draft payload with string category, string-array tags and external cover", async () => {
     const { account, service, calls } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    // 合规摘要（≥50 字）：验证已提供摘要时原样透传、不触发自动补足。
+    const compliantDigest = "摘要透传验证：这是一段超过五十字长度的掘金摘要内容，用于确认当作者已提供合规摘要时系统不会再从正文自动补足原文应完整出现在 brief_content 字段中。";
     const saved = service.saveDraft(draft.id, {
       title: "掘金分类测试",
       markdown: "# 掘金分类测试\n\n正文",
-      digest: "掘金摘要"
+      digest: compliantDigest
     });
     const approved = service.approveDraft(saved.id);
     const job = service.createPublishJob(approved.id, {
@@ -367,12 +369,48 @@ describe("JuejinChannelService", () => {
     // 掘金 title 已单独提交，正文不再重复携带首行 "# 标题"。
     expect(body.mark_content).not.toContain("掘金分类测试");
     expect(body.mark_content).toContain("正文");
-    expect(body.brief_content).toBe("掘金摘要");
+    expect(body.brief_content).toBe(compliantDigest);
     expect(body.category_id).toBe("6809637771511070734");
     expect(body.tag_ids).toEqual(["7467857238494020000", "6809641073527226000"]);
     expect(body.cover_image).toBe("");
     expect(body.edit_type).toBe(10);
     expect(body.html_content).toBe("deprecated");
+  });
+
+  it("pads a too-short digest with body text up to the 50-character minimum", async () => {
+    const { account, service, calls } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const saved = service.saveDraft(draft.id, {
+      title: "摘要补全长测试",
+      markdown: "# 摘要补全长测试\n\n这是一段足够长的正文内容，用于验证当作者撰写的摘要字数不足五十个字符时，系统会从正文中自动截取并补足到掘金要求的最低摘要长度，避免公开环节被服务端以参数错误拒绝。",
+      digest: "短摘要"
+    });
+    const approved = service.approveDraft(saved.id);
+    const job = service.createPublishJob(approved.id);
+    await waitForJob(service, job.id, "draft_created");
+
+    const create = calls.find((call) => call.endpoint === "article_draft/create")!;
+    const body = JSON.parse(create.body) as Record<string, unknown>;
+    expect((body.brief_content as string).length).toBeGreaterThanOrEqual(50);
+    expect(body.brief_content).toContain("短摘要");
+  });
+
+  it("falls back to body text when the digest is empty", async () => {
+    const { account, service, calls } = setupHarness();
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const saved = service.saveDraft(draft.id, {
+      title: "空摘要回退测试",
+      markdown: "# 空摘要回退测试\n\n当作者没有撰写任何摘要时，系统应当从正文首段截取足够长度的文本作为摘要，以满足掘金平台对摘要字数的最低要求，保证文章能够成功公开而不会因摘要过短而失败。",
+      digest: ""
+    });
+    const approved = service.approveDraft(saved.id);
+    const job = service.createPublishJob(approved.id);
+    await waitForJob(service, job.id, "draft_created");
+
+    const create = calls.find((call) => call.endpoint === "article_draft/create")!;
+    const body = JSON.parse(create.body) as Record<string, unknown>;
+    expect((body.brief_content as string).length).toBeGreaterThanOrEqual(50);
+    expect(body.brief_content).toContain("系统应当从正文首段截取");
   });
 
   it("clamps tag_ids to the 3-tag platform limit when creating the remote draft", async () => {

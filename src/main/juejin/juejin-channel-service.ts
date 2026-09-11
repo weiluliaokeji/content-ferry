@@ -64,6 +64,11 @@ class JuejinCredentialsError extends Error {
 /** 掘金正文（markContent）最大字符数，与 saveDraft 本地校验保持一致。 */
 export const JUJIN_MAX_MARK_CONTENT_CHARS = 100_000;
 
+/** 掘金摘要（brief_content）最少字符数：少于该值 article/publish 会报「参数错误」。 */
+const JUEJIN_MIN_BRIEF_LEN = 50;
+/** 掘金摘要（brief_content）最多字符数，与 createDraft 既有截断保持一致。 */
+const JUEJIN_MAX_BRIEF_LEN = 100;
+
 export type JuejinChannelDraftStatus = "draft" | "approved" | "superseded";
 export type JuejinChannelDraftGenerationMode = "rewrite" | "source";
 export type JuejinPublishJobStatus =
@@ -615,8 +620,9 @@ export class JuejinChannelService {
           .run(`本地图片已上传 ${inlineResult.uploadedCount} 张`, job.id);
       }
 
-      // 构建摘要：取 digest 字段，若为空则用 markdown 前 100 个字符
-      const briefContent = (draft.digest || draft.markdown.replace(/#{1,6}\s+.*\n?/g, "").replace(/[#*`\n]/g, " ").trim().slice(0, 100)).slice(0, 100);
+      // 构建摘要：优先用作者/AI 撰写的 digest；掘金要求摘要不少于 50 字，过短会在
+      // article/publish 环节报「参数错误」（服务端强校验），因此不足时从正文补足到 50~100 字。
+      const briefContent = buildJuejinBriefContent(draft.digest, draft.markdown);
 
       // 兜底：本地图片全部上传成功后正文仍超过掘金最大字数限制时，发布失败并给出
       // 明确提示，避免请求打到掘金被服务端拒绝（只留下不可见错误）。
@@ -778,6 +784,26 @@ function normalizeMarkdown(markdown: string, title: string): string {
 /** 剥离开头的一级标题行（如发布时避免与文章标题重复渲染）。 */
 function stripLeadingTitleHeading(markdown: string): string {
   return markdown.replace(/^#\s+.+\n+/, "").trim();
+}
+
+/**
+ * 构建掘金 brief_content：优先用作者/AI 撰写的 digest，若不足 50 字则从正文
+ * 补足，最终落在 [50, 100] 字区间。正文按常见 Markdown 语法剥离后取首段拼接。
+ * 掘金 article/publish 强校验摘要不少于 50 字，过短会以泛化「参数错误」拒绝，
+ * 因此客户端主动补足可避免反复打服务端再失败。
+ */
+function buildJuejinBriefContent(digestText: string, markdown: string): string {
+  const base = (digestText || "").trim().slice(0, JUEJIN_MAX_BRIEF_LEN);
+  if (base.length >= JUEJIN_MIN_BRIEF_LEN) return base;
+  const fromBody = markdown
+    .replace(/^---[\s\S]*?---/, "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/#{1,6}\s+.*\n?/g, "")
+    .replace(/[#*`>~\[\]!]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const supplement = fromBody.slice(0, JUEJIN_MAX_BRIEF_LEN - base.length);
+  return `${base} ${supplement}`.trim().slice(0, JUEJIN_MAX_BRIEF_LEN);
 }
 
 function assertNoJuejinPromotion(markdown: string): void {
