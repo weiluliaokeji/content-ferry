@@ -34,6 +34,7 @@ export type TemporaryResearchScope = "selection" | "paragraph" | "article";
 export type TemporaryResearchResult = { scope: TemporaryResearchScope; context: string; planMarkdown: string; sources: Array<Omit<ResearchSource, "id" | "adoptionStatus" | "selected" | "retrievedAt"> & { retrievedAt?: string; sourceUrls?: string[]; claim?: string; recommendation?: string; qualityReason?: string; freshness?: string; boundary?: string; evidenceKind?: string; evidence?: ResearchSource["evidence"] }>; provider?: string; model?: string | null };
 export type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
 export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
+export type ContentPracticePlan = { projectId: string; markdown: string; status: "draft" | "confirmed" | "skipped"; updatedAt: string };
 export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };
 export type ContentReview = { projectId: string; status: "pending" | "needs_revision" | "approved"; factChecked: boolean; accountFitChecked: boolean; aiCheckResult: string; notes: string };
 export type WechatPublishJob = {

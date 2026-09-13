@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
-import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
+import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentPracticePlan, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
   accounts: MediaAccount[];
@@ -92,6 +92,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [outlineTitleSuggesting, setOutlineTitleSuggesting] = useState(false);
   const [outlineRefining, setOutlineRefining] = useState(false);
   const [outlinePreviousMarkdown, setOutlinePreviousMarkdown] = useState<string>();
+  const [practicePlanProject, setPracticePlanProject] = useState<ContentProject>();
+  const [practicePlan, setPracticePlan] = useState<ContentPracticePlan>();
+  const [practicePlanBusy, setPracticePlanBusy] = useState(false);
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
   const setOutlineAbortRef = (value: AbortController | undefined) => {
     outlineAbortRef.current = value;
@@ -722,7 +725,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutline({ ...outline, markdown: outlinePreviousMarkdown });
     setOutlinePreviousMarkdown(undefined);
   };
-  const openDraft = async (project: ContentProject) => {
+  const openDraftAfterPracticePlan = async (project: ContentProject) => {
     setDraftProject(project); setDraft(undefined); setSaving(false); setDraftGenerationStatus("");
     setArticleWorkspacePanel("assistant");
     try {
@@ -746,6 +749,40 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
     catch (cause) { if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) setError(cause instanceof Error ? cause.message : "无法起草正文。"); setDraftProject(undefined); }
     finally { setDraftGenerating(false); draftAbortRef.current = undefined; }
+  };
+  const openDraft = async (project: ContentProject) => {
+    if (project.draftReady) return openDraftAfterPracticePlan(project);
+    setPracticePlanProject(project);
+    setPracticePlan(undefined);
+    setPracticePlanBusy(true);
+    try {
+      const existing = await request<ContentPracticePlan | null>(`/content-projects/${project.id}/practice-plan`);
+      const plan = existing ?? await request<ContentPracticePlan>(`/content-projects/${project.id}/practice-plan/generate`, { method: "POST" });
+      if (plan.status === "confirmed" || plan.status === "skipped") {
+        setPracticePlanProject(undefined);
+        return openDraftAfterPracticePlan(project);
+      }
+      setPracticePlan(plan);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法生成最小实践计划。");
+      setPracticePlanProject(undefined);
+    } finally { setPracticePlanBusy(false); }
+  };
+  const savePracticePlan = async (status: ContentPracticePlan["status"], generateDraft = false) => {
+    if (!practicePlanProject || !practicePlan?.markdown.trim()) return;
+    setPracticePlanBusy(true);
+    try {
+      const saved = await request<ContentPracticePlan>(`/content-projects/${practicePlanProject.id}/practice-plan`, {
+        method: "PUT", body: JSON.stringify({ markdown: practicePlan.markdown, status })
+      });
+      setPracticePlan(saved);
+      if (generateDraft) {
+        const project = practicePlanProject;
+        setPracticePlanProject(undefined);
+        await openDraftAfterPracticePlan(project);
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "实践计划保存失败。"); }
+    finally { setPracticePlanBusy(false); }
   };
   const saveDraft = async (): Promise<{ success: boolean; markdown?: string; error?: string }> => {
     if (!draftProject || !draft) return { success: false, error: "没有可保存的草稿。" };
@@ -910,6 +947,11 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutlineModeScrollOffset,
     outlineMarkdownSourceRef,
     setOutlineMarkdownSourceRef,
+    practicePlanProject,
+    setPracticePlanProject,
+    practicePlan,
+    setPracticePlan,
+    practicePlanBusy,
     researchProject,
     setResearchProject,
     research,
@@ -1006,6 +1048,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     discardOutlineRefinement,
     undoOutlineRefinement,
     openDraft,
+    savePracticePlan,
     saveDraft,
     openReview,
     openZhuque,

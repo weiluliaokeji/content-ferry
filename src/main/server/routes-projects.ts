@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ContentSourceError } from "../content/content-source-service";
 import {
   contentBriefInput, contentDraftInput, contentOutlineInput, contentProjectInput,
-  contentProjectTitleInput, contentReviewInput, contentRevisionInput, outlineRefineInput,
+  contentProjectTitleInput, contentReviewInput, contentRevisionInput, outlineRefineInput, practicePlanInput,
   researchFollowUpInput, researchGenerateInput, researchRefreshInput, temporaryResearchInput, researchManualSourceInput, researchSelectionInput, specifiedSourceStatusInput, titleSuggestionInput
 } from "./schemas";
 import {
@@ -14,7 +14,7 @@ import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { buildResearchPlan } from "../content/research-plan";
 
 export function registerProjectsRoutes(ctx: ServerContext): void {
-  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks, researchRuns } = ctx;
+  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentPracticePlans, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks, researchRuns } = ctx;
   const agentMemory = new AgentMemoryRepository(database.connection);
   const pendingSpecifiedSourceIds = (projectId: string): string[] => contentResearch.get(projectId).specifiedSources
     .filter((source) => source.status === "pending_manual_verification")
@@ -27,6 +27,10 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
   const markTaskSpecifiedSourcesFailed = (projectId: string, sourceIds: string[], error: unknown): void => {
     const reason = `本轮调研未完成，尚未生成资料卡：${error instanceof Error ? error.message.slice(0, 240) : "请重试"}`;
     contentResearch.markSpecifiedSourceExtractionFailure(projectId, sourceIds, reason);
+  };
+  const practicePlanReady = (projectId: string): boolean => {
+    const status = contentPracticePlans.get(projectId)?.status;
+    return status === "confirmed" || status === "skipped";
   };
 
   server.get("/api/content-projects", async () => {
@@ -429,6 +433,26 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return { ...saved, sourceRelativePath: updated.sourceRelativePath };
   });
 
+  server.get("/api/content-projects/:projectId/practice-plan", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    return contentPracticePlans.get(params.projectId);
+  });
+
+  server.post("/api/content-projects/:projectId/practice-plan/generate", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    const markdown = await aiContent.generatePracticePlan(params.projectId);
+    return contentPracticePlans.save(params.projectId, markdown, "draft");
+  });
+
+  server.put("/api/content-projects/:projectId/practice-plan", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = practicePlanInput.parse(request.body);
+    contentProjects.require(params.projectId);
+    return contentPracticePlans.save(params.projectId, input.markdown, input.status);
+  });
+
   server.get("/api/content-projects/:projectId/draft", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const project = ensureProjectArticle(params.projectId);
@@ -440,8 +464,9 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return { ...draft, sourceRelativePath: project.sourceRelativePath };
   });
 
-  server.post("/api/content-projects/:projectId/draft/generate", async (request) => {
+  server.post("/api/content-projects/:projectId/draft/generate", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    if (!practicePlanReady(params.projectId)) return reply.code(409).send({ error: "请先确认最小实践计划，或明确选择不新增实践后再起草正文。" });
     const project = ensureProjectArticle(params.projectId);
     const generated = await aiContent.generateDraft(params.projectId);
     return {
@@ -456,6 +481,7 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
 
   server.post("/api/content-projects/:projectId/draft/generate/stream", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    if (!practicePlanReady(params.projectId)) return reply.code(409).send({ error: "请先确认最小实践计划，或明确选择不新增实践后再起草正文。" });
     const project = ensureProjectArticle(params.projectId);
     return streamMarkdownGeneration(request, reply, (onDelta, onStatus, signal) => aiContent.generateDraftStream(params.projectId, onDelta, onStatus, signal), params.projectId, project.sourceRelativePath);
   });

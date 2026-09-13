@@ -12,6 +12,7 @@ import { Modal, ProfileFields } from "./components/Modal";
 import { CoverCropModal } from "./components/CoverCropModal";
 import { QualityWorkspace } from "./components/QualityWorkspace";
 import { ArticleWorkspace } from "./components/ArticleWorkspace";
+import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ZhuqueReportView } from "./components/ZhuqueReportViews";
 import { resolveArticleImageUrl } from "./markdown-preview";
 import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
@@ -218,6 +219,11 @@ export function App() {
     setOutlineModeScrollOffset,
     outlineMarkdownSourceRef,
     setOutlineMarkdownSourceRef,
+    practicePlanProject,
+    setPracticePlanProject,
+    practicePlan,
+    setPracticePlan,
+    practicePlanBusy,
     researchProject,
     setResearchProject,
     research,
@@ -314,6 +320,7 @@ export function App() {
     discardOutlineRefinement,
     undoOutlineRefinement,
     openDraft,
+    savePracticePlan,
     saveDraft,
     openReview,
     openZhuque,
@@ -617,6 +624,11 @@ export function App() {
       setOutlineModeScrollOffset,
       outlineMarkdownSourceRef,
       setOutlineMarkdownSourceRef,
+      practicePlanProject,
+      setPracticePlanProject,
+      practicePlan,
+      setPracticePlan,
+      practicePlanBusy,
       researchProject,
       setResearchProject,
       research,
@@ -713,6 +725,7 @@ export function App() {
       discardOutlineRefinement,
       undoOutlineRefinement,
       openDraft,
+      savePracticePlan,
       saveDraft,
       openReview,
       openZhuque,
@@ -1837,6 +1850,9 @@ export function App() {
       </>}
       </div>
     </section>}
+    {practicePlanProject && <Modal className="outline-modal" onClose={() => { if (!practicePlanBusy) { setPracticePlanProject(undefined); setPracticePlan(undefined); } }} disabled={practicePlanBusy} title={`最小实践计划：${practicePlanProject.topic}`} eyebrow="正文起草前" wide>
+      {!practicePlan ? <p>阿文正在根据提纲和已采纳资料拟定最少需要验证的步骤…</p> : <section className="profile-form"><p className="hint">这是一份可调整的计划，不代表已经完成实践。若你的电脑已有工具、已有同类实验或不打算运行，请直接改写计划并选择对应的下一步；正文不会把计划中的预期写成实测结果。</p><label>实践计划<textarea value={practicePlan.markdown} onChange={(event) => setPracticePlan((current) => current ? { ...current, markdown: event.target.value } : current)} maxLength={20000} rows={14} /></label><details className="execution-observation"><summary>按计划执行或记录已有实践</summary><ExecutionPanel projectId={practicePlanProject.id} onError={setError} /></details><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => void savePracticePlan("draft")} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>暂存计划</button><button type="button" className="secondary-button" onClick={() => void savePracticePlan("skipped", true)} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>不新增实践，直接起草</button><button type="button" onClick={() => void savePracticePlan("confirmed", true)} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>{practicePlanBusy ? "正在保存…" : "确认计划并起草正文"}</button></div></section>}
+    </Modal>}
     {outlineProject && <Modal className="outline-modal" onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving || outlineRefining} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>
       {!outline ? <p>正在准备提纲…</p> : <>
         <p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outlineHasDraft ? "这是上次暂存的提纲草稿，请继续编辑；点击确认后才会标记为“提纲已就绪”。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>

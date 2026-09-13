@@ -30,6 +30,7 @@ export interface CreationContext {
   researchSources: Array<{ title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; evidence?: ResearchEvidence; provenanceNote?: string }>;
   specifiedSourceUrls: string[];
   researchGaps: string[];
+  practicePlan: { markdown: string; status: "draft" | "confirmed" | "skipped" } | null;
 }
 
 export class AiContentService {
@@ -60,6 +61,18 @@ export class AiContentService {
       parse: (value) => markdownOutput.parse(value)
     });
     return normalizeOutlineTitle(generated, context.topic);
+  }
+
+  async generatePracticePlan(projectId: string): Promise<string> {
+    const context = this.getContext(projectId);
+    const generated = await this.provider.generateStructured({
+      task: "outline",
+      prompt: buildPracticePlanPrompt(context),
+      outputSchema: markdownOutputSchema,
+      timeoutMs: 240_000,
+      parse: (value) => markdownOutput.parse(value)
+    });
+    return generated.value.markdown;
   }
 
   async generateResearch(projectId: string, onStatus?: (message: string) => void, options?: Pick<WebResearchOptions, "depth">): Promise<GenerateStructuredResult<ResearchCard>> {
@@ -211,7 +224,11 @@ export class AiContentService {
         evidence: parseResearchEvidence(source.evidence_json),
         provenanceNote: parseObservationNote(source.provenance_json)
       })),
-      specifiedSourceUrls: (this.db.prepare("SELECT url FROM content_specified_sources WHERE status IN ('pending_manual_verification', 'verified') AND project_id = ? ORDER BY created_at ASC").all(projectId) as Array<{ url: string }>).map((source) => source.url)
+      specifiedSourceUrls: (this.db.prepare("SELECT url FROM content_specified_sources WHERE status IN ('pending_manual_verification', 'verified') AND project_id = ? ORDER BY created_at ASC").all(projectId) as Array<{ url: string }>).map((source) => source.url),
+      practicePlan: (() => {
+        const plan = this.db.prepare("SELECT markdown, status FROM content_practice_plans WHERE project_id = ?").get(projectId) as { markdown: string; status: "draft" | "confirmed" | "skipped" } | undefined;
+        return plan ?? null;
+      })()
     };
   }
 }
@@ -290,6 +307,23 @@ ${currentMarkdown}
 </current-outline>`;
 }
 
+export function buildPracticePlanPrompt(context: CreationContext): string {
+  return `你是技术文章编辑。请在正文起草前提出一份最小实践计划，帮助作者决定哪些结论需要亲自验证。
+
+要求：
+- 只安排与已确认提纲和已采纳资料直接相关、能提高文章具体性的最少步骤；不超过 3 个步骤。
+- 每步说明目的、可复用的现有环境/软件、预计输入与可观察结果；不要默认安装依赖、克隆仓库或联网。
+- 作者可能已经安装工具、已经做过类似实践或没有条件运行；为每步写明“已有结果可直接记录，不必重跑”的替代路径。
+- 区分“建议实践”与“文章可基于已采纳资料写作”的边界；不得把计划中的预期结果写成已验证事实。
+- 输出完整 Markdown，一级标题必须为“# 最小实践计划”，不要输出代码围栏或额外说明。
+
+文章主题：${context.topic}
+已确认提纲：
+${context.outlineMarkdown ?? "尚无提纲"}
+已采纳资料：
+${formatResearchSources(context.researchSources)}`;
+}
+
 /** Rewords the synthesis provider's generic lifecycle messages into
  *  research-specific Chinese so the 联网补研 dialog shows meaningful,
  *  task-relevant progress. Live web-search queries ("正在检索网页：…") are
@@ -339,6 +373,7 @@ export function buildDraftPrompt(context: CreationContext): string {
 - 文章首先服务读者，不写成机械的提纲扩写，不使用空泛套话；正文必须把已采纳资料卡中的具体主张落实到相关章节，而不是只改写提纲。
 - 已确认研究资料卡是本篇正文的事实素材，不是可有可无的背景阅读。写作前先在内部将每个章节要点与相关资料卡建立对应关系，并在正文中使用卡片里的具体事实、做法、评价、限制或反例；覆盖所有与主题直接相关的已采纳卡，证据不足的卡可只用于边界说明，不要凑内容。
 - 严格遵守每张资料卡的质量、时效和证据边界：官方说明与第三方评价/个人体验要区分，二手观点不得改写成普遍事实；必要时使用“官网说明”“该评测认为”等归因，但不要自动插入 URL、脚注或资料列表。
+- ${context.practicePlan?.status === "confirmed" ? `作者已确认以下最小实践计划，但计划本身不是执行结果；只能使用已保存的实验观察或资料卡中的事实，不得虚构已运行的步骤或结果。\n${context.practicePlan.markdown}` : context.practicePlan?.status === "skipped" ? "作者决定本次不执行新的实践；不得编造实测过程或结果。" : "本次没有已确认的实践计划；不得编造实测过程或结果。"}
 - 严格遵循所注入技能中的去 AIGC 写作模式，从第一段起就避免套路化、模板化表达（开场套话、空总结、渲染性强调、商业黑话、工程师腔、自媒体流水线语气、伪洞见骨架、机械结构等），而不是写完再替换。
 - 保留作者可继续加入个人经验和判断的空间。
 - 不得虚构事实、数字、案例、采访或引用。

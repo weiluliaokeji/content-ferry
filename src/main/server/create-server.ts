@@ -8,6 +8,7 @@ import { ContentSourceError, ContentSourceService } from "../content/content-sou
 import { ContentProjectRepository } from "../content/content-project-repository";
 import { ContentBriefRepository } from "../content/content-brief-repository";
 import { ContentOutlineRepository } from "../content/content-outline-repository";
+import { ContentPracticePlanRepository } from "../content/content-practice-plan-repository";
 import { ContentDraftRepository } from "../content/content-draft-repository";
 import { ContentResearchError, ContentResearchRepository } from "../content/content-research-repository";
 import { ContentReviewRepository } from "../content/content-review-repository";
@@ -126,6 +127,7 @@ export function buildServer(
   const contentProjects = new ContentProjectRepository(database.connection);
   const contentBriefs = new ContentBriefRepository(database.connection);
   const contentOutlines = new ContentOutlineRepository(database.connection);
+  const contentPracticePlans = new ContentPracticePlanRepository(database.connection);
   const contentDrafts = new ContentDraftRepository(database.connection);
   const contentResearch = new ContentResearchRepository(database.connection);
   const researchTasks = new ResearchTaskRepository(database.connection);
@@ -342,6 +344,7 @@ export function buildServer(
     contentProjects,
     contentBriefs,
     contentOutlines,
+    contentPracticePlans,
     contentDrafts,
     contentResearch,
     contentReviews,

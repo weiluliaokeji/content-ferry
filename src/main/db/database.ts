@@ -164,6 +164,13 @@ export function initialiseDatabase(db: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS content_practice_plans (
+      project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
+      markdown TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'skipped')),
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS content_research_plans (
       project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
       plan_markdown TEXT NOT NULL,

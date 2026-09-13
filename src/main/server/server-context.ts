@@ -5,6 +5,7 @@ import type { ContentSourceService } from "../content/content-source-service";
 import type { ContentProjectRepository } from "../content/content-project-repository";
 import type { ContentBriefRepository } from "../content/content-brief-repository";
 import type { ContentOutlineRepository } from "../content/content-outline-repository";
+import type { ContentPracticePlanRepository } from "../content/content-practice-plan-repository";
 import type { ContentDraftRepository } from "../content/content-draft-repository";
 import type { ContentResearchRepository } from "../content/content-research-repository";
 import type { ContentReviewRepository } from "../content/content-review-repository";
@@ -49,6 +50,7 @@ export interface ServerContext {
   contentProjects: ContentProjectRepository;
   contentBriefs: ContentBriefRepository;
   contentOutlines: ContentOutlineRepository;
+  contentPracticePlans: ContentPracticePlanRepository;
   contentDrafts: ContentDraftRepository;
   contentResearch: ContentResearchRepository;
   contentReviews: ContentReviewRepository;

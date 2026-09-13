@@ -989,7 +989,9 @@ describe("local API scaffold", () => {
       id: "test-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         prompts.push(request.prompt);
-        const markdown = request.task === "outline"
+        const markdown = request.task === "outline" && request.prompt.includes("最小实践计划")
+          ? "# 最小实践计划\n\n## 验证一个关键步骤\n- 已有结果可直接记录，不必重跑"
+          : request.task === "outline"
           ? "# AI 提纲\n\n## 真实问题\n\n- 读者在采用 AI 工具时最容易忽略的边界"
           : "# AI 正文\n\n这是一份由测试模型生成的正文。";
         return {
@@ -1069,16 +1071,27 @@ describe("local API scaffold", () => {
     expect(projectsBeforeSave.json().items[0].outlineReady).toBe(false);
 
     await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: outline.json().markdown } });
+    const blockedDraft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
+    expect(blockedDraft.statusCode).toBe(409);
+    const practicePlan = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-plan/generate`, payload: {} });
+    expect(practicePlan.statusCode).toBe(200);
+    expect(practicePlan.json()).toMatchObject({ status: "draft", markdown: "# 最小实践计划\n\n## 验证一个关键步骤\n- 已有结果可直接记录，不必重跑" });
+    const confirmedPlan = await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/practice-plan`, payload: {
+      markdown: "# 最小实践计划\n\n## 使用已有本机结果\n- 不必重跑", status: "confirmed"
+    } });
+    expect(confirmedPlan.statusCode).toBe(200);
     const adopted = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { adoptionStatus: "adopted" } });
     expect(adopted.json().sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
     const draft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
     expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI Agent 如何改变开发流程\n\n这是一份由测试模型生成的正文。" });
     expect(prompts[0]).toContain("账号定位：帮助技术从业者理解 AI 工具");
     expect(prompts[0]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
-    expect(prompts[1]).toContain("已确认提纲");
+    const draftPrompt = prompts.find((prompt) => prompt.includes("微信公众号资深作者")) ?? "";
+    expect(draftPrompt).toContain("已确认提纲");
     expect(prompts[0]).not.toContain("示例官方文档");
     expect(prompts[0]).not.toContain(temporarySource.title);
-    expect(prompts[1]).toContain("示例官方文档");
+    expect(draftPrompt).toContain("示例官方文档");
+    expect(draftPrompt).toContain("使用已有本机结果");
     const refresh = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/refresh`, payload: { depth: "quick" } });
     expect(refresh.statusCode).toBe(200);
     const current = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research` });
