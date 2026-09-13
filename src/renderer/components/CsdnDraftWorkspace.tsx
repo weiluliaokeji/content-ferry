@@ -175,7 +175,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
   };
 
   // 浏览器发布按钮的本地 loading 状态：不依赖父级全局 saving 锁，
-  // 这样“在浏览器中打开 CSDN”与“保存渠道稿 / 发布到 CSDN”互不阻塞，反馈也更明确。
+  // 这样“在浏览器中完成发布”与“保存渠道稿 / 发布到 CSDN”互不阻塞，反馈也更明确。
   const handleStartBrowser = async () => {
     if (!job) return;
     setStartBusy(true);
@@ -339,7 +339,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
         {job && <span className="hint csdn-inline-status">{csdnJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {!job && <button onClick={() => onPublish()} disabled={saving}>发布到 CSDN</button>}
-        {job && job.status !== "published" && <button onClick={() => void handleStartBrowser()} disabled={startBusy}>{startBusy ? "正在打开…" : "在浏览器中打开 CSDN"}</button>}
+        {job && job.status !== "published" && <button onClick={() => void handleStartBrowser()} disabled={startBusy}>{startBusy ? "正在打开…" : "在浏览器中继续发布"}</button>}
         {job && job.status === "published" && (job.remoteUrl ? <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a> : <span className="status-badge success">已发布</span>)}
       </div>
     </header>

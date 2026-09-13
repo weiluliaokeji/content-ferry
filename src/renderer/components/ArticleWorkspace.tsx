@@ -8,7 +8,7 @@ import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { ExecutionPanel } from "./ExecutionPanel";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord } from "../types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope } from "../types";
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -93,6 +93,21 @@ export function ArticleWorkspace({
   const [selectionAiResult, setSelectionAiResult] = useState("");
   const [selectionAiOriginal, setSelectionAiOriginal] = useState("");
   const [selectionComparisonOpen, setSelectionComparisonOpen] = useState(false);
+  const [temporaryResearchScope, setTemporaryResearchScope] = useState<TemporaryResearchScope>("selection");
+  const [temporaryResearch, setTemporaryResearch] = useState<TemporaryResearchResult>();
+  const [temporaryResearchBusy, setTemporaryResearchBusy] = useState(false);
+  const [savedResearchSources, setSavedResearchSources] = useState<ResearchSource[]>([]);
+  useEffect(() => {
+    if (temporaryResearch && temporaryResearch.scope !== temporaryResearchScope) setTemporaryResearch(undefined);
+  }, [temporaryResearch, temporaryResearchScope]);
+  useEffect(() => {
+    if (!projectId || leftTool !== "sources") return;
+    let cancelled = false;
+    void request<ContentResearch>(`/content-projects/${projectId}/research`)
+      .then((research) => { if (!cancelled) setSavedResearchSources(research.sources); })
+      .catch(() => { if (!cancelled) setSavedResearchSources([]); });
+    return () => { cancelled = true; };
+  }, [projectId, leftTool]);
   const [selectionDetectionTool, setSelectionDetectionTool] = useState<"zhuque" | "contentany">("zhuque");
   const [selectionDetectionBusy, setSelectionDetectionBusy] = useState(false);
   const [selectionDetectionResult, setSelectionDetectionResult] = useState("");
@@ -474,6 +489,79 @@ export function ArticleWorkspace({
     setRightPanel("assistant");
     setWorkspaceError("");
   };
+  const runTemporaryResearch = async () => {
+    if (!projectId) {
+      setWorkspaceError("这篇文章还没有内容项目，暂时无法发起临时调研。");
+      return;
+    }
+    const source = selectionDocumentMarkdown ?? markdown;
+    let context = source;
+    if (temporaryResearchScope === "selection") {
+      if (!selectionRange || selectionRange.end <= selectionRange.start) {
+        setWorkspaceError("请先选中一段正文，再以“选中文本”发起临时调研。");
+        return;
+      }
+      context = source.slice(selectionRange.start, selectionRange.end);
+    } else if (temporaryResearchScope === "paragraph") {
+      if (!selectionRange || selectionRange.end <= selectionRange.start) {
+        setWorkspaceError("请先在目标段落中选中一小段文字，再以“当前段落”发起临时调研。");
+        return;
+      }
+      context = markdownLineNearOffset(source, selectionRange.start);
+    }
+    if (!context.trim()) {
+      setWorkspaceError("当前范围没有可供调研的正文。");
+      return;
+    }
+    setTemporaryResearchBusy(true);
+    setWorkspaceError("");
+    try {
+      const result = await request<TemporaryResearchResult>(`/content-projects/${projectId}/research/temporary`, {
+        method: "POST",
+        body: JSON.stringify({ scope: temporaryResearchScope, context: context.slice(0, 12000), depth: "quick" })
+      });
+      setTemporaryResearch(result);
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "临时调研失败，请稍后重试。");
+    } finally {
+      setTemporaryResearchBusy(false);
+    }
+  };
+  const insertTemporaryText = (text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    if (!selectionRange || selectionRange.end <= selectionRange.start || selectionDocumentMarkdown !== markdown) {
+      setWorkspaceError("请先在当前正文中选中要替换的文字，再插入临时调研结果。");
+      return;
+    }
+    onChange(`${markdown.slice(0, selectionRange.start)}${value}${markdown.slice(selectionRange.end)}`);
+    setSelectionRange(undefined);
+    setSelectionDocumentMarkdown(undefined);
+    setWorkspaceError("");
+  };
+  const saveTemporaryResearchSource = async (source: TemporaryResearchResult["sources"][number]) => {
+    if (!projectId) return;
+    setTemporaryResearchBusy(true);
+    try {
+      await request(`/content-projects/${projectId}/research/sources`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: source.title,
+          url: source.url,
+          excerpt: source.excerpt,
+          keyClaims: source.keyClaims,
+          adoptionStatus: "pending_verification",
+          ...(source.evidence ? { evidence: source.evidence } : {})
+        })
+      });
+      setWorkspaceError("");
+      setTemporaryResearch((current) => current ? { ...current, sources: current.sources.filter((item) => item !== source) } : current);
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "保存临时资料失败，请稍后重试。");
+    } finally {
+      setTemporaryResearchBusy(false);
+    }
+  };
   const runSelectionAi = async () => {
     if (!selectionRange || selectionRange.end <= selectionRange.start) {
       setWorkspaceError("请先在正文编辑区选中一段文字。");
@@ -641,6 +729,7 @@ export function ArticleWorkspace({
     : image.src.startsWith("contentferry-asset://"));
   const headings = markdown.split(/\r?\n/).map((line) => /^(#{1,6})\s+(.+)$/.exec(line)).filter((value): value is RegExpExecArray => Boolean(value));
   const sources = [...new Set([...markdown.matchAll(/https?:\/\/[^\s)>]+/g)].map((match) => match[0]))];
+  const canInsertTemporaryText = Boolean(selectionRange && selectionRange.end > selectionRange.start && selectionDocumentMarkdown === markdown);
   const editorBusy = saving || settingsSaving || settingsCoverPromptBusy || settingsSummaryBusy;
   const busy = editorBusy;
   useEffect(() => {
@@ -675,7 +764,7 @@ export function ArticleWorkspace({
         <button className={`workspace-tool${leftTool === "execution" ? " active" : ""}`} onClick={() => { setLeftTool("execution"); setExecutionOpen(true); }} aria-expanded={executionOpen}>代码与工具</button>
         {leftTool === "body" && <div className="editor-stats"><span>{wordCount} 字</span><span>{images.length} 张图片</span><span>约 {Math.max(1, Math.ceil(wordCount / 500))} 分钟阅读</span></div>}
         {leftTool === "structure" && <div className="tool-detail"><strong>文章结构</strong>{headings.length ? headings.map((heading, index) => <button className="structure-link" key={index} style={{ paddingLeft: `${(heading[1].length - 1) * 10}px` }} onClick={() => scrollEditorToHeading(heading[2], index, markdown, editorMode)}>{heading[2]}</button>) : <small>正文中还没有标题。</small>}</div>}
-        {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>) : <small>暂未识别到链接来源。</small>}</div>}
+        {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? <div className="article-source-links">{sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>)}</div> : <small>暂未识别到正文链接来源。</small>}{projectId && <>{savedResearchSources.length > 0 && <div className="temporary-research-results"><p><strong>已保存证据</strong><small>来自资料工作台；只有已采纳的卡会进入提纲和正文上下文。</small></p>{savedResearchSources.map((source) => <article className="temporary-research-card" key={source.id}><strong>{source.title}</strong><small>{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : "待核验"}</small><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p></article>)}</div>}<div className="temporary-research-box"><label>临时调研范围<select value={temporaryResearchScope} onChange={(event) => setTemporaryResearchScope(event.target.value as TemporaryResearchScope)} disabled={temporaryResearchBusy}><option value="selection">选中文本</option><option value="paragraph">当前段落</option><option value="article">整篇文章</option></select></label><small>结果只在本次编辑会话保留，不会自动改写正文或进入正式资料。</small><button type="button" className="secondary-button" onClick={() => void runTemporaryResearch()} disabled={temporaryResearchBusy}>{temporaryResearchBusy ? "正在临时调研…" : "开始临时调研"}</button>{temporaryResearch && <div className="temporary-research-results"><p><strong>临时结果</strong><small>{temporaryResearchScope === "selection" ? "选中文本" : temporaryResearchScope === "paragraph" ? "当前段落" : "整篇文章"} · 本次范围已记录</small></p>{temporaryResearch.sources.length ? temporaryResearch.sources.map((source) => <article className="temporary-research-card" key={`${source.url}-${source.title}`}><strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p>{source.keyClaims?.length ? <ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul> : null}{source.recommendation && <p><strong>为什么值得看：</strong>{source.recommendation}</p>}{source.freshness?.startsWith("易变：") && <p><strong>发布前复核：</strong>{source.freshness.slice(3)}</p>}{source.evidence?.snapshots?.[0]?.capturedAt && <small>抓取时间：{new Date(source.evidence.snapshots[0].capturedAt).toLocaleString()}</small>}<div className="temporary-research-actions"><button type="button" className="text-button" onClick={() => insertTemporaryText(source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为摘录</button><button type="button" className="text-button" onClick={() => insertTemporaryText(source.claim ?? source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为改写建议</button><button type="button" className="text-button" onClick={() => void saveTemporaryResearchSource(source)} disabled={temporaryResearchBusy}>保存为待核验证据</button></div>{!canInsertTemporaryText && <small>请选择当前正文中的一段文字后再插入。</small>}</article>) : <small>本次没有获得可核验资料卡。</small>}</div>}</div></>}</div>}
         {leftTool === "images" && <div className="tool-detail"><strong>图片素材</strong>{images.length ? images.map((image, index) => <img key={`${image.src}-${index}`} src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />) : <small>正文中还没有图片。</small>}<button disabled className="text-button">独立素材库即将开放</button></div>}
       </aside>
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
@@ -797,4 +886,13 @@ export function ArticleWorkspace({
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
   </div>;
+}
+
+function markdownLineNearOffset(markdown: string, offset: number): string {
+  const safeOffset = Math.max(0, Math.min(markdown.length, offset));
+  const before = markdown.lastIndexOf("\n", safeOffset);
+  const after = markdown.indexOf("\n", safeOffset);
+  const current = markdown.slice(before + 1, after < 0 ? markdown.length : after).trim();
+  if (current.length >= 4) return current;
+  return markdown.slice(after < 0 ? safeOffset : after + 1).split("\n").find((line) => line.trim().length >= 4)?.trim() ?? current;
 }

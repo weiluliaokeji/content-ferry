@@ -156,6 +156,32 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(result.value.sources).toEqual([]);
   });
 
+  it("body-verifies user-specified URLs before synthesis", async () => {
+    const requiredUrl = "https://example.com/required";
+    const webSearch = fakeWebSearch();
+    const extract = vi.fn(async (url: string) => ({ content: `正文 ${url}` }));
+    webSearch.extract = extract;
+    const codex: Partial<ModelProvider> = {
+      generateStructured: vi.fn(async (req: { prependInstructions?: boolean }) => req.prependInstructions
+        ? { value: { action: "done", query: "" }, provider: "openai_codex", model: "gpt-test", usage: null }
+        : { value: { planMarkdown: "结论", sources: [{ ...SINGLE_SOURCE, url: requiredUrl, sourceUrls: [requiredUrl] }] }, provider: "openai_codex", model: "gpt-test", usage: null })
+    };
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as ModelProvider, undefined, webSearch);
+    const result = await provider.webResearch({ ...context, specifiedSourceUrls: [requiredUrl] }, () => {}, { depth: "quick" });
+    expect(extract).toHaveBeenCalledWith(requiredUrl);
+    expect(result.value.sources[0].url).toBe(requiredUrl);
+    expect(result.value.specifiedSourceResults).toEqual([{ url: requiredUrl, status: "extracted" }]);
+  });
+
+  it("reports a concrete retryable error when every body extraction fails", async () => {
+    const webSearch = fakeWebSearch();
+    webSearch.extract = vi.fn(async () => { throw new Error("连接超时"); });
+    const statuses: string[] = [];
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), undefined, webSearch);
+    await expect(provider.webResearch(context, (status) => statuses.push(status), { depth: "quick" })).rejects.toThrow(/所有网页正文提取均失败/);
+    expect(statuses.some((status) => status.includes("连接超时"))).toBe(true);
+  });
+
   it("merges homogeneous cards and preserves every verified URL", async () => {
     const twoSources = fakeWebSearch();
     twoSources.search = vi.fn(async () => [

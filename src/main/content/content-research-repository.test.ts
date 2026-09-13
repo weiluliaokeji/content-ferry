@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { openInMemoryDatabase } from "../db/database";
 import { ContentResearchRepository, normalizeResearchUrl } from "./content-research-repository";
+import { buildResearchPlan } from "./research-plan";
 
 describe("ContentResearchRepository", () => {
   it("normalizes tracking-only URL differences", () => {
@@ -55,6 +56,22 @@ describe("ContentResearchRepository", () => {
     }
   });
 
+  it("marks only the specified links from a failed extraction task", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-specified", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-specified", "workspace-specified", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const initial = repository.addSpecifiedSources("project-specified", ["https://example.com/first", "https://example.com/second"]);
+      repository.markSpecifiedSourceExtractionFailure("project-specified", [initial.specifiedSources[0].id], "本轮连接失败");
+      expect(repository.get("project-specified").specifiedSources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: initial.specifiedSources[0].id, status: "failed", failureReason: "本轮连接失败" }),
+        expect.objectContaining({ id: initial.specifiedSources[1].id, status: "pending_manual_verification", failureReason: "" })
+      ]));
+    } finally { database.close(); }
+  });
+
   it("keeps author adoption decisions separate from AI recommendations", () => {
     const database = openInMemoryDatabase();
     try {
@@ -68,6 +85,42 @@ describe("ContentResearchRepository", () => {
       expect(pending.sources[0]).toMatchObject({ adoptionStatus: "pending_verification", selected: false });
       const adopted = repository.updateAdoption("project-adoption", created.sources[0].id, "adopted");
       expect(adopted.sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
+    } finally { database.close(); }
+  });
+
+  it("closes answered research questions instead of marking every run partial", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-coverage", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-coverage", "workspace-coverage", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const plan = buildResearchPlan({ topic: "测试", objective: "", angle: "", sourceNotes: "", depth: "quick" });
+      repository.beginPlan("project-coverage", plan);
+      repository.save("project-coverage", { planMarkdown: "结论", sources: [{ title: "官方资料", url: "https://example.com/docs", excerpt: "事实", keyClaims: ["主张"], sourceType: "official" }] });
+      const completed = repository.completePlan("project-coverage", { rounds: 1, maxRounds: 2, budgetExhausted: false }, { answeredQuestions: plan.questions.map((question) => ({ question, sourceUrls: ["https://example.com/docs"] })), remainingQuestions: [] });
+      expect(completed.plan?.partial).toBe(false);
+      expect(completed.plan?.gaps).not.toEqual(expect.arrayContaining([expect.stringContaining("待核验：")]));
+      expect(completed.plan?.covered).toEqual(expect.arrayContaining([expect.stringContaining("已回答："), "已获得官方原始资料。"]));
+    } finally { database.close(); }
+  });
+
+  it("does not close coverage questions without a matching plan question and source", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-coverage-guard", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-coverage-guard", "workspace-coverage-guard", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const plan = buildResearchPlan({ topic: "测试", objective: "", angle: "", sourceNotes: "", depth: "quick" });
+      repository.beginPlan("project-coverage-guard", plan);
+      repository.save("project-coverage-guard", { planMarkdown: "结论", sources: [{ title: "官方资料", url: "https://example.com/docs", excerpt: "事实", keyClaims: ["主张"], sourceType: "official" }] });
+      const completed = repository.completePlan("project-coverage-guard", undefined, {
+        answeredQuestions: [{ question: "不是计划中的问题", sourceUrls: ["https://example.com/docs"] }],
+        remainingQuestions: []
+      });
+      expect(completed.plan?.partial).toBe(true);
+      expect(completed.plan?.gaps).toEqual(expect.arrayContaining([expect.stringContaining("待核验：")]));
     } finally { database.close(); }
   });
 
@@ -92,10 +145,15 @@ describe("ContentResearchRepository", () => {
       expect(split.sources).toHaveLength(2);
       expect(split.sources.every((source) => source.adoptionStatus === "adopted" && source.selected)).toBe(true);
       expect(split.sources.flatMap((source) => source.evidence?.snapshots ?? [])).toHaveLength(2);
-      const merged = repository.merge("project-merge", split.sources[0].id, split.sources[1].id);
+      const sourceWithDifferentDecision = repository.updateAdoption("project-merge", split.sources[1].id, "pending_verification");
+      const merged = repository.merge("project-merge", split.sources[0].id, sourceWithDifferentDecision.sources.find((source) => source.id === split.sources[1].id)!.id);
       expect(merged.sources).toHaveLength(1);
       expect(merged.sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
       expect(merged.sources[0].evidence?.snapshots).toHaveLength(2);
+      expect(merged.sources[0].adoptionHistory).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceId: split.sources[0].id, adoptionStatus: "adopted" }),
+        expect.objectContaining({ sourceId: split.sources[1].id, adoptionStatus: "pending_verification" })
+      ]));
     } finally { database.close(); }
   });
 
@@ -105,13 +163,30 @@ describe("ContentResearchRepository", () => {
       const now = new Date().toISOString();
       database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-evidence", "测试工作区", now);
       database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-evidence", "workspace-evidence", "测试", now, now);
-      const result = new ContentResearchRepository(database.connection).addManual("project-evidence", { title: "手工资料", excerpt: "这是用户摘录的正文片段。", keyClaims: ["可供人工复核的主张"] });
+      const capturedAt = "2026-09-10T12:00:00.000Z";
+      const result = new ContentResearchRepository(database.connection).addManual("project-evidence", { title: "手工资料", excerpt: "这是用户摘录的正文片段。", keyClaims: ["可供人工复核的主张"], evidence: {
+        claim: "可供人工复核的主张", recommendation: "便于人工复核", qualityReason: "用户提供", freshness: "以抓取时间为准", boundary: "仅覆盖摘录", kind: "manual", sourceUrls: ["https://example.com/manual"], snapshots: [{ url: "https://example.com/manual", excerpt: "这是用户摘录的正文片段。", capturedAt, sha256: "a".repeat(64) }]
+      } });
       expect(result.sources[0].evidence).toMatchObject({ kind: "manual", claim: "可供人工复核的主张" });
       expect(result.sources[0].evidence?.snapshots[0].sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(result.sources[0].evidence?.snapshots[0].excerpt).toBe("这是用户摘录的正文片段。");
+      expect(result.sources[0].retrievedAt).toBe(capturedAt);
     } finally {
       database.close();
     }
+  });
+
+  it("can save a temporary result as pending verification without selecting it", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-temporary", "测试工作区", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("project-temporary", "workspace-temporary", "测试", now, now);
+      const result = new ContentResearchRepository(database.connection).addManual("project-temporary", {
+        title: "临时资料", url: "https://example.com/temporary", excerpt: "临时核查摘录", keyClaims: ["临时主张"], adoptionStatus: "pending_verification"
+      });
+      expect(result.sources[0]).toMatchObject({ adoptionStatus: "pending_verification", selected: false, title: "临时资料" });
+    } finally { database.close(); }
   });
 
   it("rejects unsafe manual source URL schemes", () => {

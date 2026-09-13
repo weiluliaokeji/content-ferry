@@ -17,6 +17,7 @@ export interface ResearchTaskRecord {
   attempt: number;
   lastCheckpoint: string;
   lastError: string;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
   lastHeartbeatAt: string;
@@ -44,7 +45,7 @@ export class ResearchTaskRepository {
       request_json AS requestJson,
       status, result_state AS resultState, current_step_id AS currentStepId,
       cancel_requested AS cancelRequested, attempt, last_checkpoint AS lastCheckpoint,
-      last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt,
+      last_error AS lastError, archived_at AS archivedAt, created_at AS createdAt, updated_at AS updatedAt,
       last_heartbeat_at AS lastHeartbeatAt FROM research_tasks WHERE id = ?`).get(taskId) as ResearchTaskRow | undefined;
     if (!row) throw new Error("找不到研究任务。");
     return toTask(row);
@@ -55,8 +56,8 @@ export class ResearchTaskRepository {
       request_json AS requestJson,
       status, result_state AS resultState, current_step_id AS currentStepId,
       cancel_requested AS cancelRequested, attempt, last_checkpoint AS lastCheckpoint,
-      last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt,
-      last_heartbeat_at AS lastHeartbeatAt FROM research_tasks WHERE project_id = ? ORDER BY updated_at DESC`).all(projectId) as ResearchTaskRow[];
+      last_error AS lastError, archived_at AS archivedAt, created_at AS createdAt, updated_at AS updatedAt,
+      last_heartbeat_at AS lastHeartbeatAt FROM research_tasks WHERE project_id = ? AND archived_at IS NULL ORDER BY updated_at DESC`).all(projectId) as ResearchTaskRow[];
     return rows.map(toTask);
   }
 
@@ -65,9 +66,9 @@ export class ResearchTaskRepository {
       request_json AS requestJson,
       status, result_state AS resultState, current_step_id AS currentStepId,
       cancel_requested AS cancelRequested, attempt, last_checkpoint AS lastCheckpoint,
-      last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt,
+      last_error AS lastError, archived_at AS archivedAt, created_at AS createdAt, updated_at AS updatedAt,
       last_heartbeat_at AS lastHeartbeatAt FROM research_tasks
-      WHERE status = 'queued' AND cancel_requested = 0 ORDER BY updated_at ASC`).all() as ResearchTaskRow[];
+      WHERE status = 'queued' AND cancel_requested = 0 AND archived_at IS NULL ORDER BY updated_at ASC`).all() as ResearchTaskRow[];
     return rows.map(toTask);
   }
 
@@ -113,6 +114,19 @@ export class ResearchTaskRepository {
       this.db.prepare("UPDATE research_tasks SET cancel_requested = 1, status = CASE WHEN status IN ('queued', 'running') THEN 'cancelled' ELSE status END, updated_at = ?, last_heartbeat_at = ? WHERE id = ?")
         .run(now, now, taskId);
       this.appendEvent(taskId, "cancel_requested", {});
+    })();
+    return this.require(taskId);
+  }
+
+  archive(taskId: string): ResearchTaskRecord {
+    const task = this.require(taskId);
+    if (task.archivedAt) throw new Error("该研究记录已经移除。");
+    if (task.status !== "failed" && task.status !== "cancelled") throw new Error("只有失败或已取消的研究任务可以移除记录。");
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE research_tasks SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL")
+        .run(now, now, taskId);
+      this.appendEvent(taskId, "archived", { checkpoint: "已从调研历史中移除，保留任务审计记录。" });
     })();
     return this.require(taskId);
   }
@@ -178,7 +192,7 @@ interface ResearchTaskRow {
   id: string; projectId: string; kind: ResearchTaskKind; requestHash: string;
   requestJson: string;
   status: ResearchTaskStatus; resultState: "proposed" | "accepted"; currentStepId: string | null;
-  cancelRequested: number; attempt: number; lastCheckpoint: string; lastError: string;
+  cancelRequested: number; attempt: number; lastCheckpoint: string; lastError: string; archivedAt: string | null;
   createdAt: string; updatedAt: string; lastHeartbeatAt: string;
 }
 

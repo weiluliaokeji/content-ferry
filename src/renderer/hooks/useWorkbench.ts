@@ -1,4 +1,4 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
 import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
@@ -82,8 +82,16 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [titleSuggesting, setTitleSuggesting] = useState(false);
   const [outlineProject, setOutlineProject] = useState<ContentProject>();
   const [outline, setOutline] = useState<ContentOutline>();
+  const [outlineHasDraft, setOutlineHasDraft] = useState(false);
   const [outlineGenerating, setOutlineGenerating] = useState(false);
   const [outlineGenerationStatus, setOutlineGenerationStatus] = useState("");
+  const [outlineRefinementInstruction, setOutlineRefinementInstruction] = useState("");
+  const [outlineRefinementMode, setOutlineRefinementMode] = useState<"structure" | "title">("structure");
+  const [outlineRefinementProposal, setOutlineRefinementProposal] = useState<string>();
+  const [outlineTitleSuggestions, setOutlineTitleSuggestions] = useState<string[]>([]);
+  const [outlineTitleSuggesting, setOutlineTitleSuggesting] = useState(false);
+  const [outlineRefining, setOutlineRefining] = useState(false);
+  const [outlinePreviousMarkdown, setOutlinePreviousMarkdown] = useState<string>();
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
   const setOutlineAbortRef = (value: AbortController | undefined) => {
     outlineAbortRef.current = value;
@@ -108,6 +116,34 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const researchAbortRef = useRef<AbortController | undefined>(undefined);
   const setResearchAbortRef = (value: AbortController | undefined) => { researchAbortRef.current = value; };
   const [researchStatus, setResearchStatus] = useState("");
+  const [researchElapsedSeconds, setResearchElapsedSeconds] = useState(0);
+  const [researchProgressStalled, setResearchProgressStalled] = useState(false);
+  const researchStartedAtRef = useRef<number | undefined>(undefined);
+  const researchLastProgressAtRef = useRef<number | undefined>(undefined);
+  const beginResearchProgress = () => {
+    const now = Date.now();
+    researchStartedAtRef.current = now;
+    researchLastProgressAtRef.current = now;
+    setResearchElapsedSeconds(0);
+    setResearchProgressStalled(false);
+  };
+  const noteResearchProgress = () => {
+    researchLastProgressAtRef.current = Date.now();
+    setResearchProgressStalled(false);
+  };
+  useEffect(() => {
+    if (!researchGenerating && !researchFollowingUp) return;
+    const updateProgress = () => {
+      const now = Date.now();
+      const startedAt = researchStartedAtRef.current;
+      const lastProgressAt = researchLastProgressAtRef.current;
+      if (startedAt) setResearchElapsedSeconds(Math.max(0, Math.floor((now - startedAt) / 1000)));
+      setResearchProgressStalled(Boolean(lastProgressAt && now - lastProgressAt > 45_000));
+    };
+    updateProgress();
+    const timer = window.setInterval(updateProgress, 1_000);
+    return () => window.clearInterval(timer);
+  }, [researchGenerating, researchFollowingUp]);
   const [researchError, setResearchError] = useState("");
   const [manualSourceTitle, setManualSourceTitle] = useState("");
   const [manualSourceUrl, setManualSourceUrl] = useState("");
@@ -341,11 +377,13 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const waitForResearchTask = async (project: ContentProject, taskId: string, signal: AbortSignal): Promise<ContentResearch> => {
     for (let attempt = 0; attempt < 300; attempt += 1) {
       if (signal.aborted) throw new Error("已停止本次补研；已保存的资料卡仍保留，可以稍后重试。");
-      const result = await request<{ items: Array<{ id: string; status: string; lastCheckpoint: string; lastError: string }> }>(`/content-projects/${project.id}/research/tasks`);
+      const result = await request<{ items: Array<{ id: string; status: string; lastCheckpoint: string; lastError: string; lastHeartbeatAt?: string }> }>(`/content-projects/${project.id}/research/tasks`);
       const task = result.items.find((item) => item.id === taskId);
       if (!task) throw new Error("找不到补研任务，可能已被清理。");
       setResearchTaskId(task.id);
       setResearchStatus(task.lastCheckpoint || "阿文正在后台补研…");
+      const heartbeatAt = task.lastHeartbeatAt ? Date.parse(task.lastHeartbeatAt) : NaN;
+      if (Number.isFinite(heartbeatAt)) researchLastProgressAtRef.current = heartbeatAt;
       if (task.status === "paused") {
         setResearchPaused(true);
         throw new Error("补研已暂停，可点击“继续补研”恢复。");
@@ -372,12 +410,13 @@ export function useWorkbench(params: UseWorkbenchParams) {
     try {
       if (generate) {
         setResearchGenerating(true);
+        beginResearchProgress();
         setResearchStatus("阿文正在检索官方与公开网页，并整理可追溯资料卡…");
         const controller = new AbortController();
         researchAbortRef.current = controller;
         const research = await streamGeneration<ContentResearch>(`/content-projects/${project.id}/research/generate`, controller.signal, (event, data) => {
           if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
-          if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
+          if (event === "status") { setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…")); noteResearchProgress(); }
           if (event === "paused") setResearchPaused(true);
           if (event === "complete") setResearch(data as unknown as ContentResearch);
         }, JSON.stringify({ depth: requestedDepth }));
@@ -397,6 +436,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
         } else {
           setResearch(savedResearch);
           setResearchGenerating(true);
+          beginResearchProgress();
           const controller = new AbortController();
           researchAbortRef.current = controller;
           const recovered = await waitForResearchTask(project, activeTask.id, controller.signal);
@@ -457,20 +497,20 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (!researchProject || (!researchFollowUp.trim() && specifiedSources.length === 0) || researchFollowingUp) return;
     if (specifiedSources.length > 20) { setError("指定资料最多可填写 20 条链接，请分批补充。"); return; }
     setResearchFollowingUp(true);
+    beginResearchProgress();
     setResearchError("");
-    setResearchStatus(researchFollowUp.trim() ? "阿文正在针对你的补充继续联网补研…" : "正在保存指定资料…");
+    const message = researchFollowUp.trim() || "请逐条处理本轮指定资料：提取正文、生成可追溯资料卡，并说明内容与本文主题的关联、时效和证据边界。";
+    setResearchStatus(researchFollowUp.trim() ? "阿文正在针对你的补充继续联网补研…" : "阿文正在获取指定资料并生成资料卡…");
     try {
       const controller = new AbortController();
       researchAbortRef.current = controller;
-      const payload = JSON.stringify({ message: researchFollowUp.trim(), specifiedSources, depth: researchDepth });
-      const next = researchFollowUp.trim()
-        ? await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
+      const payload = JSON.stringify({ message, specifiedSources, depth: researchDepth });
+      const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, controller.signal, (event, data) => {
         if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
-        if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…"));
+        if (event === "status") { setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…")); noteResearchProgress(); }
         if (event === "paused") setResearchPaused(true);
         if (event === "complete") setResearch(data as unknown as ContentResearch);
-        }, payload)
-        : await request<ContentResearch>(`/content-projects/${researchProject.id}/research/follow-up`, { method: "POST", body: payload, signal: controller.signal });
+      }, payload);
       setResearch(next);
       setResearchFollowUp("");
       setResearchSpecifiedSources("");
@@ -483,11 +523,16 @@ export function useWorkbench(params: UseWorkbenchParams) {
       researchAbortRef.current = undefined;
       researchPauseRequestedRef.current = false;
       setResearchStatus("");
+      researchStartedAtRef.current = undefined;
+      researchLastProgressAtRef.current = undefined;
+      setResearchElapsedSeconds(0);
+      setResearchProgressStalled(false);
     }
   };
   const refreshResearch = async () => {
     if (!researchProject || researchFollowingUp) return;
     setResearchFollowingUp(true);
+    beginResearchProgress();
     setResearchError("");
     setResearchStatus("阿文正在刷新产品能力、价格、规则和版本等易变事实…");
     try {
@@ -495,7 +540,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
       researchAbortRef.current = controller;
       const next = await streamGeneration<ContentResearch>(`/content-projects/${researchProject.id}/research/refresh`, controller.signal, (event, data) => {
         if (typeof data.taskId === "string") setResearchTaskId(data.taskId);
-        if (event === "status") setResearchStatus(String((data as { message?: string }).message ?? "阿文正在刷新资料…"));
+        if (event === "status") { setResearchStatus(String((data as { message?: string }).message ?? "阿文正在刷新资料…")); noteResearchProgress(); }
         if (event === "paused") setResearchPaused(true);
         if (event === "complete") setResearch(data as unknown as ContentResearch);
       }, JSON.stringify({ depth: researchDepth }));
@@ -508,6 +553,10 @@ export function useWorkbench(params: UseWorkbenchParams) {
       researchAbortRef.current = undefined;
       researchPauseRequestedRef.current = false;
       setResearchStatus("");
+      researchStartedAtRef.current = undefined;
+      researchLastProgressAtRef.current = undefined;
+      setResearchElapsedSeconds(0);
+      setResearchProgressStalled(false);
     }
   };
   const cancelResearch = async () => {
@@ -537,6 +586,27 @@ export function useWorkbench(params: UseWorkbenchParams) {
       void openResearch(researchProject, false);
     } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "无法恢复补研任务。"); }
   };
+  const retryResearchTask = async (taskId: string) => {
+    if (!researchProject) return;
+    try {
+      setResearchError("");
+      await request(`/content-projects/${researchProject.id}/research/tasks/${taskId}/retry`, { method: "POST" });
+      await openResearch(researchProject, false);
+    } catch (cause) {
+      setResearchError(cause instanceof Error ? cause.message : "无法沿用原请求重试补研。");
+    }
+  };
+  const archiveResearchTask = async (taskId: string) => {
+    if (!researchProject) return;
+    if (!window.confirm("仅从调研历史中移除这条记录，不会删除资料卡、结论或审计记录。继续吗？")) return;
+    try {
+      setResearchError("");
+      await request(`/content-projects/${researchProject.id}/research/tasks/${taskId}/archive`, { method: "POST" });
+      await openResearch(researchProject, false);
+    } catch (cause) {
+      setResearchError(cause instanceof Error ? cause.message : "无法移除调研失败记录。");
+    }
+  };
   const addManualResearchSource = async () => {
     if (!researchProject || !manualSourceTitle.trim() || !manualSourceExcerpt.trim()) return;
     setResearchFollowingUp(true);
@@ -556,7 +626,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     finally { setResearchFollowingUp(false); }
   };
   const generateOutline = async (project: ContentProject) => {
-    setOutlineProject(project); setOutline(undefined); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…");
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…"); setOutlineRefinementProposal(undefined); setOutlinePreviousMarkdown(undefined);
     try {
       const controller = new AbortController();
       outlineAbortRef.current = controller;
@@ -572,13 +642,12 @@ export function useWorkbench(params: UseWorkbenchParams) {
     finally { setOutlineGenerating(false); outlineAbortRef.current = undefined; }
   };
   const openOutline = async (project: ContentProject) => {
-    if (project.outlineReady) {
-      setOutlineProject(project); setOutline(undefined); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0);
-      try { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); }
-      catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); }
-      return;
-    }
-    setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0);
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0); setOutlineRefinementMode("structure"); setOutlineRefinementInstruction(""); setOutlineRefinementProposal(undefined); setOutlineTitleSuggestions([]); setOutlineTitleSuggesting(false); setOutlinePreviousMarkdown(undefined);
+    try {
+      const draft = await request<ContentOutline | null>(`/content-projects/${project.id}/outline/draft`);
+      if (draft?.markdown.trim()) { setOutline(draft); setOutlineHasDraft(true); return; }
+      if (project.outlineReady) { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); return; }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); return; }
     await generateOutline(project);
   };
   const switchOutlineToMarkdown = (offset: number) => {
@@ -593,9 +662,65 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const saveOutline = async (event: FormEvent) => {
     event.preventDefault(); if (!outlineProject || !outline) return;
     setSaving(true);
-    try { await request<ContentOutline>(`/content-projects/${outlineProject.id}/outline`, { method: "PUT", body: JSON.stringify({ markdown: outline.markdown }) }); setOutlineProject(undefined); setOutline(undefined); await loadProjects(); }
+      try {
+        await request<ContentOutline>(`/content-projects/${outlineProject.id}/outline`, { method: "PUT", body: JSON.stringify({ markdown: outline.markdown }) });
+        setOutlineProject(undefined); setOutline(undefined); setOutlineHasDraft(false); await loadProjects();
+      }
     catch (cause) { setError(cause instanceof Error ? cause.message : "提纲保存失败。"); }
     finally { setSaving(false); }
+  };
+  const saveOutlineDraft = async () => {
+    if (!outlineProject || !outline?.markdown.trim()) return;
+    setSaving(true);
+    try { await request<ContentOutline>(`/content-projects/${outlineProject.id}/outline/draft`, { method: "PUT", body: JSON.stringify({ markdown: outline.markdown }) }); setOutlineHasDraft(true); await loadProjects(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "提纲暂存失败。"); }
+    finally { setSaving(false); }
+  };
+  const refineOutline = async () => {
+    if (!outlineProject || !outline || !outlineRefinementInstruction.trim() || outlineGenerating) return;
+    setOutlineRefining(true); setOutlineRefinementProposal(undefined);
+    try {
+      const refined = await request<ContentOutline>(`/content-projects/${outlineProject.id}/outline/refine`, {
+        method: "POST",
+        body: JSON.stringify({ markdown: outline.markdown, instruction: outlineRefinementInstruction.trim() })
+      });
+      setOutlineRefinementProposal(refined.markdown);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提纲优化失败。");
+    } finally { setOutlineRefining(false); }
+  };
+  const suggestOutlineTitles = async () => {
+    if (!outlineProject || outlineTitleSuggesting) return;
+    setOutlineTitleSuggesting(true); setOutlineTitleSuggestions([]);
+    try {
+      const brief = await request<ContentBrief>(`/content-projects/${outlineProject.id}/brief`);
+      const suggested = await request<TitleSuggestion>(`/content-projects/${outlineProject.id}/title/suggest`, {
+        method: "POST",
+        body: JSON.stringify({ topic: brief.topic || outlineProject.topic, objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes })
+      });
+      setOutlineTitleSuggestions(suggested.titles);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法推荐文章标题。");
+    } finally { setOutlineTitleSuggesting(false); }
+  };
+  const applyOutlineTitle = (title: string) => {
+    if (!outline || !title.trim()) return;
+    setOutlinePreviousMarkdown(outline.markdown);
+    setOutline({ ...outline, markdown: replaceLeadingOutlineTitle(outline.markdown, title.trim()) });
+    setOutlineTitleSuggestions([]);
+  };
+  const applyOutlineRefinement = () => {
+    if (!outline || !outlineRefinementProposal?.trim()) return;
+    setOutlinePreviousMarkdown(outline.markdown);
+    setOutline({ ...outline, markdown: outlineRefinementProposal });
+    setOutlineRefinementProposal(undefined);
+    setOutlineRefinementInstruction("");
+  };
+  const discardOutlineRefinement = () => setOutlineRefinementProposal(undefined);
+  const undoOutlineRefinement = () => {
+    if (!outline || outlinePreviousMarkdown === undefined) return;
+    setOutline({ ...outline, markdown: outlinePreviousMarkdown });
+    setOutlinePreviousMarkdown(undefined);
   };
   const openDraft = async (project: ContentProject) => {
     setDraftProject(project); setDraft(undefined); setSaving(false); setDraftGenerationStatus("");
@@ -761,10 +886,22 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutlineProject,
     outline,
     setOutline,
+    outlineHasDraft,
     outlineGenerating,
     setOutlineGenerating,
     outlineGenerationStatus,
     setOutlineGenerationStatus,
+    outlineRefinementInstruction,
+    setOutlineRefinementInstruction,
+    outlineRefinementMode,
+    setOutlineRefinementMode,
+    outlineRefinementProposal,
+    setOutlineRefinementProposal,
+    outlineTitleSuggestions,
+    setOutlineTitleSuggestions,
+    outlineTitleSuggesting,
+    outlineRefining,
+    outlinePreviousMarkdown,
     outlineAbortRef,
     setOutlineAbortRef,
     outlineEditorMode,
@@ -795,6 +932,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     researchAbortRef,
     setResearchAbortRef,
     researchStatus,
+    researchElapsedSeconds,
+    researchProgressStalled,
     setResearchStatus,
     researchError,
     setResearchError,
@@ -851,12 +990,21 @@ export function useWorkbench(params: UseWorkbenchParams) {
     cancelResearch,
     pauseResearch,
     resumeResearch,
+    retryResearchTask,
+    archiveResearchTask,
     addManualResearchSource,
     generateOutline,
     openOutline,
     switchOutlineToMarkdown,
     switchOutlineToVisual,
     saveOutline,
+    saveOutlineDraft,
+    refineOutline,
+    suggestOutlineTitles,
+    applyOutlineTitle,
+    applyOutlineRefinement,
+    discardOutlineRefinement,
+    undoOutlineRefinement,
     openDraft,
     saveDraft,
     openReview,
@@ -868,3 +1016,10 @@ export function useWorkbench(params: UseWorkbenchParams) {
 }
 
 export type UseWorkbenchReturn = ReturnType<typeof useWorkbench>;
+
+function replaceLeadingOutlineTitle(markdown: string, title: string): string {
+  const leadingTitle = /^\s*#\s+[^\r\n]+/;
+  return leadingTitle.test(markdown)
+    ? markdown.replace(leadingTitle, `# ${title}`)
+    : `# ${title}\n\n${markdown.trimStart()}`;
+}

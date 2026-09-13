@@ -29,12 +29,25 @@ import { LibraryView } from "./views/LibraryView";
 import { LogsView } from "./views/LogsView";
 import { PublishView } from "./views/PublishView";
 import { SkillsView } from "./views/SkillsView";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, ResearchRun, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, ResearchRun, ResearchTask, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
   import("./components/VisualMarkdownEditor").then((module) => ({ default: module.VisualMarkdownEditor }))
 );
+
+type ResearchFailureKind = "verification" | "network" | "service";
+
+function classifyResearchFailure(message: string): ResearchFailureKind {
+  if (/(验证|验证码|登录|人工完成|captcha|browserverification)/i.test(message)) return "verification";
+  if (/(tls|handshake|eof|network|fetch failed|socket|timeout|timed out|连接|代理|reconnect)/i.test(message)) return "network";
+  return "service";
+}
+
+function formatResearchElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
 
 // 主界面（自 main.tsx 拆分）
 export function App() {
@@ -70,6 +83,8 @@ export function App() {
   const [dashboardPage, setDashboardPage] = useState(1);
   const [dashboardPageSize, setDashboardPageSize] = useState(5);
   const [sourcePreviewRefreshing, setSourcePreviewRefreshing] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [researchAuxiliaryPanel, setResearchAuxiliaryPanel] = useState<"history" | "refresh" | "correction" | null>(null);
 
   // 资料卡"打开来源"链接的 URL tooltip：用 fixed + portal 挂到 body，
   // 彻底脱离 Modal 的 overflow 裁剪容器。
@@ -179,10 +194,22 @@ export function App() {
     setOutlineProject,
     outline,
     setOutline,
+    outlineHasDraft,
     outlineGenerating,
     setOutlineGenerating,
     outlineGenerationStatus,
     setOutlineGenerationStatus,
+    outlineRefinementInstruction,
+    setOutlineRefinementInstruction,
+    outlineRefinementMode,
+    setOutlineRefinementMode,
+    outlineRefinementProposal,
+    setOutlineRefinementProposal,
+    outlineTitleSuggestions,
+    setOutlineTitleSuggestions,
+    outlineTitleSuggesting,
+    outlineRefining,
+    outlinePreviousMarkdown,
     outlineAbortRef,
     setOutlineAbortRef,
     outlineEditorMode,
@@ -213,6 +240,8 @@ export function App() {
     researchAbortRef,
     setResearchAbortRef,
     researchStatus,
+    researchElapsedSeconds,
+    researchProgressStalled,
     setResearchStatus,
     researchError,
     setResearchError,
@@ -269,12 +298,21 @@ export function App() {
     cancelResearch,
     pauseResearch,
     resumeResearch,
+    retryResearchTask,
+    archiveResearchTask,
     addManualResearchSource,
     generateOutline,
     openOutline,
     switchOutlineToMarkdown,
     switchOutlineToVisual,
     saveOutline,
+    saveOutlineDraft,
+    refineOutline,
+    suggestOutlineTitles,
+    applyOutlineTitle,
+    applyOutlineRefinement,
+    discardOutlineRefinement,
+    undoOutlineRefinement,
     openDraft,
     saveDraft,
     openReview,
@@ -555,10 +593,22 @@ export function App() {
       setOutlineProject,
       outline,
       setOutline,
+      outlineHasDraft,
       outlineGenerating,
       setOutlineGenerating,
       outlineGenerationStatus,
       setOutlineGenerationStatus,
+      outlineRefinementInstruction,
+      setOutlineRefinementInstruction,
+      outlineRefinementMode,
+      setOutlineRefinementMode,
+      outlineRefinementProposal,
+      setOutlineRefinementProposal,
+      outlineTitleSuggestions,
+      setOutlineTitleSuggestions,
+      outlineTitleSuggesting,
+      outlineRefining,
+      outlinePreviousMarkdown,
       outlineAbortRef,
       setOutlineAbortRef,
       outlineEditorMode,
@@ -589,6 +639,8 @@ export function App() {
       researchAbortRef,
       setResearchAbortRef,
       researchStatus,
+      researchElapsedSeconds,
+      researchProgressStalled,
       setResearchStatus,
       researchError,
       setResearchError,
@@ -602,6 +654,8 @@ export function App() {
       setManualSourceClaims,
       pauseResearch,
       resumeResearch,
+      retryResearchTask,
+      archiveResearchTask,
       draftProject,
       setDraftProject,
       draft,
@@ -651,6 +705,13 @@ export function App() {
       switchOutlineToMarkdown,
       switchOutlineToVisual,
       saveOutline,
+      saveOutlineDraft,
+      refineOutline,
+      suggestOutlineTitles,
+      applyOutlineTitle,
+      applyOutlineRefinement,
+      discardOutlineRefinement,
+      undoOutlineRefinement,
       openDraft,
       saveDraft,
       openReview,
@@ -662,6 +723,15 @@ export function App() {
       setActiveView,
     }
   });
+
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = researchProject ? "hidden" : "";
+    if (!researchProject) setResearchAuxiliaryPanel(null);
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+    };
+  }, [researchProject]);
 
   // ── 账号与连接管理域（拆分自 App.tsx） ──
   const {
@@ -1248,6 +1318,14 @@ export function App() {
   // 并没有微信已发布记录，仅靠 bestWechatJob 判定会让这些文章仍然可编辑。
   const archiveReadOnly = activeView === "library";
   const researchReadOnly = archiveReadOnly || (researchProject ? bestWechatJob(wechatJobs, (item) => item.projectId === researchProject.id || item.sourceRelativePath === researchProject.sourceRelativePath || item.title === researchProject.topic)?.status === "published" : false);
+  const researchFailureKind = researchError ? classifyResearchFailure(researchError) : undefined;
+  const returnToBriefFromResearch = () => {
+    const project = researchProject;
+    setResearchProject(undefined);
+    setResearch(undefined);
+    setResearchError("");
+    if (project) void openBrief(project);
+  };
   const outlineReadOnly = archiveReadOnly || (outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false);
   const briefReadOnly = archiveReadOnly || (briefProject ? bestWechatJob(wechatJobs, (item) => item.projectId === briefProject.id || item.sourceRelativePath === briefProject.sourceRelativePath || item.title === briefProject.topic)?.status === "published" : false);
 
@@ -1287,17 +1365,17 @@ export function App() {
   const completedSafePage = Math.min(publishCompletedPage, completedTotalPages);
   const completedPageItems = completedEntries.slice((completedSafePage - 1) * publishCompletedPageSize, completedSafePage * publishCompletedPageSize);
 
-  return <div className="app-shell">
-    <aside className="app-sidebar">
-      <div className="app-brand"><img src={wenduLogo} alt="" /><strong>文渡<small>ContentFerry</small></strong></div>
+  return <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <aside className={`app-sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
+      <div className="app-brand"><img src={wenduLogo} alt="" /><strong>文渡<small>ContentFerry</small></strong><button type="button" className="sidebar-collapse-toggle" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "展开侧边栏" : "收缩侧边栏"} title={sidebarCollapsed ? "展开侧边栏" : "收缩侧边栏"}>{sidebarCollapsed ? "›" : "‹"}</button></div>
       <nav>
-        <button className={activeView === "dashboard" ? "active" : ""} onClick={() => setActiveView("dashboard")}>工作台</button>
-        <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")}>归档库</button>
-        <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")}>发布记录</button>
-        <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")}>技能与模型</button>
-        <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")}>账号</button>
-        <button className={activeView === "logs" ? "active" : ""} onClick={() => setActiveView("logs")}>运行日志</button>
-        <button className={activeView === "help" ? "active" : ""} onClick={() => setActiveView("help")}>使用帮助</button>
+        <button className={activeView === "dashboard" ? "active" : ""} onClick={() => setActiveView("dashboard")} title="工作台"><span className="sidebar-nav-icon" aria-hidden="true">工</span><span className="sidebar-nav-label">工作台</span></button>
+        <button className={activeView === "library" ? "active" : ""} onClick={() => setActiveView("library")} title="归档库"><span className="sidebar-nav-icon" aria-hidden="true">档</span><span className="sidebar-nav-label">归档库</span></button>
+        <button className={activeView === "publish" ? "active" : ""} onClick={() => setActiveView("publish")} title="发布记录"><span className="sidebar-nav-icon" aria-hidden="true">发</span><span className="sidebar-nav-label">发布记录</span></button>
+        <button className={activeView === "skills" ? "active" : ""} onClick={() => setActiveView("skills")} title="技能与模型"><span className="sidebar-nav-icon" aria-hidden="true">技</span><span className="sidebar-nav-label">技能与模型</span></button>
+        <button className={activeView === "accounts" ? "active" : ""} onClick={() => setActiveView("accounts")} title="账号"><span className="sidebar-nav-icon" aria-hidden="true">账</span><span className="sidebar-nav-label">账号</span></button>
+        <button className={activeView === "logs" ? "active" : ""} onClick={() => setActiveView("logs")} title="运行日志"><span className="sidebar-nav-icon" aria-hidden="true">志</span><span className="sidebar-nav-label">运行日志</span></button>
+        <button className={activeView === "help" ? "active" : ""} onClick={() => setActiveView("help")} title="使用帮助"><span className="sidebar-nav-icon" aria-hidden="true">帮</span><span className="sidebar-nav-label">使用帮助</span></button>
       </nav>
     </aside>
     <main className="app-main">
@@ -1728,21 +1806,49 @@ export function App() {
 
     {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} title="配置文章库" eyebrow="只读导入预览" wide><label>内容源类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "vitepress" | "plain")}><option value="vitepress">VitePress 文章库</option><option value="plain">普通 Markdown 文章库</option></select></label><p className="hint">{sourceType === "vitepress" ? "选择 VitePress 仓库中的 `docs` 文件夹；只会识别 `posts/文章标题/index.md` 为文章。" : "选择包含多个 `<文章目录>/index.md` 的本地目录；不会套用 posts/ 或 public/ 约定。"}</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); openProjectCreator(); }}>下一步：新建文章</button></div></div>}</Modal>}
 
-    {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴笔记、数据、个人经历或写作要求；链接请填在下方。" /></label><label>指定资料链接（可选，每行一条）<textarea value={projectSpecifiedSources} onChange={(event) => setProjectSpecifiedSources(event.target.value)} placeholder="https://example.com/required-source" /><small>链接会单独保留为待人工核验资料；尚未核验前不会作为写作事实。</small></label><label>调研深度<select value={projectResearchDepth} onChange={(event) => setProjectResearchDepth(event.target.value as typeof projectResearchDepth)}><option value="quick">快速核实：优先确认一个关键缺口</option><option value="balanced">均衡调研：覆盖核心事实和必要边界</option><option value="deep">深入研究：额外寻找经验、限制或反例</option></select><small>深度只控制本轮请求预算；是否足够由研究计划中的覆盖和缺口判断。</small></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
+    {projectModalOpen && <Modal onClose={() => setProjectModalOpen(false)} disabled={saving} title="新建文章" eyebrow="从想法到资料"><p className="hint">创作主题是唯一必填项；它决定文章要讨论什么。写作目标描述希望读者获得什么，两者不重复。阿文会结合账号定位和这些输入直接开始联网补研。</p><form onSubmit={createProject} className="profile-form"><label>创作主题或想法<textarea autoFocus value={projectTopic} onChange={(event) => setProjectTopic(event.target.value)} placeholder="例如：我想写 AI Agent 如何改变个人开发者的工作流" /></label><label>发布账号（可稍后选择）<select value={projectAccountId} onChange={(event) => setProjectAccountId(event.target.value)}><option value="">暂不选择</option>{accounts.map((account) => <option value={account.id} key={account.id}>{platformName(account.platform)} · {account.displayName}</option>)}</select></label><label>写作目标（可选）<textarea value={projectObjective} onChange={(event) => setProjectObjective(event.target.value)} placeholder="希望读者看完理解、判断或完成什么？" /></label><label>目标读者（可选）<textarea value={projectAudience} onChange={(event) => setProjectAudience(event.target.value)} placeholder="例如：需要低成本接入 AI 的个人开发者" /></label><label>核心角度（可选）<textarea value={projectAngle} onChange={(event) => setProjectAngle(event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法（可选）<textarea value={projectSourceNotes} onChange={(event) => setProjectSourceNotes(event.target.value)} placeholder="粘贴笔记、数据、个人经历或写作要求；链接请填在下方。" /></label><label>指定资料链接（可选，每行一条）<textarea value={projectSpecifiedSources} onChange={(event) => setProjectSpecifiedSources(event.target.value)} placeholder="https://example.com/required-source" /><small>链接会自动抓取正文并尝试生成资料卡；是否进入写作由资料卡采纳决定。</small></label><label>调研深度<select value={projectResearchDepth} onChange={(event) => setProjectResearchDepth(event.target.value as typeof projectResearchDepth)}><option value="quick">快速核实：优先确认一个关键缺口</option><option value="balanced">均衡调研：覆盖核心事实和必要边界</option><option value="deep">深入研究：额外寻找经验、限制或反例</option></select><small>深度只控制本轮请求预算；是否足够由研究计划中的覆盖和缺口判断。</small></label><label>文章标题（可选）<input value={projectTitle} onChange={(event) => setProjectTitle(event.target.value)} maxLength={120} placeholder="可先留空，后续可在“编辑创作方向”中让阿文推荐" /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : "创建并联网补研"}</button></div></form></Modal>}
     {briefProject && <Modal onClose={closeBrief} disabled={saving} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{briefReadOnly ? "这篇文章已发布，创作方向仅供查看，不可修改。" : brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"}{briefReadOnly ? "" : " 保存后，阿文会默认联网补充资料，再生成文章提纲。"}</p><form onSubmit={briefReadOnly ? (event) => { event.preventDefault(); } : saveBrief} className="profile-form"><label>创作主题或想法<textarea autoFocus readOnly={briefReadOnly} value={brief.topic} onChange={(event) => changeBrief("topic", event.target.value)} maxLength={12000} placeholder="这篇文章想讨论的问题、判断或初始构思" /></label><label>写作目标<textarea readOnly={briefReadOnly} value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea readOnly={briefReadOnly} value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea readOnly={briefReadOnly} value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea readOnly={briefReadOnly} value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input readOnly={briefReadOnly} value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label>{!briefReadOnly && <div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>}{!briefReadOnly && historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{!briefReadOnly && titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>{briefReadOnly ? "关闭" : "稍后继续"}</button>{!briefReadOnly && <button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button>}</div></form></>}</Modal>}
-    {researchProject && <Modal onClose={() => { if (!researchGenerating && !researchFollowingUp) { setResearchProject(undefined); setResearch(undefined); setResearchError(""); } }} disabled={researchGenerating || researchFollowingUp} title={`联网资料：${researchProject.topic}`} eyebrow="第三步：补充资料" wide>
-      {researchGenerating || researchFollowingUp ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>{researchStatus || "阿文正在检索官方与公开网页，并整理可追溯资料卡…"}</span>{researchTaskId && <button type="button" className="secondary-button" onClick={() => void cancelResearch()}>停止补研</button>}</div> : researchError ? <section className="research-follow-up"><h3>联网检索需要处理</h3><p className="error" role="alert">{researchError}</p><p className="hint">若已打开“文渡 · 联网检索协助”窗口，请在该窗口中完成网站要求的验证或登录，再回到这里重试。浏览器会保留该站点会话。</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); setResearchError(""); }}>稍后继续</button><button type="button" onClick={() => void openResearch(researchProject, true)}>完成验证后重试</button></div></section> : !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>正在准备资料窗口…</span></div> : <>
+    {researchProject && <section className="research-workspace-screen" role="region" aria-label={`联网资料：${researchProject.topic}`}>
+      <header className="research-workspace-header"><div><p className="eyebrow">第三步：补充资料</p><h2>联网资料：{researchProject.topic}</h2><p className="hint compact-hint">研究计划、资料卡、缺口和运行历史集中在这里；完成后可返回创作方向或进入提纲。</p></div><button className="text-button" onClick={() => { if (!researchGenerating && !researchFollowingUp) returnToBriefFromResearch(); }} disabled={researchGenerating || researchFollowingUp}>返回创作方向</button></header>
+      {research && <>
+        <nav className="research-workspace-tools" aria-label="研究辅助工具">
+          <button type="button" className={researchAuxiliaryPanel === "history" ? "active" : "secondary-button"} onClick={() => setResearchAuxiliaryPanel((current) => current === "history" ? null : "history")}>调研运行历史</button>
+          <button type="button" className={researchAuxiliaryPanel === "refresh" ? "active" : "secondary-button"} onClick={() => setResearchAuxiliaryPanel((current) => current === "refresh" ? null : "refresh")}>时效刷新</button>
+          <button type="button" className={researchAuxiliaryPanel === "correction" ? "active" : "secondary-button"} disabled={researchReadOnly} onClick={() => setResearchAuxiliaryPanel((current) => current === "correction" ? null : "correction")}>资料卡纠错</button>
+        </nav>
+        {researchAuxiliaryPanel && <section className="research-auxiliary-panel" aria-label="研究辅助面板">
+          {researchAuxiliaryPanel === "history" && <ResearchHistoryPanel projectId={researchProject.id} refreshKey={research.updatedAt} onRetry={retryResearchTask} onArchive={archiveResearchTask} />}
+          {researchAuxiliaryPanel === "refresh" && <section className="research-panel-content" aria-label="时效刷新"><h3>时效刷新</h3><p className="hint">只复核产品能力、价格、规则、版本和限额；既有资料与作者决定不会被覆盖。</p><button type="button" className="secondary-button" disabled={researchFollowingUp || researchReadOnly} onClick={() => void refreshResearch()}>刷新易变事实</button></section>}
+          {researchAuxiliaryPanel === "correction" && !researchReadOnly && <ResearchCardCorrectionPanel sources={research.sources} onSplit={splitResearchSource} onMerge={mergeResearchSources} />}
+        </section>}
+      </>}
+      <div className="research-workspace-content">
+      {researchGenerating || researchFollowingUp ? <p className={researchProgressStalled ? "research-live-status stalled" : "research-live-status"} role="status">本轮调研已运行 {formatResearchElapsed(researchElapsedSeconds)} · {researchProgressStalled ? "超过 45 秒没有新进度，可能在等待来源响应；可暂停或停止" : "最近仍有进度更新"}</p> : null}
+      {researchGenerating || researchFollowingUp ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>{researchStatus || "阿文正在检索官方与公开网页，并整理可追溯资料卡…"}</span>{researchTaskId && <button type="button" className="secondary-button" onClick={() => void cancelResearch()}>停止补研</button>}</div> : researchError ? <section className={`research-follow-up research-error-panel research-error-${researchFailureKind ?? "service"}`}><h3>{researchFailureKind === "verification" ? "需要完成网页验证" : researchFailureKind === "network" ? "联网连接失败" : "联网检索未完成"}</h3><p className="error" role="alert">{researchError}</p><p className="hint">{researchFailureKind === "verification" ? "请在“文渡 · 联网检索协助”窗口中完成登录、验证码或其他网页验证；完成后回到这里重试。" : researchFailureKind === "network" ? "这次失败发生在网络或 TLS 连接阶段，不代表资料丢失，也不一定需要网页验证。请稍后重试；如果反复出现，请检查检索代理设置。" : "本轮没有生成可保存的完整结果，已有资料卡和历史运行会保留。请稍后重试，或检查模型与联网配置。"}</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={returnToBriefFromResearch}>返回创作方向</button>{researchTaskId && <button type="button" className="secondary-button" onClick={() => void retryResearchTask(researchTaskId)}>沿用原请求重试</button>}{researchTaskId && !researchPaused && <button type="button" className="secondary-button" onClick={() => void archiveResearchTask(researchTaskId)}>移除记录</button>}{researchFailureKind === "network" && <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); setResearchError(""); openResearchProxySettings(); }}>检查检索代理</button>}<button type="button" onClick={() => void openResearch(researchProject, true)}>{researchFailureKind === "verification" ? "完成验证后重试" : "重新连接"}</button></div></section> : !research ? <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>正在准备资料窗口…</span></div> : <>
         <p className="hint">{researchReadOnly ? "这篇文章已发布，以下资料仅供查看，不可修改。" : "AI 推荐不等于已采纳。只有你明确采纳的资料卡才会进入提纲、正文和事实检查；待核验、未采纳或拒绝的卡不会进入写作上下文。"}</p>
         {research.plan && <section className="research-plan"><h3>研究计划与覆盖</h3><p className="hint">调研深度：{research.plan.depth === "quick" ? "快速核实" : research.plan.depth === "deep" ? "深入研究" : "均衡调研"}。它只限制本轮执行预算，不代表资料已经足够。</p>{research.plan.execution?.maxRounds != null ? <p className="hint">本轮已使用 {research.plan.execution.rounds ?? 0}/{research.plan.execution.maxRounds} 次检索预算。</p> : <p className="hint">当前检索提供方未报告内部轮次；请以覆盖和缺口判断是否继续。</p>}<strong>要回答的问题</strong><ul>{research.plan.questions.map((question) => <li key={question}>{question}</li>)}</ul><strong>证据维度</strong><ul>{research.plan.evidenceDimensions.map((dimension) => <li key={dimension}>{dimension}</li>)}</ul><strong>已覆盖</strong><ul>{research.plan.covered.length ? research.plan.covered.map((item) => <li key={item}>{item}</li>) : <li>仍在收集可追溯资料。</li>}</ul><strong>仍有缺口</strong><ul>{research.plan.gaps.length ? research.plan.gaps.map((gap) => <li key={gap}>{gap}</li>) : <li>材料覆盖后仍需逐条核验正文和适用条件。</li>}</ul>{research.plan.partial && <p className="error">本次是部分调研结果；请围绕上述缺口继续补研或手工核验。</p>}<p className="hint">时效提醒：{research.plan.freshnessRisks.join(" ")} 冲突提醒：{research.plan.pendingConflicts.join(" ")}</p></section>}
         <section className="research-plan"><h3>补研结论</h3><pre>{research.planMarkdown}</pre></section>
-        {research.specifiedSources.length > 0 && <section className="research-sources"><h3>指定资料</h3><p className="hint">这些链接必须保留处理结果；在核验并形成资料卡前，不会作为写作事实。</p>{research.specifiedSources.map((source) => <article className="research-source-card" key={source.id}><strong>指定资料 · {source.status === "verified" ? "已人工核验" : source.status === "rejected" ? "不采用" : source.status === "failed" ? "无法访问" : "待人工核验"}</strong><a href={source.url} target="_blank" rel="noreferrer" onMouseEnter={(event) => handleSourceLinkEnter(event, source.url)} onMouseLeave={handleSourceLinkLeave}>打开来源</a>{source.verificationNote && <p>核验说明：{source.verificationNote}</p>}{source.failureReason && <p>失败原因：{source.failureReason}</p>}{!researchReadOnly && <><textarea value={specifiedSourceNotes[source.id] ?? (source.status === "failed" ? source.failureReason : source.verificationNote)} onChange={(event) => setSpecifiedSourceNotes((current) => ({ ...current, [source.id]: event.target.value }))} maxLength={5000} placeholder="核验说明；若无法访问，请填写失败原因" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void updateSpecifiedSource(source, "verified")} disabled={!(specifiedSourceNotes[source.id] ?? source.verificationNote).trim()}>已人工核验</button><button type="button" className="secondary-button" onClick={() => void updateSpecifiedSource(source, "failed")} disabled={!(specifiedSourceNotes[source.id] ?? source.failureReason).trim()}>无法访问</button><button type="button" className="secondary-button" onClick={() => void updateSpecifiedSource(source, "rejected")}>不采用</button><button type="button" className="secondary-button" onClick={() => void updateSpecifiedSource(source, "pending_manual_verification")}>重新核验</button></div></>}</article>)}</section>}
-        <section className="research-sources"><h3>资料卡</h3><p className="hint">搜索结果只用于发现候选；每张自动资料卡均附有正文核验摘录。相同主张的同质来源会合并显示。</p>{research.sources.map((source) => <article className="research-source-card" key={source.id}><strong>{source.url.startsWith("manual://") ? "手工补录" : source.provenance ? "实验观察" : source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><small>AI 推荐 · 作者决定：{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : source.adoptionStatus === "pending_verification" ? "待人工核验" : "待决定"}</small>{!researchReadOnly && <div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void updateResearchAdoption(source, "adopted")}>采纳</button><button type="button" className="secondary-button" onClick={() => void updateResearchAdoption(source, "pending_verification")}>待核验</button><button type="button" className="secondary-button" onClick={() => void updateResearchAdoption(source, "rejected")}>拒绝</button></div>}{!source.url.startsWith("manual://") && !source.provenance && <a href={source.url} target="_blank" rel="noreferrer" onMouseEnter={(event) => handleSourceLinkEnter(event, source.url)} onMouseLeave={handleSourceLinkLeave}>打开来源</a>}{source.provenance && <small>执行记录：{source.provenance.executionRunId} · {source.provenance.targetType} / {source.provenance.runtime} · {source.provenance.artifacts.length} 个产物</small>}<p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul>{source.evidence && <><p><strong>可支持的主张：</strong>{source.evidence.claim}</p><p><strong>为什么值得看：</strong>{source.evidence.recommendation}</p><p><strong>质量与时效：</strong>{source.evidence.qualityReason} {source.evidence.freshness}</p><p><strong>证据边界：</strong>{source.evidence.boundary}</p><small>证据类型：{source.evidence.kind} · 已合并 {source.evidence.sourceUrls.length} 个同质来源</small><ul>{source.evidence.sourceUrls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>{source.evidence.snapshots.map((snapshot) => <details key={snapshot.url}><summary>正文核验摘录 · {new Date(snapshot.capturedAt).toLocaleString()}</summary><p>{snapshot.excerpt}</p><small>SHA-256：{snapshot.sha256}</small></details>)}</>}<small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>)}</section>
-        {!researchReadOnly && <section className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的“与阿文对话”最前面。</p></div><label>本轮调研深度<select value={researchDepth} onChange={(event) => setResearchDepth(event.target.value as typeof researchDepth)} disabled={researchFollowingUp}><option value="quick">快速核实</option><option value="balanced">均衡调研</option><option value="deep">深入研究</option></select><small>只改变执行预算；若计划仍有缺口，结果会明确标为部分调研。</small></label><textarea value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><textarea value={researchSpecifiedSources} onChange={(event) => setResearchSpecifiedSources(event.target.value)} maxLength={80000} disabled={researchFollowingUp} placeholder="新增指定资料链接（可选，每行一条）" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={(!researchFollowUp.trim() && !researchSpecifiedSources.trim()) || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : researchFollowUp.trim() ? "让阿文继续补研" : "保存指定资料"}</button><small>{researchFollowUp.length}/4000</small></div></section>}
+        {research.specifiedSources.length > 0 && (researchGenerating || researchFollowingUp) && <p className={researchProgressStalled ? "research-live-status stalled" : "research-live-status"}>指定资料正在处理：已运行 {formatResearchElapsed(researchElapsedSeconds)} · {researchProgressStalled ? "超过 45 秒没有新进度，可能在等待来源响应" : "最近仍有进度更新"}</p>}
+        {research.specifiedSources.length > 0 && <section className="research-sources"><h3>指定资料</h3><p className="hint">这些链接会自动抓取并尝试生成资料卡；抓取失败时才需要人工处理。是否进入写作仍由资料卡的作者决定控制。</p>{research.specifiedSources.map((source) => <article className="research-source-card" key={source.id}><strong>指定资料 · {source.status === "verified" ? "已获取" : source.status === "rejected" ? "不采用" : source.status === "failed" ? "获取失败" : "正在获取"}</strong><a href={source.url} target="_blank" rel="noreferrer" onMouseEnter={(event) => handleSourceLinkEnter(event, source.url)} onMouseLeave={handleSourceLinkLeave}>打开来源</a>{source.verificationNote && <p>{source.verificationNote}</p>}{source.failureReason && <p>获取失败：{source.failureReason}</p>}{source.status === "pending_manual_verification" && <small className="hint">系统正在抓取正文并生成资料卡，请稍候。</small>}</article>)}</section>}
+        <section className="research-sources"><h3>资料卡</h3><p className="hint">搜索结果只用于发现候选；每张自动资料卡均附有正文核验摘录。相同主张的同质来源会合并显示。</p>{research.sources.map((source) => { const adoptionLabel = source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : source.adoptionStatus === "pending_verification" ? "待人工核验" : "待决定"; return <article className="research-source-card" key={source.id}><strong>{source.url.startsWith("manual://") ? "手工补录" : source.provenance ? "实验观察" : source.sourceType === "official" ? "官方" : "公开"} · {source.title}</strong><small className={`research-adoption-summary research-adoption-${source.adoptionStatus}`}><span>AI 推荐：推荐</span><span>作者决定：{adoptionLabel}</span></small>{!researchReadOnly && <div className="research-adoption-actions" role="group" aria-label={`作者决定：${source.title}`}><button type="button" className={source.adoptionStatus === "adopted" ? "research-adoption-button selected adopted" : "research-adoption-button"} aria-pressed={source.adoptionStatus === "adopted"} disabled={source.adoptionStatus === "adopted"} onClick={() => void updateResearchAdoption(source, "adopted")}>✓ 已采纳</button><button type="button" className={source.adoptionStatus === "pending_verification" ? "research-adoption-button selected pending" : "research-adoption-button"} aria-pressed={source.adoptionStatus === "pending_verification"} disabled={source.adoptionStatus === "pending_verification"} onClick={() => void updateResearchAdoption(source, "pending_verification")}>! 待核验</button><button type="button" className={source.adoptionStatus === "rejected" ? "research-adoption-button selected rejected" : "research-adoption-button"} aria-pressed={source.adoptionStatus === "rejected"} disabled={source.adoptionStatus === "rejected"} onClick={() => void updateResearchAdoption(source, "rejected")}>× 已拒绝</button></div>}{!source.url.startsWith("manual://") && !source.provenance && <a href={source.url} target="_blank" rel="noreferrer" onMouseEnter={(event) => handleSourceLinkEnter(event, source.url)} onMouseLeave={handleSourceLinkLeave}>打开来源</a>}{source.provenance && <small>执行记录：{source.provenance.executionRunId} · {source.provenance.targetType} / {source.provenance.runtime} · {source.provenance.artifacts.length} 个产物</small>}<p>{source.excerpt}</p><ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul>{source.evidence && <><p><strong>可支持的主张：</strong>{source.evidence.claim}</p><p><strong>为什么值得看：</strong>{source.evidence.recommendation}</p><p><strong>质量与时效：</strong>{source.evidence.qualityReason} {source.evidence.freshness}</p><p><strong>证据边界：</strong>{source.evidence.boundary}</p><small>证据类型：{source.evidence.kind} · 已合并 {source.evidence.sourceUrls.length} 个同质来源</small><ul>{source.evidence.sourceUrls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>{source.evidence.snapshots.map((snapshot) => <details key={snapshot.url}><summary>正文核验摘录 · {new Date(snapshot.capturedAt).toLocaleString()}</summary><p>{snapshot.excerpt}</p><small>SHA-256：{snapshot.sha256}</small></details>)}</>}<small>获取时间：{new Date(source.retrievedAt).toLocaleString()}</small></article>; })}</section>
+        {!researchReadOnly && <section id="research-follow-up" className="research-follow-up"><div><h3>继续补研</h3><p className="hint">告诉阿文还缺什么：需要核查的事实、指定来源、时间范围、反例或不想采用的方向。原有资料不会被覆盖；本轮对话会出现在正文编辑器的“与阿文对话”最前面。</p></div><label>本轮调研深度<select value={researchDepth} onChange={(event) => setResearchDepth(event.target.value as typeof researchDepth)} disabled={researchFollowingUp}><option value="quick">快速核实</option><option value="balanced">均衡调研</option><option value="deep">深入研究</option></select><small>只改变执行预算；若计划仍有缺口，结果会明确标为部分调研。</small></label><textarea id="research-follow-up-input" value={researchFollowUp} onChange={(event) => setResearchFollowUp(event.target.value)} maxLength={4000} disabled={researchFollowingUp} placeholder="例如：重点核查 NVIDIA Build 当前免费模型、调用限制和是否需要绑定付款方式；优先官方文档。" /><textarea value={researchSpecifiedSources} onChange={(event) => setResearchSpecifiedSources(event.target.value)} maxLength={80000} disabled={researchFollowingUp} placeholder="新增指定资料链接（可选，每行一条）" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void continueResearch()} disabled={(!researchFollowUp.trim() && !researchSpecifiedSources.trim()) || researchFollowingUp}>{researchFollowingUp ? "阿文正在补研…" : researchFollowUp.trim() ? "让阿文继续补研" : "获取资料并生成卡片"}</button><small>{researchFollowUp.length}/4000</small></div></section>}
         {!researchReadOnly && <section className="research-follow-up"><div><h3>手工补录资料卡</h3><p className="hint">如果你已经查到可靠资料，可以直接补录；保存后默认纳入后续提纲和正文。链接与指定资料一致时，会以这条摘要完成该链接的人工核验。</p></div><input value={manualSourceTitle} onChange={(event) => setManualSourceTitle(event.target.value)} maxLength={200} placeholder="资料标题（必填）" disabled={researchFollowingUp} /><input value={manualSourceUrl} onChange={(event) => setManualSourceUrl(event.target.value)} maxLength={1000} placeholder="来源链接（可选；没有链接可留空）" disabled={researchFollowingUp} /><textarea value={manualSourceExcerpt} onChange={(event) => setManualSourceExcerpt(event.target.value)} maxLength={8000} disabled={researchFollowingUp} placeholder="资料摘要或原文摘录（必填）" /><textarea value={manualSourceClaims} onChange={(event) => setManualSourceClaims(event.target.value)} maxLength={4000} placeholder="关键结论，每行一条（可选）" /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void addManualResearchSource()} disabled={!manualSourceTitle.trim() || !manualSourceExcerpt.trim() || researchFollowingUp}>保存资料卡</button></div></section>}
-        <div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>稍后继续</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div>
+        <div className="modal-actions">{researchReadOnly ? <button type="button" className="secondary-button" onClick={() => { setResearchProject(undefined); setResearch(undefined); }}>关闭</button> : <><button type="button" className="secondary-button" onClick={returnToBriefFromResearch}>返回创作方向</button><button disabled={researchFollowingUp} onClick={() => { const project = researchProject; setResearchProject(undefined); setResearch(undefined); void openOutline(project); }}>用已选资料生成提纲</button></>}</div>
+      </>}
+      </div>
+    </section>}
+    {outlineProject && <Modal className="outline-modal" onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving || outlineRefining} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>
+      {!outline ? <p>正在准备提纲…</p> : <>
+        <p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outlineHasDraft ? "这是上次暂存的提纲草稿，请继续编辑；点击确认后才会标记为“提纲已就绪”。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>
+        {outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}
+        <form onSubmit={saveOutline} className="profile-form">
+          <label>文章提纲</label>
+          {outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : outlineEditorMode === "markdown" ? <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchOutlineToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={outlineMarkdownSourceRef} className="markdown-source-editor" value={outline.markdown} readOnly={outlineReadOnly} onChange={(event) => setOutline((current) => current ? { ...current, markdown: event.target.value } : current)} spellCheck={false} /></div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onSwitchToMarkdown={switchOutlineToMarkdown} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}
+          {!outlineReadOnly && !outlineGenerating && <section className="outline-refinement-panel"><div><h3>和阿文一起优化</h3><p className="hint compact-hint">标题优化会生成候选供你选择；结构优化会生成完整提纲建议。任何建议都不会自动覆盖当前内容。</p></div><div className="outline-refinement-mode" role="tablist" aria-label="优化内容"><button type="button" role="tab" aria-selected={outlineRefinementMode === "structure"} className={outlineRefinementMode === "structure" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("structure"); setOutlineTitleSuggestions([]); }}>优化提纲结构</button><button type="button" role="tab" aria-selected={outlineRefinementMode === "title"} className={outlineRefinementMode === "title" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("title"); setOutlineRefinementProposal(undefined); }}>优化文章标题</button></div>{outlineRefinementMode === "title" && <p className="hint compact-hint">当前标题：{leadingMarkdownTitle(outline?.markdown) || outlineProject?.topic || "未设置"}。选择候选后会同步更新提纲一级标题，保存提纲时才会正式更新文章标题。</p>}<textarea value={outlineRefinementInstruction} onChange={(event) => setOutlineRefinementInstruction(event.target.value)} maxLength={4000} placeholder={outlineRefinementMode === "title" ? "例如：更突出实际使用场景，面向个人开发者" : "例如：压缩成 5 个章节，保留第二章的实战案例"} disabled={outlineRefining || outlineTitleSuggesting} /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void ((outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction)) ? suggestOutlineTitles() : refineOutline())} disabled={outlineRefining || outlineTitleSuggesting || !outlineRefinementInstruction.trim()}>{outlineRefining || outlineTitleSuggesting ? "阿文正在分析…" : outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction) ? "生成标题候选" : "生成修改建议"}</button>{outlinePreviousMarkdown !== undefined && <button type="button" className="secondary-button" onClick={undoOutlineRefinement}>撤销上次应用</button>}</div>{outlineRefinementMode === "title" && outlineTitleSuggestions.length > 0 && <div className="outline-refinement-proposal"><h4>标题候选</h4><div className="title-suggestion-list">{outlineTitleSuggestions.map((title) => <button type="button" className="secondary-button" onClick={() => applyOutlineTitle(title)} key={title}>{title} · 采用此标题并继续编辑</button>)}</div></div>}{outlineRefinementMode === "structure" && outlineRefinementProposal && <div className="outline-refinement-proposal"><h4>修改建议预览</h4><textarea value={outlineRefinementProposal} readOnly /><div className="inline-actions"><button type="button" className="secondary-button" onClick={discardOutlineRefinement}>放弃建议</button><button type="button" onClick={applyOutlineRefinement}>应用建议</button></div></div>}</section>}
+          <div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => void saveOutlineDraft()} disabled={saving || outlineGenerating || !outline.markdown.trim()}>暂存提纲</button><button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>放弃本次修改</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认提纲并标记为已就绪"}</button></>}</div>
+        </form>
       </>}
     </Modal>}
-    {outlineProject && <Modal onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>{!outline ? <p>正在准备提纲…</p> : <><p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>{outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}<form onSubmit={saveOutline} className="profile-form"><label>文章提纲</label>{outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : outlineEditorMode === "markdown" ? <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchOutlineToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={outlineMarkdownSourceRef} className="markdown-source-editor" value={outline.markdown} readOnly={outlineReadOnly} onChange={(event) => setOutline((current) => current ? { ...current, markdown: event.target.value } : current)} spellCheck={false} /></div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onSwitchToMarkdown={switchOutlineToMarkdown} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}<div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>稍后继续</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认并保存提纲"}</button></>}</div></form></>}</Modal>}
   </main>
   {sourceLinkTip && createPortal((
     <div
@@ -1752,28 +1858,43 @@ export function App() {
       role="tooltip"
     >{sourceLinkTip.url}</div>
   ), document.body)}
-  {researchProject && research && !researchReadOnly && createPortal(
-    <ResearchCardCorrectionPanel sources={research.sources} onSplit={splitResearchSource} onMerge={mergeResearchSources} />,
-    document.body
-  )}
-  {researchProject && research && !researchReadOnly && createPortal(
-    <aside aria-label="时效刷新" style={{ position: "fixed", left: 24, bottom: 24, zIndex: 10001, maxWidth: 320, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
-      <strong>时效刷新</strong><p className="hint">只复核产品能力、价格、规则、版本和限额；既有资料与作者决定不会被覆盖。</p>
-      <button type="button" className="secondary-button" disabled={researchFollowingUp} onClick={() => void refreshResearch()}>刷新易变事实</button>
-    </aside>,
-    document.body
-  )}
-  {researchProject && research && createPortal(<ResearchHistoryPanel projectId={researchProject.id} refreshKey={research.updatedAt} />, document.body)}
   </div>;
 }
 
-function ResearchHistoryPanel({ projectId, refreshKey }: { projectId: string; refreshKey: string | null }) {
+function ResearchHistoryPanel({ projectId, refreshKey, onRetry, onArchive }: { projectId: string; refreshKey: string | null; onRetry: (taskId: string) => Promise<void> | void; onArchive: (taskId: string) => Promise<void> | void }) {
   const [runs, setRuns] = useState<ResearchRun[]>([]);
-  useEffect(() => { void request<{ items: ResearchRun[] }>(`/content-projects/${projectId}/research/runs`).then((result) => setRuns(result.items)).catch(() => setRuns([])); }, [projectId, refreshKey]);
-  return <aside aria-label="调研运行历史" style={{ position: "fixed", left: 24, top: 24, zIndex: 10001, maxWidth: 340, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
-    <strong>调研运行历史</strong><p className="hint">当前资料在窗口中展示；以下是不可变快照。</p>
-    {runs.length ? runs.map((run) => <details key={run.id}><summary>{run.kind === "refresh" ? "时效刷新" : run.kind === "follow_up" ? "继续补研" : "初始调研"} · {new Date(run.createdAt).toLocaleString()}</summary><p>{run.research.planMarkdown}</p><small>{run.research.sources.length} 张资料卡；采纳决定已随本次快照保留。</small></details>) : <small>尚无已完成的历史运行。</small>}
-  </aside>;
+  const [tasks, setTasks] = useState<ResearchTask[]>([]);
+  const [retryingTaskId, setRetryingTaskId] = useState<string>();
+  const [archivingTaskId, setArchivingTaskId] = useState<string>();
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      request<{ items: ResearchRun[] }>(`/content-projects/${projectId}/research/runs`),
+      request<{ items: ResearchTask[] }>(`/content-projects/${projectId}/research/tasks`)
+    ]).then(([runResult, taskResult]) => {
+      if (cancelled) return;
+      setRuns(runResult.items);
+      setTasks(taskResult.items);
+    }).catch(() => {
+      if (!cancelled) { setRuns([]); setTasks([]); }
+    });
+    return () => { cancelled = true; };
+  }, [projectId, refreshKey]);
+  const unfinishedTasks = tasks.filter((task) => !["completed", "completed_with_warnings"].includes(task.status));
+  const statusLabel: Record<ResearchTask["status"], string> = { queued: "排队中", running: "进行中", waiting_user: "等待处理", paused: "已暂停", completed: "已完成", completed_with_warnings: "已完成（有提醒）", failed: "失败", cancelled: "已取消" };
+  const retryTask = async (taskId: string) => {
+    setRetryingTaskId(taskId);
+    try { await onRetry(taskId); } finally { setRetryingTaskId(undefined); }
+  };
+  const archiveTask = async (taskId: string) => {
+    setArchivingTaskId(taskId);
+    try { await onArchive(taskId); } finally { setArchivingTaskId(undefined); }
+  };
+  return <div className="research-panel-content">
+    <h3>调研运行历史</h3><p className="hint">已完成运行是不可变快照；失败或取消的运行会保留原始要求和错误，可沿用原请求重试。</p>
+    {unfinishedTasks.length > 0 && <section className="research-history-tasks"><h4>未完成运行</h4>{unfinishedTasks.map((task) => <article className={`research-history-task research-history-task-${task.status}`} key={task.id}><div className="research-history-task-heading"><strong>{task.request.kind === "refresh" ? "时效刷新" : task.kind === "follow_up" ? "继续补研" : "初始调研"}</strong><span>{statusLabel[task.status]} · {new Date(task.updatedAt).toLocaleString()}</span></div><p>{task.request.message?.trim() || (task.kind === "generate" ? "根据创作简报开始初始调研" : "未记录补研要求")}</p>{task.lastError && <small className="error">失败原因：{task.lastError}</small>}{task.lastCheckpoint && <small>检查点：{task.lastCheckpoint}</small>}{(task.status === "failed" || task.status === "cancelled") && <div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void retryTask(task.id)} disabled={retryingTaskId === task.id || archivingTaskId === task.id}>{retryingTaskId === task.id ? "正在重新排队…" : "沿用原请求重试"}</button><button type="button" className="secondary-button" onClick={() => void archiveTask(task.id)} disabled={retryingTaskId === task.id || archivingTaskId === task.id}>{archivingTaskId === task.id ? "正在移除…" : "移除记录"}</button></div>}</article>)}</section>}
+    <section className="research-history-completed"><h4>已完成运行</h4>{runs.length ? runs.map((run) => <details key={run.id}><summary>{run.kind === "refresh" ? "时效刷新" : run.kind === "follow_up" ? "继续补研" : "初始调研"} · {new Date(run.createdAt).toLocaleString()}</summary><p>{run.research.planMarkdown}</p><small>{run.research.sources.length} 张资料卡；采纳决定已随本次快照保留。</small>{run.research.sources.map((source) => <article key={source.id}><strong>{source.title}</strong><br /><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><br /><small>作者决定：{source.adoptionStatus} · 获取：{new Date(source.retrievedAt).toLocaleString()}</small>{source.evidence?.snapshots.map((snapshot) => <details key={`${source.id}-${snapshot.url}`}><summary>正文快照 · {new Date(snapshot.capturedAt).toLocaleString()}</summary><p>{snapshot.excerpt}</p><small>SHA-256：{snapshot.sha256}</small></details>)}{source.adoptionHistory?.length ? <small>合并前决定：{source.adoptionHistory.map((decision) => `${decision.title}（${decision.adoptionStatus}）`).join("、")}</small> : null}</article>)}{run.research.specifiedSources.map((source) => <small key={source.id}>指定来源：{source.url} · {source.status}</small>)}</details>) : <small>尚无已完成的历史运行。</small>}</section>
+  </div>;
 }
 
 function ResearchCardCorrectionPanel({
@@ -1789,11 +1910,19 @@ function ResearchCardCorrectionPanel({
   const [targetId, setTargetId] = useState("");
   const source = sources.find((item) => item.id === sourceId);
   const target = sources.find((item) => item.id === targetId);
-  return <aside aria-label="资料卡纠错" style={{ position: "fixed", right: 24, bottom: 24, zIndex: 10001, maxWidth: 360, padding: 12, border: "1px solid #cbd5e1", borderRadius: 10, background: "#fff", boxShadow: "0 8px 30px rgba(15, 23, 42, .16)" }}>
-    <strong>资料卡纠错</strong><p className="hint">卡片聚合不准确时可拆分，或将同一主张合并；会保留来源和作者决定。</p>
+  return <div className="research-panel-content">
+    <h3>资料卡纠错</h3><p className="hint">卡片聚合不准确时可拆分，或将同一主张合并；会保留来源和作者决定。</p>
     <select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">选择资料卡</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
     <div className="inline-actions"><button type="button" className="secondary-button" disabled={!source || (source.evidence?.snapshots.length ?? 0) < 2} onClick={() => source && void onSplit(source)}>拆分来源</button></div>
     <select value={targetId} onChange={(event) => setTargetId(event.target.value)}><option value="">合并到哪张卡</option>{sources.filter((item) => item.id !== sourceId).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
     <div className="inline-actions"><button type="button" className="secondary-button" disabled={!source || !target} onClick={() => source && target && void onMerge(target, source)}>合并资料卡</button></div>
-  </aside>;
+  </div>;
+}
+
+function leadingMarkdownTitle(markdown: string | undefined): string {
+  return markdown?.match(/^\s*#\s+([^\r\n]+)\s*$/m)?.[1]?.trim() ?? "";
+}
+
+function isTitleOnlyInstruction(instruction: string): boolean {
+  return /标题|题目/.test(instruction) && !/章节|结构|顺序|要点|论证/.test(instruction);
 }

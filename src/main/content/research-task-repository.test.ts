@@ -17,6 +17,8 @@ describe("ResearchTaskRepository", () => {
       expect(cancelled.cancelRequested).toBe(true);
       expect(cancelled.status).toBe("cancelled");
       expect(repository.isCancelRequested(task.id)).toBe(true);
+      expect(repository.archive(task.id).archivedAt).toBeTruthy();
+      expect(repository.list("project-1")).toEqual([]);
       expect((database.connection.prepare("SELECT COUNT(*) AS count FROM research_task_events WHERE task_id = ?").get(task.id) as { count: number }).count).toBeGreaterThanOrEqual(3);
     } finally {
       database.close();

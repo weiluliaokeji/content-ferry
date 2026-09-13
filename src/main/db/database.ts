@@ -152,6 +152,12 @@ export function initialiseDatabase(db: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS content_outline_drafts (
+      project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
+      markdown TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS content_drafts (
       project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
       markdown TEXT NOT NULL,
@@ -179,6 +185,7 @@ export function initialiseDatabase(db: Database.Database): void {
       claims_json TEXT NOT NULL DEFAULT '[]',
       provenance_json TEXT NOT NULL DEFAULT '{}',
       evidence_json TEXT NOT NULL DEFAULT '{}',
+      adoption_history_json TEXT NOT NULL DEFAULT '[]',
       adoption_status TEXT NOT NULL DEFAULT 'recommended' CHECK(adoption_status IN ('recommended', 'adopted', 'rejected', 'pending_verification')),
       source_type TEXT NOT NULL CHECK(source_type IN ('official', 'public')),
       retrieved_at TEXT NOT NULL,
@@ -231,6 +238,7 @@ export function initialiseDatabase(db: Database.Database): void {
       attempt INTEGER NOT NULL DEFAULT 1,
       last_checkpoint TEXT NOT NULL DEFAULT '',
       last_error TEXT NOT NULL DEFAULT '',
+      archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_heartbeat_at TEXT NOT NULL
@@ -816,12 +824,18 @@ export function initialiseDatabase(db: Database.Database): void {
   if (!researchTaskColumns.some((column) => column.name === "request_json")) {
     db.exec("ALTER TABLE research_tasks ADD COLUMN request_json TEXT NOT NULL DEFAULT '{}'");
   }
+  if (!researchTaskColumns.some((column) => column.name === "archived_at")) {
+    db.exec("ALTER TABLE research_tasks ADD COLUMN archived_at TEXT");
+  }
   const researchSourceColumns = db.prepare("PRAGMA table_info(content_research_sources)").all() as Array<{ name: string }>;
   if (!researchSourceColumns.some((column) => column.name === "provenance_json")) {
     db.exec("ALTER TABLE content_research_sources ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'");
   }
   if (!researchSourceColumns.some((column) => column.name === "evidence_json")) {
     db.exec("ALTER TABLE content_research_sources ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!researchSourceColumns.some((column) => column.name === "adoption_history_json")) {
+    db.exec("ALTER TABLE content_research_sources ADD COLUMN adoption_history_json TEXT NOT NULL DEFAULT '[]'");
   }
   if (!researchSourceColumns.some((column) => column.name === "adoption_status")) {
     db.exec("ALTER TABLE content_research_sources ADD COLUMN adoption_status TEXT NOT NULL DEFAULT 'recommended'");

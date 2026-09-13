@@ -13,6 +13,7 @@ export interface ContentProject {
   briefReady: boolean;
   researchReady: boolean;
   outlineReady: boolean;
+  outlineDraftReady: boolean;
   draftReady: boolean;
   reviewStatus: "pending" | "needs_revision" | "approved" | null;
 }
@@ -25,6 +26,7 @@ export class ContentProjectRepository {
       EXISTS(SELECT 1 FROM content_briefs b WHERE b.project_id = p.id) AS brief_ready,
       EXISTS(SELECT 1 FROM content_research_plans r WHERE r.project_id = p.id) AS research_ready,
       EXISTS(SELECT 1 FROM content_outlines o WHERE o.project_id = p.id) AS outline_ready,
+      EXISTS(SELECT 1 FROM content_outline_drafts od WHERE od.project_id = p.id) AS outline_draft_ready,
       EXISTS(SELECT 1 FROM content_drafts d WHERE d.project_id = p.id) AS draft_ready,
       (SELECT r.status FROM content_reviews r WHERE r.project_id = p.id) AS review_status
       FROM content_projects p WHERE p.workspace_id = ? ORDER BY p.updated_at DESC`).all(workspaceId) as Array<Record<string, string | null>>)
@@ -36,6 +38,7 @@ export class ContentProjectRepository {
       EXISTS(SELECT 1 FROM content_briefs b WHERE b.project_id = p.id) AS brief_ready,
       EXISTS(SELECT 1 FROM content_research_plans r WHERE r.project_id = p.id) AS research_ready,
       EXISTS(SELECT 1 FROM content_outlines o WHERE o.project_id = p.id) AS outline_ready,
+      EXISTS(SELECT 1 FROM content_outline_drafts od WHERE od.project_id = p.id) AS outline_draft_ready,
       EXISTS(SELECT 1 FROM content_drafts d WHERE d.project_id = p.id) AS draft_ready,
       (SELECT r.status FROM content_reviews r WHERE r.project_id = p.id) AS review_status
       FROM content_projects p WHERE p.workspace_id = ? AND p.source_relative_path = ?`)
@@ -52,7 +55,7 @@ export class ContentProjectRepository {
       .run(id, input.workspaceId, input.targetAccountId ?? null, input.sourceRelativePath, input.topic, now, now);
     return { id, workspaceId: input.workspaceId, targetAccountId: input.targetAccountId ?? null,
       sourceRelativePath: input.sourceRelativePath, topic: input.topic, status: "idea", createdAt: now,
-      updatedAt: now, briefReady: false, researchReady: false, outlineReady: false, draftReady: false, reviewStatus: null };
+      updatedAt: now, briefReady: false, researchReady: false, outlineReady: false, outlineDraftReady: false, draftReady: false, reviewStatus: null };
   }
 
   require(projectId: string): ContentProject {
@@ -61,6 +64,7 @@ export class ContentProjectRepository {
       EXISTS(SELECT 1 FROM content_briefs b WHERE b.project_id = p.id) AS brief_ready,
       EXISTS(SELECT 1 FROM content_research_plans r WHERE r.project_id = p.id) AS research_ready,
       EXISTS(SELECT 1 FROM content_outlines o WHERE o.project_id = p.id) AS outline_ready,
+      EXISTS(SELECT 1 FROM content_outline_drafts od WHERE od.project_id = p.id) AS outline_draft_ready,
       EXISTS(SELECT 1 FROM content_drafts d WHERE d.project_id = p.id) AS draft_ready,
       (SELECT r.status FROM content_reviews r WHERE r.project_id = p.id) AS review_status
       FROM content_projects p WHERE p.id = ?`).get(projectId) as Record<string, string | null> | undefined;
@@ -82,6 +86,6 @@ export class ContentProjectRepository {
     return { id: row.id as string, workspaceId: row.workspace_id as string, targetAccountId: row.target_account_id,
       sourceRelativePath: row.source_relative_path,
       topic: row.topic as string, status: "idea", createdAt: row.created_at as string, updatedAt: row.updated_at as string,
-      briefReady: Boolean(row.brief_ready), researchReady: Boolean(row.research_ready), outlineReady: Boolean(row.outline_ready), draftReady: Boolean(row.draft_ready), reviewStatus: row.review_status as ContentProject["reviewStatus"] };
+      briefReady: Boolean(row.brief_ready), researchReady: Boolean(row.research_ready), outlineReady: Boolean(row.outline_ready), outlineDraftReady: Boolean(row.outline_draft_ready), draftReady: Boolean(row.draft_ready), reviewStatus: row.review_status as ContentProject["reviewStatus"] };
   }
 }

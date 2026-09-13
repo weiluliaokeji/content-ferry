@@ -70,7 +70,7 @@ export class ResearchTaskRunner {
     this.active.add(taskId);
     try {
       const task = this.tasks.require(taskId);
-      const request = task.request && typeof task.request === "object" ? task.request as { kind?: unknown; message?: unknown; depth?: unknown } : {};
+      const request = task.request && typeof task.request === "object" ? task.request as { kind?: unknown; message?: unknown; depth?: unknown; specifiedSourceIds?: unknown } : {};
       const instruction = typeof request.message === "string" ? request.message.trim() : "";
       const depth: ResearchDepth = request.depth === "quick" || request.depth === "deep" ? request.depth : "balanced";
       if (task.kind === "follow_up" && !instruction) throw new Error("补充资料任务缺少补充说明，无法恢复。 ");
@@ -102,9 +102,10 @@ export class ResearchTaskRunner {
         return;
       }
       const value = generatedValue;
+      this.research.markSpecifiedSourceExtraction(task.projectId, value.specifiedSourceResults ?? []);
       if (task.kind === "follow_up") this.research.append(task.projectId, value);
       else this.research.save(task.projectId, value);
-      const saved = this.research.completePlan(task.projectId, value.execution);
+      const saved = this.research.completePlan(task.projectId, value.execution, value.coverage);
       this.runs.record(task.projectId, task.id, request.kind === "refresh" ? "refresh" : task.kind, saved);
       if (task.kind === "follow_up") {
         const project = this.projects.require(task.projectId);
@@ -125,6 +126,12 @@ export class ResearchTaskRunner {
         this.tasks.transition(taskId, "paused", { checkpoint: "已暂停，等待用户继续。" });
         return;
       }
+      const failedTask = this.tasks.require(taskId);
+      if (!cancelled) this.research.markSpecifiedSourceExtractionFailure(
+        failedTask.projectId,
+        specifiedSourceIdsFromRequest(failedTask.request),
+        `后台补研未完成，尚未生成资料卡：${error instanceof Error ? error.message.slice(0, 240) : "请重试"}`
+      );
       this.tasks.transition(taskId, cancelled ? "cancelled" : "failed", {
         error: error instanceof Error ? error.message : "资料补研失败。"
       });
@@ -133,4 +140,10 @@ export class ResearchTaskRunner {
       this.active.delete(taskId);
     }
   }
+}
+
+function specifiedSourceIdsFromRequest(request: unknown): string[] {
+  if (!request || typeof request !== "object") return [];
+  const ids = (request as { specifiedSourceIds?: unknown }).specifiedSourceIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
 }

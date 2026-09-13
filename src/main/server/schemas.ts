@@ -65,6 +65,10 @@ export const contentProjectTitleInput = z.object({ title: z.string().trim().min(
 export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
 export const titleSuggestionInput = contentBriefInput;
 export const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
+export const outlineRefineInput = z.object({
+  markdown: z.string().trim().min(1).max(30000),
+  instruction: z.string().trim().min(1).max(4000)
+});
 export const contentDraftInput = z.object({ markdown: z.string().trim().min(1).max(100000) });
 export const researchSelectionInput = z.object({ adoptionStatus: z.enum(["recommended", "adopted", "rejected", "pending_verification"]) });
 export const researchFollowUpInput = z.object({
@@ -78,6 +82,11 @@ export const researchFollowUpInput = z.object({
 });
 export const researchGenerateInput = z.object({ depth: researchDepthInput }).default({ depth: "balanced" });
 export const researchRefreshInput = z.object({ depth: researchDepthInput }).default({ depth: "balanced" });
+export const temporaryResearchInput = z.object({
+  scope: z.enum(["selection", "paragraph", "article"]),
+  context: z.string().trim().min(1).max(12000),
+  depth: researchDepthInput.default("quick")
+});
 export const specifiedSourceStatusInput = z.object({
   status: z.enum(["pending_manual_verification", "verified", "rejected", "failed"]),
   verificationNote: z.string().trim().max(5000).default(""),
@@ -94,7 +103,18 @@ export const researchManualSourceInput = z.object({
   title: z.string().trim().min(1).max(300),
   url: z.string().trim().max(4000).optional(),
   excerpt: z.string().trim().min(1).max(5000),
-  keyClaims: z.array(z.string().trim().min(1).max(1000)).max(10).default([])
+  keyClaims: z.array(z.string().trim().min(1).max(1000)).max(10).default([]),
+  adoptionStatus: z.enum(["adopted", "pending_verification"]).default("adopted"),
+  evidence: z.object({
+    claim: z.string().trim().min(1).max(500),
+    recommendation: z.string().trim().min(1).max(500),
+    qualityReason: z.string().trim().min(1).max(500),
+    freshness: z.string().trim().min(1).max(500),
+    boundary: z.string().trim().min(1).max(500),
+    kind: z.enum(["official", "review", "experience", "counterexample", "manual"]),
+    sourceUrls: z.array(z.string().url().max(4000)).min(1).max(20),
+    snapshots: z.array(z.object({ url: z.string().url().max(4000), excerpt: z.string().max(2000), capturedAt: z.string().max(80), sha256: z.string().regex(/^[0-9a-f]{64}$/i) })).max(20)
+  }).optional()
 });
 export const executionRequestInput = z.object({
   projectId: z.string().uuid().optional(),

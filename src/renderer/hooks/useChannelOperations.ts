@@ -744,6 +744,8 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
         const assistedJob = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/browser-assist`, { method: "POST" });
         setCsdnPublishJob(assistedJob);
       }
+      // 打开可见浏览器属于独立交互，不应继续锁住“确认结果”等本地状态操作。
+      setCsdnDraftSaving(false);
       await window.contentFerry.openCsdnPublisher(jobId);
       if (!alreadyPrepared) await loadCsdnChannelDrafts();
       setError("");
@@ -1310,7 +1312,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     if (!csdnPublishJob) return;
     try {
       // 该路由返回的是 { job, draft }，不是 job 本身；若不解构会丢失顶层 id，
-      // 导致后续“在浏览器中打开 CSDN”把 undefined 拼进 URL（POST /jobs/undefined/browser-assist）。
+      // 导致后续“在浏览器中完成发布”把 undefined 拼进 URL（POST /jobs/undefined/browser-assist）。
       const payload = await request<{ job: CsdnPublishJob }>(`/integrations/csdn/jobs/${csdnPublishJob.id}`);
       if (payload?.job) setCsdnPublishJob(payload.job);
     } catch {

@@ -797,7 +797,7 @@ describe("local API scaffold", () => {
     expect(brief.json()).toMatchObject({ topic: "original idea", objective: "reader outcome" });
   });
 
-  it("keeps user-specified links separate until their verification outcome is recorded", async () => {
+  it("keeps user-specified verification status separate from evidence cards", async () => {
     server = createTestServer();
     const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
       topic: "Matt Pocock 的 skills 介绍和推荐",
@@ -944,16 +944,32 @@ describe("local API scaffold", () => {
     const outline = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/outline` });
     expect(outline.statusCode).toBe(200);
     expect(outline.json()).toMatchObject({ generatedFromBrief: true });
+    const outlineDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline/draft`, payload: { markdown: "# 暂存提纲\n\n## 待调整" } });
+    expect(outlineDraft.statusCode).toBe(200);
+    const draftPreview = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/outline/draft` });
+    expect(draftPreview.json()).toMatchObject({ markdown: "# 暂存提纲\n\n## 待调整" });
+    const beforeConfirm = await server.inject({ method: "GET", url: "/api/content-projects" });
+    expect(beforeConfirm.json().items.find((item: { id: string }) => item.id === project.json().id).outlineReady).toBe(false);
     const savedOutline = await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: "# AI Agent 工作流\n\n## 我的提纲" } });
     expect(savedOutline.json()).toMatchObject({ markdown: "# AI Agent 工作流\n\n## 我的提纲", generatedFromBrief: false });
+    const renamedProject = await server.inject({ method: "GET", url: "/api/content-projects" });
+    expect(renamedProject.json().items.find((item: { id: string }) => item.id === project.json().id)).toMatchObject({ topic: "AI Agent 工作流" });
+    const clearedDraft = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/outline/draft` });
+    expect(clearedDraft.json()).toBeNull();
     const draft = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/draft` });
     expect(draft.statusCode).toBe(200);
     expect(draft.json()).toMatchObject({ generatedFromOutline: true });
     const savedDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/draft`, payload: { markdown: "# AI Agent 工作流\n\n正文草稿" } });
     expect(savedDraft.json()).toMatchObject({ markdown: "# AI Agent 工作流\n\n正文草稿", generatedFromOutline: false });
+    const revisedOutline = await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: "# AI Agent 工作流（修订）\n\n## 新的提纲结构" } });
+    expect(revisedOutline.statusCode).toBe(200);
+    const draftAfterOutlineRevision = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/draft` });
+    expect(draftAfterOutlineRevision.json().markdown).toContain("正文草稿");
+    expect(draftAfterOutlineRevision.json().markdown).not.toContain("新的提纲结构");
+    const projectAfterOutlineRevision = await server.inject({ method: "GET", url: "/api/content-projects" });
     const rootPath = database!.connection.prepare("SELECT root_path FROM content_sources WHERE workspace_id = 'local-default'")
       .pluck().get() as string;
-    const articleFile = path.join(rootPath, ...String(project.json().sourceRelativePath).split("/"));
+    const articleFile = path.join(rootPath, ...String(projectAfterOutlineRevision.json().items.find((item: { id: string }) => item.id === project.json().id).sourceRelativePath).split("/"));
     const externalSource = fs.readFileSync(articleFile, "utf8").replace("正文草稿", "Obsidian 外部修改");
     fs.writeFileSync(articleFile, externalSource);
     const externallyEdited = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/draft` });
@@ -968,6 +984,7 @@ describe("local API scaffold", () => {
 
   it("uses the configured AI provider to generate an outline and draft without saving them silently", async () => {
     const prompts: string[] = [];
+    const researchInstructions: string[] = [];
     const fakeProvider: ModelProvider = {
       id: "test-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
@@ -982,13 +999,18 @@ describe("local API scaffold", () => {
           usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 2 }
         };
       },
-      async webResearch(_context: WebResearchContext): Promise<GenerateStructuredResult<ResearchCard>> {
+      async webResearch(_context: WebResearchContext, _onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+        if (options?.instruction) researchInstructions.push(options.instruction);
+        const temporary = options?.instruction?.includes("临时调研") === true;
         return {
           value: {
             planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。",
             sources: [{
-              title: "示例官方文档", url: "https://example.com/docs", excerpt: "用于验证资料卡持久化。",
-              keyClaims: ["提供了可核对的接入说明"], sourceType: "official"
+              title: temporary ? "临时示例官方文档" : "示例官方文档", url: temporary ? "https://example.com/temporary-docs" : "https://example.com/docs", excerpt: "用于验证资料卡持久化。",
+              keyClaims: ["提供了可核对的接入说明"], sourceType: "official", evidence: {
+                claim: "提供了可核对的接入说明", recommendation: "用于核对接入路径", qualityReason: "测试正文", freshness: "测试时间", boundary: "仅覆盖测试页面", kind: "official",
+                sourceUrls: [temporary ? "https://example.com/temporary-docs" : "https://example.com/docs"], snapshots: [{ url: temporary ? "https://example.com/temporary-docs" : "https://example.com/docs", excerpt: "测试正文", capturedAt: "2026-09-10T12:00:00.000Z", sha256: "a".repeat(64) }]
+              }
             }]
           },
           provider: "test-ai",
@@ -1019,6 +1041,19 @@ describe("local API scaffold", () => {
       sources: Array<{ id: string; title: string; selected: boolean; adoptionStatus: string }>;
     };
     expect(researchResult).toMatchObject({ planMarkdown: "## 本次补研结论\n\n- 官方文档可支持基础接入说明。", sources: [{ title: "示例官方文档", selected: false, adoptionStatus: "recommended" }] });
+    const temporary = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/temporary`, payload: { scope: "selection", context: "请核对这段正文中的接入限制。", depth: "quick" } });
+    expect(temporary.statusCode).toBe(200);
+    expect(temporary.json()).toMatchObject({ scope: "selection", context: "请核对这段正文中的接入限制。", sources: [{ title: "临时示例官方文档" }] });
+    expect(researchInstructions[0]).toContain("<untrusted-article-context>");
+    const invalidTemporary = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/temporary`, payload: { scope: "invalid", context: "测试", depth: "quick" } });
+    expect(invalidTemporary.statusCode).toBe(400);
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research` })).json().sources).toHaveLength(1);
+    const temporarySource = temporary.json().sources[0] as { title: string; url: string; excerpt: string; keyClaims: string[]; evidence: unknown };
+    const savedTemporary = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/sources`, payload: {
+      title: temporarySource.title, url: temporarySource.url, excerpt: temporarySource.excerpt, keyClaims: temporarySource.keyClaims, adoptionStatus: "pending_verification", evidence: temporarySource.evidence
+    } });
+    expect(savedTemporary.statusCode).toBe(200);
+    expect(savedTemporary.json().sources).toEqual(expect.arrayContaining([expect.objectContaining({ title: temporarySource.title, adoptionStatus: "pending_verification", retrievedAt: "2026-09-10T12:00:00.000Z", evidence: expect.objectContaining({ snapshots: expect.any(Array) }) })]));
     const researchTasks = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research/tasks` });
     expect(researchTasks.statusCode).toBe(200);
     expect(researchTasks.json().items[0]).toMatchObject({ projectId: project.json().id, kind: "generate", status: "completed" });
@@ -1042,6 +1077,7 @@ describe("local API scaffold", () => {
     expect(prompts[0]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
     expect(prompts[1]).toContain("已确认提纲");
     expect(prompts[0]).not.toContain("示例官方文档");
+    expect(prompts[0]).not.toContain(temporarySource.title);
     expect(prompts[1]).toContain("示例官方文档");
     const refresh = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/refresh`, payload: { depth: "quick" } });
     expect(refresh.statusCode).toBe(200);
@@ -1116,6 +1152,25 @@ describe("local API scaffold", () => {
       expect.objectContaining({ role: "user", content: expect.stringContaining("继续核查调用限额") }),
       expect.objectContaining({ role: "assistant", content: expect.stringContaining("本轮补研结论") })
     ]);
+  });
+
+  it("returns temporary research failures without persisting sources or runs", async () => {
+    const fakeProvider: ModelProvider = {
+      id: "test-temporary-failure",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ markdown: "# 测试" }), provider: "test-temporary-failure", model: null, usage: null };
+      },
+      async webResearch(): Promise<GenerateStructuredResult<ResearchCard>> {
+        throw new Error("临时调研测试失败");
+      }
+    };
+    server = createTestServer(fakeProvider);
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "临时调研失败测试" } });
+    const projectId = project.json().id as string;
+    const response = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/research/temporary`, payload: { scope: "article", context: "测试失败路径", depth: "quick" } });
+    expect(response.statusCode).toBe(500);
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/research` })).json().sources).toHaveLength(0);
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/research/runs` })).json().items).toHaveLength(0);
   });
 
   it("persists a visible research plan and reports budget exhaustion as partial research", async () => {

@@ -160,24 +160,40 @@ export class ConfiguredModelProvider implements ModelProvider {
     if (this.providerSupportsTools(provider)) {
       try {
         rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook, maxRounds, correlationId);
-      } catch {
-        onStatusHook("工具调用检索未成功，改用规划式检索继续补充资料…");
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.slice(0, 160) : "未知错误";
+        onStatusHook(`工具调用检索未成功（${reason}），改用规划式检索继续补充资料…`);
       }
     }
     if (accumulated.length === 0 || (context.coverageGaps?.length && rounds < maxRounds)) {
       rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, maxRounds - rounds, correlationId);
     }
 
-    if (accumulated.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
+    const specifiedSources = (context.specifiedSourceUrls ?? []).map((url) => ({
+      title: "用户指定来源",
+      url,
+      snippet: "用户指定来源，必须直接核验正文。",
+      sourceType: "public" as const
+    }));
+    // Put user-required URLs first so they are not delayed behind a long list
+    // of discovered candidates.
+    const candidates = [...specifiedSources, ...accumulated];
+    if (candidates.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
 
-    const verifiedSources = await this.extractResearchSources(accumulated, onStatusHook);
-    if (verifiedSources.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("已找到搜索候选，但无法提取可核验的网页正文；未生成资料卡。请检查网络、搜索服务或手工补录资料。"));
+    const verifiedSources = await this.extractResearchSources(candidates, onStatusHook);
+    if (verifiedSources.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("已找到搜索候选，但所有网页正文提取均失败；请检查网络、搜索服务或指定来源后重试。"));
     const synthesisPrompt = options?.instruction
       ? buildResearchFollowUpSynthesisPrompt(context, verifiedSources, options.instruction, instructions)
       : buildResearchSynthesisPrompt(context, verifiedSources, instructions);
     meta.retrieval = { rounds, sources: verifiedSources.length, provider: this.webSearch.activeProviderId };
     const generated = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
-    return withResearchExecution({ ...generated, value: { ...generated.value, sources: attachVerifiedEvidence(generated.value.sources, verifiedSources) } }, { rounds, maxRounds, budgetExhausted: rounds >= maxRounds });
+    const verifiedUrls = new Set(verifiedSources.map((source) => canonicalUrl(source.url)));
+    const specifiedSourceResults = (context.specifiedSourceUrls ?? []).map((url) => ({
+      url,
+      status: verifiedUrls.has(canonicalUrl(url)) ? "extracted" as const : "failed" as const,
+      ...(verifiedUrls.has(canonicalUrl(url)) ? {} : { reason: "正文提取失败或正文为空，请打开来源后重试。" })
+    }));
+    return withResearchExecution({ ...generated, value: { ...generated.value, sources: attachVerifiedEvidence(generated.value.sources, verifiedSources), specifiedSourceResults } }, { rounds, maxRounds, budgetExhausted: rounds >= maxRounds });
   }
 
   // --- research retrieval schemes -------------------------------------------
@@ -243,25 +259,42 @@ export class ConfiguredModelProvider implements ModelProvider {
 
   private async extractResearchSources(candidates: SearchSourceForPrompt[], onStatus: (message: string) => void): Promise<SearchSourceForPrompt[]> {
     const unique = [...new Map(candidates.map((source) => [canonicalUrl(source.url), source])).values()];
-    const verified: SearchSourceForPrompt[] = [];
+    const verified = new Array<SearchSourceForPrompt | undefined>(unique.length);
+    const failed = new Array<string | undefined>(unique.length);
+    let completed = 0;
     onStatus(`正在核验 ${unique.length} 个候选网页的正文…`);
-    for (const source of unique) {
-      try {
-        const content = (await this.webSearch!.extract(source.url)).content.trim();
-        if (!content) continue;
-        const capturedAt = new Date().toISOString();
-        verified.push({
-          ...source,
-          bodyExcerpt: content.slice(0, 1600),
-          capturedAt,
-          sha256: createHash("sha256").update(content).digest("hex")
-        });
-      } catch {
-        // A search hit is only discovery material; it cannot become a card without body verification.
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex++;
+        const source = unique[index];
+        if (!source) return;
+        try {
+          const content = (await this.webSearch!.extract(source.url)).content.trim();
+          if (!content) failed[index] = `${source.title}（正文为空）`;
+          else {
+            const capturedAt = new Date().toISOString();
+            verified[index] = {
+              ...source,
+              bodyExcerpt: content.slice(0, 1600),
+              capturedAt,
+              sha256: createHash("sha256").update(content).digest("hex")
+            };
+          }
+        } catch (error) {
+          failed[index] = `${source.title}（${error instanceof Error ? error.message.slice(0, 120) : "提取失败"}）`;
+        } finally {
+          completed += 1;
+          onStatus(`正文核验进度：${completed}/${unique.length}`);
+        }
       }
-    }
-    onStatus(`已核验 ${verified.length} 个网页正文。`);
-    return verified;
+    };
+    await Promise.all(Array.from({ length: Math.min(4, unique.length) }, () => worker()));
+    const verifiedSources = verified.filter((source): source is SearchSourceForPrompt => Boolean(source));
+    const failedSources = failed.filter((message): message is string => Boolean(message));
+    if (failedSources.length) onStatus(`有 ${failedSources.length} 个网页正文核验失败，可重试：${failedSources.slice(0, 3).join("；")}${failedSources.length > 3 ? "；其余失败已省略" : ""}`);
+    onStatus(`已核验 ${verifiedSources.length} 个网页正文。`);
+    return verifiedSources;
   }
 
   private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string): Promise<{ action: "search" | "done"; query?: string }> {
@@ -780,6 +813,10 @@ function canonicalUrl(value: string): string {
     const url = new URL(value);
     url.hash = "";
     url.hostname = url.hostname.toLowerCase();
+    if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$)/i.test(key)) url.searchParams.delete(key);
+    }
     url.pathname = url.pathname.replace(/\/+$/, "") || "/";
     return url.toString();
   } catch {

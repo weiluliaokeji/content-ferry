@@ -1,4 +1,11 @@
 export type ResearchEvidenceKind = "official" | "review" | "experience" | "counterexample" | "manual";
+export type ResearchAdoptionStatus = "recommended" | "adopted" | "rejected" | "pending_verification";
+
+export interface ResearchAdoptionDecision {
+  sourceId: string;
+  title: string;
+  adoptionStatus: ResearchAdoptionStatus;
+}
 
 export interface ResearchEvidenceSnapshot {
   url: string;
@@ -16,4 +23,5 @@ export interface ResearchEvidence {
   kind: ResearchEvidenceKind;
   sourceUrls: string[];
   snapshots: ResearchEvidenceSnapshot[];
+  mergedDecisions?: ResearchAdoptionDecision[];
 }

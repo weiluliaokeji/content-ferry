@@ -19,11 +19,26 @@ export class ContentOutlineRepository {
     return { projectId, markdown: buildOutline(row), generatedFromBrief: true };
   }
 
+  getDraft(projectId: string): ContentOutline | null {
+    const row = this.db.prepare("SELECT markdown FROM content_outline_drafts WHERE project_id = ?")
+      .get(projectId) as { markdown: string } | undefined;
+    return row ? { projectId, markdown: row.markdown, generatedFromBrief: true } : null;
+  }
+
+  saveDraft(projectId: string, markdown: string): ContentOutline {
+    this.get(projectId);
+    this.db.prepare(`INSERT INTO content_outline_drafts (project_id, markdown, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`)
+      .run(projectId, markdown, new Date().toISOString());
+    return { projectId, markdown, generatedFromBrief: true };
+  }
+
   save(projectId: string, markdown: string): ContentOutline {
     this.get(projectId);
     this.db.prepare(`INSERT INTO content_outlines (project_id, markdown, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`)
       .run(projectId, markdown, new Date().toISOString());
+    this.db.prepare("DELETE FROM content_outline_drafts WHERE project_id = ?").run(projectId);
     return { projectId, markdown, generatedFromBrief: false };
   }
 }
