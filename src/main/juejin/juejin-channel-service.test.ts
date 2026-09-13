@@ -244,7 +244,7 @@ describe("JuejinChannelService", () => {
     expect(recommendation.tagIds).toEqual([]);
   });
 
-  it("stores the AI recommendation on the channel draft at creation time", async () => {
+  it("stores the AI recommendation on the channel draft after creation", async () => {
     const tagHandler = () => apiResponse([
       { tag: { tag_id: "tag-1", tag_name: "Docker" } },
       { tag: { tag_id: "tag-2", tag_name: "Kubernetes" } }
@@ -259,9 +259,45 @@ describe("JuejinChannelService", () => {
     } as unknown as ModelProvider;
     const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
 
-    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
-    expect(draft.suggestedCategoryId).toBe("6809637769959178254");
-    expect(draft.suggestedTagIds).toEqual(["tag-1", "tag-2"]);
+    const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "rewrite" });
+    const deadline = Date.now() + 1000;
+    let updated = service.listDrafts(draft.workspaceId, account.id).find((candidate) => candidate.id === draft.id)!;
+    while (Date.now() < deadline && updated.suggestedTagIds.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      updated = service.listDrafts(draft.workspaceId, account.id).find((candidate) => candidate.id === draft.id)!;
+    }
+    expect(updated.suggestedCategoryId).toBe("6809637769959178254");
+    expect(updated.suggestedTagIds).toEqual(["tag-1", "tag-2"]);
+  });
+
+  it("returns a source draft without waiting for slow AI tag recommendation", async () => {
+    let markRecommendationStarted!: () => void;
+    let releaseRecommendation!: () => void;
+    const recommendationStarted = new Promise<void>((resolve) => { markRecommendationStarted = resolve; });
+    const provider = {
+      generateStructured: async (req: { prompt: string }) => {
+        if (!req.prompt.includes("可选分类")) return { value: { title: "适配后的标题", markdown: "# 适配后的标题\n\n正文。" } };
+        markRecommendationStarted();
+        await new Promise<void>((resolve) => { releaseRecommendation = resolve; });
+        return { value: { categoryId: "6809637769959178254", tagIds: ["tag-1"] } };
+      }
+    } as unknown as ModelProvider;
+    const { account, service } = setupHarness({
+      ...defaultHandlers(),
+      "query_tag_list": () => apiResponse([{ tag: { tag_id: "tag-1", tag_name: "Docker" } }])
+    }, provider);
+
+    const creation = service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    await recommendationStarted;
+    const returnedBeforeRecommendation = await Promise.race([
+      creation.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100))
+    ]);
+    releaseRecommendation();
+
+    const draft = await creation;
+    expect(returnedBeforeRecommendation).toBe(true);
+    expect(draft.status).toBe("draft");
   });
 
 

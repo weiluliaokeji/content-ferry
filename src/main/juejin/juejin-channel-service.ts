@@ -25,7 +25,7 @@ import { appendArticleSignature } from "../publishing/article-signature";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
-import { JUEJIN_CATEGORIES, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
+import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
 import {
   buildPublishIdempotencyKey,
   computePublishSnapshotHash,
@@ -94,9 +94,9 @@ export interface JuejinChannelDraft {
   author: string;
   digest: string;
   coverSource: string;
-  /** 创建稿时由 AI 推荐的掘金分类 id（官方分类），缺省时为空串。 */
+  /** 创建稿后由 AI 推荐的掘金分类 id（官方分类），缺省时使用确定性推断。 */
   suggestedCategoryId: string;
-  /** 创建稿时由 AI 推荐的掘金标签 id 列表（官方 tag_id），缺省时为空数组。 */
+  /** 创建稿后由 AI 推荐的掘金标签 id 列表（官方 tag_id），缺省时使用确定性推断。 */
   suggestedTagIds: string[];
   status: JuejinChannelDraftStatus;
   createdAt: string;
@@ -172,7 +172,7 @@ export class JuejinChannelService {
    * 根据标题+正文，从掘金官方分类与标签中由 AI 推荐最相关的分类与最多 JUEJIN_MAX_TAGS 个标签。
    * 推荐结果以官方 id 为硬约束：AI 返回的 categoryId/tagIds 必须落在官方清单内，
    * 否则剔除或回退到确定性推断。模型不可用/超时/校验失败时，回退到 inferJuejin*，
-   * 保证创建掘金稿时总能拿到（即便不完美）的分类与标签建议。
+   * 保证最终总能拿到（即便不完美）的分类与标签建议。
    */
   async recommendPublishOptions(accountId: string, input: { title: string; markdown: string }): Promise<{ categoryId: string; tagIds: string[] }> {
     const account = this.accounts.requireAccount(accountId);
@@ -221,6 +221,19 @@ export class JuejinChannelService {
         tagIds: inferJuejinTags(input.title, input.markdown, tags)
       };
     }
+  }
+
+  private schedulePublishOptionsRecommendation(draftId: string, accountId: string, input: { title: string; markdown: string }): void {
+    // ponytail: best-effort background recommendation; add a persisted progress state only if live status becomes necessary.
+    void this.recommendPublishOptions(accountId, input).then((recommendation) => {
+      const current = this.db.prepare("SELECT status, title, markdown FROM channel_drafts WHERE id = ?")
+        .get(draftId) as { status: string; title: string; markdown: string } | undefined;
+      if (!current || current.status !== "draft" || current.title !== input.title || current.markdown !== input.markdown) return;
+      this.db.prepare("UPDATE channel_drafts SET suggested_category_id = ?, suggested_tag_ids = ?, updated_at = ? WHERE id = ?")
+        .run(recommendation.categoryId, JSON.stringify(recommendation.tagIds), new Date().toISOString(), draftId);
+    }).catch(() => {
+      // Deterministic options remain available in the editor when AI recommendation fails.
+    });
   }
 
   async createFromSource(input: {
@@ -275,8 +288,12 @@ export class JuejinChannelService {
     const author = sourceSettings?.author ?? "";
     const sourceDigest = sourceSettings?.digest ?? "";
     const coverSource = sourceSettings?.cover_source ?? "";
-    // 创建稿时由 AI 根据正文推荐掘金分类与标签（模型不可用时回退确定性推断）。
-    const recommendation = await this.recommendPublishOptions(account.id, { title, markdown });
+    const draftTitle = generatedDraft.title.trim().slice(0, 80);
+    const fallbackTags = Object.entries(JUEJIN_KNOWN_TAGS).map(([name, id]) => ({ id, name }));
+    const fallbackRecommendation = {
+      categoryId: inferJuejinCategory(draftTitle, markdown),
+      tagIds: inferJuejinTags(draftTitle, markdown, fallbackTags)
+    };
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
@@ -286,9 +303,10 @@ export class JuejinChannelService {
         (id, workspace_id, account_id, project_id, source_relative_path, source_hash, generation_mode, title, markdown, author, digest, cover_source, suggested_category_id, suggested_tag_ids, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`)
         .run(id, account.workspaceId, account.id, input.projectId ?? null, article.relativePath, sourceHash, generationMode,
-          generatedDraft.title.trim().slice(0, 80), markdown, author, sourceDigest.slice(0, 200), coverSource,
-          recommendation.categoryId, JSON.stringify(recommendation.tagIds), now, now);
+        draftTitle, markdown, author, sourceDigest.slice(0, 200), coverSource,
+        fallbackRecommendation.categoryId, JSON.stringify(fallbackRecommendation.tagIds), now, now);
     })();
+    this.schedulePublishOptionsRecommendation(id, account.id, { title: draftTitle, markdown });
     return this.requireDraft(id);
   }
 
@@ -591,7 +609,7 @@ export class JuejinChannelService {
         uploadImage: async (png) => (await uploader.uploadImage(png)).url,
         onError: (source, error) => {
           const reason = error instanceof Error ? error.message : typeof error === "object" && error !== null ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : String(error);
-          console.error(`[juejin] mermaid 渲染失败，已保留原始代码块：${reason}\n源码前 120 字：${source.slice(0, 120)}`);
+          console.error(`[juejin] mermaid 渲染失败，已保留原始代码块：${reason}（源码长度 ${source.length}）`);
         }
       });
       const inlineResult = await inlineJuejinLocalImages(
