@@ -519,18 +519,19 @@ describe("CnblogsChannelService", () => {
     expect(newPost.body).not.toContain("<name>publish</name>");
     expect(editPost.body).toContain("<param><value><boolean>1</boolean></value></param>");
     expect(editPost.body).not.toContain("<name>publish</name>");
-    // 本地图片 + 封面在公开前都经 newMediaObject 上传。
-    expect(uploads.length).toBeGreaterThanOrEqual(2);
+    // 本地正文图片在公开前经 newMediaObject 上传；封面不再插入正文，因此不上传封面。
+    expect(uploads.length).toBe(1);
     expect(uploads.some((call) => call.body.includes("diagram.png"))).toBe(true);
-    expect(uploads.some((call) => call.body.includes("cover.png"))).toBe(true);
+    expect(uploads.some((call) => call.body.includes("cover.png"))).toBe(false);
 
     // 完整 post 对象传递：editPost 收到的 post struct 与 newPost 完全一致（除 publish），
     // 防止"只传 postId 触发完全替换为空文章"的陷阱。
     expect(extractPostMembers(editPost.body)).toEqual(extractPostMembers(newPost.body));
 
-    // 封面插入文首，图片引用已替换为图床永久 URL。
+    // 正文不再包含封面和标题，图片引用已替换为图床永久 URL。
     const description = extractStringMember(newPost.body, "description");
-    expect(description.startsWith("![封面](https://img.cnblogs.com/uploads/cover.png)")).toBe(true);
+    expect(description).not.toContain("![封面]");
+    expect(description).not.toContain("# 集成测试标题");
     expect(description).toContain("![示意图](https://img.cnblogs.com/uploads/diagram.png)");
     expect(description).not.toContain("./assets/");
   });

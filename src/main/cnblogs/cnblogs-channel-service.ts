@@ -608,16 +608,15 @@ export class CnblogsChannelService {
     return { ...matched, blogName };
   }
 
-  /** 构建完整 post 对象：注入 [Markdown] 分类、上传本地图片（封面置文首）、组装标签与摘要。 */
+  /** 构建完整 post 对象：注入 [Markdown] 分类、上传本地图片、组装标签与摘要。博客园正文不再重复标题与封面，标题走 MetaWeblog 独立 title 字段。 */
   private async buildPostPayload(
     job: CnblogsPublishJob,
     blog: CnblogsBlogInfo,
     credentials: { username: string; apiKey: string }
   ): Promise<CnblogsPostPayload> {
     const draft = this.requireDraft(job.channelDraftId);
-    const sourceSettings = this.db.prepare("SELECT digest, cover_source FROM article_settings WHERE context_key = ?")
-      .get(`source:${draft.sourceRelativePath}`) as { digest: string | null; cover_source: string | null } | undefined;
-    const coverSource = draft.coverSource || sourceSettings?.cover_source || "";
+    const sourceSettings = this.db.prepare("SELECT digest FROM article_settings WHERE context_key = ?")
+      .get(`source:${draft.sourceRelativePath}`) as { digest: string | null } | undefined;
     const digestText = draft.digest || sourceSettings?.digest || "";
     const options = this.publishOptionsCache.get(job.id);
     const categories = ["[Markdown]", ...(options?.categories ?? [])]
@@ -646,7 +645,6 @@ export class CnblogsChannelService {
       sourceRelativePath: draft.sourceRelativePath,
       contentSources: this.contentSources,
       assetStore: this.assetStore,
-      coverSource,
       uploadImage: async (source, buffer, mimeType, fileName) => {
         const result = await client.newMediaObject(blog.blogId, credentials.username, credentials.apiKey, {
           name: fileName,
@@ -662,7 +660,7 @@ export class CnblogsChannelService {
     }
     return {
       title: draft.title,
-      description: convertHighlightMarkdown(uploaded.markdown),
+      description: convertHighlightMarkdown(stripLeadingTitle(uploaded.markdown, draft.title)),
       categories,
       mt_keywords: keywords,
       mt_excerpt: digestText.slice(0, 200),
@@ -754,6 +752,18 @@ function normalizeMarkdown(markdown: string, title: string): string {
   const withoutFrontMatter = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
   const withoutLeadingTitle = withoutFrontMatter.replace(/^#\s+.+\n+/, "").trim();
   return `# ${title}\n\n${withoutLeadingTitle}`;
+}
+
+/** 去掉正文开头的 `# 标题` 行。博客园发布时标题已走独立 title 字段，正文内重复出现影响阅读。 */
+function stripLeadingTitle(markdown: string, title: string): string {
+  const lines = markdown.split("\n");
+  const firstLine = lines[0] ?? "";
+  if (/^#\s+/.test(firstLine) && firstLine.replace(/^#\s+/, "").trim() === title.trim()) {
+    let index = 1;
+    while (index < lines.length && lines[index].trim() === "") index++;
+    return lines.slice(index).join("\n");
+  }
+  return markdown;
 }
 
 /**
