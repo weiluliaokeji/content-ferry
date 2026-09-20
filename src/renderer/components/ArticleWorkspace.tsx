@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { apiBase, platformName, request } from "../api";
 import { extractMarkdownImages, renderPhonePreview, resolveArticleImageUrl } from "../markdown-preview";
@@ -548,8 +548,13 @@ export function ArticleWorkspace({
           markdown
         })
       });
-      setArticleSettings((current) => ({ ...current, digest: generated.summary }));
-      setWorkspaceError("");
+      // Summary generation is independent from saving the article. Keep the
+      // result update interruptible so a long editor view remains responsive
+      // when the model response arrives.
+      startTransition(() => {
+        setArticleSettings((current) => ({ ...current, digest: generated.summary }));
+        setWorkspaceError("");
+      });
     } catch (cause) {
       setWorkspaceError(cause instanceof Error ? cause.message : "文章摘要生成失败。");
     } finally {
@@ -840,7 +845,10 @@ export function ArticleWorkspace({
   const headings = markdown.split(/\r?\n/).map((line) => /^(#{1,6})\s+(.+)$/.exec(line)).filter((value): value is RegExpExecArray => Boolean(value));
   const sources = [...new Set([...markdown.matchAll(/https?:\/\/[^\s)>]+/g)].map((match) => match[0]))];
   const canInsertTemporaryText = Boolean(selectionRange && selectionRange.end > selectionRange.start && selectionDocumentMarkdown === markdown);
-  const editorBusy = saving || settingsSaving || settingsCoverPromptBusy || settingsSummaryBusy;
+  // Generating a summary is an AI request, not a save operation. It must not
+  // disable the editor, save button, or the Ctrl/Cmd+S shortcut while the
+  // provider is working; only the summary action itself is locked below.
+  const editorBusy = saving || settingsSaving || settingsCoverPromptBusy;
   const busy = editorBusy;
   useEffect(() => {
     const saveWithShortcut = (event: KeyboardEvent) => {
@@ -932,7 +940,8 @@ export function ArticleWorkspace({
           <label>摘要
             <textarea value={articleSettings.digest} maxLength={digestMaxLength} onChange={(event) => setArticleSettings((current) => ({ ...current, digest: event.target.value }))} placeholder={`用于${selectedSettingsAccount ? platformName(selectedSettingsAccount.platform) : "目标平台"}的内容卡片和分享，最多 ${digestMaxLength} 字`} />
             <small>{articleSettings.digest.length}/{digestMaxLength} 字{selectedSettingsAccount ? ` · ${platformName(selectedSettingsAccount.platform)}限制` : " · 选择账号后按平台适配"}</small>
-            <button type="button" className="secondary-button" onClick={() => void generateArticleSummary()} disabled={busy}>{settingsSummaryBusy ? "AI 正在提炼摘要…" : "AI 生成适配摘要"}</button>
+            <button type="button" className="secondary-button" onClick={() => void generateArticleSummary()} disabled={busy || settingsSummaryBusy} aria-busy={settingsSummaryBusy}>{settingsSummaryBusy ? "AI 正在提炼摘要…" : "AI 生成适配摘要"}</button>
+            {settingsSummaryBusy && <small className="settings-nonblocking-status" role="status">正在等待 AI 返回，文章滚动、编辑和保存仍可继续。</small>}
           </label>
           {selectedSettingsAccount?.platform === "wechat_official" && <fieldset className="wechat-comment-settings">
             <legend>微信留言</legend>
