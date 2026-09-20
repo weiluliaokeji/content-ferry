@@ -10,6 +10,7 @@ describe("article settings schema", () => {
     database = openInMemoryDatabase();
     const columns = database.connection.prepare("PRAGMA table_info(article_settings)").all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toContain("cover_prompt");
+    expect(columns.map((column) => column.name)).toContain("is_ai_generated");
   });
 });
 

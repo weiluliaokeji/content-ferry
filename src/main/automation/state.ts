@@ -10,6 +10,7 @@ export type WechatBackendTarget = {
   title: string;
   declareOriginal: boolean;
   enableReward: boolean;
+  isAiGenerated: boolean;
   collectionName: string;
 };
 

@@ -74,6 +74,7 @@ export function ArticleWorkspace({
     onlyFansCanComment: false,
     declareOriginal: true,
     enableReward: true,
+    isAiGenerated: false,
     collectionName: ""
   });
   const [authorHistory, setAuthorHistory] = useState<string[]>([]);
@@ -147,6 +148,7 @@ export function ArticleWorkspace({
     onlyFansCanComment: false,
     declareOriginal: true,
     enableReward: true,
+    isAiGenerated: false,
     collectionName: ""
   });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
@@ -971,6 +973,10 @@ export function ArticleWorkspace({
           </fieldset>}
           {selectedSettingsAccount?.platform === "wechat_official" && <fieldset className="wechat-comment-settings">
             <legend>微信发布选项</legend>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={articleSettings.isAiGenerated} onChange={(event) => setArticleSettings((current) => ({ ...current, isAiGenerated: event.target.checked }))} />
+              <span><strong>文章由 AI 生成</strong><small>发布到微信公众号时，文渡会在微信后台将“创作来源”选择为“内容由AI生成”。</small></span>
+            </label>
             <label className="checkbox-row">
               <input type="checkbox" checked={articleSettings.declareOriginal} onChange={(event) => setArticleSettings((current) => ({ ...current, declareOriginal: event.target.checked }))} />
               <span><strong>申请原创声明</strong><small>创建草稿后，文渡会在微信后台尝试打开并开启该选项；平台审核结果以微信为准。</small></span>

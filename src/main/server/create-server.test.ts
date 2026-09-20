@@ -610,6 +610,7 @@ describe("local API scaffold", () => {
         onlyFansCanComment: true,
         declareOriginal: true,
         enableReward: true,
+        isAiGenerated: true,
         collectionName: "测试合集"
       }
     });
@@ -626,6 +627,7 @@ describe("local API scaffold", () => {
       onlyFansCanComment: true,
       declareOriginal: true,
       enableReward: true,
+      isAiGenerated: true,
       collectionName: "测试合集"
     });
 
@@ -1480,10 +1482,10 @@ describe("local API scaffold", () => {
       await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown } });
 
       const draft = await server.inject({ method: "POST", url: "/api/integrations/wechat/drafts", payload: {
-        accountId, projectId, author: "ContentFerry", coverSource: asset.json().assetUrl
+        accountId, projectId, author: "ContentFerry", coverSource: asset.json().assetUrl, isAiGenerated: true
       } });
       expect(draft.statusCode).toBe(201);
-      expect(draft.json()).toMatchObject({ draftMediaId: "draft-media-id", status: "draft_ready" });
+      expect(draft.json()).toMatchObject({ draftMediaId: "draft-media-id", status: "draft_ready", isAiGenerated: true });
       const submitted = await server.inject({ method: "POST", url: `/api/integrations/wechat/jobs/${draft.json().id}/submit`, payload: { mode: "publish" } });
       expect(submitted.json()).toMatchObject({ publishId: "publish-id-1", status: "submitted", mode: "publish" });
       const corrected = await server.inject({

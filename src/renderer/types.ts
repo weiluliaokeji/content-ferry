@@ -42,7 +42,7 @@ export type WechatPublishJob = {
   draftMediaId: string | null; publishId: string | null; messageId: string | null;
   status: "draft_ready" | "browser_editing" | "submitted" | "published" | "failed" | "cancelled"; errorMessage: string | null;
   statusSource: "system" | "wechat" | "browser" | "manual"; statusNote: string | null;
-  declareOriginal: boolean; enableReward: boolean; collectionName: string; updatedAt: string;
+  declareOriginal: boolean; enableReward: boolean; isAiGenerated: boolean; collectionName: string; updatedAt: string;
 };
 export type CsdnChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
@@ -141,6 +141,7 @@ export type ArticleSettings = {
   onlyFansCanComment: boolean;
   declareOriginal: boolean;
   enableReward: boolean;
+  isAiGenerated: boolean;
   collectionName: string;
 };
 export type ModelProviderId = "openai_codex" | "modelscope" | "agnes" | (string & {});

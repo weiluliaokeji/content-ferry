@@ -121,8 +121,8 @@ export function registerSystemRoutes(ctx: ServerContext): void {
 
   server.get("/api/article-settings", async (request) => {
     const query = z.object({ contextKey: z.string().trim().min(1).max(1200) }).parse(request.query);
-    const row = database.connection.prepare("SELECT author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name FROM article_settings WHERE context_key = ?")
-      .get(query.contextKey) as { author: string; digest: string; cover_source: string; cover_prompt: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number; declare_original: number; enable_reward: number; collection_name: string } | undefined;
+    const row = database.connection.prepare("SELECT author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, is_ai_generated, collection_name FROM article_settings WHERE context_key = ?")
+      .get(query.contextKey) as { author: string; digest: string; cover_source: string; cover_prompt: string; account_id: string | null; need_open_comment: number; only_fans_can_comment: number; declare_original: number; enable_reward: number; is_ai_generated: number; collection_name: string } | undefined;
     const projectId = query.contextKey.startsWith("project:") ? query.contextKey.slice("project:".length) : "";
     const sourcePath = query.contextKey.startsWith("source:") ? query.contextKey.slice("source:".length) : "";
     const project = projectId
@@ -140,6 +140,7 @@ export function registerSystemRoutes(ctx: ServerContext): void {
       onlyFansCanComment: row ? row.only_fans_can_comment === 1 : false,
       declareOriginal: row ? row.declare_original === 1 : true,
       enableReward: row ? row.enable_reward === 1 : true,
+      isAiGenerated: row?.is_ai_generated === 1,
       collectionName: row?.collection_name ?? ""
     };
   });
@@ -156,19 +157,20 @@ export function registerSystemRoutes(ctx: ServerContext): void {
       onlyFansCanComment: z.boolean().default(false),
       declareOriginal: z.boolean().default(false),
       enableReward: z.boolean().default(false),
+      isAiGenerated: z.boolean().default(false),
       collectionName: z.string().trim().max(80).default("")
     }).parse(request.body);
     const now = new Date().toISOString();
     database.connection.prepare(`INSERT INTO article_settings
-      (context_key, author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, collection_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (context_key, author, digest, cover_source, cover_prompt, account_id, need_open_comment, only_fans_can_comment, declare_original, enable_reward, is_ai_generated, collection_name, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(context_key) DO UPDATE SET author = excluded.author, digest = excluded.digest,
         cover_source = excluded.cover_source, cover_prompt = excluded.cover_prompt, account_id = excluded.account_id,
         need_open_comment = excluded.need_open_comment, only_fans_can_comment = excluded.only_fans_can_comment,
-        declare_original = excluded.declare_original, enable_reward = excluded.enable_reward, collection_name = excluded.collection_name,
+        declare_original = excluded.declare_original, enable_reward = excluded.enable_reward, is_ai_generated = excluded.is_ai_generated, collection_name = excluded.collection_name,
         updated_at = excluded.updated_at`)
       .run(input.contextKey, input.author, input.digest, input.coverSource, input.coverPrompt, input.accountId || null,
         input.needOpenComment ? 1 : 0, input.needOpenComment && input.onlyFansCanComment ? 1 : 0,
-        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName, now);
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName, now);
     if (input.contextKey.startsWith("project:")) {
       database.connection.prepare("UPDATE content_projects SET target_account_id = ?, updated_at = ? WHERE id = ?")
         .run(input.accountId || null, now, input.contextKey.slice("project:".length));
@@ -186,6 +188,7 @@ export function registerSystemRoutes(ctx: ServerContext): void {
       onlyFansCanComment: input.needOpenComment && input.onlyFansCanComment,
       declareOriginal: input.declareOriginal,
       enableReward: input.enableReward,
+      isAiGenerated: input.isAiGenerated,
       collectionName: input.collectionName
     };
   });

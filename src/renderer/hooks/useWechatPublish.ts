@@ -44,6 +44,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
   const [publishOnlyFansCanComment, setPublishOnlyFansCanComment] = useState(false);
   const [publishDeclareOriginal, setPublishDeclareOriginal] = useState(true);
   const [publishEnableReward, setPublishEnableReward] = useState(true);
+  const [publishIsAiGenerated, setPublishIsAiGenerated] = useState(false);
   const [publishCollectionName, setPublishCollectionName] = useState("");
   const [publishThumbMediaId, setPublishThumbMediaId] = useState("");
   const [publishCoverSource, setPublishCoverSource] = useState("");
@@ -78,6 +79,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
     setPublishDigest("");
     setPublishNeedOpenComment(true);
     setPublishOnlyFansCanComment(false);
+    setPublishIsAiGenerated(false);
     setPublishThumbMediaId("");
     setPublishCheckMarkdown("");
     setPublishAiCheckResult("");
@@ -92,7 +94,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || preferred?.id || "");
         setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
-        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishCollectionName(settings.collectionName);
+        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishIsAiGenerated(settings.isAiGenerated); setPublishCollectionName(settings.collectionName);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -119,6 +121,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
     setPublishDigest("");
     setPublishNeedOpenComment(true);
     setPublishOnlyFansCanComment(false);
+    setPublishIsAiGenerated(false);
     setPublishThumbMediaId("");
     setPublishCheckMarkdown(article.markdown);
     setPublishAiCheckResult("");
@@ -132,7 +135,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
       .then((settings) => {
         setPublishAuthor(settings.author); setPublishDigest(settings.digest); setPublishAccountId(settings.accountId || "");
         setPublishNeedOpenComment(settings.needOpenComment); setPublishOnlyFansCanComment(settings.onlyFansCanComment);
-        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishCollectionName(settings.collectionName);
+        setPublishDeclareOriginal(settings.declareOriginal); setPublishEnableReward(settings.enableReward); setPublishIsAiGenerated(settings.isAiGenerated); setPublishCollectionName(settings.collectionName);
         if (settings.coverSource) {
           setPublishCoverSource(settings.coverSource);
           setPublishCoverLabel("文章设置中的封面");
@@ -321,6 +324,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
           onlyFansCanComment: publishNeedOpenComment && publishOnlyFansCanComment,
           declareOriginal: publishDeclareOriginal,
           enableReward: publishEnableReward,
+          isAiGenerated: publishIsAiGenerated,
           collectionName: publishCollectionName
         })
       });
@@ -364,6 +368,7 @@ export function useWechatPublish(params: UseWechatPublishParams) {
         title: assistedJob.title,
         declareOriginal: assistedJob.declareOriginal,
         enableReward: assistedJob.enableReward,
+        isAiGenerated: assistedJob.isAiGenerated,
         collectionName: assistedJob.collectionName
       });
       await Promise.all([loadWechatJobs(), loadProjects()]);
@@ -434,6 +439,8 @@ export function useWechatPublish(params: UseWechatPublishParams) {
     setPublishDeclareOriginal,
     publishEnableReward,
     setPublishEnableReward,
+    publishIsAiGenerated,
+    setPublishIsAiGenerated,
     publishCollectionName,
     setPublishCollectionName,
     publishThumbMediaId,

@@ -256,10 +256,7 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     window.show();
     window.focus();
   });
-  ipcMain.handle("contentferry:open-wechat-backend", async (_event, target?: { accountId?: unknown; title?: unknown; declareOriginal?: unknown; enableReward?: unknown; collectionName?: unknown }) => {
-    const window = await getOrCreateWechatBackendWindow();
-    window.show();
-    window.focus();
+  ipcMain.handle("contentferry:open-wechat-backend", async (_event, target?: { accountId?: unknown; title?: unknown; declareOriginal?: unknown; enableReward?: unknown; isAiGenerated?: unknown; collectionName?: unknown }) => {
     const requestedTitle = typeof target?.title === "string" ? target.title.trim() : "";
     if (requestedTitle) {
       const accountId = typeof target?.accountId === "string" ? target.accountId.trim() : "";
@@ -268,6 +265,7 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
         title: requestedTitle.slice(0, 200),
         declareOriginal: target?.declareOriginal === true,
         enableReward: target?.enableReward === true,
+        isAiGenerated: target?.isAiGenerated === true,
         collectionName: typeof target?.collectionName === "string" ? target.collectionName.trim().slice(0, 80) : ""
       };
       logWechatBrowserAssist("requested", {
@@ -275,15 +273,24 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
         accountId: state.wechatBackendTarget.accountId || undefined,
         declareOriginal: state.wechatBackendTarget.declareOriginal,
         enableReward: state.wechatBackendTarget.enableReward,
+        isAiGenerated: state.wechatBackendTarget.isAiGenerated,
         hasCollection: Boolean(state.wechatBackendTarget.collectionName)
       });
-      // A deliberate reopen starts a fresh browser-assist run. Session storage
-      // is still used across the internal WeChat page navigations that follow.
-      await window.webContents.executeJavaScript("sessionStorage.removeItem('contentferry-wechat-draft-target'); window.__contentFerryWechatDraftTarget = undefined;", true);
     } else {
       state.wechatBackendTarget = undefined;
-      await window.webContents.executeJavaScript("sessionStorage.removeItem('contentferry-wechat-draft-target'); window.__contentFerryWechatDraftTarget = undefined;", true);
     }
+    const existingWindow = state.wechatBackendWindow && !state.wechatBackendWindow.isDestroyed()
+      ? state.wechatBackendWindow
+      : undefined;
+    if (existingWindow) {
+      await existingWindow.webContents.executeJavaScript("sessionStorage.removeItem('contentferry-wechat-draft-target'); window.__contentFerryWechatDraftTarget = undefined;", true);
+    }
+    // Set the target before the first navigation finishes. Otherwise the
+    // did-finish-load driver starts without a target and the first visible
+    // backend page can spend a full render cycle doing nothing.
+    const window = await getOrCreateWechatBackendWindow();
+    window.show();
+    window.focus();
     await driveWechatBackendToDrafts(window, state.wechatBackendTarget);
   });
   ipcMain.handle("contentferry:open-csdn-publisher", async (_event, jobId?: unknown) => {
@@ -382,4 +389,3 @@ app.on("before-quit", (event) => {
     void shutdownAndExit();
   }
 });
-

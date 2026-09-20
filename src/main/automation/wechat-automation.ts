@@ -1,10 +1,62 @@
-import { BrowserWindow } from "electron";
+import { BrowserWindow, type WebContents } from "electron";
 import { state, type WechatBackendTarget } from "./state";
 import { createWenduWindowIcon } from "./windows";
 import { delay } from "./delay";
 
+const WECHAT_ASSIST_CONSOLE_PREFIX = "__contentferry_wechat_assist__:";
+
 export function logWechatBrowserAssist(step: string, details: Record<string, unknown> = {}): void {
   state.runtimeInfoLogger?.({ scope: "wechat-browser-assist", step, ...details }, "微信浏览器辅助");
+}
+
+type WechatNativeClickWebContents = Pick<WebContents, "getURL" | "focus" | "sendInputEvent">;
+
+export function handleWechatAssistConsoleMessage(
+  message: string,
+  webContents?: WechatNativeClickWebContents
+): boolean {
+  if (!message.startsWith(WECHAT_ASSIST_CONSOLE_PREFIX)) return false;
+  try {
+    const parsed = JSON.parse(message.slice(WECHAT_ASSIST_CONSOLE_PREFIX.length)) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return true;
+    const payload = parsed as Record<string, unknown>;
+    if (typeof payload.step !== "string") return true;
+    const details = typeof payload.details === "object" && payload.details !== null
+      ? payload.details as Record<string, unknown>
+      : {};
+    logWechatBrowserAssist(payload.step, details);
+    if (payload.step === "native-click-request" && webContents) {
+      const clickKind = details.clickKind;
+      const x = details.x;
+      const y = details.y;
+      let isWechatEditor = false;
+      try {
+        const url = new URL(webContents.getURL());
+        isWechatEditor = url.protocol === "https:" && url.hostname === "mp.weixin.qq.com";
+      } catch {
+        isWechatEditor = false;
+      }
+      const validClickKind = clickKind === "ai-source-radio" || clickKind === "ai-source-confirm";
+      const validCoordinates = typeof x === "number" && Number.isFinite(x) && x >= 0 && x <= 10_000
+        && typeof y === "number" && Number.isFinite(y) && y >= 0 && y <= 10_000;
+      if (isWechatEditor && validClickKind && validCoordinates) {
+        const input = { x: Math.round(x), y: Math.round(y), button: "left" as const, clickCount: 1 };
+        webContents.focus();
+        webContents.sendInputEvent({ type: "mouseDown", ...input });
+        webContents.sendInputEvent({ type: "mouseUp", ...input });
+        logWechatBrowserAssist("native-click-dispatched", { clickKind, x: input.x, y: input.y });
+      } else {
+        logWechatBrowserAssist("native-click-rejected", {
+          clickKind: typeof clickKind === "string" ? clickKind : undefined,
+          isWechatEditor,
+          validCoordinates
+        });
+      }
+    }
+  } catch {
+    logWechatBrowserAssist("page-debug-message-invalid");
+  }
+  return true;
 }
 
 export function saveObservedWechatCollections(accountId: string, names: unknown): void {
@@ -44,6 +96,7 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
   }
   logWechatBrowserAssist("editor-driver-started", {
     url: window.webContents.getURL(),
+    isAiGenerated: target.isAiGenerated,
     declareOriginal: target.declareOriginal,
     enableReward: target.enableReward,
     hasCollection: Boolean(target.collectionName)
@@ -71,6 +124,9 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
         return rect.width > 4 && rect.height > 4 && style.display !== "none" && style.visibility !== "hidden";
       };
       const normalizedText = (element) => (element?.textContent || "").replace(/\\s+/g, "").trim();
+      const report = (step, details = {}) => {
+        try { console.info("${WECHAT_ASSIST_CONSOLE_PREFIX}" + JSON.stringify({ step, details: { source: "editor", ...details } })); } catch {}
+      };
       const clickableNodes = () => [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span")]
         .filter(visible);
       const clickVisibleDialogConfirm = (keywords) => {
@@ -230,6 +286,88 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
           sessionStorage.setItem("contentferry-wechat-draft-target", JSON.stringify(value));
         } catch {}
       };
+      const applyAiCreationSource = () => {
+        const target = window.__contentFerryWechatDraftTarget;
+        if (!target?.isAiGenerated) return "skipped";
+        if (target.aiSourceResult === "selected" || target.aiSourceResult === "already") return target.aiSourceResult;
+        const claimArea = document.querySelector("#js_claim_source_area");
+        const claimCheckbox = claimArea?.querySelector("input.js_claim_source");
+        if (!(claimCheckbox instanceof HTMLInputElement)) return "waiting";
+        const selectedLabel = claimArea.querySelector(".js_claim_source_selected");
+        if (selectedLabel && visible(selectedLabel) && normalizedText(selectedLabel).includes("内容由AI生成")) {
+          target.aiSourceResult = "already";
+          return "already";
+        }
+        if (!claimCheckbox.checked) {
+          claimCheckbox.click();
+          return "opened";
+        }
+        const radio = document.querySelector("input.weui-desktop-form__radio[value='1']");
+        const radioLabel = radio?.closest("label");
+        const radioVisible = radio instanceof HTMLInputElement && (visible(radio) || Boolean(radioLabel && visible(radioLabel)));
+        if (!radioVisible) {
+          const sourceDescription = claimArea.querySelector(".js_claim_source_desc");
+          if (sourceDescription && visible(sourceDescription) && !target.aiSourceOpened) {
+            sourceDescription.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+            target.aiSourceOpened = true;
+            return "opened";
+          }
+          return "waiting";
+        }
+        const dialog = radio.closest(".weui-desktop-dialog");
+        const confirmButtons = [...(dialog || document).querySelectorAll(
+          ".weui-desktop-dialog__ft button.weui-desktop-btn_primary, .weui-desktop-btn_wrp button.weui-desktop-btn_primary"
+        )]
+          .filter(visible)
+          .filter((node) => /^(?:确认|确定)$/.test(normalizedText(node)));
+        const confirmCandidates = confirmButtons.filter((node) => {
+            const className = String(node.className || "");
+            return !(node instanceof HTMLButtonElement && node.disabled)
+              && node.getAttribute("aria-disabled") !== "true"
+              && !/weui-desktop-btn_disabled/.test(className);
+          });
+        const confirm = confirmCandidates[confirmCandidates.length - 1];
+        const selected = Boolean(selectedLabel && visible(selectedLabel) && normalizedText(selectedLabel).includes("内容由AI生成"));
+        const debugKey = [claimCheckbox.checked, radio.checked, selected, confirmButtons.length, confirmCandidates.length].join("|");
+        if (target.aiSourceDebugKey !== debugKey) {
+          target.aiSourceDebugKey = debugKey;
+          report("ai-source-state", {
+            claimChecked: claimCheckbox.checked,
+            radioChecked: radio.checked,
+            selected,
+            confirmButtons: confirmButtons.length,
+            confirmCandidates: confirmCandidates.length
+          });
+        }
+        const requestNativeClick = (clickKind, element, attemptKey, requestedAtKey, maxAttempts = 4) => {
+          const now = Date.now();
+          const attempts = Number(target[attemptKey] || 0);
+          const requestedAt = Number(target[requestedAtKey] || 0);
+          if (attempts >= maxAttempts || now - requestedAt < 700) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 4 || rect.height <= 4) return false;
+          target[attemptKey] = attempts + 1;
+          target[requestedAtKey] = now;
+          report("native-click-request", {
+            clickKind,
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            attempt: attempts + 1
+          });
+          return true;
+        };
+        if (radio.checked && confirm) {
+          requestNativeClick("ai-source-confirm", confirm, "aiSourceConfirmAttempts", "aiSourceConfirmRequestedAt", 3);
+          return "waiting";
+        }
+        const radioHotspot = radioLabel?.querySelector(".weui-desktop-icon-radio") || radioLabel || radio;
+        // A previous synthetic click can leave the native input visually checked
+        // while WeChat's controlled form state is still empty. Reset only the DOM
+        // value so the following real mouse click produces an input/change transition.
+        if (radio.checked) radio.checked = false;
+        requestNativeClick("ai-source-radio", radioHotspot, "aiSourceRadioAttempts", "aiSourceRadioRequestedAt");
+        return "waiting";
+      };
       const showAssistStatus = (lines) => {
         let panel = document.getElementById("contentferry-wechat-assist-status");
         if (!panel) {
@@ -313,7 +451,7 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
       const applyRequestedSettings = () => {
         const target = window.__contentFerryWechatDraftTarget;
         if (!target?.draftOpened) return;
-        const requested = target.declareOriginal || target.enableReward || Boolean(target.collectionName);
+        const requested = target.isAiGenerated || target.declareOriginal || target.enableReward || Boolean(target.collectionName);
         if (!requested) {
           showAssistStatus([
             "已打开目标草稿，但这条草稿任务没有保存原创、赞赏或合集设置。",
@@ -339,7 +477,15 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
           return;
         }
 
+        const aiSourceStatus = applyAiCreationSource();
+        if (aiSourceStatus === "opened" || aiSourceStatus === "waiting") {
+          persist(target);
+          showAssistStatus(["已定位到文章设置区域。", "正在将“创作来源”设置为“内容由AI生成”……"]);
+          return;
+        }
+
         const notes = ["文渡已打开目标草稿。"];
+        if (target.isAiGenerated) notes.push(target.aiSourceResult === "already" ? "创作来源：微信页面已显示为内容由AI生成。" : "创作来源：已选择内容由AI生成。");
         if (target.declareOriginal) {
           const originalOpen = document.querySelector("#js_original_open");
           if (originalOpen && visible(originalOpen)) {
@@ -457,10 +603,18 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
         persist(target);
         showAssistStatus(notes);
       };
+      let tickTimer;
+      const scheduleTick = (delay = 60) => {
+        if (tickTimer !== undefined) return;
+        tickTimer = window.setTimeout(() => {
+          tickTimer = undefined;
+          tick();
+        }, delay);
+      };
       const tick = () => applyRequestedSettings();
-      window.setTimeout(tick, 400);
-      window.setInterval(tick, 1000);
-      new MutationObserver(() => window.setTimeout(tick, 80))
+      scheduleTick(80);
+      window.setInterval(() => scheduleTick(300), 300);
+      new MutationObserver(() => scheduleTick(50))
         .observe(document.documentElement, { childList: true, subtree: true });
     })()`, true);
     const diagnostics = await window.webContents.executeJavaScript(`(() => {
@@ -471,7 +625,8 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
       return {
         url: location.href,
         title: document.title,
-        requestedSettings: Boolean(target?.declareOriginal || target?.enableReward || target?.collectionName),
+        requestedSettings: Boolean(target?.isAiGenerated || target?.declareOriginal || target?.enableReward || target?.collectionName),
+        isAiGenerated: target?.isAiGenerated === true,
         declareOriginal: target?.declareOriginal === true,
         enableReward: target?.enableReward === true,
         hasCollection: Boolean(target?.collectionName),
@@ -495,6 +650,12 @@ export async function driveWechatEditorSettings(window: BrowserWindow, target?: 
 
 export async function driveWechatBackendToDrafts(window: BrowserWindow, target?: WechatBackendTarget): Promise<void> {
   if (window.isDestroyed()) return;
+  logWechatBrowserAssist("backend-driver-started", {
+    url: window.webContents.getURL(),
+    hasTarget: Boolean(target),
+    hasTitle: Boolean(target?.title),
+    isAiGenerated: target?.isAiGenerated === true
+  });
   if (target !== undefined) {
     await window.webContents.executeJavaScript(`(() => {
       const fallback = ${JSON.stringify(target)};
@@ -513,6 +674,10 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       return rect.width > 4 && rect.height > 4 && style.display !== "none" && style.visibility !== "hidden";
     };
     const normalizedText = (element) => (element.textContent || "").replace(/\\s+/g, "").trim();
+    const report = (step, details = {}) => {
+      try { console.info("${WECHAT_ASSIST_CONSOLE_PREFIX}" + JSON.stringify({ step, details: { source: "backend", ...details } })); } catch {}
+    };
+    report("backend-driver-injected", { path: \`\${location.pathname}\${location.search}\` });
     const clickableNodes = () => [...document.querySelectorAll("a, button, [role='button'], [role='link'], li, span")].filter(visible);
     const findText = (patterns) => clickableNodes().find((item) => patterns.some((pattern) => pattern.test(normalizedText(item))));
     const clickText = (patterns) => {
@@ -527,6 +692,7 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       return true;
     };
     let contentManagementOpened = false;
+    let draftsNavigationRequestedAt = 0;
     const isDraftsPage = () => {
       if (/\\/cgi-bin\\/appmsg|action=(?:list|list_ex).*appmsg/i.test(location.href)) return true;
       return [...document.querySelectorAll("h1, h2, h3, [class*='page_title' i], [class*='main_hd' i]")]
@@ -539,6 +705,14 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       return target.getAttribute("aria-expanded") === "true" || /active|selected|current|open|expanded/i.test(classes);
     };
     const openDrafts = () => {
+      if (draftsNavigationRequestedAt > 0) {
+        // Do not call location.assign again while the first navigation is still
+        // loading. Reassigning the same WeChat URL on every polling tick can
+        // keep the backend in a reload loop for tens of seconds.
+        if (Date.now() - draftsNavigationRequestedAt < 120_000) return true;
+        report("drafts-navigation-timeout", { elapsedMs: Date.now() - draftsNavigationRequestedAt });
+        draftsNavigationRequestedAt = 0;
+      }
       // 已展开的微信菜单通常带有草稿箱的真实链接。直接使用该链接能避开不同
       // 后台版本对二级菜单 click 事件和数量徽标的差异。
       const directLink = [...document.querySelectorAll("a[href]")].find((item) => {
@@ -546,10 +720,17 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
         return /草稿箱/.test(normalizedText(item)) && href && !/^javascript:/i.test(href);
       });
       if (directLink) {
+        draftsNavigationRequestedAt = Date.now();
+        report("drafts-link-found", { method: "direct-link" });
         location.assign(directLink.href);
         return true;
       }
-      return clickText([/^草稿箱.*$/, /^草稿.*$/]);
+      const clicked = clickText([/^草稿箱.*$/, /^草稿.*$/]);
+      if (clicked) {
+        draftsNavigationRequestedAt = Date.now();
+        report("drafts-link-found", { method: "menu-click" });
+      }
+      return clicked;
     };
     const openTargetDraft = () => {
       const draftTarget = window.__contentFerryWechatDraftTarget;
@@ -586,6 +767,10 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
           || titleLink.parentElement;
       };
       const cards = [...new Set(titleNodes.map(findDraftCard).filter(Boolean))];
+      if (draftTarget.lastDraftCardCount !== cards.length) {
+        draftTarget.lastDraftCardCount = cards.length;
+        report("draft-card-match", { count: cards.length });
+      }
       if (cards.length !== 1) {
         showAssistStatus(["已进入微信草稿箱，但未能唯一识别目标草稿。", "请确认标题没有重复，或手动打开目标草稿后继续。"]);
         return false;
@@ -596,6 +781,7 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
         .find((wrapper) => normalizedText(wrapper.querySelector(".weui-desktop-tooltip") || wrapper) === "编辑");
       const exactEdit = exactEditWrapper?.querySelector("a.weui-desktop-icon-btn");
       if (exactEdit) {
+        report("draft-edit-clicked", { method: "exact-action" });
         exactEdit.click();
         window.__contentFerryWechatDraftTarget = { ...draftTarget, title: "", draftOpened: true };
         sessionStorage.setItem("contentferry-wechat-draft-target", JSON.stringify(window.__contentFerryWechatDraftTarget));
@@ -618,6 +804,7 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
         return false;
       }
       const edit = editButtons[0];
+      report("draft-edit-clicked", { method: "hover-action" });
       edit.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
       edit.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
       edit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
@@ -651,10 +838,92 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       }
       panel.textContent = lines.join("\\n");
     };
+    const applyAiCreationSource = () => {
+      const target = window.__contentFerryWechatDraftTarget;
+      if (!target?.isAiGenerated) return "skipped";
+      if (target.aiSourceResult === "selected" || target.aiSourceResult === "already") return target.aiSourceResult;
+      const claimArea = document.querySelector("#js_claim_source_area");
+      const claimCheckbox = claimArea?.querySelector("input.js_claim_source");
+      if (!(claimCheckbox instanceof HTMLInputElement)) return "waiting";
+      const selectedLabel = claimArea.querySelector(".js_claim_source_selected");
+      if (selectedLabel && visible(selectedLabel) && normalizedText(selectedLabel).includes("内容由AI生成")) {
+        target.aiSourceResult = "already";
+        return "already";
+      }
+      if (!claimCheckbox.checked) {
+        claimCheckbox.click();
+        return "opened";
+      }
+      const radio = document.querySelector("input.weui-desktop-form__radio[value='1']");
+      const radioLabel = radio?.closest("label");
+      const radioVisible = radio instanceof HTMLInputElement && (visible(radio) || Boolean(radioLabel && visible(radioLabel)));
+      if (!radioVisible) {
+        const sourceDescription = claimArea.querySelector(".js_claim_source_desc");
+        if (sourceDescription && visible(sourceDescription) && !target.aiSourceOpened) {
+          sourceDescription.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+          target.aiSourceOpened = true;
+          return "opened";
+        }
+        return "waiting";
+      }
+      const dialog = radio.closest(".weui-desktop-dialog");
+      const confirmButtons = [...(dialog || document).querySelectorAll(
+        ".weui-desktop-dialog__ft button.weui-desktop-btn_primary, .weui-desktop-btn_wrp button.weui-desktop-btn_primary"
+      )]
+        .filter(visible)
+        .filter((node) => /^(?:确认|确定)$/.test(normalizedText(node)));
+      const confirmCandidates = confirmButtons.filter((node) => {
+          const className = String(node.className || "");
+          return !(node instanceof HTMLButtonElement && node.disabled)
+            && node.getAttribute("aria-disabled") !== "true"
+            && !/weui-desktop-btn_disabled/.test(className);
+        });
+      const confirm = confirmCandidates[confirmCandidates.length - 1];
+      const selected = Boolean(selectedLabel && visible(selectedLabel) && normalizedText(selectedLabel).includes("内容由AI生成"));
+      const debugKey = [claimCheckbox.checked, radio.checked, selected, confirmButtons.length, confirmCandidates.length].join("|");
+      if (target.aiSourceDebugKey !== debugKey) {
+        target.aiSourceDebugKey = debugKey;
+        report("ai-source-state", {
+          claimChecked: claimCheckbox.checked,
+          radioChecked: radio.checked,
+          selected,
+          confirmButtons: confirmButtons.length,
+          confirmCandidates: confirmCandidates.length
+        });
+      }
+      const requestNativeClick = (clickKind, element, attemptKey, requestedAtKey, maxAttempts = 4) => {
+        const now = Date.now();
+        const attempts = Number(target[attemptKey] || 0);
+        const requestedAt = Number(target[requestedAtKey] || 0);
+        if (attempts >= maxAttempts || now - requestedAt < 700) return false;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 4 || rect.height <= 4) return false;
+        target[attemptKey] = attempts + 1;
+        target[requestedAtKey] = now;
+        report("native-click-request", {
+          clickKind,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          attempt: attempts + 1
+        });
+        return true;
+      };
+      if (radio.checked && confirm) {
+        requestNativeClick("ai-source-confirm", confirm, "aiSourceConfirmAttempts", "aiSourceConfirmRequestedAt", 3);
+        return "waiting";
+      }
+      const radioHotspot = radioLabel?.querySelector(".weui-desktop-icon-radio") || radioLabel || radio;
+      // A previous synthetic click can leave the native input visually checked
+      // while WeChat's controlled form state is still empty. Reset only the DOM
+      // value so the following real mouse click produces an input/change transition.
+      if (radio.checked) radio.checked = false;
+      requestNativeClick("ai-source-radio", radioHotspot, "aiSourceRadioAttempts", "aiSourceRadioRequestedAt");
+      return "waiting";
+    };
     const applyRequestedSettings = () => {
       const target = window.__contentFerryWechatDraftTarget;
       if (!target?.draftOpened) return;
-      const requestedWechatSettings = target.declareOriginal || target.enableReward || Boolean(target.collectionName);
+      const requestedWechatSettings = target.isAiGenerated || target.declareOriginal || target.enableReward || Boolean(target.collectionName);
       if (requestedWechatSettings && !target.settingsScrolled) {
         const settingsShortcut = [...document.querySelectorAll(
           ".js_fold.fold_tips_scrolltop .tool_bar__fold-btn, .fold_tips_scrolltop a[data-type='1']"
@@ -698,7 +967,14 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
         window.setTimeout(applyRequestedSettings, 500);
         return;
       }
+      const aiSourceStatus = applyAiCreationSource();
+      if (aiSourceStatus === "opened" || aiSourceStatus === "waiting") {
+        sessionStorage.setItem("contentferry-wechat-draft-target", JSON.stringify(target));
+        showAssistStatus(["已定位到文章设置区域。", "正在将“创作来源”设置为“内容由AI生成”……"]);
+        return;
+      }
       const notes = ["文渡已定位到目标草稿。"];
+      if (target.isAiGenerated) notes.push(target.aiSourceResult === "already" ? "创作来源：微信页面已显示为内容由AI生成。" : "创作来源：已选择内容由AI生成。");
       if (target.declareOriginal) {
         const originalOpen = document.querySelector("#js_original_open");
         if (originalOpen && visible(originalOpen)) {
@@ -767,7 +1043,20 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       sessionStorage.setItem("contentferry-wechat-draft-target", JSON.stringify(target));
       showAssistStatus(notes);
     };
+    let tickTimer;
+    const scheduleTick = (delay = 60) => {
+      if (tickTimer !== undefined) return;
+      tickTimer = window.setTimeout(() => {
+        tickTimer = undefined;
+        tick();
+      }, delay);
+    };
     const tick = () => {
+      const currentPath = \`\${location.pathname}\${location.search}\`;
+      if (window.__contentFerryWechatLastAssistPath !== currentPath) {
+        window.__contentFerryWechatLastAssistPath = currentPath;
+        report("page-observed", { path: currentPath });
+      }
       if (isDraftsPage()) {
         if (!window.__contentFerryWechatDraftTarget?.draftOpened) openTargetDraft();
         else applyRequestedSettings();
@@ -782,16 +1071,19 @@ export async function driveWechatBackendToDrafts(window: BrowserWindow, target?:
       if (!contentManagement) return;
       if (!contentManagementOpened && contentManagement && !isExpanded(contentManagement)) {
         contentManagementOpened = clickText([/^内容管理$/, /^内容管理(?:[▶▾▼])?$/]);
-        window.setTimeout(tick, 500);
+        scheduleTick(120);
         return;
       }
       contentManagementOpened = true;
       if (openDrafts()) return;
     };
-    // 微信登录成功后可能不触发完整页面刷新，因此同时监听 DOM 变化。
-    window.setTimeout(tick, 1200);
-    window.setInterval(tick, 1200);
-    new MutationObserver(() => window.setTimeout(tick, 80)).observe(document.documentElement, { childList: true, subtree: true });
+    // 微信登录成功后可能不触发完整页面刷新，因此监听 DOM 变化并保留低频兜底。
+    // 旧实现首次等待 1.2 秒且 MutationObserver 每次都创建定时器，导致进入后台
+    // 后出现明显空等并可能堆积重复执行。统一通过防抖调度，页面出现目标节点后
+    // 尽快处理，未触发 DOM 变化时也会每 300ms 检查一次。
+    scheduleTick(80);
+    window.setInterval(() => scheduleTick(300), 300);
+    new MutationObserver(() => scheduleTick(50)).observe(document.documentElement, { childList: true, subtree: true });
   })()`, true);
   if (target) void advanceWechatDraftEditing(window);
 }
@@ -914,6 +1206,7 @@ export async function getOrCreateWechatBackendWindow(): Promise<BrowserWindow> {
     }
   });
   state.wechatBackendWindow = window;
+  logWechatBrowserAssist("backend-window-created");
   window.on("closed", () => { if (state.wechatBackendWindow === window) { state.wechatBackendWindow = undefined; state.wechatBackendTarget = undefined; } });
   window.webContents.on("did-create-window", (childWindow) => {
     state.wechatEditorWindow = childWindow;
@@ -943,6 +1236,7 @@ export async function getOrCreateWechatBackendWindow(): Promise<BrowserWindow> {
       void driveWechatEditorSettings(childWindow, state.wechatBackendTarget);
     });
     childWindow.webContents.on("console-message", (_event, _level, message) => {
+      if (handleWechatAssistConsoleMessage(message, childWindow.webContents)) return;
       const prefix = "__contentferry_wechat_collections__:";
       if (!message.startsWith(prefix)) return;
       try {
@@ -957,8 +1251,13 @@ export async function getOrCreateWechatBackendWindow(): Promise<BrowserWindow> {
     childWindow.show();
     childWindow.focus();
   });
+  window.webContents.on("console-message", (_event, _level, message) => {
+    handleWechatAssistConsoleMessage(message, window.webContents);
+  });
   window.webContents.on("did-finish-load", () => { void driveWechatBackendToDrafts(window, state.wechatBackendTarget); });
+  logWechatBrowserAssist("backend-navigation-started", { url: "https://mp.weixin.qq.com/" });
   await window.loadURL("https://mp.weixin.qq.com/");
+  logWechatBrowserAssist("backend-navigation-finished", { url: window.webContents.getURL() });
   return window;
 }
 

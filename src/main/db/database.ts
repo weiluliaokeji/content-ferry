@@ -291,6 +291,7 @@ export function initialiseDatabase(db: Database.Database): void {
       only_fans_can_comment INTEGER NOT NULL DEFAULT 0,
       declare_original INTEGER NOT NULL DEFAULT 0,
       enable_reward INTEGER NOT NULL DEFAULT 0,
+      is_ai_generated INTEGER NOT NULL DEFAULT 0,
       collection_name TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
@@ -504,6 +505,7 @@ export function initialiseDatabase(db: Database.Database): void {
       status_note TEXT,
       declare_original INTEGER NOT NULL DEFAULT 0,
       enable_reward INTEGER NOT NULL DEFAULT 0,
+      is_ai_generated INTEGER NOT NULL DEFAULT 0,
       collection_name TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -810,6 +812,9 @@ export function initialiseDatabase(db: Database.Database): void {
   if (!articleSettingColumns.some((column) => column.name === "enable_reward")) {
     db.exec("ALTER TABLE article_settings ADD COLUMN enable_reward INTEGER NOT NULL DEFAULT 0");
   }
+  if (!articleSettingColumns.some((column) => column.name === "is_ai_generated")) {
+    db.exec("ALTER TABLE article_settings ADD COLUMN is_ai_generated INTEGER NOT NULL DEFAULT 0");
+  }
   if (!articleSettingColumns.some((column) => column.name === "collection_name")) {
     db.exec("ALTER TABLE article_settings ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");
   }
@@ -869,6 +874,9 @@ export function initialiseDatabase(db: Database.Database): void {
   }
   if (!publishJobColumns.some((column) => column.name === "enable_reward")) {
     db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN enable_reward INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!publishJobColumns.some((column) => column.name === "is_ai_generated")) {
+    db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN is_ai_generated INTEGER NOT NULL DEFAULT 0");
   }
   if (!publishJobColumns.some((column) => column.name === "collection_name")) {
     db.exec("ALTER TABLE wechat_publish_jobs ADD COLUMN collection_name TEXT NOT NULL DEFAULT ''");

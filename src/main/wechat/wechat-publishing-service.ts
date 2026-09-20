@@ -64,6 +64,7 @@ export class WechatPublishingService {
     onlyFansCanComment?: boolean;
     declareOriginal?: boolean;
     enableReward?: boolean;
+    isAiGenerated?: boolean;
     collectionName?: string;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
@@ -110,10 +111,10 @@ export class WechatPublishingService {
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, collection_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?)`)
+      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
       .run(id, account.workspaceId, account.id, input.projectId, input.projectId, row.topic, result.media_id,
-        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
     return this.requireJob(id);
   }
 
@@ -128,6 +129,7 @@ export class WechatPublishingService {
     onlyFansCanComment?: boolean;
     declareOriginal?: boolean;
     enableReward?: boolean;
+    isAiGenerated?: boolean;
     collectionName?: string;
   }): Promise<WechatPublishJob> {
     const account = this.accounts.requireAccount(input.accountId);
@@ -160,10 +162,10 @@ export class WechatPublishingService {
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, collection_name, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?)`)
+      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
       .run(id, account.workspaceId, account.id, article.relativePath, title, result.media_id,
-        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
     return this.requireJob(id);
   }
 
@@ -215,6 +217,7 @@ export class WechatPublishingService {
     }
     const now = new Date().toISOString();
     const requestedSettings = [
+      job.isAiGenerated ? "创作来源：内容由AI生成" : "",
       job.declareOriginal ? "申请原创" : "",
       job.enableReward ? "开启赞赏" : "",
       job.collectionName ? `加入合集「${job.collectionName}」` : ""
@@ -450,6 +453,7 @@ export interface WechatPublishJob {
   statusNote: string | null;
   declareOriginal: boolean;
   enableReward: boolean;
+  isAiGenerated: boolean;
   collectionName: string;
   createdAt: string;
   updatedAt: string;
@@ -466,6 +470,7 @@ function mapJob(row: Record<string, string | null>): WechatPublishJob {
     statusNote: row.status_note,
     declareOriginal: Number(row.declare_original ?? 0) === 1,
     enableReward: Number(row.enable_reward ?? 0) === 1,
+    isAiGenerated: Number(row.is_ai_generated ?? 0) === 1,
     collectionName: row.collection_name ?? "",
     createdAt: row.created_at!, updatedAt: row.updated_at!
   };

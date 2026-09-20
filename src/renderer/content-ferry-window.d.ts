@@ -36,7 +36,7 @@ declare global {
       selectDirectory: () => Promise<string | undefined>;
       selectImage: () => Promise<{ fileName: string; mimeType: string; base64: string } | undefined>;
       openZhuque: () => Promise<void>;
-      openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; collectionName?: string }) => Promise<void>;
+      openWechatBackend: (target?: { accountId?: string; title: string; declareOriginal?: boolean; enableReward?: boolean; isAiGenerated?: boolean; collectionName?: string }) => Promise<void>;
       openContentAny: () => Promise<void>;
       openCsdnPublisher: (jobId: string) => Promise<void>;
       readCnblogsPersonalOptions: (accountId: string) => Promise<{ categories: string[]; tags: string[] }>;

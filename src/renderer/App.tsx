@@ -944,6 +944,7 @@ export function App() {
     setPublishDeclareOriginal,
     publishEnableReward,
     setPublishEnableReward,
+    publishIsAiGenerated,
     publishCollectionName,
     setPublishCollectionName,
     publishThumbMediaId,
@@ -1747,7 +1748,7 @@ export function App() {
           <p className="ready"><strong>作者</strong><span>{publishAuthor || "未填写（允许）"}</span></p>
           <p className="ready"><strong>摘要</strong><span>{publishDigest ? `${publishDigest.length}/120 字` : "未填写（允许）"}</span></p>
           <p className="ready"><strong>微信留言</strong><span>{publishNeedOpenComment ? publishOnlyFansCanComment ? "已开启 · 仅关注者可留言" : "已开启 · 所有人可留言" : "已关闭"}</span></p>
-          <p className="ready"><strong>微信后台选项</strong><span>{[publishDeclareOriginal ? "申请原创" : "", publishEnableReward ? "开启赞赏" : "", publishCollectionName ? `加入合集：${publishCollectionName}` : ""].filter(Boolean).join(" · ") || "未设置（创建草稿后仍可在微信后台调整）"}</span></p>
+          <p className="ready"><strong>微信后台选项</strong><span>{[publishIsAiGenerated ? "创作来源：内容由AI生成" : "", publishDeclareOriginal ? "申请原创" : "", publishEnableReward ? "开启赞赏" : "", publishCollectionName ? `加入合集：${publishCollectionName}` : ""].filter(Boolean).join(" · ") || "未设置（创建草稿后仍可在微信后台调整）"}</span></p>
         </div>
         <section className="publish-ai-check">
           <div className="detector-switch"><label>检测工具<select value={publishDetector} onChange={(event) => setPublishDetector(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select></label><button type="button" className="secondary-button" onClick={() => void (publishDetector === "zhuque" ? runPublishZhuque() : runPublishContentAny())} disabled={publishAiCheckRunning || saving}>{publishAiCheckRunning ? "正在自动检测…" : publishDetector === "zhuque" ? "开始腾讯朱雀检测" : "开始 ContentAny 检测"}</button></div>

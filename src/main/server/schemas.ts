@@ -209,6 +209,7 @@ export const wechatDraftInput = z.object({
   onlyFansCanComment: z.boolean().default(false),
   declareOriginal: z.boolean().default(false),
   enableReward: z.boolean().default(false),
+  isAiGenerated: z.boolean().default(false),
   collectionName: z.string().trim().max(80).default("")
 });
 export const wechatSourceDraftInput = z.object({
@@ -222,6 +223,7 @@ export const wechatSourceDraftInput = z.object({
   onlyFansCanComment: z.boolean().default(false),
   declareOriginal: z.boolean().default(false),
   enableReward: z.boolean().default(false),
+  isAiGenerated: z.boolean().default(false),
   collectionName: z.string().trim().max(80).default("")
 });
 export const wechatSubmitInput = z.object({ mode: z.enum(["publish", "mass"]) });
