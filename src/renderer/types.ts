@@ -159,7 +159,8 @@ export type ManagedSkill = {
   files: Array<{ relativePath: string; size: number }>;
 };
 export type SkillFileContent = { relativePath: string; content: string; size: number };
-export type ArticleChatSuggestion = { original: string; replacement: string; reason: string; status?: "pending" | "accepted" | "rejected" | "unavailable" };
+export type ArticleChatSuggestionOperation = "replace" | "insert_before" | "insert_after";
+export type ArticleChatSuggestion = { original: string; replacement: string; reason: string; kind?: "content" | "feedback"; operation?: ArticleChatSuggestionOperation; status?: "pending" | "accepted" | "rejected" | "unavailable" };
 export type ArticleChatMessage = {
   id: string;
   role: "user" | "assistant";

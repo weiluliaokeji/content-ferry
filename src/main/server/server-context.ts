@@ -34,6 +34,7 @@ import type { GitSourceService } from "../agent/git-source-service";
 import type { ResearchTaskRepository } from "../content/research-task-repository";
 import type { ResearchTaskRunner } from "../content/research-task-runner";
 import type { ResearchRunRepository } from "../content/research-run-repository";
+import type { WebSearchClient } from "../ai/web-search";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
 export interface ServerContext {
@@ -60,6 +61,7 @@ export interface ServerContext {
   appCredentials: AppCredentialRepository;
   getTavilyApiKey: () => string | undefined;
   getResearchProxyUrl: () => string;
+  webSearch: WebSearchClient;
   modelConnections: ModelConnectionRepository;
   skills?: SkillRegistry;
   aiAuditLog?: AiAuditLog;

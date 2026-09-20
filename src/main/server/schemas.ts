@@ -351,6 +351,8 @@ export const articleChatSuggestion = z.object({
   original: z.string().trim().min(6).max(2000),
   replacement: z.string().trim().min(1).max(3000),
   reason: z.string().trim().min(1).max(500),
+  kind: z.enum(["content", "feedback"]).default("content"),
+  operation: z.enum(["replace", "insert_before", "insert_after"]).default("replace"),
   status: z.enum(["pending", "accepted", "rejected", "unavailable"]).default("pending")
 });
 export const articleChatOutput = z.object({ reply: z.string().trim().min(1).max(20000), memorySuggestion: z.string().trim().max(1000).default(""), writingMemorySuggestion: z.string().trim().max(1000).default(""), suggestions: z.array(articleChatSuggestion).max(5).default([]) });
@@ -375,7 +377,7 @@ export const articleChatSuggestionParams = z.object({
   messageId: z.string().uuid(),
   suggestionIndex: z.coerce.number().int().min(0).max(4)
 });
-export const articleChatSuggestionStatusInput = z.object({ status: z.enum(["accepted", "rejected", "unavailable"]) });
+export const articleChatSuggestionStatusInput = z.object({ status: z.enum(["pending", "accepted", "rejected", "unavailable"]) });
 
 export interface CsdnBrowserConfirmResult {
   remoteUrl: string | null;

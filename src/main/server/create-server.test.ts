@@ -9,6 +9,8 @@ import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
 import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, WebResearchOptions } from "../ai/model-provider";
 import type { ResearchCard, WebResearchContext } from "../ai/research-prompts";
+import type { WebSearchClient } from "../ai/web-search";
+import { extractWebResearchTargets } from "../ai/awen-conversation-service";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { stageDirectoryDeletion } from "../content/content-source-service";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
@@ -111,6 +113,12 @@ describe("local API scaffold", () => {
     expect(grants.json().items).toEqual(expect.arrayContaining([expect.objectContaining({ id: grant.json().id, toolId: "execution:git" })]));
     const removedGrant = await server.inject({ method: "DELETE", url: `/api/agent/permissions/${grant.json().id}` });
     expect(removedGrant.statusCode).toBe(204);
+  });
+
+  it("normalizes Markdown-wrapped URLs before web verification", () => {
+    expect(extractWebResearchTargets("请核实 `https://herdr.dev/docs/agent-skill/` 页面")).toEqual([
+      "https://herdr.dev/docs/agent-skill/"
+    ]);
   });
 
   it("enforces execution permissions and records the confirmation decision", async () => {
@@ -300,6 +308,10 @@ describe("local API scaffold", () => {
     expect(before.statusCode).toBe(200);
     expect(before.json().messages[0].suggestions).toHaveLength(1);
 
+    const repaired = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { status: "pending" } });
+    expect(repaired.statusCode).toBe(200);
+    expect(repaired.json().suggestions).toEqual([expect.objectContaining({ status: "pending" })]);
+
     const handled = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { status: "rejected" } });
     expect(handled.statusCode).toBe(200);
     expect(handled.json().suggestions).toEqual([expect.objectContaining({ status: "rejected" })]);
@@ -337,6 +349,87 @@ describe("local API scaffold", () => {
     const userMessageCount = database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE id = ?")
       .get(payload.clientMessageId) as { count: number };
     expect(userMessageCount.count).toBe(1);
+  });
+
+  it("preloads requested web pages into the Awen prompt", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-web-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const prompts: string[] = [];
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-web-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        prompts.push(request.prompt);
+        return {
+          value: request.parse({ reply: "已根据应用抓取的资料核对。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [] }),
+          provider: "test-awen-web-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    const webSearch: WebSearchClient = {
+      activeProviderId: null,
+      search: vi.fn(async () => []),
+      extract: vi.fn(async (url) => ({ content: `官方页面正文：${url} 支持 Agent Skill。` }))
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory, webSearch });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/article-chat/messages",
+      payload: {
+        contextKey: "source:posts/web-check/index.md",
+        title: "联网核验测试",
+        markdown: "正文中提到 https://herdr.dev/docs/agent-skill/。",
+        message: "请重新核实官方页面 https://herdr.dev/docs/agent-skill/"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(webSearch.extract).toHaveBeenCalledWith("https://herdr.dev/docs/agent-skill/");
+    expect(prompts[0]).toContain("官方页面正文：https://herdr.dev/docs/agent-skill/");
+    expect(prompts[0]).toContain("应用侧联网核验结果");
+  });
+
+  it("renders escaped newlines from an Awen reply as actual newlines", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-newline-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-newline-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return {
+          value: request.parse({ reply: "第一段\\n第二段\\n- 列表项", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [] }),
+          provider: "test-awen-newline-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/article-chat/messages",
+      payload: {
+        contextKey: "source:posts/newline/index.md",
+        title: "换行测试",
+        markdown: "正文。",
+        message: "请分段回答。"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().message.content).toBe("第一段\n第二段\n- 列表项");
+
+    const now = new Date().toISOString();
+    database.connection.prepare(`INSERT INTO article_chat_messages
+      (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+      VALUES (?, ?, 'assistant', ?, '', '[]', ?)`)
+      .run("33333333-3333-4333-8333-333333333333", "source:posts/newline/index.md", "历史行一\\n历史行二", now);
+    const thread = await server.inject({ method: "GET", url: "/api/article-chat?contextKey=source%3Aposts%2Fnewline%2Findex.md" });
+    expect(thread.json().messages.at(-1).content).toBe("历史行一\n历史行二");
   });
 
   it("exposes scoped memory management without deleting source events", async () => {

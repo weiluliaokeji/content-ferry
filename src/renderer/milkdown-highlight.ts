@@ -24,6 +24,20 @@ import { $command, $inputRule, $mark, $useKeymap } from "@milkdown/kit/utils";
 /** 自定义 mdast 节点类型名。加前缀以免与 remark 生态里的同名节点冲突。 */
 export const HIGHLIGHT_NODE_TYPE = "wunduHighlight";
 
+/** 工具栏使用的荧光笔图标，颜色由编辑器的按钮状态控制。 */
+export const highlightIcon = `
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+  >
+    <path d="M6.1 15.8 14.9 7l2.1 2.1-8.8 8.8H6.1v-2.1Z" />
+    <path d="m14.2 5.6 1.2-1.2c.4-.4 1-.4 1.4 0l2.8 2.8c.4.4.4 1 0 1.4l-1.2 1.2-4.2-4.2Z" />
+    <path d="M4 19.5h16v1.5H4z" fill="#f2c94c" />
+  </svg>
+`;
+
 /** 与 `src/shared/markdown-highlight.ts` 保持一致：正文不含 `=` 与换行。 */
 const MARKER = "==";
 

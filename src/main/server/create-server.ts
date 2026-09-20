@@ -15,7 +15,7 @@ import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
 import { AiContentService } from "../ai/ai-content-service";
-import { createWebSearchClient, type VisibleBrowserSearch } from "../ai/web-search";
+import { createWebSearchClient, type VisibleBrowserSearch, type WebSearchClient } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse } from "../../shared/contracts";
@@ -107,6 +107,8 @@ export function buildServer(
     logFilePath?: string;
     skillsDirectory?: string;
     visibleBrowserSearch?: VisibleBrowserSearch;
+    /** 可选注入：文章对话使用的应用侧网页检索客户端（测试和桌面装配共用）。 */
+    webSearch?: WebSearchClient;
     csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
     /** 可选注入：外部提供博客园渠道稿服务实例（默认由 buildServer 内部构造）。 */
     cnblogsChannel?: CnblogsChannelService;
@@ -147,17 +149,18 @@ export function buildServer(
   const modelConnections = new ModelConnectionRepository(database.connection, appCredentials);
   const skills = options?.skillsDirectory ? new SkillRegistry(database.connection, options.skillsDirectory) : undefined;
   const aiAuditLog = skills ? new AiAuditLog(loadAppSettings().dataDir, () => loadAppSettings().auditAiCalls) : undefined;
+  const webSearch = options?.webSearch ?? createWebSearchClient({
+    getTavilyApiKey,
+    getResearchProxyUrl,
+    visibleBrowserSearch: options?.visibleBrowserSearch
+  });
   const effectiveModelProvider = skills
     ? new ConfiguredModelProvider(
       modelConnections,
       skills,
       modelProvider,
       aiAuditLog,
-      createWebSearchClient({
-        getTavilyApiKey,
-        getResearchProxyUrl,
-        visibleBrowserSearch: options?.visibleBrowserSearch
-      })
+      webSearch
     )
     : modelProvider;
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
@@ -354,6 +357,7 @@ export function buildServer(
     appCredentials,
     getTavilyApiKey,
     getResearchProxyUrl,
+    webSearch,
     modelConnections,
     skills,
     aiAuditLog,

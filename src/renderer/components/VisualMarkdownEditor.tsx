@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
-import { editorViewCtx, serializerCtx } from "@milkdown/kit/core";
+import { commandsCtx, editorViewCtx, serializerCtx } from "@milkdown/kit/core";
+import type { Ctx } from "@milkdown/kit/ctx";
 import { redo, undo } from "@milkdown/kit/prose/history";
+import { isMarkSelectedCommand } from "@milkdown/kit/preset/commonmark";
 import { replaceAll } from "@milkdown/kit/utils";
-import { useHighlight } from "../milkdown-highlight";
+import { highlightIcon, highlightSchema, toggleHighlightCommand, useHighlight } from "../milkdown-highlight";
 import { useMermaidPreview } from "../milkdown-mermaid";
+import { suggestionOperation } from "./awen-suggestion-utils";
+import { centeredSuggestionScrollTop, shouldReportVisualEditorSelection } from "./visual-editor-utils";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/classic.css";
 
@@ -49,6 +53,7 @@ export function VisualMarkdownEditor({
   onSuggestionOffsetChange,
   onAcceptSuggestion,
   onRejectSuggestion,
+  locateSuggestionRequest,
   minHeight = 420,
   readOnly = false
 }: {
@@ -69,11 +74,12 @@ export function VisualMarkdownEditor({
   onTextSelection?: (selection?: VisualMarkdownSelection) => void;
   onSwitchToMarkdown?: (markdownOffset: number) => void;
   initialScrollOffset?: number;
-  suggestions?: Array<{ id: string; original: string; replacement: string; reason: string }>;
+  suggestions?: Array<{ id: string; original: string; replacement: string; reason: string; operation?: "replace" | "insert_before" | "insert_after" }>;
   suggestionOffsets?: Record<string, { x: number; y: number }>;
   onSuggestionOffsetChange?: (id: string, offset: { x: number; y: number }) => void;
   onAcceptSuggestion?: (id: string) => void;
   onRejectSuggestion?: (id: string) => void;
+  locateSuggestionRequest?: { id: string; original: string; replacement: string; sequence: number };
   minHeight?: number;
   readOnly?: boolean;
 }) {
@@ -83,14 +89,12 @@ export function VisualMarkdownEditor({
   const onChangeRef = useRef(onChange);
   const valueRef = useRef(value);
   const lastEditorValueRef = useRef<string | undefined>(undefined);
-  const suggestionsRef = useRef(suggestions);
   const suggestionCallbacksRef = useRef({ onAcceptSuggestion, onRejectSuggestion });
   const suggestionOffsetsRef = useRef(suggestionOffsets);
   const onSuggestionOffsetChangeRef = useRef(onSuggestionOffsetChange);
   const readOnlyRef = useRef(readOnly);
   onChangeRef.current = onChange;
   valueRef.current = value;
-  suggestionsRef.current = suggestions;
   suggestionCallbacksRef.current = { onAcceptSuggestion, onRejectSuggestion };
   suggestionOffsetsRef.current = suggestionOffsets;
   onSuggestionOffsetChangeRef.current = onSuggestionOffsetChange;
@@ -101,6 +105,25 @@ export function VisualMarkdownEditor({
     let disposed = false;
     let userHasEdited = false;
     const root = rootRef.current;
+    let toolbarIdleTimer: number | undefined;
+    const revealToolbar = () => {
+      root.classList.remove("toolbar-idle");
+      if (toolbarIdleTimer !== undefined) window.clearTimeout(toolbarIdleTimer);
+      if (readOnlyRef.current) return;
+      toolbarIdleTimer = window.setTimeout(() => root.classList.add("toolbar-idle"), 1800);
+    };
+    const revealToolbarOnPointerMove = (event: PointerEvent) => {
+      const toolbar = root.querySelector<HTMLElement>(".milkdown-top-bar");
+      if (!toolbar) return;
+      const bounds = toolbar.getBoundingClientRect();
+      // The toolbar remains in the layout while hidden, so its original
+      // rectangle is still a reliable hover zone. Moving over the article
+      // body should not wake it up while the author is reading or editing.
+      if (event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom + 8) revealToolbar();
+    };
+    root.addEventListener("pointermove", revealToolbarOnPointerMove);
+    ["pointerdown", "focusin", "keydown", "wheel"].forEach((eventName) => root.addEventListener(eventName, revealToolbar));
+    revealToolbar();
     const markUserEdit = () => { userHasEdited = true; };
     const markToolbarEdit = (event: MouseEvent) => {
       if ((event.target as Element | null)?.closest("button")) userHasEdited = true;
@@ -228,12 +251,31 @@ export function VisualMarkdownEditor({
         [Crepe.Feature.CodeMirror]: false,
         [Crepe.Feature.ImageBlock]: true,
         [Crepe.Feature.Latex]: false,
+        [Crepe.Feature.Toolbar]: true,
         // Keep the compact selection toolbar, but also expose the common
         // structural actions in a persistent bar. This makes lists and
         // tables discoverable instead of requiring users to know `/`.
         [Crepe.Feature.TopBar]: true
       },
       featureConfigs: {
+        [Crepe.Feature.Toolbar]: {
+          buildToolbar: (builder) => {
+            builder.getGroup("formatting").addItem("highlight", {
+              icon: highlightIcon,
+              active: isHighlightActive,
+              onRun: toggleHighlight
+            });
+          }
+        },
+        [Crepe.Feature.TopBar]: {
+          buildTopBar: (builder) => {
+            builder.getGroup("formatting").addItem("highlight", {
+              icon: highlightIcon,
+              active: isHighlightActive,
+              onRun: toggleHighlight
+            });
+          }
+        },
         [Crepe.Feature.ImageBlock]: {
           onUpload: uploadImage,
           inlineOnUpload: uploadImage,
@@ -303,6 +345,10 @@ export function VisualMarkdownEditor({
       root.removeEventListener("keydown", markKeyboardEdit, true);
       root.removeEventListener("copy", copySelection);
       root.removeEventListener("paste", importPastedImage, true);
+      root.removeEventListener("pointermove", revealToolbarOnPointerMove);
+      ["pointerdown", "focusin", "keydown", "wheel"].forEach((eventName) => root.removeEventListener(eventName, revealToolbar));
+      if (toolbarIdleTimer !== undefined) window.clearTimeout(toolbarIdleTimer);
+      root.classList.remove("toolbar-idle");
       void crepe.destroy();
     };
   }, []);
@@ -390,9 +436,19 @@ export function VisualMarkdownEditor({
       // paragraph so the card never covers the following text.
       bubble.style.top = `${Math.max(0, rect.bottom - rootRect.top + 8 + reservedBefore)}px`;
       bubble.style.left = `${Math.max(12, rect.left - rootRect.left)}px`;
-      bubble.innerHTML = `<strong>阿文建议</strong><span>${escapeHtml(suggestion.reason)}</span><div><button type="button" data-action="accept">同意</button><button type="button" data-action="reject">拒绝</button></div>`;
-      bubble.querySelector<HTMLButtonElement>("[data-action='accept']")?.addEventListener("click", () => suggestionCallbacksRef.current.onAcceptSuggestion?.(suggestion.id));
-      bubble.querySelector<HTMLButtonElement>("[data-action='reject']")?.addEventListener("click", () => suggestionCallbacksRef.current.onRejectSuggestion?.(suggestion.id));
+      const operation = suggestionOperation(suggestion);
+      const operationLabel = operation === "replace" ? "替换原文" : operation === "insert_after" ? "追加到原文后" : "插入到原文前";
+      bubble.innerHTML = `<strong>阿文建议 · ${operationLabel}</strong><span>${escapeHtml(suggestion.reason)}</span><div><button type="button" data-action="accept">同意</button><button type="button" data-action="reject">拒绝</button></div>`;
+      const runSuggestionAction = (event: MouseEvent, callback: ((id: string) => void) | undefined) => {
+        // Keep the action independent from the editor's selection lifecycle.
+        // In particular, a bubbling mouseup can otherwise cause React to
+        // rerender and remove this bubble before click is dispatched.
+        event.preventDefault();
+        event.stopPropagation();
+        callback?.(suggestion.id);
+      };
+      bubble.querySelector<HTMLButtonElement>("[data-action='accept']")?.addEventListener("click", (event) => runSuggestionAction(event, suggestionCallbacksRef.current.onAcceptSuggestion));
+      bubble.querySelector<HTMLButtonElement>("[data-action='reject']")?.addEventListener("click", (event) => runSuggestionAction(event, suggestionCallbacksRef.current.onRejectSuggestion));
       root.appendChild(bubble);
       if (!adjustedBlocks.has(targetBlock)) {
         adjustedBlocks.set(targetBlock, targetBlock.style.marginBottom);
@@ -459,6 +515,35 @@ export function VisualMarkdownEditor({
     };
   }, [suggestions, editorReady]);
 
+  useEffect(() => {
+    const request = locateSuggestionRequest;
+    const root = rootRef.current;
+    if (!root || !editorReady || !request) return;
+    const editorRoot = root.querySelector<HTMLElement>(".ProseMirror");
+    if (!editorRoot) return;
+    const candidates = [
+      ...suggestionAnchorCandidates(request.original.trim()),
+      ...suggestionAnchorCandidates(request.replacement.trim())
+    ];
+    const range = findUniqueTextRange(editorRoot, candidates);
+    const targetBlock = range ? closestSuggestionBlock(range.startContainer, root) : undefined;
+    if (!targetBlock) return;
+    const canvas = root.closest<HTMLElement>(".editor-canvas");
+    if (canvas) {
+      const canvasRect = canvas.getBoundingClientRect();
+      const targetRect = targetBlock.getBoundingClientRect();
+      canvas.scrollTo({
+        top: centeredSuggestionScrollTop(canvas.scrollTop, canvasRect.top, canvas.clientHeight, targetRect.top, targetRect.height),
+        behavior: "smooth"
+      });
+    } else {
+      targetBlock.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    targetBlock.classList.add("awen-suggestion-target-located");
+    const timer = window.setTimeout(() => targetBlock.classList.remove("awen-suggestion-target-located"), 1600);
+    return () => window.clearTimeout(timer);
+  }, [editorReady, locateSuggestionRequest]);
+
   return <div className={`visual-editor-shell${readOnly ? " read-only" : ""}`}>
     {!readOnly && <div className="editor-inline-mode-switch editor-mode-switch" aria-label="编辑模式">
       <button type="button" className="active editor-mode-icon" title="当前：所见即所得编辑" aria-label="当前：所见即所得编辑">✎</button>
@@ -469,10 +554,34 @@ export function VisualMarkdownEditor({
       style={{ minHeight }}
       ref={rootRef}
       aria-label={readOnly ? "提纲预览（只读）" : "可视化文章编辑器"}
-      onMouseUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
+      onMouseUp={(event) => {
+        const target = event.target as Element | null;
+        if (!shouldReportVisualEditorSelection(Boolean(target?.closest(".awen-inline-suggestion")))) return;
+        reportSelection(rootRef.current, crepeRef.current, onTextSelection);
+      }}
       onKeyUp={() => reportSelection(rootRef.current, crepeRef.current, onTextSelection)}
     />
   </div>;
+}
+
+function isHighlightActive(ctx: Ctx): boolean {
+  const commands = ctx.get(commandsCtx);
+  return commands.call(isMarkSelectedCommand.key, highlightSchema.type(ctx));
+}
+
+function toggleHighlight(ctx: Ctx): void {
+  const view = ctx.get(editorViewCtx);
+  const { state } = view;
+  const markType = highlightSchema.type(ctx);
+  if (state.selection.empty) {
+    const active = state.storedMarks?.some((mark) => mark.type === markType)
+      ?? state.selection.$from.marks().some((mark) => mark.type === markType);
+    view.dispatch(active ? state.tr.removeStoredMark(markType) : state.tr.addStoredMark(markType.create()));
+    view.focus();
+    return;
+  }
+  ctx.get(commandsCtx).call(toggleHighlightCommand.key);
+  view.focus();
 }
 
 function readVisibleMarkdownOffset(root: HTMLElement | null, crepe: Crepe | null, markdown: string): number {
