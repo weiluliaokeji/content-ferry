@@ -1,0 +1,18 @@
+{
+  "api_keys": [
+    {
+      "key": "<YOUR_FIRST_INWORLD_API_KEY>",
+      "name": "primary",
+      "status": "active"
+    },
+    {
+      "key": "<YOUR_SECOND_INWORLD_API_KEY_OPTIONAL>",
+      "name": "backup",
+      "status": "active"
+    }
+  ],
+  "voice_id": "<VOICE_ID_FROM_CLONE>",
+  "display_name": "your_name",
+  "created_at": "YYYY-MM-DD",
+  "source_audio": "path/to/reference_audio.m4a"
+}

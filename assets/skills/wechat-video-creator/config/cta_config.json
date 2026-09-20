@@ -1,0 +1,19 @@
+{
+  "version": "1.0",
+  "enabled": true,
+  "duration_seconds": 6.77,
+  "subtitle": "主页关注公众号「围炉聊科技」看完整版",
+  "caption_html": "<div class='cta-main'>主页关注公众号「围炉聊科技」</div><div class='cta-sub'>看完整版文章</div>",
+  "audio_template_path": "assets/audio/cta_tail.mp3",
+  "style": {
+    "background_color": "#060d18",
+    "main_text_color": "#3ee0a6",
+    "sub_text_color": "#8b95a7",
+    "main_font_size": "72px",
+    "sub_font_size": "40px"
+  },
+  "display_text": {
+    "main": "主页关注公众号「围炉聊科技」",
+    "sub": "看完整版文章"
+  }
+}

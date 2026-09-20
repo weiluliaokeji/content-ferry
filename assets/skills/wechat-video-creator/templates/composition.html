@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080, initial-scale=1.0">
+<title>视频渲染源模板</title>
+<script src="assets/vendor/gsap.min.js"></script>
+<style>
+  /* ===== CSS 变量 ===== */
+  :root {
+    --bg: #060d18; --fg: #e6e9ef; --fg-2: #8b95a7;
+    --accent: #3ee0a6; --warn: #f59e0b;
+    --surface: rgba(11,19,35,0.72); --surface-warm: rgba(18,30,50,0.80);
+    --border: rgba(255,255,255,0.08); --border-soft: rgba(255,255,255,0.04);
+    --meta: #4a5568; --muted: #5a6a7d;
+    --vid-title: 72px; --vid-sub: 40px; --vid-body: 29px; --vid-label: 22px;
+    --space-1: 6px; --space-2: 12px; --space-3: 18px; --space-4: 24px;
+    --space-5: 36px; --space-6: 48px; --space-7: 72px; --space-8: 96px;
+    --radius-md: 14px; --radius-pill: 999px;
+    /* 竖屏 9:16 播放器 UI 安全区：标题下移避顶部状态栏/返回按钮；字幕贴底避底部控件 */
+    --safe-top: 150px;
+    /* ═══ 字幕防重叠硬性约束（勿随意改动，改动需同步 SKILL.md）═══
+       --caption-bottom: 字幕离画面底边的距离（px）
+       --caption-safe : 字幕区总预留高度 = 字幕bottom + 两行字幕高度 + 安全间隙
+                        scene-inner.max-height 由它推导，保证场景内容永不侵入字幕区 */
+    --caption-bottom: 100px;
+    --caption-safe: 230px;
+    --font-display: "Inter", "Noto Sans SC", "PingFang SC", sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font-family:var(--font-display); overflow:hidden; }
+
+  /* ===== 舞台 ===== */
+  #stage { position:relative; width:1080px; height:1920px; overflow:hidden; }
+
+  /* 场景层 */
+  .clip {
+    position:absolute; inset:0; opacity:0; visibility:hidden;
+    display:flex; flex-direction:column; align-items:center;
+    padding: var(--safe-top) 72px 120px;
+  }
+  .scene-inner {
+    position:relative; z-index:2; width:100%;
+    /* ═══ 字幕防重叠硬性约束：内容区高度以舞台底边向上扣除 --caption-safe 为上限，
+       超出的内容 overflow:hidden 裁掉，物理上不可能侵入字幕区 ═══ */
+    max-height: calc(1920px - var(--safe-top) - var(--caption-safe));
+    display:flex; flex-direction:column;
+    overflow:hidden;
+    /* 硬上限内的软留白：内容提前 100px 收笔，避免贴着裁切线；非防重叠约束的一部分 */
+    padding-bottom: 100px;
+  }
+
+  /* 背景 */
+  .bg-img { position:absolute; inset:0; z-index:0; }
+  .bg-img img { width:100%; height:100%; object-fit:cover; }
+  /* 硬约束：禁止横向截图直接全屏铺底（Patch #2） */
+  /* 若使用横向截图，必须做竖屏重构：局部放大/留白遮罩/降透明度 */
+  .bg-img.is-landscape-reworked img {
+    object-fit: contain;
+    object-position: center top;
+    padding: 160px 0;  /* 上下留白 */
+    background: var(--bg);
+    opacity: 0.45;      /* 降透明度，避免与前景文字冲突 */
+  }
+  .bg-img.is-landscape-reworked .bg-veil {
+    opacity: 0.75 !important;
+  }
+  .bg-veil { position:absolute; inset:0; z-index:1; background:rgba(6,13,24,0.55); }
+  .bg-grid { position:absolute; inset:0; z-index:1; background:url("data:image/svg+xml,...") center/90px; opacity:0.35; }
+
+  /* chrome 装饰 */
+  .chrome { position:absolute; top:36px; left:72px; right:72px; z-index:3; display:flex; align-items:center; gap:14px; }
+  .rule { height:1px; background:var(--border); flex:1; transform-origin:left center; }
+  .label { font-family:var(--font-mono); font-size:var(--vid-label); color:var(--meta); letter-spacing:0.12em; }
+  .label-accent { color:var(--accent); }
+
+  /* 标题 */
+  .section-title { font-family:var(--font-display); font-size:var(--vid-title); font-weight:600; letter-spacing:-0.02em; line-height:1.12; color:var(--fg); margin-bottom:var(--space-6); }
+  .section-title em { color:var(--accent); font-style:normal; }
+
+  /* 字幕（固定贴底，语义上永远位于场景内容之下，禁止修改为中间悬浮） */
+  .caption {
+    position:absolute; bottom:var(--caption-bottom); left:72px; right:72px; z-index:5;
+    font-size:var(--vid-body); line-height:1.5; color:var(--fg-2);
+    opacity:0; text-align:center;
+  }
+  .caption .now { color:var(--accent); font-weight:600; }
+
+  /* hbar 横向对比条 */
+  .hbar { display:flex; flex-direction:column; gap:var(--space-5); }
+  .hbar-row { display:grid; grid-template-columns:226px 1fr 120px; gap:var(--space-5); align-items:center; }
+  .hbar-name { font-family:var(--font-display); font-size:29px; font-weight:600; color:var(--fg-2); text-align:right; white-space:nowrap; }
+  .hbar-track { height:24px; background:var(--surface); border-radius:var(--radius-pill); overflow:hidden; }
+  .hbar-fill { height:100%; background:var(--accent); border-radius:var(--radius-pill); transform-origin:left center; }
+  .hbar-val { font-family:var(--font-mono); font-size:29px; color:var(--fg); }
+
+  /* tag 标签行 */
+  .tag-row { display:flex; flex-wrap:wrap; gap:var(--space-3); }
+  .tag { font-family:var(--font-mono); font-size:var(--vid-label); letter-spacing:0.08em; color:var(--muted); border:1px solid var(--border); border-radius:var(--radius-pill); padding:var(--space-2) var(--space-4); }
+  .tag.is-accent { color:var(--accent); border-color:rgba(62,224,166,0.45); }
+
+  /* warn 警示条 */
+  .warn-bar { display:flex; align-items:center; gap:var(--space-4); background:var(--surface-warm); border:1px solid var(--border); border-radius:var(--radius-md); padding:var(--space-4) var(--space-5); }
+  .warn-bar span { font-size:var(--vid-body); color:var(--fg-2); }
+  .warn-bar b { color:var(--warn); font-weight:700; }
+
+  /* steps 步骤 */
+  .steps { list-style:none; display:flex; flex-direction:column; }
+  .steps li { display:flex; gap:var(--space-6); align-items:flex-start; padding:var(--space-5) 0; border-bottom:1px solid var(--border-soft); }
+  .steps li:last-child { border-bottom:none; }
+  .steps .idx { font-family:var(--font-mono); font-size:var(--vid-label); color:var(--meta); padding-top:6px; }
+  .steps li.is-current .idx { color:var(--accent); }
+  .steps b { display:block; font-family:var(--font-display); font-size:34px; font-weight:600; color:var(--fg); }
+  .steps li.is-current b { color:var(--accent); }
+  .steps span.desc { display:block; margin-top:4px; font-size:var(--vid-body); line-height:1.45; color:var(--fg-2); }
+
+  /* matrix 选型矩阵 */
+  .matrix { display:grid; grid-template-columns:200px repeat(4, 1fr); gap:2px; background:var(--border); border:2px solid var(--border); border-radius:var(--radius-md); overflow:hidden; }
+  .matrix .m-head { background:var(--surface-warm); padding:var(--space-3) var(--space-4); text-align:center; font-family:var(--font-display); font-size:27px; font-weight:600; }
+  .matrix .m-head.is-accent { color:var(--accent); }
+  .matrix .m-cell { background:var(--surface); padding:var(--space-4) var(--space-3); text-align:center; font-size:23px; line-height:1.3; color:var(--fg-2); }
+  .matrix .m-cell.is-accent { color:var(--accent); font-weight:700; }
+  .matrix .m-label { background:var(--surface); padding:var(--space-4) var(--space-3); font-size:23px; color:var(--fg); font-weight:600; }
+
+  /* quote 金句 */
+  .quote { border-left:2px solid var(--accent); padding-left:var(--space-8); }
+  .quote p { font-family:var(--font-display); font-size:66px; font-weight:700; letter-spacing:-0.02em; line-height:1.14; color:var(--fg); }
+  .quote p em { color:var(--accent); font-style:normal; }
+
+  /* spacer */
+  .spacer { flex:1; }
+
+  /* ═══ 截图展示（中间区域，非背景）═══
+     用于实操类文章：口播讲解时画面中间展示截图/界面，
+     字幕在底部，标题在顶部，截图居中。
+     max-height 必须遵守，否则 .scene-inner 的 overflow:hidden
+     会裁切截图底部或侵入字幕区。 */
+  .screenshot {
+    max-width: 100%;
+    max-height: 580px;          /* 经验值：画面中间区域约 900px，
+                                   标题(72px)+margin(48px) + 截图(580px) + caption-note(40px)
+                                   ≈ 740px，远低于 .scene-inner 上限 1540px，安全 */
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: var(--space-3);
+    align-self: center;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  }
+  .screenshot.is-dark-bg {
+    /* 浅色截图在深色背景上增加对比 */
+    border-color: rgba(255,255,255,0.15);
+    background: rgba(11,19,35,0.90);
+  }
+  .screenshot.is-highlight {
+    /* 关键截图加绿色边框高亮 */
+    border-color: rgba(62,224,166,0.60);
+    box-shadow: 0 0 24px rgba(62,224,166,0.15);
+  }
+  .caption-note {
+    /* 截图下方的简短标注，不是字幕（字幕仍是 .caption 贴底） */
+    font-size: var(--vid-label);
+    color: var(--fg-2);
+    text-align: center;
+    margin-top: var(--space-3);
+  }
+
+  /* 截图并排对比（before/after 或 两个界面并排） */
+  .ss-compare {
+    display: flex;
+    gap: var(--space-4);
+    width: 100%;
+    justify-content: center;
+    align-items: flex-start;
+  }
+  .ss-side {
+    flex: 1;
+    max-width: 460px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .ss-side .screenshot {
+    max-height: 480px;          /* 并排时更小，避免总高度超限 */
+  }
+  .ss-divider {
+    width: 1px;
+    background: var(--border);
+    align-self: stretch;
+  }
+
+  /* 截图轮播（多张截图垂直堆叠，适合步骤展示） */
+  .ss-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    width: 100%;
+    align-items: center;
+  }
+  .ss-stack .screenshot {
+    max-height: 340px;          /* 堆叠时更小 */
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!--
+    ═══════════════════════════════════════════════════
+    以下 section 的 data-start / data-duration 由 segment_processor.py
+    根据实际口播配音的 whisper 时间戳自动生成（见 SKILL.md Step 4）。
+    模板中保留 {{SCENE_N_START}} / {{SCENE_N_DURATION}} 占位符，
+    运行 fill_template.py 后会被替换为真实数值。
+    禁止在此处硬编码时间。
+    ═══════════════════════════════════════════════════
+  -->
+
+  <!-- ══════════ F1 · 开场 ══════════ -->
+  <section id="scene-01" class="clip" data-start="{{SCENE_1_START}}" data-duration="{{SCENE_1_DURATION}}" data-track-index="1">
+    <div class="bg-img"><img src="assets/img/cover.png" data-gsap-bg="1" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-01</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t1Title">主标题 <em>高亮词</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F2 · 核心观点 1 ══════════ -->
+  <section id="scene-02" class="clip" data-start="{{SCENE_2_START}}" data-duration="{{SCENE_2_DURATION}}" data-track-index="2">
+    <div class="bg-img"><img src="assets/img/scene-02.png" data-gsap-bg="2" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-02</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t2Title">观点 1 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F3 · 核心观点 2 ══════════ -->
+  <section id="scene-03" class="clip" data-start="{{SCENE_3_START}}" data-duration="{{SCENE_3_DURATION}}" data-track-index="3">
+    <div class="bg-img"><img src="assets/img/scene-03.png" data-gsap-bg="3" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-03</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t3Title">观点 2 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F4 · 核心观点 3 ══════════ -->
+  <section id="scene-04" class="clip" data-start="{{SCENE_4_START}}" data-duration="{{SCENE_4_DURATION}}" data-track-index="4">
+    <div class="bg-img"><img src="assets/img/scene-04.png" data-gsap-bg="4" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-04</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t4Title">观点 3 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F5 · 核心观点 4 ══════════ -->
+  <section id="scene-05" class="clip" data-start="{{SCENE_5_START}}" data-duration="{{SCENE_5_DURATION}}" data-track-index="5">
+    <div class="bg-img"><img src="assets/img/scene-05.png" data-gsap-bg="5" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-05</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t5Title">观点 4 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F6 · 核心观点 5 ══════════ -->
+  <section id="scene-06" class="clip" data-start="{{SCENE_6_START}}" data-duration="{{SCENE_6_DURATION}}" data-track-index="6">
+    <div class="bg-img"><img src="assets/img/scene-06.png" data-gsap-bg="6" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-06</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t6Title">观点 5 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F7 · 选型/矩阵 ══════════ -->
+  <section id="scene-07" class="clip" data-start="{{SCENE_7_START}}" data-duration="{{SCENE_7_DURATION}}" data-track-index="7">
+    <div class="bg-img"><img src="assets/img/scene-07.png" data-gsap-bg="7" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-07</span><span class="label">TAG</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t7Title">选型 <em>矩阵</em></h2>
+      <!-- matrix 示例：
+      <div class="matrix" data-gsap="t7Matrix">
+        <div class="m-head">维度</div><div class="m-head is-accent">A</div><div class="m-head">B</div>
+        <div class="m-label">成本</div><div class="m-cell is-accent">低</div><div class="m-cell">高</div>
+      </div>
+      -->
+    </div>
+  </section>
+
+  <!-- ══════════ F8 · 格局/互动 ══════════ -->
+  <section id="scene-08" class="clip" data-start="{{SCENE_8_START}}" data-duration="{{SCENE_8_DURATION}}" data-track-index="8">
+    <div class="bg-img"><img src="assets/img/cover.png" data-gsap-bg="8" alt=""></div>
+    <div class="bg-veil"></div>
+    <div class="bg-grid"></div>
+    <div class="chrome"><span class="rule"></span><span class="label label-accent">SCN-08</span><span class="label">TAKEAWAY</span></div>
+    <div class="scene-inner">
+      <h2 class="section-title" data-gsap="t8Title">总结 <em>高亮</em></h2>
+      <!-- 场景内容 -->
+    </div>
+  </section>
+
+  <!-- ══════════ F9 · 关注引导（默认片尾） ══════════ -->
+  <section id="scene-09" class="clip" data-start="{{MAIN_DURATION}}" data-duration="{{CTA_DURATION}}" data-track-index="9">
+    <div class="bg-veil" style="opacity:0.75; background:var(--bg);"></div>
+    <div class="scene-inner" style="justify-content:center; align-items:center; text-align:center;">
+      <div data-gsap="ctaTitle" style="font-family:var(--font-display); font-size:var(--vid-title); font-weight:600; line-height:1.2; color:var(--accent);">
+        主页关注公众号「围炉聊科技」
+      </div>
+      <div data-gsap="ctaSub" style="margin-top:var(--space-4); font-size:var(--vid-sub); color:var(--fg-2);">
+        看完整版文章
+      </div>
+    </div>
+  </section>
+
+  <!--
+    字幕层：每场景 1 条字幕（硬性上限 1 条，单行 ≤ 28 字）。
+    共 8 个场景 → 8 条字幕 cap-01 到 cap-08。
+    字幕文本与时间由 fill_template.py 从 segments.json 自动填充。
+    防重叠：.caption 贴底(bottom: var(--caption-bottom)) + .scene-inner 有 max-height 兜底。
+  -->
+  <p class="caption" id="cap-01" style="opacity:0">{{CAPTION_1}}</p>
+  <p class="caption" id="cap-02" style="opacity:0">{{CAPTION_2}}</p>
+  <p class="caption" id="cap-03" style="opacity:0">{{CAPTION_3}}</p>
+  <p class="caption" id="cap-04" style="opacity:0">{{CAPTION_4}}</p>
+  <p class="caption" id="cap-05" style="opacity:0">{{CAPTION_5}}</p>
+  <p class="caption" id="cap-06" style="opacity:0">{{CAPTION_6}}</p>
+  <p class="caption" id="cap-07" style="opacity:0">{{CAPTION_7}}</p>
+  <p class="caption" id="cap-08" style="opacity:0">{{CAPTION_8}}</p>
+  <p class="caption" id="cap-09" style="opacity:0">主页关注公众号「围炉聊科技」看完整版</p>
+
+  <!-- 配音：主音频 + 片尾 CTA -->
+  <audio id="narration" src="assets/audio/narration.mp3" data-start="0" data-duration="{{MAIN_DURATION}}" data-track-index="10"></audio>
+  <audio id="narration-cta" src="assets/audio/cta_tail.mp3" data-start="{{MAIN_DURATION}}" data-duration="{{CTA_DURATION}}" data-track-index="11" style="display:none;"></audio>
+</div>
+
+<script>
+  // ===== 全局配置（由 fill_template.py 从 segments.json 自动填充） =====
+  // 禁止在此处硬编码时间。所有时间值由 segment_processor.py 从配音中提取。
+  const MAIN_DURATION = {{MAIN_DURATION}};   // 主配音实际时长（秒）
+  const CTA_DURATION = {{CTA_DURATION}};       // 片尾 CTA 时长；不需要片尾时设为 0
+  const TOTAL_DURATION = {{TOTAL_DURATION}};
+  const ENABLE_CTA = {{ENABLE_CTA}};
+
+  const E = "power3.out";
+  const CAP_E = "power2.inOut";
+  const tl = gsap.timeline({ paused: true });
+  window.__timelines = window.__timelines || {};
+
+  // 强制预置所有 clip 为隐藏（避免 seek 跳过 from 初始态）
+  tl.set(".clip", { autoAlpha: 0 });
+  tl.set(".bg-veil", { opacity: 0.55 });
+
+  // ===== 通用动画函数 =====
+  function fadeUp(sel, at, dist, delay) { tl.fromTo(sel, { y: dist||24, opacity: 0 }, { y:0, opacity:1, duration:0.6, ease:E, delay:delay||0 }, at); }
+  function fadeIn(sel, at, dur, delay) { tl.fromTo(sel, { opacity: 0 }, { opacity:1, duration:dur||0.5, ease:E, delay:delay||0 }, at); }
+  function setLines(sel, at, delay) {
+    const els = document.querySelectorAll(sel);
+    els.forEach((el, i) => { tl.fromTo(el, { scaleX: 0 }, { scaleX: 1, duration: 0.55, ease: E, delay: (delay||0) + i*0.06 }, at); });
+  }
+  function counter(el, at, target, delay) {
+    const obj = { v: 0 };
+    tl.to(obj, { v: target, duration: 1.2, ease: E, delay: delay||0,
+      onUpdate: () => { if (el.dataset.decimals) el.textContent = obj.v.toFixed(+el.dataset.decimals); else el.textContent = Math.round(obj.v); }
+    }, at);
+  }
+  function typewriter(el, at, delay) {
+    const txt = el.dataset.text || el.textContent;
+    el.textContent = "";
+    const o = { i: 0 };
+    tl.to(o, { i: txt.length, duration: txt.length * 0.028, ease: "none", delay: delay||0,
+      onUpdate: () => { el.textContent = txt.slice(0, Math.max(0, Math.round(o.i))); }
+    }, at);
+  }
+  function capIn(id, at) { tl.to("#"+id, { autoAlpha: 1, duration: 0.35, ease: CAP_E }, at); }
+  function capOut(id, at) { tl.to("#"+id, { autoAlpha: 0, duration: 0.35, ease: CAP_E }, at); }
+
+  // ===== 场景显隐 =====
+  function sceneIn(id, at) { tl.to("#"+id, { autoAlpha: 1, duration: 0.5, ease: "power2.out" }, at); }
+  function sceneOut(id, at) { tl.to("#"+id, { autoAlpha: 0, duration: 0.5, ease: "power2.in" }, at); }
+
+  // ===== 动态场景时间轴（由 fill_template.py 从 segments.json 注入） =====
+  // 以下时间常量由 fill_template.py 自动替换；禁止手动硬编码
+  const S1_START = {{SCENE_1_START}};   const S1_END = {{SCENE_1_END}};
+  const S2_START = {{SCENE_2_START}};   const S2_END = {{SCENE_2_END}};
+  const S3_START = {{SCENE_3_START}};   const S3_END = {{SCENE_3_END}};
+  const S4_START = {{SCENE_4_START}};   const S4_END = {{SCENE_4_END}};
+  const S5_START = {{SCENE_5_START}};   const S5_END = {{SCENE_5_END}};
+  const S6_START = {{SCENE_6_START}};   const S6_END = {{SCENE_6_END}};
+  const S7_START = {{SCENE_7_START}};   const S7_END = {{SCENE_7_END}};
+  const S8_START = {{SCENE_8_START}};   const S8_END = {{SCENE_8_END}};
+
+  // 全局背景动画（与场景切换同步）
+  tl.fromTo("[data-gsap-bg='1']", { scale: 1.08 }, { scale: 1, duration: 3.2, ease: "power1.out" }, S1_START);
+  tl.fromTo("[data-gsap-bg='2']", { scale: 1.08 }, { scale: 1, duration: 3.0, ease: "power1.out" }, S2_START);
+  tl.fromTo("[data-gsap-bg='3']", { scale: 1.06 }, { scale: 1, duration: 3.0, ease: "power1.out" }, S3_START);
+  tl.fromTo("[data-gsap-bg='4']", { scale: 1.06 }, { scale: 1, duration: 3.0, ease: "power1.out" }, S4_START);
+  tl.fromTo("[data-gsap-bg='5']", { scale: 1.06 }, { scale: 1, duration: 3.0, ease: "power1.out" }, S5_START);
+  tl.fromTo("[data-gsap-bg='6']", { scale: 1.06 }, { scale: 1, duration: 2.8, ease: "power1.out" }, S6_START);
+  tl.fromTo("[data-gsap-bg='7']", { scale: 1.06 }, { scale: 1, duration: 2.8, ease: "power1.out" }, S7_START);
+  tl.fromTo("[data-gsap-bg='8']", { scale: 1.06 }, { scale: 1, duration: 2.6, ease: "power1.out" }, S8_START);
+
+  // chrome 装饰条
+  tl.fromTo(".rule", { scaleX: 0 }, { scaleX: 1, duration: 0.45, ease: E }, S1_START + 0.2);
+
+  // ===== 各场景动画（时间由 segments.json 驱动，禁止硬编码） =====
+  // F1
+  sceneIn("scene-01", S1_START);
+  fadeUp("[data-gsap='t1Title']", S1_START + 0.4);
+  sceneOut("scene-01", S1_END);
+
+  // F2
+  sceneIn("scene-02", S2_START);
+  fadeUp("[data-gsap='t2Title']", S2_START + 0.4);
+  sceneOut("scene-02", S2_END);
+
+  // F3
+  sceneIn("scene-03", S3_START);
+  fadeUp("[data-gsap='t3Title']", S3_START + 0.4);
+  sceneOut("scene-03", S3_END);
+
+  // F4
+  sceneIn("scene-04", S4_START);
+  fadeUp("[data-gsap='t4Title']", S4_START + 0.4);
+  setLines(".hbar-fill", S4_START + 0.8, 0.25);
+  sceneOut("scene-04", S4_END);
+
+  // F5
+  sceneIn("scene-05", S5_START);
+  fadeUp("[data-gsap='t5Title']", S5_START + 0.4);
+  sceneOut("scene-05", S5_END);
+
+  // F6
+  sceneIn("scene-06", S6_START);
+  fadeUp("[data-gsap='t6Title']", S6_START + 0.4);
+  sceneOut("scene-06", S6_END);
+
+  // F7
+  sceneIn("scene-07", S7_START);
+  fadeUp("[data-gsap='t7Title']", S7_START + 0.4);
+  sceneOut("scene-07", S7_END);
+
+  // F8
+  sceneIn("scene-08", S8_START);
+  fadeUp("[data-gsap='t8Title']", S8_START + 0.4);
+  sceneOut("scene-08", MAIN_DURATION);
+
+  // F9 · 片尾 CTA（当 CTA_DURATION > 0 时自动启用）
+  if (ENABLE_CTA) {
+    sceneIn("scene-09", MAIN_DURATION);
+    fadeIn("[data-gsap='ctaTitle']", MAIN_DURATION + 0.2, 0.6);
+    fadeIn("[data-gsap='ctaSub']",   MAIN_DURATION + 0.5, 0.6);
+    capIn("cap-09", MAIN_DURATION + 0.2);
+    capOut("cap-09", TOTAL_DURATION);
+    sceneOut("scene-09", TOTAL_DURATION);
+  }
+
+  // ===== 字幕驱动（由 fill_template.py 从 segments.json 自动填充时间） =====
+  capIn("cap-01", {{CAP_1_IN}}); capOut("cap-01", {{CAP_1_OUT}});
+  capIn("cap-02", {{CAP_2_IN}}); capOut("cap-02", {{CAP_2_OUT}});
+  capIn("cap-03", {{CAP_3_IN}}); capOut("cap-03", {{CAP_3_OUT}});
+  capIn("cap-04", {{CAP_4_IN}}); capOut("cap-04", {{CAP_4_OUT}});
+  capIn("cap-05", {{CAP_5_IN}}); capOut("cap-05", {{CAP_5_OUT}});
+  capIn("cap-06", {{CAP_6_IN}}); capOut("cap-06", {{CAP_6_OUT}});
+  capIn("cap-07", {{CAP_7_IN}}); capOut("cap-07", {{CAP_7_OUT}});
+  capIn("cap-08", {{CAP_8_IN}}); capOut("cap-08", {{CAP_8_OUT}});
+
+  window.__timelines.main = tl;
+  console.log("Timeline ready. Duration:", tl.duration());
+</script>
+</body>
+</html>

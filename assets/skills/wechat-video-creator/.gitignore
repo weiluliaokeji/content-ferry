@@ -1,0 +1,5 @@
+# 本地密钥 / 凭证（不要提交真实 Inworld API key）
+config/voice_cache.json
+
+# Python 字节码缓存
+__pycache__/
