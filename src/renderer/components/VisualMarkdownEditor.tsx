@@ -408,6 +408,27 @@ export function VisualMarkdownEditor({
 
   useEffect(() => {
     const root = rootRef.current;
+    const editorRoot = root?.querySelector<HTMLElement>(".ProseMirror");
+    if (!editorRoot || !editorReady) return;
+    const configureImages = () => {
+      const images = Array.from(editorRoot.querySelectorAll<HTMLImageElement>("img"));
+      images.forEach((image, index) => {
+        // Keep the first visible image eager, but do not make every image in a
+        // long article compete with the editor's first paint. Async decoding
+        // also keeps image decoding off the critical interaction path.
+        image.loading = index === 0 ? "eager" : "lazy";
+        image.decoding = "async";
+        if (index > 0) image.fetchPriority = "low";
+      });
+    };
+    configureImages();
+    const observer = new MutationObserver(configureImages);
+    observer.observe(editorRoot, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [editorReady]);
+
+  useEffect(() => {
+    const root = rootRef.current;
     if (!root) return;
     root.classList.remove("has-awen-suggestions");
     root.querySelectorAll(".awen-inline-suggestion").forEach((node) => node.remove());

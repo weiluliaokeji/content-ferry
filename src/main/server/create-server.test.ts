@@ -816,6 +816,15 @@ describe("local API scaffold", () => {
       // The PNG magic header must be present at byte 0 — any other content (SVG
       // body, an HTML error page, plain text) means rasterize silently failed.
       expect(Buffer.from(svgRasterized.rawPayload).subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
+      expect(svgRasterized.headers.etag).toBeTruthy();
+      expect(svgRasterized.headers["cache-control"]).toContain("must-revalidate");
+      const svgRasterizedCached = await server.inject({
+        method: "GET",
+        url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("./assets/diagram.svg")}&rasterize=1`,
+        headers: { "if-none-match": svgRasterized.headers.etag }
+      });
+      expect(svgRasterizedCached.statusCode).toBe(304);
+      expect(svgRasterizedCached.rawPayload.length).toBe(0);
       const svgRasterizeOff = await server.inject({ method: "GET", url: `/api/content-source/article-resource?path=${encodeURIComponent(renamedArticlePath)}&src=${encodeURIComponent("./assets/diagram.svg")}&rasterize=0` });
       expect(svgRasterizeOff.statusCode).toBe(200);
       expect(svgRasterizeOff.headers["content-type"]).toContain("image/svg+xml");

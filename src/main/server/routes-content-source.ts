@@ -115,8 +115,15 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
       rasterize: z.enum(["0", "1"]).optional()
     }).parse(request.query);
     try {
-      const asset = contentSources.readArticleResource(workspace.id, query.path, query.src, { rasterize: query.rasterize === "1" });
-      return reply.type(asset.mimeType).send(asset.stream);
+      const metadata = contentSources.inspectArticleResource(workspace.id, query.path, query.src);
+      const etag = `"${metadata.size.toString(16)}-${Math.trunc(metadata.modifiedAtMs).toString(16)}-${query.rasterize === "1" ? "r" : "o"}"`;
+      const cacheHeaders = () => reply
+        .header("Cache-Control", "private, max-age=0, must-revalidate")
+        .header("ETag", etag)
+        .header("Last-Modified", new Date(metadata.modifiedAtMs).toUTCString());
+      if (request.headers["if-none-match"] === etag) return cacheHeaders().code(304).send();
+      const asset = await contentSources.readArticleResourceAsync(workspace.id, query.path, query.src, { rasterize: query.rasterize === "1" });
+      return cacheHeaders().type(asset.mimeType).send(asset.stream);
     } catch {
       return reply.code(404).send();
     }

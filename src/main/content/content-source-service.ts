@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
+import { rasterizeSvgOffMainThread } from "./svg-rasterizer";
 
 export interface ContentSourcePreviewItem {
   relativePath: string;
@@ -46,6 +47,15 @@ export interface ContentSourceArticle {
   frontMatter: string;
 }
 
+export interface ArticleResourceMetadata {
+  resourcePath: string;
+  mimeType: string;
+  size: number;
+  modifiedAtMs: number;
+}
+
+type RasterizedSvgCacheEntry = { signature: string; png: Buffer };
+
 export interface StagedArticleDeletion {
   finalize(): void;
   rollback(): void;
@@ -67,6 +77,9 @@ export class ContentSourceError extends Error {
 }
 
 export class ContentSourceService {
+  private readonly rasterizedSvgCache = new Map<string, RasterizedSvgCacheEntry>();
+  private readonly rasterizedSvgPending = new Map<string, Promise<Buffer>>();
+
   constructor(private readonly db: Database.Database) {}
 
   getSource(workspaceId: string): string | null {
@@ -289,6 +302,43 @@ export class ContentSourceService {
   }
 
   readArticleResource(workspaceId: string, relativePath: string, sourceUrl: string, options: { rasterize?: boolean } = {}): { stream: NodeJS.ReadableStream; mimeType: string } {
+    const metadata = this.inspectArticleResource(workspaceId, relativePath, sourceUrl);
+    const { resourcePath, mimeType } = metadata;
+    if (mimeType === "image/svg+xml") {
+      // SVGs authored with only a viewBox and no width/height attributes collapse to a
+      // zero-size box inside the editor's <img> and in published output. Inject explicit
+      // intrinsic dimensions parsed from the viewBox so they render at a usable size.
+      const raw = fs.readFileSync(resourcePath, "utf-8");
+      const normalized = withSvgIntrinsicSize(raw);
+      // Renderer previews ask for a rasterized PNG by passing `rasterize: true`.
+      // Browsers render inline `<img src="...svg">` documents by loading the
+      // SVG and every external resource it references (web fonts, remote
+      // images, `@import url(...)`). In sandboxed editors those fetches can
+      // fail and the SVG collapses to a flat background rectangle. Replacing
+      // every glyph with resvg's system-font fallback ships a self-contained
+      // PNG that always displays. We never rewrite the original SVG on disk.
+      if (options.rasterize) {
+        const png = rasterizeSvgToPng(Buffer.from(normalized, "utf-8"));
+        return { stream: Readable.from(png), mimeType: "image/png" };
+      }
+      return { stream: Readable.from(Buffer.from(normalized, "utf-8")), mimeType };
+    }
+    return { stream: fs.createReadStream(resourcePath), mimeType };
+  }
+
+  async readArticleResourceAsync(workspaceId: string, relativePath: string, sourceUrl: string, options: { rasterize?: boolean } = {}): Promise<{ stream: NodeJS.ReadableStream; mimeType: string }> {
+    const metadata = this.inspectArticleResource(workspaceId, relativePath, sourceUrl);
+    if (!options.rasterize || metadata.mimeType !== "image/svg+xml") return this.readArticleResource(workspaceId, relativePath, sourceUrl, options);
+    const signature = `${metadata.size}:${metadata.modifiedAtMs}`;
+    const cached = this.rasterizedSvgCache.get(metadata.resourcePath);
+    if (cached?.signature === signature) return { stream: Readable.from(cached.png), mimeType: "image/png" };
+    const pendingKey = `${metadata.resourcePath}\u0000${signature}`;
+    const pending = this.rasterizedSvgPending.get(pendingKey) ?? this.createRasterizedSvg(metadata.resourcePath, signature, pendingKey);
+    const png = await pending;
+    return { stream: Readable.from(png), mimeType: "image/png" };
+  }
+
+  inspectArticleResource(workspaceId: string, relativePath: string, sourceUrl: string): ArticleResourceMetadata {
     const articlePath = this.resolveArticlePath(workspaceId, relativePath);
     const config = this.getSourceConfig(workspaceId)!;
     const rootPath = config.rootPath;
@@ -315,26 +365,25 @@ export class ContentSourceService {
       ".avif": "image/avif"
     }[extension];
     if (!mimeType) throw new ContentSourceError("文章引用的文件不是受支持的图片。");
-    if (extension === ".svg") {
-      // SVGs authored with only a viewBox and no width/height attributes collapse to a
-      // zero-size box inside the editor's <img> and in published output. Inject explicit
-      // intrinsic dimensions parsed from the viewBox so they render at a usable size.
+    const stat = fs.statSync(resourcePath);
+    return { resourcePath, mimeType, size: stat.size, modifiedAtMs: stat.mtimeMs };
+  }
+
+  private createRasterizedSvg(resourcePath: string, signature: string, pendingKey: string): Promise<Buffer> {
+    const pending = (async () => {
       const raw = fs.readFileSync(resourcePath, "utf-8");
       const normalized = withSvgIntrinsicSize(raw);
-      // Renderer previews ask for a rasterized PNG by passing `rasterize: true`.
-      // Browsers render inline `<img src="...svg">` documents by loading the
-      // SVG and every external resource it references (web fonts, remote
-      // images, `@import url(...)`). In sandboxed editors those fetches can
-      // fail and the SVG collapses to a flat background rectangle. Replacing
-      // every glyph with resvg's system-font fallback ships a self-contained
-      // PNG that always displays. We never rewrite the original SVG on disk.
-      if (options.rasterize) {
-        const png = rasterizeSvgToPng(Buffer.from(normalized, "utf-8"));
-        return { stream: Readable.from(png), mimeType: "image/png" };
-      }
-      return { stream: Readable.from(Buffer.from(normalized, "utf-8")), mimeType };
-    }
-    return { stream: fs.createReadStream(resourcePath), mimeType };
+      const png = await rasterizeSvgOffMainThread(Buffer.from(normalized, "utf-8"));
+      this.rasterizedSvgCache.set(resourcePath, { signature, png });
+      while (this.rasterizedSvgCache.size > 32) this.rasterizedSvgCache.delete(this.rasterizedSvgCache.keys().next().value as string);
+      return png;
+    })();
+    this.rasterizedSvgPending.set(pendingKey, pending);
+    void pending.then(
+      () => { this.rasterizedSvgPending.delete(pendingKey); },
+      () => { this.rasterizedSvgPending.delete(pendingKey); }
+    );
+    return pending;
   }
 
   private resolveArticlePath(workspaceId: string, relativePath: string): string {
