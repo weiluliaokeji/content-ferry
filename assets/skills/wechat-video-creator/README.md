@@ -41,8 +41,7 @@ wechat-video-creator/
 │   ├── cover_overlay.py     # 封面文字叠加
 │   └── batch_tts.py         # 批量配音
 ├── skills/
-│   ├── baidu-image-gen/  # 百度 AI 生图技能（自包含，首选）
-│   └── cover-image-gen/  # 备用文生图（仅文生图）
+│   └── cover-image-gen/  # 文生图技能（ModelScope / Agnes，仅纯文生图）
 ├── templates/
 │   ├── composition.html  # 渲染源 HTML 模板（占位符驱动，含 F9 片尾 CTA）
 │   └── customize.py      # 场景文案定制（已幂等）
@@ -68,12 +67,13 @@ wechat-video-creator/
 10. **合成 MP4** → `ffmpeg -framerate 25 -i frame_%05d.jpg -i audio/narration.mp3 ...`
 11. **产出物料** → 封面 + 描述 + 短标题
 
-### 图片生成备选方案
+### 图片生成方案
 
-若系统未预装 `baidu-image-gen`，可换用以下任一方式生成竖屏素材：
-1. **百度 AI 生图**：调用 `baidu-image-gen` 技能（系统预装时优先）
-2. **搜索+合成**：用 `websearch` 找版权可商用图片，再用 `ffmpeg` 或 Pillow 叠加暗色遮罩、调整尺寸到 1080×1920
-3. **纯色+文字**：直接用 HTML/CSS 渐变背景 + 文字排版（不依赖外部图片服务）
+通过 `cover-image-gen` 生成竖屏素材（仅纯文生图）：
+1. **ModelScope（推荐）**：`python3 skills/cover-image-gen/scripts/generate_image.py --provider modelscope --prompt "<提示词>" --resolution 2K --aspect_ratio 9:16 --output composition/assets/img/scene-NN.png`（异步任务，需 `MODELSCOPE_API_KEY`）
+2. **Agnes**：`--provider agnes`（同步 b64，需 `AGNES_API_KEY`）
+
+图生图/编辑/超分/扩图/局部重绘当前不支持。需要展示产品界面、API 文档、数据看板等真实截图时，直接复用文章内图片（见 `references/03-images-screenshots.md` Step 7），不要用 AI 抽象图替代。仍需纯背景时用 HTML/CSS 渐变背景。
 
 ### 关键规格
 

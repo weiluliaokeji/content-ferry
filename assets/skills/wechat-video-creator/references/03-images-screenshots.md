@@ -2,24 +2,22 @@
 
 > 对应 SKILL.md 步骤索引 6–7。
 
-## Step 6：生成竖屏场景素材图（baidu-image-gen）
+## Step 6：生成竖屏场景素材图（cover-image-gen）
 
-调用 `baidu-image-gen` 生成场景配图：
-- `aspect_ratio`: `9:16`；`pixel`: `1080x1920`（百度千帆自动校正为 1072×1920，正常）；`resolution`: `2K`；`style`: `none`
+调用 `cover-image-gen` 生成场景配图（仅纯文生图；图生图/编辑/超分/扩图/局部重绘当前不支持）：
+- `aspect_ratio`: `9:16`；`resolution`: `2K`（ModelScope 映射为 1280×720 后由平台按 9:16 重算；Agnes 2K/9:16 → 1440×2560）
 
-**运行时探测与自动路由（执行前并行探测，二选一生效）**：
+**运行时探测（执行前确认）**：
 ```bash
-python3 skills/baidu-image-gen/scripts/submit.py --self-check --dry-run
-python3 skills/cover-image-gen/scripts/generate_image.py --self-check --dry-run
+python3 skills/cover-image-gen/scripts/generate_image.py --self-check
 ```
-- 双链路均通：按场景类型选最优（编辑类→百度，纯文生图→任一）
-- 仅百度通：强制百度，禁用 fallback
-- 仅 MS/Agnes 通：**仅纯文生图可用**；编辑类直接报错
-- 双不通：报错并给配置指引
+- 通过：进入下方生图流程
+- 不通过：报错并提示配置 `MODELSCOPE_API_KEY` 或 `AGNES_API_KEY`，不降级其他方案
 
-**Fallback 能力校验门（阻断）**：若场景需图生图/局部重绘/扩图/超分/参考图编辑且 `baidu-image-gen` 不可用 → 直接报错停止，提示配置百度千帆或简化场景为纯文生图；仅纯文生图才静默切 `cover-image-gen`。
-
-**判定为不可用（满足其一即切，切换前同场景最多重试一次）**：技能缺失且 `dumate-find-skill` 无法装；`submit.py` 退出码 2（提示词风险，用户改措辞仍不过）；按模型列表切 `--model` 后仍退出码 1；轮询超时/下载失败重试仍失败。
+**能力边界（硬约束）**：场景需要图生图/局部重绘/扩图/超分/参考图编辑时，**不要试图用 `cover-image-gen` 模拟**——直接走以下任一路径：
+1. 复用文章真实截图（实操/产品/教程类必做，详见 Step 7）
+2. 简化场景为纯文生图（重新设计画面主体）
+3. 用 HTML/CSS 渐变背景 + 文字排版替代图片
 
 **cover-image-gen 用法**（遵循其两阶段门禁：提示词先展示确认再生图，结果先展示不自动进后续）：
 ```bash

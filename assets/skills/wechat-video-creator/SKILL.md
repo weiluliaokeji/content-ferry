@@ -39,7 +39,7 @@ version: "1.0.0"
 
 - **运行时**：Python 3.11+；`pip install websockets`；ffmpeg（PATH 中，libx264/aac）；faster-whisper；Edge/Chromium 无头（CDP）。
 - **Inworld TTS**：API key + `voiceId` 持久化于本地 `config/voice_cache.json`（**非环境变量**）；仓库只提供 `config/voice_cache.example.json`，真实文件由使用者在本地创建，不能随技能迁移或提交。克隆只需一次，永久复用；多 key 数组轮询，失败不降级其他 TTS。
-- **文生图**：`baidu-image-gen`（系统预装优先，支持文生图/图生图/编辑/超分/扩图/局部重绘）；备用 `cover-image-gen`（仅文生图）。
+- **文生图**：`cover-image-gen`（仅纯文生图，支持 ModelScope Qwen-Image 与 Agnes 两套 provider；不支持图生图/编辑/超分/扩图/局部重绘，相关场景改为复用文章真实截图或纯色/渐变背景，不要假装支持）。
 - **CTA 文案/样式**：`config/cta_config.json`（可设 `"enabled": false` 关闭片尾）。
 - **文章目录**：文档中的 `D:\Workbench\weiluliaokejiBlogs\docs\posts\...` 只是示例，实际执行必须传入文章目录的绝对路径；产物默认写入 `<article_dir>/assets/video-assets/`。
 - **CTA 音频**：`assets/audio/cta_tail.mp3` 当前针对微信公众号“围炉聊科技”；其他公众号需要自行替换同名文件，并用 `ffprobe` 重新确认实际时长。
@@ -80,6 +80,6 @@ version: "1.0.0"
 
 - `scripts/`：`render_frames.py`（CDP 逐帧）、`segment_processor.py`（分段+stutter）、`snapshot_frames.py`（渲染前目检）、`fill_template.py`（占位符填充）、`audio_post_process.py`（时长检测+atempo）、`inworld_tts.py`（TTS 合成）、`voice_manager.py`（配置读写）、`cover_overlay.py`（封面文字叠加）、`batch_tts.py`（批量配音）
 - `templates/`：`composition.html`（渲染源模板，含 F9 片尾 CTA）、`customize.py`（场景文案定制，幂等）
-- `skills/`：`baidu-image-gen/`、`cover-image-gen/`（文生图）
+- `skills/`：`cover-image-gen/`（文生图，仅纯文生图）
 - `config/`：`voice_cache.example.json`（配置格式示例）、本地忽略的 `voice_cache.json`（Inworld key+voiceId）、`cta_config.json`（CTA 文案/样式）
 - `assets/audio/cta_tail.mp3`：默认片尾配音模板

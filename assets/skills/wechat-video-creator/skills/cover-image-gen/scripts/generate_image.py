@@ -7,7 +7,7 @@
 
 API Key 优先取 --api-key，否则读环境变量 MODELSCOPE_API_KEY / AGNES_API_KEY。
 
-统一参数（与 baidu-image-gen 对齐）：
+统一参数：
   --resolution 1K|2K|4K      分辨率等级（默认 2K）
   --aspect_ratio 9:16|16:9|1:1|...  宽高比（默认 16:9）
   --size WxH                 ModelScope 尺寸（别名，向后兼容；自动反解为 resolution/aspect_ratio）
@@ -32,7 +32,7 @@ DEFAULT_AGNES_MODEL = "agnes-image-2.1-flash"
 
 POLL_INTERVAL_SECONDS = 3
 
-# 统一的分辨率与宽高比映射（与 baidu-image-gen 保持一致）
+# 统一的分辨率与宽高比映射
 RESOLUTION_MAP = {
     "1K": "1K",
     "2K": "2K",
@@ -270,7 +270,7 @@ def main() -> int:
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--model", default=None)
-    # 统一参数（新增，与 baidu-image-gen 对齐）
+    # 统一参数
     parser.add_argument("--resolution", choices=["1K", "2K", "4K"], default="2K", help="分辨率等级（默认 2K）")
     parser.add_argument("--aspect_ratio", choices=list(ASPECT_RATIO_MAP.keys()), default="16:9", help="宽高比（默认 16:9）")
     # 向后兼容别名

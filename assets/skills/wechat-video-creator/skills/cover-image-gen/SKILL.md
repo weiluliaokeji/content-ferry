@@ -1,6 +1,6 @@
 ---
 name: cover-image-gen
-description: 文生图封面技能：根据文章标题与正文（或任意主题）提炼生图提示词，经用户确认后调用 ModelScope（Qwen-Image，异步任务轮询）或 Agnes（同步 b64）图片模型生成 16:9 横版封面并保存到本地。Use when 需要为文章、公众号、视频生成封面图、题图、横版配图时使用（触发词：封面、配图、生图、文生图、cover、image generation）。图像编辑、图生图、超分请改用 baidu-image-gen。
+description: 文生图封面技能：根据文章标题与正文（或任意主题）提炼生图提示词，经用户确认后调用 ModelScope（Qwen-Image，异步任务轮询）或 Agnes（同步 b64）图片模型生成横版/竖版封面并保存到本地。Use when 需要为文章、公众号、视频生成封面图、题图、配图时使用（触发词：封面、配图、生图、文生图、cover、image generation）。图像编辑、图生图、超分、扩图、局部重绘当前不支持，请改用真实截图复用或纯色/渐变背景。
 ---
 
 # Cover Image Gen（封面生图）
@@ -13,7 +13,7 @@ description: 文生图封面技能：根据文章标题与正文（或任意主�
 - 需要调用 ModelScope（Qwen-Image 系列）或 Agnes 图片模型生图，并把结果保存到本地。
 
 ### 不适合使用本技能的场景
-- 图生图、图像编辑、风格迁移、扩图、局部重绘、超分 —— 改用 `baidu-image-gen`。
+- 图生图、图像编辑、风格迁移、扩图、局部重绘、超分 —— 当前不支持；如需展示产品界面/截图，复用文章内真实图片；如需纯背景，用 HTML/CSS 渐变。
 - 纯图像后处理（格式转换、裁剪、压缩）—— 用普通图像处理工具。
 - 用户未提供 prompt 且无法从上下文推断生图意图。
 
@@ -103,7 +103,7 @@ python3 scripts/generate_image.py --provider modelscope --prompt "..." --dry-run
 ```
 
 - API Key 优先取 `--api-key`，否则读环境变量 `MODELSCOPE_API_KEY` / `AGNES_API_KEY`。
-- **统一参数（与 baidu-image-gen 对齐）**：
+- **统一参数（分辨率与宽高比）**：
   - `--resolution`：`1K` / `2K` / `4K`（默认 `2K`）
   - `--aspect_ratio`：`1:1` / `9:16` / `16:9` / `2:3` / `3:2` / `3:4` / `4:3` / `21:9` / `9:21`（默认 `16:9`）
 - 向后兼容别名：`--size`（ModelScope 尺寸，自动反解为 `--resolution`/`--aspect_ratio`，反解失败报错退出）、`--ratio`（Agnes 宽高比，须为合法宽高比），使用时会提示建议迁移到统一参数。
