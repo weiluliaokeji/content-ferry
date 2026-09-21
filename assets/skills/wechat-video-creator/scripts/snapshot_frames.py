@@ -13,6 +13,7 @@
 """
 
 import asyncio, base64, json, os, sys, urllib.request
+from pathlib import Path
 
 CDP = "http://127.0.0.1:19222"
 CDP_TIMEOUT = 30.0  # 单次 CDP 调用上限；超时说明页面/连接异常，避免无限等待
@@ -40,11 +41,12 @@ async def main():
     times = [float(x) for x in sys.argv[3].split(",")]
     os.makedirs(outdir, exist_ok=True)
 
-    file_url = (
-        html
-        if html.startswith("http://") or html.startswith("https://")
-        else "file:///" + html.replace("\\", "/").replace("/d/", "D:/").lstrip("/")
-    )
+    if html.startswith("http://") or html.startswith("https://"):
+        file_url = html
+    else:
+        # 与 render_frames.py 同口径：用 pathlib 生成 file:// URL，
+        # 旧实现的 /d/→D:/ 硬编码在非 D 盘会拼出错误 URL。
+        file_url = Path(os.path.abspath(html)).as_uri()
 
     ws = await websockets.connect(await get_page_ws(), max_size=50 * 1024 * 1024)
     pending, seq = {}, 0

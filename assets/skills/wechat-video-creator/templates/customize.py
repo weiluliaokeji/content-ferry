@@ -16,11 +16,25 @@
 注意：本脚本已幂等——首次运行会备份 `index.html` 为 `index.html.orig`，
       后续重跑自动从 `.orig` 重建占位符再应用 SCENES，无需先手动 fill_template.py。
       前提：先跑一次 fill_template.py 生成含时间/字幕占位符的 index.html（.orig 即其快照）。
+
+      ⚠️ 改了脚本/配音并重跑 fill_template.py 后，必须 `python customize.py --rebase`：
+      否则仍从旧 .orig 重建，新时间戳被静默丢弃 → 场景切换/字幕与配音错位。
+      检测到时间戳不一致时会打印 WARNING（不阻断）。
 """
 
-import re, pathlib
+import argparse, re, sys, pathlib
+
+# Windows 控制台默认 GBK，中文/箭头字符写 stderr 会 UnicodeEncodeError 使脚本崩溃
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 H = pathlib.Path(__file__).parent / "index.html"
+
+# fill_template.py 填充的场景时间戳，用于基线漂移检测
+_TS_RE = re.compile(r'data-start="([^"]*)"')
 
 # ── 内容构造函数（对应模板 CSS：.steps / .tag-row / .matrix / .warn-bar） ──
 
@@ -167,11 +181,41 @@ CHROME = {
 
 
 def main():
+    ap = argparse.ArgumentParser(
+        description="把 composition.html 的演示文案替换为本文实际内容（幂等）"
+    )
+    ap.add_argument(
+        "--rebase",
+        action="store_true",
+        help="以当前 index.html 为新基线重建 index.html.orig。"
+        "重新跑过 fill_template.py（配音/分段有更新）后必须加此参数，"
+        "否则仍从旧 .orig 重建，新时间戳会被静默丢弃导致字幕与音频错位。",
+    )
+    args = ap.parse_args()
+
+    if not H.exists():
+        raise SystemExit("[customize] 找不到 index.html，请先跑 fill_template.py")
+
     # 幂等：从 index.html.orig 备份重建占位符，使重跑无需先手动 fill_template.py
     ORIG = H.with_name("index.html.orig")
+    if args.rebase and ORIG.exists():
+        ORIG.unlink()
     if not ORIG.exists():
         # 首次定制：把当前（已 fill_template 填充时间/字幕、仍含演示文案占位符的）index.html 备份
         ORIG.write_text(H.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        # 基线漂移检测：index.html 已被 fill_template 重新填充（场景时间戳变了），
+        # 却仍从旧 .orig 重建 → 新时间戳被丢弃，场景切换/字幕与音频错位。
+        cur_ts = _TS_RE.findall(H.read_text(encoding="utf-8"))
+        orig_ts = _TS_RE.findall(ORIG.read_text(encoding="utf-8"))
+        if cur_ts != orig_ts:
+            print(
+                "[customize] WARNING: index.html 的场景时间戳与 index.html.orig 不一致。\n"
+                "  index.html 已被 fill_template.py 重新填充，但本次仍基于旧 .orig 重建，\n"
+                "  新时间戳会被丢弃，导致场景切换/字幕与配音错位。\n"
+                "  要采用新时间戳请重跑: python customize.py --rebase",
+                file=sys.stderr,
+            )
     text = ORIG.read_text(encoding="utf-8")
 
     for sid, (title, body) in SCENES.items():

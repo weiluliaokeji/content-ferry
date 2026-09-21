@@ -15,6 +15,7 @@
 """
 
 import asyncio, base64, json, os, sys, time, urllib.request
+from pathlib import Path
 
 CDP = "http://127.0.0.1:19222"
 CDP_PORT = 19222
@@ -27,25 +28,22 @@ def resolve_duration(args):
     # arg index: 5 (0-based: sys.argv[5])
     if len(args) > 5:
         return float(args[5])
-    # Try to load from segments.json next to the html file
+    # 契约落点是 composition/segments.json（与 index.html 同目录），因此先查同目录；
+    # 上级目录仅作为旧布局的兼容兜底，不能优先——否则 video-assets/ 下的陈旧
+    # segments.json 会被静默采用。
     html_path = args[1] if len(args) > 1 else ""
     if html_path:
         html_dir = os.path.dirname(os.path.abspath(html_path))
-        seg_path = os.path.join(html_dir, "..", "segments.json")
-        if os.path.exists(seg_path):
-            try:
-                with open(seg_path, "r", encoding="utf-8") as f:
-                    return json.load(f).get("total_duration", DEFAULT_DURATION)
-            except Exception:
-                pass
-        # Also try same directory
-        seg_path2 = os.path.join(html_dir, "segments.json")
-        if os.path.exists(seg_path2):
-            try:
-                with open(seg_path2, "r", encoding="utf-8") as f:
-                    return json.load(f).get("total_duration", DEFAULT_DURATION)
-            except Exception:
-                pass
+        for seg_path in (
+            os.path.join(html_dir, "segments.json"),
+            os.path.join(html_dir, "..", "segments.json"),
+        ):
+            if os.path.exists(seg_path):
+                try:
+                    with open(seg_path, "r", encoding="utf-8") as f:
+                        return json.load(f).get("total_duration", DEFAULT_DURATION)
+                except Exception:
+                    pass
     return DEFAULT_DURATION
 
 
@@ -160,11 +158,12 @@ async def main():
 
     os.makedirs(frames_dir, exist_ok=True)
 
-    file_url = (
-        html_path
-        if html_path.startswith("http://") or html_path.startswith("https://")
-        else "file:///" + html_path.replace("\\", "/").replace("/d/", "D:/").lstrip("/")
-    )
+    if html_path.startswith("http://") or html_path.startswith("https://"):
+        file_url = html_path
+    else:
+        # 用 pathlib 生成 file:// URL：旧实现把 /d/ 硬编码替换成 D:/，
+        # 文章放在其它盘符时会拼出错误 URL 导致渲染失败。
+        file_url = Path(os.path.abspath(html_path)).as_uri()
 
     ws_url = await get_page_ws()
     if not ws_url:

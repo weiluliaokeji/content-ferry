@@ -322,11 +322,14 @@
   <section id="scene-09" class="clip" data-start="{{MAIN_DURATION}}" data-duration="{{CTA_DURATION}}" data-track-index="9">
     <div class="bg-veil" style="opacity:0.75; background:var(--bg);"></div>
     <div class="scene-inner" style="justify-content:center; align-items:center; text-align:center;">
+      <!-- CTA 文案由 fill_template.py 从 config/cta_config.json 注入；
+           未配置时回落为下方 default_replacer 中的默认文案。换公众号必须改配置，
+           不能只换 cta_tail.mp3——否则声音是新的、画面还写着旧号名。 -->
       <div data-gsap="ctaTitle" style="font-family:var(--font-display); font-size:var(--vid-title); font-weight:600; line-height:1.2; color:var(--accent);">
-        主页关注公众号「围炉聊科技」
+        {{CTA_MAIN}}
       </div>
       <div data-gsap="ctaSub" style="margin-top:var(--space-4); font-size:var(--vid-sub); color:var(--fg-2);">
-        看完整版文章
+        {{CTA_SUB}}
       </div>
     </div>
   </section>
@@ -345,7 +348,7 @@
   <p class="caption" id="cap-06" style="opacity:0">{{CAPTION_6}}</p>
   <p class="caption" id="cap-07" style="opacity:0">{{CAPTION_7}}</p>
   <p class="caption" id="cap-08" style="opacity:0">{{CAPTION_8}}</p>
-  <p class="caption" id="cap-09" style="opacity:0">主页关注公众号「围炉聊科技」看完整版</p>
+  <p class="caption" id="cap-09" style="opacity:0">{{CTA_CAPTION}}</p>
 
   <!-- 配音：主音频 + 片尾 CTA -->
   <audio id="narration" src="assets/audio/narration.mp3" data-start="0" data-duration="{{MAIN_DURATION}}" data-track-index="10"></audio>

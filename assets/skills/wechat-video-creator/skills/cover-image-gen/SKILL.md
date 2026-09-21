@@ -115,7 +115,7 @@ python3 scripts/generate_image.py --provider modelscope --prompt "..." --dry-run
 - MUST 要求非空 prompt；为空时停止并要求先完成提示词生成阶段。
 - MUST 在生图前通过用户确认门；未经确认的提示词不得直接生图。
 - MUST 按响应 `content-type` 决定扩展名（jpeg→.jpg，webp→.webp，其余默认 .png）。
-- MUST 将生成的图片保存到用户指定路径或当前工作目录；不要保存到 SKILL 目录。
+- MUST 显式传 `--output` 绝对路径（脚本强制要求，缺省直接报错退出），不要依赖"当前工作目录"落盘，也不要保存到 SKILL 目录；被 wechat-video-creator 调用时产物路径遵循其目录契约（如 `composition/assets/img/cover.png`）。
 - SHOULD 在提交前向用户展示将要使用的 provider、model、尺寸参数。
 - NEVER 把 API Key 写进代码、日志或展示给用户。
 - NEVER 修改用户已确认的提示词后再提交。

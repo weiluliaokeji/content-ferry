@@ -98,7 +98,7 @@ def compose(
     title: str,
     subtitle: str = "",
     brand: str = "",
-    output: str = "cover_final.png",
+    output: str = "封面.png",
     accent: tuple = (62, 224, 166),
 ):
     # Validate title length before rendering

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Audio post-processor: 检测配音时长，超出 78-99s 区间（主配音，不含 CTA）时自动 atempo 压缩并记录。
+Audio post-processor: 按固定倍速压缩主配音（owner 硬性：一律 1.3x），换算 segments.json 时间戳并记录。
 
 用法:
-    python audio_post_process.py <input.mp3> [--target-min 78] [--target-max 99] [--output output.mp3] [--segments segments.json]
+    python audio_post_process.py <input.mp3> [--speed 1.3] [--target-min 78] [--target-max 168]
+                                 [--output output.mp3] [--segments segments.json]
 
 流程:
     1. 用 ffprobe 获取音频时长（主配音，不含 CTA）
-    2. 如果 > target_max: 计算 atempo 值（上限 2.0），ffmpeg 压缩
-    3. 如果 < target_min: 警告（通常需要扩充脚本内容）
-    4. 如有 segments.json，换算后更新（无需重新 whisper，因 segments 时间已被预乘 speed_ratio）
-    5. 记录调整日志到 audio/speed_adjustment.log
+    2. 固定倍速 atempo（默认 1.3x，安全区间 1.2–1.7x）：**不是**向区间中点靠拢，
+       也**不会**输出 1.0x——未调速视为缺陷，禁止交付
+    3. 提速后仍 > target_max → RED 退出（必须精简脚本，不得靠超压倍速蒙混）
+       提速后 < 60s → 警告建议扩充脚本（但仍按固定倍速交付）
+    4. 如有 segments.json，换算后更新（无需重新 whisper；segments 时间戳是原始配音的
+       whisper 时间，此处统一乘 1/speed_ratio 换算到调速后的时间轴）
+    5. 记录调整日志到音频文件同级的 speed_adjustment.log（可用 --log 覆盖）
 
 依赖:
     ffmpeg, ffprobe
@@ -23,6 +27,10 @@ import json, os, subprocess, sys, argparse, math
 # Skill root resolution for CTA template
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CTA_TEMPLATE_PATH = os.path.join(SKILL_ROOT, "assets", "audio", "cta_tail.mp3")
+
+# owner 硬性调速规格（与 SKILL.md「视频规格（唯一真值表）」保持一致）
+DEFAULT_SPEED = 1.3  # 一律 1.3x；安全区间 1.2–1.7x；1.0x = 缺陷，禁止交付
+MIN_SPEED_DURATION = 60.0  # 提速后下限，低于此建议扩充脚本（但不得退回 1.0x）
 
 
 def assert_cta_template():
@@ -180,6 +188,13 @@ def main():
         "Total = main + 6.77s CTA; >209s blocks publishing.",
     )
     parser.add_argument(
+        "--speed",
+        type=float,
+        default=DEFAULT_SPEED,
+        help=f"atempo speed ratio (default {DEFAULT_SPEED}; 安全区间 1.2-1.7x；"
+        "1.0x 视为缺陷，禁止交付)",
+    )
+    parser.add_argument(
         "--speed-cap",
         type=float,
         default=1.7,
@@ -189,7 +204,7 @@ def main():
         "--segments", default="", help="Path to segments.json to update"
     )
     parser.add_argument(
-        "--log", default="audio/speed_adjustment.log", help="Adjustment log path"
+        "--log", default="", help="Adjustment log path (default: alongside the input MP3)"
     )
     parser.add_argument(
         "--no-concat-cta",
@@ -200,6 +215,11 @@ def main():
     args = parser.parse_args()
 
     output = args.output or args.input
+    # Resolve the log next to the audio rather than relative to CWD, so the
+    # layout does not depend on which directory the shell happened to start in.
+    log_path = args.log or os.path.join(
+        os.path.dirname(os.path.abspath(args.input)), "speed_adjustment.log"
+    )
     duration = get_duration(args.input)
     if duration is None:
         print("[audio_post_process] ERROR: could not get duration", file=sys.stderr)
@@ -221,46 +241,60 @@ def main():
         )
         sys.exit(2)
 
-    speed_ratio = 1.0
-    if duration > args.target_min:
-        # Calculate speed ratio to bring duration into target range (99-168s)
-        target_mid = (args.target_min + args.target_max) / 2
-        speed_ratio = duration / target_mid
-        # Clamp to speed_cap (default 1.7x)
-        if speed_ratio > args.speed_cap:
-            # RED: script too long, must shorten instead of over-compressing
-            print(
-                f"[audio_post_process] RED ALERT: Required speed {speed_ratio:.2f}x exceeds cap {args.speed_cap}x. "
-                f"Script is too long ({duration:.1f}s). Must shorten script to ≤300 words before proceeding.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
+    # owner 硬性：按固定倍速提速（默认 1.3x），**不是**向 target 区间中点靠拢。
+    # 1.0x = 缺陷禁止交付，因此即使 duration 已落在 [target_min, target_max] 内也必须提速。
+    speed_ratio = args.speed
+    # owner 硬性：安全区间 1.2–1.7x，默认 1.3x；1.0x 视为缺陷禁止交付。
+    # 低于 1.2x（含 1.0x）一律阻断，禁止用「不调速 / 轻微减速」蒙混过关——
+    # 旧实现只在上界 >1.7x 时拦截，下界缺失，显式传 --speed 1.0 仍能产出缺陷片。
+    if speed_ratio < 1.2:
         print(
-            f"[audio_post_process] Duration exceeds target_min. Applying atempo={speed_ratio:.3f}x"
+            f"[audio_post_process] RED ALERT: requested {speed_ratio:.2f}x is below the "
+            f"1.2x safe floor (default 1.3x; safe range 1.2-1.7x; 1.0x is an undeliverable "
+            f"defect). Pass --speed 1.3 or shorten the script.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if speed_ratio > args.speed_cap:
+        print(
+            f"[audio_post_process] RED ALERT: requested {speed_ratio:.2f}x exceeds speed cap "
+            f"{args.speed_cap}x. Audio would degrade; lower --speed or shorten the script.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    sped_duration = duration / speed_ratio
+    if sped_duration > args.target_max:
+        print(
+            f"[audio_post_process] RED ALERT: even at {speed_ratio:.2f}x the narration is "
+            f"{sped_duration:.1f}s > target_max {args.target_max:.0f}s. Must shorten the script "
+            f"to ≤300 words instead of over-compressing.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if sped_duration < MIN_SPEED_DURATION:
+        print(
+            f"[audio_post_process] WARN: after {speed_ratio:.2f}x the narration is only "
+            f"{sped_duration:.1f}s (<{MIN_SPEED_DURATION:.0f}s). Consider expanding the script "
+            f"— 1.0x is NOT an option (undeliverable defect)."
+        )
+
+    if speed_ratio != 1.0:
+        print(
+            f"[audio_post_process] Applying atempo={speed_ratio:.3f}x "
+            f"({duration:.2f}s -> {sped_duration:.2f}s)"
         )
         apply_atempo(args.input, output, speed_ratio)
         new_dur = get_duration(output)
         print(f"[audio_post_process] New duration: {new_dur:.2f}s")
         log_adjustment(
-            args.log, duration, args.target_min, args.target_max, speed_ratio, output
+            log_path, duration, args.target_min, args.target_max, speed_ratio, output
         )
-    elif duration < args.target_min:
-        print(
-            f"[audio_post_process] WARN: Duration {duration:.2f}s is below minimum {args.target_min}s. Consider expanding script."
+    elif args.input != output:
+        subprocess.check_call(
+            ["ffmpeg", "-y", "-v", "error", "-i", args.input, "-c", "copy", output]
         )
-        # Just copy and warn
-        if args.input != output:
-            subprocess.check_call(
-                ["ffmpeg", "-y", "-v", "error", "-i", args.input, "-c", "copy", output]
-            )
-    else:
-        print(
-            "[audio_post_process] Duration within target range. No adjustment needed."
-        )
-        if args.input != output:
-            subprocess.check_call(
-                ["ffmpeg", "-y", "-v", "error", "-i", args.input, "-c", "copy", output]
-            )
 
     if args.segments and speed_ratio != 1.0:
         print(

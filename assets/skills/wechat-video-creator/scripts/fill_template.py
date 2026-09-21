@@ -17,6 +17,16 @@ Template filler: 读取 segments.json，填充 composition.html 中的占位符�
     {{CAPTION_N}}            → segment text (smart_truncate, 句末断句, 上限 28 字 = 单行字幕防重叠)
     {{CAP_N_IN}}             → segment start + 0.3s
     {{CAP_N_OUT}}            → segment end - 0.3s
+    {{CTA_MAIN}}             → cta_config.json display_text.main（片尾主文案）
+    {{CTA_SUB}}              → cta_config.json display_text.sub（片尾副文案）
+    {{CTA_CAPTION}}          → cta_config.json subtitle（片尾字幕）
+
+CTA 配置（默认读技能包 config/cta_config.json，可用 --cta-config 覆盖）:
+    生效字段：display_text.main / display_text.sub / subtitle /
+              duration_seconds（segments.json 无 cta_duration 时的默认值）/
+              enabled=false（强制关闭片尾，cta_duration 归 0）
+    未接线字段：style.* 与 audio_template_path 当前不被任何脚本读取，
+               改它们不会影响成片（样式见 templates/composition.html）。
 
 同时同步更新 HTML 中 section 的 data-start / data-duration 属性。
 未使用的场景占位符自动替换为 0，对应 HTML section 自动隐藏（display:none）。
@@ -25,9 +35,34 @@ Template filler: 读取 segments.json，填充 composition.html 中的占位符�
 import json, re, os, argparse
 
 
+# CTA 文案兜底：未配置 cta_config.json 时保持与原硬编码一致的行为
+DEFAULT_CTA = {
+    "main": "主页关注公众号「围炉聊科技」",
+    "sub": "看完整版文章",
+    "caption": "主页关注公众号「围炉聊科技」看完整版",
+}
+
+SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CTA_CONFIG = os.path.join(SKILL_ROOT, "config", "cta_config.json")
+
+
 def load_segments(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_cta_config(path):
+    """Load CTA text config. Missing/invalid config is not an error: fall back
+    to DEFAULT_CTA so existing articles keep rendering unchanged."""
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception as e:
+        print("[fill_template] WARN: cannot read CTA config %s: %s" % (path, e))
+        return {}
 
 
 def smart_truncate(text, limit=120):
@@ -54,14 +89,21 @@ def smart_truncate(text, limit=120):
     return text[: limit - 2] + "……"
 
 
-def fill_template(template_path, output_path, segments_data):
+def fill_template(template_path, output_path, segments_data, cta_cfg=None):
+    cta_cfg = cta_cfg or {}
     with open(template_path, "r", encoding="utf-8") as f:
         text = f.read()
 
     segs = segments_data.get("segments", [])
     main_dur = segments_data.get("main_duration", 0)
-    cta_dur = segments_data.get("cta_duration", 6.77)
-    total_dur = segments_data.get("total_duration", main_dur + cta_dur)
+    # cta_duration 取值优先级：segments.json > cta_config.json 的 duration_seconds
+    cta_dur = segments_data.get("cta_duration", cta_cfg.get("duration_seconds", 6.77))
+    if cta_cfg.get("enabled") is False:
+        # 配置显式关闭片尾：强制归零，覆盖 segments.json（此时 total 也只算主配音）
+        cta_dur = 0.0
+        total_dur = main_dur
+    else:
+        total_dur = segments_data.get("total_duration", main_dur + cta_dur)
 
     # ── 1. 构建 replacements 字典 ──
     # 动态探测模板可渲染的场景容量（从模板占位符推断，而非硬编码 8）
@@ -74,6 +116,15 @@ def fill_template(template_path, output_path, segments_data):
         "{{TOTAL_DURATION}}": str(round(total_dur, 3)),
         "{{ENABLE_CTA}}": "true" if cta_dur > 0 else "false",
     }
+
+    # 片尾 CTA 文案：换公众号时必须改 cta_config.json，只换 cta_tail.mp3
+    # 会导致「声音是新的、画面还写着旧号名」
+    disp = cta_cfg.get("display_text") or {}
+    replacements["{{CTA_MAIN}}"] = disp.get("main") or DEFAULT_CTA["main"]
+    replacements["{{CTA_SUB}}"] = disp.get("sub") or DEFAULT_CTA["sub"]
+    replacements["{{CTA_CAPTION}}"] = (
+        cta_cfg.get("subtitle") or disp.get("caption") or DEFAULT_CTA["caption"]
+    )
 
     # 场景占位符（用 % 格式化，避免 f-string 大括号转义 bug）
     for i, seg in enumerate(segs, start=1):
@@ -122,6 +173,13 @@ def fill_template(template_path, output_path, segments_data):
             return ""  # 字符串型默认值
         elif key.startswith("CAP_"):
             return "0"  # 数值型默认值
+        # 片尾文案兜底：未配置 cta_config.json 时与原硬编码一致
+        if key == "CTA_MAIN":
+            return DEFAULT_CTA["main"]
+        if key == "CTA_SUB":
+            return DEFAULT_CTA["sub"]
+        if key == "CTA_CAPTION":
+            return DEFAULT_CTA["caption"]
         return m.group(0)  # 未知占位符保留原样
 
     text = re.sub(r"\{\{([A-Z_0-9]+)\}\}", default_replacer, text)
@@ -202,10 +260,18 @@ def main():
     parser.add_argument("segments", help="Path to segments.json")
     parser.add_argument("template", help="Path to composition.html template")
     parser.add_argument("output", help="Path to output index.html")
+    parser.add_argument(
+        "--cta-config",
+        default=DEFAULT_CTA_CONFIG,
+        help="CTA 文案配置（默认技能包 config/cta_config.json）",
+    )
     args = parser.parse_args()
 
     data = load_segments(args.segments)
-    fill_template(args.template, args.output, data)
+    cta_cfg = load_cta_config(args.cta_config)
+    if cta_cfg:
+        print("[fill_template] CTA config: %s" % args.cta_config)
+    fill_template(args.template, args.output, data, cta_cfg)
 
 
 if __name__ == "__main__":

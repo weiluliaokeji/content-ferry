@@ -20,8 +20,8 @@ version: "1.0.0"
 |------|-----|
 | 分辨率 / 宽高比 | 1080×1920 / 9:16 |
 | 帧率 | 25fps |
-| 主配音原始时长 | **78–168s**（约 300–500 字中文）|
-| 调速（owner 硬性）| **一律 1.3x**；安全区间 1.2–1.7x；**1.0x = 缺陷，禁止交付**；仅主配音 <78s 且提速后 <60s 才扩充脚本（不保留 1.0x）|
+| 主配音原始时长 | **78–168s**（经验参考区间；字数以下方门禁为准，实际时长以 whisper 实测为准）|
+| 调速（owner 硬性）| **一律 1.3x**；安全区间 1.2–1.7x；**1.0x = 缺陷，禁止交付**；仅主配音 <78s 且提速后 <60s 才扩充脚本（不保留 1.0x）。由 `audio_post_process.py --speed` **默认 1.3 强制执行**（旧实现按「向区间中点靠拢」自动算倍率，会产出 <1.0x 的减速片，已修）|
 | 含 CTA 总时长 | **67–136s**（CTA 实际时长以 `cta_tail.mp3` 的 `ffprobe` 为准，约 6.77s）|
 | 视频编码 | H.264 (libx264, -crf 20, -pix_fmt yuv420p) |
 | 音频编码 | AAC (192k) |
@@ -29,7 +29,7 @@ version: "1.0.0"
 | 发布短标题符号 | **仅支持 `《》“”：+？%℃`**；逗号/顿号/破折号/括号等一律不可用，**逗号用空格代替**（细则见 `references/05-cover-cta.md`；不约束封面图文字）|
 | 渲染 | Edge/Chromium CDP `127.0.0.1:19222`（启动必须 `--disable-extensions`）|
 
-**口播字数门禁（唯一定义，Step 2 与 Step 3 共用，不在别处重复）**：
+**口播字数门禁（唯一定义，Step 2 与 Step 3 共用，不在别处重复；与上方时长区间冲突时以本门禁为准）**：
 - ≤300 字：绿灯，进配音
 - 301–400 字：黄灯，建议精简到 ≤300（不阻断）
 - >400 字：红灯阻断，禁止进配音
@@ -61,10 +61,11 @@ video-assets/
     │   │   ├── scene-01.png …# 场景配图（零填充两位编号）
     │   │   └── screens/      # 文章真实截图（实操/产品类必放）
     │   ├── audio/
-    │   │   ├── narration.mp3     # 主配音（已调速）
-    │   │   ├── narration_raw.mp3 # 调速前原始配音
+    │   │   ├── narration.mp3     # 完整配音 = 调速后主配音 + CTA（ffmpeg 音轨输入）
+    │   │   ├── narration_raw.mp3 # 调速前原始主配音（audio_post_process.py 入参）
+    │   │   ├── narration_v2.mp3  # 仅当省略 --output 时出现（实际名 `<入参stem>_v2.mp3`，如 narration_raw_v2.mp3）；此时 ffmpeg 须改用此文件。显式 --output narration.mp3 时会被脚本回写为 narration.mp3（含 CTA），无需此文件
     │   │   ├── cta_tail.mp3      # CTA 片尾：渲染前须从技能包 assets/audio/cta_tail.mp3 复制到位
-    │   │   └── *.log             # speed_adjustment.log / key_rotation.log
+    │   │   └── *.log             # speed_adjustment.log / key_rotation.log（跟随音频目录，非 CWD）
     │   └── vendor/
     │       └── gsap.min.js   # 必须存在（渲染前 vendor 必检）
     ├── frames/               # 逐帧中间产物 frame_%05d.jpg（ffmpeg 后可选清理）
@@ -93,12 +94,30 @@ test -f 视频号发布物料.md && echo OK_MATERIAL
 test -f composition/assets/audio/cta_tail.mp3 && echo OK_CTA   # 关闭片尾 CTA 时可不检
 ```
 
+**脚本调用约定（防止 CWD 漂移，硬性）**
+
+所有脚本**一律在 `<article_dir>/assets/video-assets/` 目录执行**，路径参数显式写成 `composition/...`。**禁止依赖脚本的 CWD 相对默认值**——旧版 `--log` 默认 `audio/speed_adjustment.log`、`key_rotation.log` 写死 `audio/`，在不同目录起跑会把日志散到 `video-assets/audio/` 或 `composition/audio/`，这是产物结构不一致的根源之一（两处默认值已改为跟随音频文件所在目录，但仍应显式传参）。
+
+| 脚本 | 调用（CWD = `video-assets/`） |
+|---|---|
+| `inworld_tts.py` | `python3 <skill>/scripts/inworld_tts.py --text-file composition/_tts.txt --output composition/assets/audio/narration_raw.mp3`（`--text` / `--text-file` **二选一必填**，`--output` 必填）。**长中文口播一律用 `--text-file`**：`--text "$(cat ...)"` 是 bash 语法，PowerShell 下失效，且引号/换行转义必炸。首次克隆用 `voice_manager.py` 落 `voiceId` |
+| `segment_processor.py` | `python3 <skill>/scripts/segment_processor.py composition/SCRIPT.md composition/assets/audio/narration_raw.mp3 --output composition/segments.json` |
+| `audio_post_process.py` | `python3 <skill>/scripts/audio_post_process.py composition/assets/audio/narration_raw.mp3 --output composition/assets/audio/narration.mp3 --segments composition/segments.json --log composition/assets/audio/speed_adjustment.log` |
+| `fill_template.py` | `python3 <skill>/scripts/fill_template.py composition/segments.json <skill>/templates/composition.html composition/index.html` |
+| `render_frames.py` | `python3 <skill>/scripts/render_frames.py "D:/…/composition/index.html" "D:/…/composition/frames" 25`（**必须 Windows 原生绝对路径** `D:/…`，见坑 2） |
+| `snapshot_frames.py` | `python3 <skill>/scripts/snapshot_frames.py composition/index.html composition/_snap 3,26,70,92` |
+| `cover_overlay.py` | `python3 <skill>/scripts/cover_overlay.py --bg composition/assets/img/cover.png --output 封面.png --title … --subtitle … --brand …` |
+| `batch_tts.py`（可选，分段合成替代路径） | `python3 <skill>/scripts/batch_tts.py composition/SCRIPT.md composition/assets/audio composition/assets/audio/narration_raw.mp3`。分段中间件 `seg_*.mp3` 拼接成功后自动清理（失败时保留供诊断，事后须手动清理）；`.concat.txt` 临时文件无论成败都会删除 |
+
 ## 依赖与环境
 
 - **运行时**：Python 3.11+；`pip install websockets`；ffmpeg（PATH 中，libx264/aac）；faster-whisper；Edge/Chromium 无头（CDP）。
 - **Inworld TTS**：API key + `voiceId` 持久化于本地 `config/voice_cache.json`（**非环境变量**）；仓库只提供 `config/voice_cache.example.json`，真实文件由使用者在本地创建，不能随技能迁移或提交。克隆只需一次，永久复用；多 key 数组轮询，失败不降级其他 TTS。
 - **文生图**：`cover-image-gen`（仅纯文生图，支持 ModelScope Qwen-Image 与 Agnes 两套 provider；不支持图生图/编辑/超分/扩图/局部重绘，相关场景改为复用文章真实截图或纯色/渐变背景，不要假装支持）。
-- **CTA 文案/样式**：`config/cta_config.json`（可设 `"enabled": false` 关闭片尾）。
+- **CTA 配置 `config/cta_config.json`**（由 `fill_template.py` 读取并注入 `index.html`）：
+  - **已接线**：`display_text.main` / `display_text.sub`（片尾画面主副文案）、`subtitle`（片尾字幕）、`duration_seconds`（`segments.json` 缺 `cta_duration` 时的默认值）、`enabled: false`（强制关闭片尾，`cta_duration` 归 0）。缺失或解析失败时回落到内置默认文案，不报错。
+  - **未接线**：`style.*` 与 `audio_template_path` 当前不被任何脚本读取，改它们**不会**影响成片；样式需改 `templates/composition.html`。
+- **换公众号必须同时改两处**：`cta_tail.mp3`（声音）+ `cta_config.json` 的 `display_text` / `subtitle`（画面）。只换音频会出现「声音是新的、画面还写着旧号名」。
 - **文章目录**：文档中的 `D:\Workbench\weiluliaokejiBlogs\docs\posts\...` 只是示例，实际执行必须传入文章目录的绝对路径；产物默认写入 `<article_dir>/assets/video-assets/`。
 - **CTA 音频（两个位置，禁止混用）**：
   - **技能自带模板**：技能包内 `assets/audio/cta_tail.mp3`（针对微信公众号“围炉聊科技”；换号需替换同名文件并重跑 `ffprobe` 确认时长）。`audio_post_process.py` 拼接主配音+CTA 时读的是这一个（按 `SKILL_ROOT` 解析）。
@@ -118,15 +137,23 @@ test -f composition/assets/audio/cta_tail.mp3 && echo OK_CTA   # 关闭片尾 CT
             assets/video-assets/composition/frames \
             assets/video-assets/composition/_snap
    ```
+   **同一步补齐 GSAP vendor（必做，见坑 6）**：技能包不内置 `gsap.min.js`，缺它渲染必在 ready 检查超时退出。建完骨架立即检查并补齐，不要等到 Step 10 才发现：
+   ```bash
+   # 在 <article_dir>/assets/video-assets 执行
+   test -f composition/assets/vendor/gsap.min.js || \
+     curl -sL -o composition/assets/vendor/gsap.min.js \
+       https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js
+   ```
+   下载失败（离线/代理）时**停止并告知用户手动放置**，不要用改模板或删 `is_ready` 检查的方式绕过。
 1. **读取源文章** → 提炼 3–5 核心论点 [`references/01-article-script.md`]
 2. **撰写口播脚本 + 分镜**（钩子优先）[同上]
-3. **脚本复核**（原文比对：数据/术语/结论/逻辑）[同上]
-4. **克隆配音**（Inworld TTS，复用 `voiceId`）[`references/02-tts-audio.md`]
+3. **脚本复核**（原文比对：数据/术语/结论/逻辑；`references/01-article-script.md` 中称 **Step 2.5 质量门**，同一件事）[同上]
+4. **克隆配音**（口播正文先落 `composition/_tts.txt`，再 Inworld TTS 复用 `voiceId`）[`references/02-tts-audio.md`]
 5. **分段处理 + stutter 检测**（faster-whisper → `segments.json`）[同上]
-6. **生成场景素材图**（baidu-image-gen，必要时 cover-image-gen 兜底）[`references/03-images-screenshots.md`]
+6. **生成场景素材图**（`cover-image-gen`，仅纯文生图；不支持图生图/编辑/超分/扩图）[`references/03-images-screenshots.md`]
 7. **复用文章真实截图**（实操/产品/教程类必做）[同上]
 8. **构建渲染源 HTML**（`fill_template.py` 填时间/字幕）[`references/04-html-render-ffmpeg.md`]
-9. **定制场景文案**（`customize.py`，**已幂等**，重跑即重建）[同上]
+9. **定制场景文案**（`customize.py`，**已幂等**，改文案直接重跑；但改了配音/分段并重跑 Step 8 后**必须加 `--rebase`**，否则新时间戳被静默丢弃）[同上]
 10. **逐帧渲染**（Edge CDP `render_frames.py`）[同上]
 11. **ffmpeg 合成 MP4**[同上]
 12. **封面 + 发布物料 + CTA**（`cover_overlay.py` / `cta_config.json`）[`references/05-cover-cta.md`]
@@ -138,7 +165,7 @@ test -f composition/assets/audio/cta_tail.mp3 && echo OK_CTA   # 关闭片尾 CT
 - [ ] 实操/产品类文章：相关场景含 `.screenshot` / `.ss-compare` / `.ss-stack`（真实截图已复用，非全 AI 抽象图）
 - [ ] `snapshot_frames.py` 在每场景中段截图，核对字幕贴底、内容未裁切（`.scene-inner` 计算高度 ≤ 1540px）
 - [ ] `unset HTTP_PROXY`（沙箱代理会假 502）；路径用 Windows 原生 `D:/...` 非 `/d/...`；ffmpeg 不接 `tail`/`head` 管道
-- [ ] **vendor 目录必检（新增）**：`Test-Path composition/assets/vendor/gsap.min.js` 为 True；缺失则 `Invoke-WebRequest "https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" -OutFile composition/assets/vendor/gsap.min.js`。缺失会导致 `FATAL: page not ready` 超时退出（`is_ready` 检查含 `!!window.__timelines.main`，gsap 加载失败时短路为 false）（详见 `references/06-troubleshooting.md` 坑 6）
+- [ ] **vendor 目录必检**：Step 0 已自动下载 `composition/assets/vendor/gsap.min.js`，此处**复核存在**（`is_ready` 检查含 `!!window.__timelines.main`，gsap 加载失败时短路为 false）（详见 `references/06-troubleshooting.md` 坑 6）
 - [ ] **evaluate 返回值须为标量（新增）**：所有 `window.__timelines.main.time(t)` / `.progress(p)` 调用须包 IIFE 返回 number（`(() => { ...; return 0; })()`），否则 playwright 序列化 GSAP timeline 对象（含循环引用）会递归卡死；CDP 路径虽默认 `returnByValue: false` 不受影响，但 IIFE 仍是最佳实践（详见坑 7）
 - [ ] **CTA 配音已落位**：`composition/assets/audio/cta_tail.mp3` 存在——缺失则 CTA 段无声音。从技能包 `assets/audio/cta_tail.mp3` 复制（该复制无脚本代劳，须手动做一次）；`cta_config.json` 关闭片尾时可跳过
 - [ ] **产物目录合规（见「产物目录契约」）**：`composition/` 下无 `.edge-profile*`、无 `render_frames_*` / `snapshot_*` 脚本副本、无 `封面*.png`；最终 `封面.png` 与 `output.mp4`（及 `output-vN.mp4`）在 `video-assets/` 根、与 `视频号发布物料.md` 同目录；`视频号发布物料.md` 在 `video-assets/` 根。任一不符即未达统一规范，交付前必须整改

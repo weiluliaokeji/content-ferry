@@ -8,7 +8,12 @@ Supports multi-key rotation: automatically cycles to next key on quota limit (42
 All keys exhausted -> fatal error (no fallback).
 
 Usage:
-    python inworld_tts.py --text "文案内容" --output audio.mp3 [--voice_id xxx]
+    python inworld_tts.py --text-file _tts.txt --output audio.mp3 [--voice_id xxx]
+    python inworld_tts.py --text "短文案"   --output audio.mp3 [--voice_id xxx]
+
+--text / --text-file 二选一必填。长中文口播推荐 --text-file（UTF-8 文件），
+避免把整段文案塞进命令行导致的 shell 引号/换行转义问题（bash 的 $(cat ...)
+在 PowerShell 下不可用）。
 """
 
 import os, sys, re, json, urllib.request, base64, argparse, urllib.error
@@ -105,12 +110,22 @@ def speak(text, voice_id, api_key, out_path):
         return False, str(e)
 
 
-def _rotation_log(msg):
-    """Log key-rotation events to stderr and append to audio/key_rotation.log."""
+def _rotation_log(msg, log_dir=None):
+    """Log key-rotation events to stderr and append to key_rotation.log.
+
+    `log_dir` normally points at the directory of the output MP3 so the log
+    lands next to the audio. Do not fall back to a CWD-relative "audio/" dir:
+    that scatters logs across article directories depending on where the shell
+    happened to be, which is one reason output layouts differed between runs.
+    """
     print(msg, file=sys.stderr)
+    if not log_dir:
+        # 无明确落点时宁可不写文件日志，也不回退 CWD 相对目录——
+        # 否则日志散落在起跑目录，是产物结构漂移的来源之一。
+        return
     try:
-        os.makedirs("audio", exist_ok=True)
-        with open(os.path.join("audio", "key_rotation.log"), "a", encoding="utf-8") as f:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "key_rotation.log"), "a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except OSError:
         pass
@@ -123,6 +138,8 @@ def _speak_with_key_rotation(text, voice_id, out_path, cfg):
     keys = get_api_keys(cfg)
     if not keys:
         return False, "No API keys configured"
+    # Keep key_rotation.log next to the generated MP3 instead of relative to CWD.
+    log_dir = os.path.dirname(os.path.abspath(out_path))
 
     tried = []
     for entry in keys:
@@ -136,14 +153,16 @@ def _speak_with_key_rotation(text, voice_id, out_path, cfg):
             if ok:
                 if tried:
                     _rotation_log(
-                        "  [key rotation] succeeded after trying: %s" % tried
+                        "  [key rotation] succeeded after trying: %s" % tried,
+                        log_dir,
                     )
                 return True, info
 
             if _is_quota_error(RuntimeError(info) if isinstance(info, str) else info):
                 _rotation_log(
                     "  [key rotation] key '%s' hit limit (%s), rotating..."
-                    % (name, info[:60])
+                    % (name, info[:60]),
+                    log_dir,
                 )
                 tried.append(
                     "%s(%s)" % (name, (info[:40] + "...") if len(info) > 40 else info)
@@ -153,7 +172,8 @@ def _speak_with_key_rotation(text, voice_id, out_path, cfg):
             elif attempt == 0:
                 _rotation_log(
                     "  [retry] transient error on '%s' (%s), retrying..."
-                    % (name, info[:60])
+                    % (name, info[:60]),
+                    log_dir,
                 )
                 continue  # retry same key once
             else:
@@ -173,13 +193,39 @@ def main():
     parser = argparse.ArgumentParser(
         description="Inworld TTS with multi-key rotation (no fallback)"
     )
-    parser.add_argument("--text", required=True, help="Text to synthesize")
+    parser.add_argument(
+        "--text", help="Text to synthesize (mutually exclusive with --text-file)"
+    )
+    parser.add_argument(
+        "--text-file",
+        help="Path to a UTF-8 text file to synthesize (recommended: avoids shell "
+        "quoting/escaping issues with long Chinese copy; mutually exclusive with --text)",
+    )
     parser.add_argument("--output", required=True, help="Output MP3 path")
     parser.add_argument(
         "--voice_id", default="", help="Inworld voiceId (optional, loaded from config)"
     )
     parser.add_argument("--api_key", default="", help="Override API key (optional)")
     args = parser.parse_args()
+
+    if bool(args.text) == bool(args.text_file):
+        parser.error("exactly one of --text / --text-file is required")
+    if args.text_file:
+        try:
+            with open(args.text_file, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+        except OSError as e:
+            print("ERROR: cannot read --text-file: %s" % e, file=sys.stderr)
+            sys.exit(1)
+        if not text:
+            print("ERROR: --text-file is empty: %s" % args.text_file, file=sys.stderr)
+            sys.exit(1)
+    else:
+        text = args.text.strip()
+        if not text:
+            print("ERROR: --text is empty", file=sys.stderr)
+            sys.exit(1)
+    args.text = text
 
     cfg = load_config()
 

@@ -87,6 +87,14 @@ def main():
         "[batch_tts] Concatenated %d segments -> %s (%d bytes)"
         % (len(pieces), final_out, os.path.getsize(final_out))
     )
+    # 拼接成功后清理分段中间件：seg_*.mp3 不在产物契约内，
+    # 留下会造成目录结构漂移（失败时保留供诊断，事后须手动清理）。
+    for p in pieces:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    print("[batch_tts] Cleaned %d intermediate segment(s)" % len(pieces))
 
 
 if __name__ == "__main__":

@@ -9,7 +9,9 @@
 1. 确保 `segments.json` 已生成（见 `references/02-tts-audio.md` Step 5）
 2. `fill_template.py` 填时间/字幕占位符：
    ```bash
-   python scripts/fill_template.py segments.json templates/composition.html composition/index.html
+   # 在 <article_dir>/assets/video-assets/ 执行；脚本从技能 scripts/ 调用，不复制进 article
+   python3 <skill>/scripts/fill_template.py composition/segments.json \
+     <skill>/templates/composition.html composition/index.html
    ```
 3. 自动替换 `{{SCENE_N_START}}` / `{{SCENE_N_DURATION}}` / `{{MAIN_DURATION}}` 等，并更新 `<section>` 的 `data-start` / `data-duration`
 
@@ -50,7 +52,11 @@
 2. `</h2>` 后注释块 → 真实内容，四类结构（密度上限为硬约束）：`.steps` / `.tag-row` / `.warn-bar` / `.matrix`
 3. chrome 的 `.label`（GUIDE/NOTICE/PICK 01/MATRIX/TAKEAWAY）
 
-**幂等说明**：`customize.py` 现于首次运行时备份 `index.html` 为 `index.html.orig`；后续重跑自动从 `.orig` 重建再应用 `SCENES`，**不再需要先手动 `fill_template.py`**。改图/改文案直接重跑即可。
+**幂等说明**：`customize.py` 现于首次运行时备份 `index.html` 为 `index.html.orig`；后续重跑自动从 `.orig` 重建再应用 `SCENES`，**改文案/改图直接重跑即可**，无需先手动 `fill_template.py`。
+
+> ⚠️ **基线陷阱（重跑 Step 8 后必看）**：`.orig` 是**首次** `fill_template.py` 产物的快照。若之后改了脚本/配音并重跑 Step 8（`index.html` 的场景时间戳已更新），直接跑 `customize.py` 仍会从**旧 `.orig`** 重建——**新时间戳被静默丢弃**，成片的场景切换与字幕会跟新配音错位。
+> - 重新跑过 `fill_template.py` 后，必须：`python customize.py --rebase`（以当前 `index.html` 为新基线重建 `.orig`）。
+> - 脚本会自动比对 `index.html` 与 `.orig` 的 `data-start` 时间戳，不一致时打印 WARNING（不阻断）——**看到 WARNING 就说明你正踩这个坑**。
 
 **渲染前校验（务必执行）**：
 ```bash
@@ -61,7 +67,7 @@ grep -c '<!-- matrix 示例' composition/index.html     # 应为 0
 
 **渲染前快速目检（强烈推荐）**：`snapshot_frames.py` 在每场景中段截图（避免全量渲染 5 分钟后才发现文案问题）：
 ```bash
-python3 scripts/snapshot_frames.py composition/index.html _snap 3,26,70,92
+python3 <skill>/scripts/snapshot_frames.py composition/index.html composition/_snap 3,26,70,92
 ```
 
 **防重叠专项抽查（必做，逐条核对）**：
@@ -77,7 +83,7 @@ python3 scripts/snapshot_frames.py composition/index.html _snap 3,26,70,92
 
 ```bash
 test -f composition/assets/vendor/gsap.min.js            # 缺则 FATAL: page not ready（坑 6）
-test -f composition/assets/audio/narration.mp3           # 主配音
+test -f composition/assets/audio/narration.mp3           # 完整配音（主配音+CTA）
 test -f composition/assets/audio/cta_tail.mp3            # CTA 片尾；缺则 CTA 段无声音
 ```
 > `cta_tail.mp3` **没有脚本自动拷贝**：`audio_post_process.py` 拼接时读的是技能包自带模板（`SKILL_ROOT/assets/audio/cta_tail.mp3`），不会写进文章。渲染前须手动复制一次到 `composition/assets/audio/cta_tail.mp3`（`cta_config.json` 关闭片尾时不需要）。
@@ -107,6 +113,10 @@ python3 scripts/render_frames.py <index.html_path> <frames_dir> <fps> [start_fra
 
 > 在 `composition/` 目录内执行（命令引用的 `frames/`、`assets/` 均为相对路径）。最终视频**必须输出到上级 `video-assets/` 根**，与 `视频号发布物料.md` 同目录——**禁止**写 `composition/output.mp4`。
 
+> ⚠️ **音频必须是「主配音 + CTA」的拼接版，否则 CTA 画面会被裁掉**：成片帧数含 F9 片尾 CTA 场景，而 `-shortest` 以**较短的流**为准——若 `-i` 只给纯主配音（不含 CTA 那 6.77s），成片会被截到主配音长度，**CTA 场景整段消失**。
+> - 按 `references/02-tts-audio.md` 的推荐调用（带 `--output`）跑 `audio_post_process.py` 时，`narration.mp3` 已是拼接版，可直接用；
+> - 若省略了 `--output`，脚本只额外生成 `narration_v2.mp3`（含 CTA），`narration.mp3` 仍是纯主配音——**此时必须改用 `assets/audio/narration_v2.mp3`**。
+
 ```bash
 # 当前目录 = composition/
 ffmpeg -y -framerate 25 -i frames/frame_%05d.jpg -i assets/audio/narration.mp3 \
@@ -114,6 +124,6 @@ ffmpeg -y -framerate 25 -i frames/frame_%05d.jpg -i assets/audio/narration.mp3 \
   -c:a aac -b:a 192k -shortest -movflags +faststart \
   ../output.mp4
 ```
-**调速合成**（owner 要求一律 1.3x）：`[0:v]setpts=PTS/1.3[v];[1:a]atempo=1.3[a]` 后 `-map [v] -map [a]`。
+> ⚠️ **严禁二次调速**：上方「owner 硬性 1.3x」已在 `audio_post_process.py` 阶段完成——`narration.mp3` 已是 `atempo 1.3` 后的成品，且 `render_frames.py` 依据 `segments.json` 中已被 `update_segments` 改写（×1/1.3）的 `total_duration` 按**调速后时间轴**渲染帧。因此本步 ffmpeg **只做「帧 + 音频」合成，绝不叠加 `setpts`/`atempo`**。若误对已调速素材再套 `[0:v]setpts=PTS/1.3[v];[1:a]atempo=1.3[a]`，成片会被二次加速到约 1.69x 且音画错位，属成片缺陷。
 
 校验：`ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,r_frame_rate ../output.mp4` → `duration`≈配音时长、`1080x1920`、`h264+aac`。

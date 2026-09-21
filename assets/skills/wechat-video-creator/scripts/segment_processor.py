@@ -174,12 +174,21 @@ def main():
     )
     parser.add_argument("script", help="Path to SCRIPT.md")
     parser.add_argument("audio", help="Path to narration MP3")
-    parser.add_argument("--output", default="segments.json", help="Output JSON path")
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Output JSON path (default: segments.json next to the SCRIPT.md)",
+    )
     parser.add_argument(
         "--cta-duration", type=float, default=6.77, help="CTA tail duration in seconds"
     )
     parser.add_argument(
-        "--speed-ratio", type=float, default=1.0, help="Applied atempo speed ratio"
+        "--speed-ratio",
+        type=float,
+        default=1.0,
+        help="仅写入 segments.json 供留痕（默认 1.0）；**不会**换算时间戳。"
+        "时间戳换算由 audio_post_process.py 的 update_segments 完成，"
+        "在此传 1.3 不会让时间轴提前压缩",
     )
     parser.add_argument(
         "--whisper-model", default="small", help="faster-whisper model size"
@@ -204,10 +213,19 @@ def main():
         speed_ratio=args.speed_ratio,
     )
 
-    with open(args.output, "w", encoding="utf-8") as f:
+    # 产物落点跟随 SCRIPT.md（契约要求 segments.json 与 SCRIPT.md 同在 composition/），
+    # 不跟随 CWD——否则谁在哪个目录起跑，segments.json 就散到哪里。
+    out_path = args.output or os.path.join(
+        os.path.dirname(os.path.abspath(args.script)), "segments.json"
+    )
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    print("[segment_processor] Wrote %s" % args.output)
+    print("[segment_processor] Wrote %s" % out_path)
     print(
         "  main_duration=%.2fs  total=%.2fs  speed=%.2fx"
         % (result["main_duration"], result["total_duration"], result["speed_ratio"])

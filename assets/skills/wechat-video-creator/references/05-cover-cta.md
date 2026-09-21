@@ -49,16 +49,17 @@ python3 scripts/cover_overlay.py \
 
 **内容**：
 - **口播**（实际时长以 `cta_tail.mp3` 的 `ffprobe` 为准，当前约 6.77s）："详细内容我整理成了文章，点我头像进主页，关注公众号【围炉聊科技】就能看到。"
-- **画面字幕**："主页关注公众号「围炉聊科技」看完整版"
+- **画面主/副文案 + 片尾字幕**：由 `config/cta_config.json` 的 `display_text.main` / `display_text.sub` / `subtitle` 决定，`fill_template.py` 在生成 `index.html` 时注入模板占位符 `{{CTA_MAIN}}` / `{{CTA_SUB}}` / `{{CTA_CAPTION}}`；配置缺失时回落到内置默认文案。
+- **换公众号必须改两处**：`cta_tail.mp3`（声音）+ 上述三个字段（画面）。只换音频会出现「声音是新的、画面还写着旧号名」。
 
 **使用方式**：
-1. **音频拼接**：主口播 `narration.mp3` + CTA `cta_tail.mp3` → `narration_v2.mp3`
+1. **音频拼接**：主口播（调速后）+ CTA `cta_tail.mp3` → 完整配音。按推荐调用（带 `--output`）时结果回写为 `narration.mp3`；省略 `--output` 时额外生成 `narration_v2.mp3`（详见 `references/02-tts-audio.md`）
 2. **模板强制复用**：`audio_post_process.py` 拼接前检查 `cta_tail.mp3` 存在性——存在则强制复用，禁止重调 Inworld；不存在先用 `inworld_tts.py` 生成放置
 3. **HTML 模板**：`templates/composition.html` 内置 F9（`scene-09`），`MAIN_DURATION` / `CTA_DURATION` 由 `fill_template.py` 从 `segments.json` 自动填充
 4. **关闭 CTA**：`config/cta_config.json` 设 `"enabled": false`，或生成 `segments.json` 时 `cta_duration = 0`
 
 **重录版本规范**：
-- 每次重渲染必须生成 `-vN` 新文件（如 `-v2.mp4`），禁止覆盖旧版
+- 每次重渲染必须生成 `output-vN.mp4` 新文件（如 `output-v2.mp4`，N 递增），禁止覆盖旧版；文件同样落在 `video-assets/` 根
 - 重录前环境清理：按 PID 精确 `taskkill /F /PID <占用19222进程>` + `rm frames/*` + `curl http://127.0.0.1:19222/json` 端口检测（不全杀 msedge）
 
 **产物位置**：CTA 配音——技能自带模板在技能包 `assets/audio/cta_tail.mp3`，文章运行时副本在 `composition/assets/audio/cta_tail.mp3`（渲染前须手动复制一次，无脚本代劳；详见 SKILL.md「依赖与环境」）；CTA 配置 `config/cta_config.json`。

@@ -29,7 +29,7 @@ wechat-video-creator/
 ├── config/
 │   ├── voice_cache.example.json # 配置格式示例
 │   ├── voice_cache.json  # 本地 Inworld API key 与 voiceId（被 .gitignore 忽略）
-│   └── cta_config.json   # 片尾 CTA 文案与样式配置
+│   └── cta_config.json   # 片尾 CTA 文案配置（display_text/subtitle/duration_seconds/enabled 已接线；style.* 未接线）
 ├── scripts/
 │   ├── render_frames.py     # Edge CDP 逐帧渲染脚本
 │   ├── inworld_tts.py       # Inworld TTS 合成（多 key 轮询，不降级）
@@ -52,20 +52,29 @@ wechat-video-creator/
 
 ### 使用流程
 
+> 以下步骤**一律在 `<article_dir>/assets/video-assets/` 目录执行**，路径显式写 `composition/...`（避免 CWD 漂移导致产物结构不一致）。
+
 1. **读取源文章** → 提炼核心观点
 2. **撰写脚本** → `composition/SCRIPT.md`（按 `## F数字` 格式分段）
 3. **复核脚本** → 原文比对（数据、术语、结论、逻辑）
-4. **克隆配音** → `python scripts/inworld_tts.py --text "文案" --output audio/narration.mp3`
-5. **分段处理与 stutter 检测** → `python scripts/segment_processor.py composition/SCRIPT.md audio/narration.mp3 --output segments.json`
+4. **克隆配音** → 口播正文先落 `composition/_tts.txt`，再 `python <skill>/scripts/inworld_tts.py --text-file composition/_tts.txt --output composition/assets/audio/narration_raw.mp3`
+   - 长中文口播**一律用 `--text-file`**：`--text "$(cat ...)"` 是 bash 语法，PowerShell 下失效且引号/换行转义必炸
+5. **分段处理与 stutter 检测** → `python scripts/segment_processor.py composition/SCRIPT.md composition/assets/audio/narration_raw.mp3 --output composition/segments.json`
    - 自动按段落切分、whisper 转写、匹配时间戳、检测 stutter
-6. **配音后处理（时长压缩）** → `python scripts/audio_post_process.py audio/narration.mp3 --segments segments.json`
-   - **owner 硬性：一律 1.3x 提速**（安全区间 1.2–1.7x），1.0x 视为缺陷；>168s 阻断，<78s 警告扩充。详见 `references/02-tts-audio.md`
+6. **配音后处理（时长压缩 + 拼 CTA）** →
+   `python scripts/audio_post_process.py composition/assets/audio/narration_raw.mp3 --output composition/assets/audio/narration.mp3 --segments composition/segments.json --log composition/assets/audio/speed_adjustment.log`
+   - **owner 硬性：一律 1.3x 提速**（安全区间 1.2–1.7x），1.0x 视为缺陷。脚本 `--speed` 默认即 1.3 且**强制执行**：78–168s 照提，<78s 也照提（提速后 <60s 才提示扩充），提速后仍 >168s 或 `--speed` >1.7 则 `exit(2)` 阻断。详见 `references/02-tts-audio.md`
+   - `--output` 不能省：省略时含 CTA 的成片会落到 `<入参stem>_v2.mp3`（如 `narration_raw_v2.mp3`）而非契约约定的 `narration.mp3`，下游 ffmpeg 易接错；显式传 `--output composition/assets/audio/narration.mp3` 可让脚本把含 CTA 的成片稳定回写为 `narration.mp3`
 7. **生成素材** → 竖屏配图（见下方"图片生成备选方案"）
-8. **填充模板构建 HTML** → `python scripts/fill_template.py segments.json templates/composition.html composition/index.html`
+8. **填充模板构建 HTML** → `python <skill>/scripts/fill_template.py composition/segments.json <skill>/templates/composition.html composition/index.html`
    - 自动替换所有 `{{SCENE_N_START}}` 等占位符为真实时间戳
-9. **逐帧渲染** → `python scripts/render_frames.py <absolute_path_to_html> <frames_dir> 25`
-10. **合成 MP4** → `ffmpeg -framerate 25 -i frame_%05d.jpg -i audio/narration.mp3 ...`
-11. **产出物料** → 封面 + 描述 + 短标题
+9. **定制场景文案（必做）** → 复制 `<skill>/templates/customize.py` 到 `composition/`，改 `SCENES` / `CHROME` 后 `python customize.py`
+   - **不跑这步，每个场景顶部会显示"主标题 高亮词"等占位文字**
+   - 改文案直接重跑即可（幂等）；但**重跑过第 8 步（配音/分段有更新）后必须 `python customize.py --rebase`**，否则仍从旧 `index.html.orig` 重建、新时间戳被静默丢弃 → 场景切换/字幕与配音错位
+10. **逐帧渲染** → `python <skill>/scripts/render_frames.py <D:/绝对路径/composition/index.html> <D:/绝对路径/composition/frames> 25`
+11. **合成 MP4** → 在 `composition/` 内执行 `ffmpeg -framerate 25 -i frames/frame_%05d.jpg -i assets/audio/narration.mp3 ... ../output.mp4`
+    - 音轨必须是**含 CTA 的完整配音**，否则 `-shortest` 会把 CTA 画面裁掉
+12. **产出物料** → `video-assets/` 根下的 `封面.png` + `视频号发布物料.md`
 
 ### 图片生成方案
 
