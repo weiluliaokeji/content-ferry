@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ContentSourceService, withSvgIntrinsicSize } from "./content-source-service";
 import { AccountRepository } from "../accounts/account-repository";
 import { openInMemoryDatabase } from "../db/database";
+import { ImageSearchHistoryRepository } from "./image-search-history-repository";
 
 describe("withSvgIntrinsicSize", () => {
   it("injects width/height from the viewBox when both are missing", () => {
@@ -123,6 +124,87 @@ describe("ContentSourceService plain Markdown source", () => {
       const resource = service.readArticleResource(workspaceId, "已有文章/index.md", "./assets/cover.png");
       expect(resource.mimeType).toBe("image/png");
       await readStreamToBuffer(resource.stream);
+    } finally {
+      fs.rmSync(sourceDirectory, { recursive: true, force: true });
+      database.close();
+    }
+  });
+});
+
+describe("ContentSourceService article rename", () => {
+  it("migrates article-scoped history when the article directory follows its title", () => {
+    const database = openInMemoryDatabase();
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-article-rename-"));
+    try {
+      const articleDirectory = path.join(sourceDirectory, "posts", "旧标题");
+      fs.mkdirSync(articleDirectory, { recursive: true });
+      fs.writeFileSync(path.join(articleDirectory, "index.md"), "---\ntitle: 旧标题\n---\n\n# 旧标题\n\n旧正文\n");
+
+      const workspaceId = new AccountRepository(database.connection).getOrCreateDefaultWorkspace().id;
+      const contentSources = new ContentSourceService(database.connection);
+      contentSources.setSource(workspaceId, sourceDirectory);
+
+      const history = new ImageSearchHistoryRepository(database.connection);
+      const historyItem = { imageUrl: "https://example.com/image.png", thumbnailUrl: null, caption: "示例图", sourceUrl: null, sourceTitle: null };
+      history.add("source:posts/旧标题/index.md", "旧标题配图", "tavily", [historyItem]);
+      database.connection.prepare("INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, ?, ?)")
+        .run("source:posts/旧标题/index.md", "旧文章记忆", "2026-09-20T00:00:00.000Z");
+      database.connection.prepare(`INSERT INTO article_chat_messages
+        (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+        VALUES (?, ?, 'user', ?, '', '[]', ?)`)
+        .run("rename-chat-message", "source:posts/旧标题/index.md", "请帮我修改标题", "2026-09-20T00:01:00.000Z");
+      database.connection.prepare("INSERT INTO agent_events (id, scope_key, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run("rename-chat-event", "source:posts/旧标题/index.md", "article_chat.user_message", "{}", "2026-09-20T00:01:00.000Z");
+
+      const saved = contentSources.saveArticle(workspaceId, "posts/旧标题/index.md", "# 新标题\n\n更新后的正文");
+
+      expect(saved.relativePath).toBe("posts/新标题/index.md");
+      expect(history.list("source:posts/旧标题/index.md")).toHaveLength(0);
+      expect(history.list("source:posts/新标题/index.md")[0]?.query).toBe("旧标题配图");
+      expect(database.connection.prepare("SELECT memory FROM article_chat_threads WHERE context_key = ?")
+        .get("source:posts/新标题/index.md")).toEqual({ memory: "旧文章记忆" });
+      expect(database.connection.prepare("SELECT content FROM article_chat_messages WHERE context_key = ?")
+        .get("source:posts/新标题/index.md")).toEqual({ content: "请帮我修改标题" });
+      expect(database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE context_key = ?")
+        .get("source:posts/旧标题/index.md")).toEqual({ count: 0 });
+      expect(database.connection.prepare("SELECT scope_key AS scopeKey FROM agent_events WHERE id = ?")
+        .get("rename-chat-event")).toEqual({ scopeKey: "source:posts/新标题/index.md" });
+    } finally {
+      fs.rmSync(sourceDirectory, { recursive: true, force: true });
+      database.close();
+    }
+  });
+
+  it("rolls the directory back when article context migration conflicts", () => {
+    const database = openInMemoryDatabase();
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-article-rename-conflict-"));
+    try {
+      const articleDirectory = path.join(sourceDirectory, "posts", "旧标题");
+      fs.mkdirSync(articleDirectory, { recursive: true });
+      fs.writeFileSync(path.join(articleDirectory, "index.md"), "---\ntitle: 旧标题\n---\n\n# 旧标题\n\n旧正文\n");
+
+      const workspaceId = new AccountRepository(database.connection).getOrCreateDefaultWorkspace().id;
+      const contentSources = new ContentSourceService(database.connection);
+      contentSources.setSource(workspaceId, sourceDirectory);
+      const now = "2026-09-20T00:00:00.000Z";
+      database.connection.prepare("INSERT INTO article_settings (context_key, updated_at) VALUES (?, ?)")
+        .run("source:posts/旧标题/index.md", now);
+      database.connection.prepare(`INSERT INTO memory_candidates
+        (id, scope_key, kind, content, content_hash, source_event_ids_json, status, support_count, confidence, importance, created_at, updated_at)
+        VALUES (?, ?, 'article_fact', ?, ?, '[]', 'candidate', 1, 1, 1, ?, ?)`)
+        .run("old-memory", "source:posts/旧标题/index.md", "同一条记忆", "same-hash", now, now);
+      database.connection.prepare(`INSERT INTO memory_candidates
+        (id, scope_key, kind, content, content_hash, source_event_ids_json, status, support_count, confidence, importance, created_at, updated_at)
+        VALUES (?, ?, 'article_fact', ?, ?, '[]', 'candidate', 1, 1, 1, ?, ?)`)
+        .run("new-memory", "source:posts/新标题/index.md", "另一条记忆", "same-hash", now, now);
+
+      expect(() => contentSources.saveArticle(workspaceId, "posts/旧标题/index.md", "# 新标题\n\n更新后的正文")).toThrow();
+      expect(fs.existsSync(path.join(sourceDirectory, "posts", "旧标题"))).toBe(true);
+      expect(fs.existsSync(path.join(sourceDirectory, "posts", "新标题"))).toBe(false);
+      expect(database.connection.prepare("SELECT context_key AS contextKey FROM article_settings")
+        .get()).toEqual({ contextKey: "source:posts/旧标题/index.md" });
+      expect(database.connection.prepare("SELECT scope_key AS scopeKey FROM memory_candidates WHERE id = ?")
+        .get("old-memory")).toEqual({ scopeKey: "source:posts/旧标题/index.md" });
     } finally {
       fs.rmSync(sourceDirectory, { recursive: true, force: true });
       database.close();

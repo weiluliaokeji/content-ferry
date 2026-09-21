@@ -75,16 +75,26 @@ export class AwenConversationService {
     };
   }
 
-  updateSuggestion(messageId: string, suggestionIndex: number, status: ArticleChatSuggestion["status"]): ArticleChatSuggestion[] | null {
-    const row = this.db.prepare("SELECT suggestions_json AS suggestionsJson FROM article_chat_messages WHERE id = ? AND role = 'assistant'")
-      .get(messageId) as { suggestionsJson: string } | undefined;
-    if (!row) return null;
-    const suggestions = parseChatSuggestions(row.suggestionsJson);
-    if (!suggestions[suggestionIndex]) return null;
-    suggestions[suggestionIndex] = { ...suggestions[suggestionIndex], status };
-    this.db.prepare("UPDATE article_chat_messages SET suggestions_json = ? WHERE id = ?")
-      .run(JSON.stringify(suggestions), messageId);
-    return suggestions;
+  updateSuggestion(messageId: string, suggestionIndex: number, status: ArticleChatSuggestion["status"], contextKey: string): ArticleChatSuggestion[] | null {
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT suggestions_json AS suggestionsJson FROM article_chat_messages WHERE id = ? AND context_key = ? AND role = 'assistant'")
+        .get(messageId, contextKey) as { suggestionsJson: string } | undefined;
+      if (!row) return null;
+      const suggestions = parseChatSuggestions(row.suggestionsJson);
+      const selected = suggestions[suggestionIndex];
+      if (!selected) return null;
+      const selectedOriginal = normalizeSuggestionAnchor(selected.original);
+      const nextSuggestions = suggestions.map((suggestion, index) => {
+        if (index === suggestionIndex) return { ...suggestion, status };
+        if (status === "accepted" && suggestion.status !== "unavailable" && normalizeSuggestionAnchor(suggestion.original) === selectedOriginal) {
+          return { ...suggestion, status: "rejected" as const };
+        }
+        return suggestion;
+      });
+      this.db.prepare("UPDATE article_chat_messages SET suggestions_json = ? WHERE id = ?")
+        .run(JSON.stringify(nextSuggestions), messageId);
+      return nextSuggestions;
+    })();
   }
 
   async send(input: ArticleChatInput) {
@@ -288,6 +298,10 @@ function normalizeArticleChatOutput(value: z.infer<typeof articleChatOutput>): z
 
 function normalizeEscapedLineBreaks(value: string): string {
   return value.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n");
+}
+
+function normalizeSuggestionAnchor(value: string): string {
+  return value.trim().replace(/\r\n/g, "\n");
 }
 
 function deriveSeriesScope(title: string): string | undefined {

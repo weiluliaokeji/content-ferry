@@ -83,6 +83,25 @@ describe("local API scaffold", () => {
     return buildServer("2026-07-19T00:00:00.000Z", database, testVault, modelProvider, assetStore);
   }
 
+  it("persists image review mode and rejects connections without image input", async () => {
+    server = createTestServer();
+    const reset = await server.inject({ method: "PUT", url: "/api/image-review/settings", payload: { mode: "disabled", provider: null } });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toMatchObject({ mode: "disabled", provider: null });
+
+    const rejected = await server.inject({ method: "PUT", url: "/api/image-review/settings", payload: { mode: "specific", provider: "modelscope" } });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error).toContain("不支持图片输入");
+
+    const saved = await server.inject({ method: "PUT", url: "/api/image-review/settings", payload: { mode: "specific", provider: "openai_codex" } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ mode: "specific", provider: "openai_codex", effectiveProvider: "openai_codex", effectiveVisionInputSupport: "supported" });
+
+    const current = await server.inject({ method: "PUT", url: "/api/image-review/settings", payload: { mode: "current", provider: null } });
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).toMatchObject({ mode: "current", provider: null, currentProvider: "openai_codex" });
+  });
+
   it("exposes a guarded execution preflight without host fallback", async () => {
     server = createTestServer();
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-execution-route-"));
@@ -308,17 +327,58 @@ describe("local API scaffold", () => {
     expect(before.statusCode).toBe(200);
     expect(before.json().messages[0].suggestions).toHaveLength(1);
 
-    const repaired = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { status: "pending" } });
+    const wrongContext = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { contextKey: "source:posts/other/index.md", status: "accepted" } });
+    expect(wrongContext.statusCode).toBe(404);
+
+    const repaired = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { contextKey, status: "pending" } });
     expect(repaired.statusCode).toBe(200);
     expect(repaired.json().suggestions).toEqual([expect.objectContaining({ status: "pending" })]);
 
-    const handled = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { status: "rejected" } });
+    const handled = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/0`, payload: { contextKey, status: "rejected" } });
     expect(handled.statusCode).toBe(200);
     expect(handled.json().suggestions).toEqual([expect.objectContaining({ status: "rejected" })]);
 
     const after = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(contextKey)}` });
     expect(after.statusCode).toBe(200);
     expect(after.json().messages[0].suggestions).toEqual([expect.objectContaining({ status: "rejected" })]);
+  });
+
+  it("rejects sibling replacement suggestions when one alternative is accepted", async () => {
+    server = createTestServer();
+    const contextKey = "source:posts/title-options/index.md";
+    const messageId = "22222222-2222-4222-8222-222222222222";
+    const now = new Date().toISOString();
+    const original = "# 原来的文章标题";
+    database!.connection.prepare("INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, '', ?)")
+      .run(contextKey, now);
+    database!.connection.prepare(`INSERT INTO article_chat_messages
+      (id, context_key, role, content, memory_suggestion, suggestions_json, created_at)
+      VALUES (?, ?, 'assistant', ?, '', ?, ?)`)
+      .run(
+        messageId,
+        contextKey,
+        "这里有五个互斥的标题方案。",
+        JSON.stringify([
+          { original, replacement: "# 标题一", reason: "方案一", status: "pending" },
+          { original, replacement: "# 标题二", reason: "方案二", status: "pending" },
+          { original, replacement: "# 标题三", reason: "方案三", status: "pending" },
+          { original, replacement: "# 标题四", reason: "方案四", status: "pending" },
+          { original, replacement: "# 标题五", reason: "方案五", status: "pending" }
+        ]),
+        now
+      );
+
+    const accepted = await server.inject({ method: "PATCH", url: `/api/article-chat/messages/${messageId}/suggestions/3`, payload: { contextKey, status: "accepted" } });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().suggestions.map((suggestion: { status: string }) => suggestion.status)).toEqual([
+      "rejected", "rejected", "rejected", "accepted", "rejected"
+    ]);
+
+    const after = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(contextKey)}` });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().messages[0].suggestions.map((suggestion: { status: string }) => suggestion.status)).toEqual([
+      "rejected", "rejected", "rejected", "accepted", "rejected"
+    ]);
   });
 
   it("reuses a client Awen message id when a failed message is sent again", async () => {

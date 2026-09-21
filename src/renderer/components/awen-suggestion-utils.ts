@@ -7,6 +7,56 @@ type SuggestionLike = Pick<ArticleChatSuggestion, "original" | "replacement"> & 
 
 type MarkdownRange = { start: number; end: number };
 
+export function getArticleChatContextKey(sourceArticlePath: string | undefined, fallbackContextKey: string): string {
+  return sourceArticlePath ? `source:${sourceArticlePath}` : fallbackContextKey;
+}
+
+export function shouldReloadAwenConversation(
+  isOpen: boolean,
+  isLoaded: boolean,
+  loadedContextKey: string | undefined,
+  contextKey: string,
+  loadingContextKey?: string
+): boolean {
+  return isOpen
+    && !(isLoaded && loadedContextKey === contextKey)
+    && loadingContextKey !== contextKey;
+}
+
+export function canSendAwenMessage(
+  isLoaded: boolean,
+  loadedContextKey: string | undefined,
+  contextKey: string,
+  isRetry: boolean
+): boolean {
+  return isRetry || (isLoaded && loadedContextKey === contextKey);
+}
+
+export function canFinalizeAwenSuggestionSync(
+  conversationReadSucceeded: boolean,
+  suggestion: ArticleChatSuggestion | undefined
+): suggestion is ArticleChatSuggestion {
+  return conversationReadSucceeded && Boolean(suggestion);
+}
+
+export function isCurrentAwenLoad(
+  requestId: number,
+  currentRequestId: number,
+  requestedContextKey: string,
+  currentContextKey: string
+): boolean {
+  return requestId === currentRequestId && requestedContextKey === currentContextKey;
+}
+
+export function isCurrentAwenSuggestionSync(
+  syncId: number,
+  currentSyncId: number,
+  targetContextKey: string,
+  currentContextKey: string
+): boolean {
+  return syncId === currentSyncId && targetContextKey === currentContextKey;
+}
+
 export function suggestionOperation(suggestion: SuggestionLike): ArticleChatSuggestionOperation {
   if (suggestion.operation) return suggestion.operation;
   return /不替换|保留原文|接在.{0,40}(之后|后面)|追加到/u.test(suggestion.reason ?? "")

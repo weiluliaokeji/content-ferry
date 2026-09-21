@@ -34,6 +34,8 @@ export type CodexAiInitStatus =
   | "login_required"
   | "binary_missing";
 
+export type ImageReviewMode = "disabled" | "current" | "specific";
+
 export interface AppSettings {
   schemaVersion: 1;
   dataDir: string;
@@ -49,6 +51,9 @@ export interface AppSettings {
    * 留空表示直连。格式 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。
    */
   researchProxyUrl: string;
+  /** 联网找图候选的图片初审模型配置；不保存独立凭证。 */
+  imageReviewMode: ImageReviewMode;
+  imageReviewProvider: string | null;
   /**
    * 一次性存量归档迁移是否已完成。false/undefined 时，应用启动会自动把
    * 2026-08-11 之前创建且未归档的文章标记为 archived，然后置为 true。

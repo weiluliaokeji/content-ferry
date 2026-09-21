@@ -5,12 +5,14 @@ import { extractMarkdownImages, renderPhonePreview, resolveArticleImageUrl } fro
 import { locateMarkdownSelection } from "../markdown-selection";
 import { markdownOffsetAtTextareaTop, readImageUrl, scrollEditorToHeading, scrollTextareaToMarkdownOffset } from "../utils";
 import { AwenBottomPanel, AwenMemoryManager, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
-import { applyAwenSuggestionToMarkdown, findUniqueSuggestionRange, getAwenAlternativeSuggestionIds, getPendingAwenSuggestionIds, shouldPersistAcceptedAwenSuggestion } from "./awen-suggestion-utils";
+import { applyAwenSuggestionToMarkdown, canFinalizeAwenSuggestionSync, canSendAwenMessage, findUniqueSuggestionRange, getArticleChatContextKey, getAwenAlternativeSuggestionIds, getPendingAwenSuggestionIds, isCurrentAwenLoad, isCurrentAwenSuggestionSync, shouldPersistAcceptedAwenSuggestion, shouldReloadAwenConversation } from "./awen-suggestion-utils";
 import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { ExecutionPanel } from "./ExecutionPanel";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope } from "../types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord } from "../types";
+
+type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -53,7 +55,7 @@ export function ArticleWorkspace({
   onStopGeneration?: () => void;
   onChange: (markdown: string) => void;
   onBack: () => void;
-  onSave: () => Promise<{ success: boolean; markdown?: string; error?: string }>;
+  onSave: () => Promise<ArticleSaveResult>;
   onPublish?: () => void;
   // 非微信平台的发布在渠道稿中进行：这里提供入口，直接打开对应平台的渠道稿。
   onEnterChannel?: (platform: AccountPlatform) => void;
@@ -81,6 +83,14 @@ export function ArticleWorkspace({
   const [collectionHistory, setCollectionHistory] = useState<string[]>([]);
   const [collectionsSyncedAt, setCollectionsSyncedAt] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
+  const [imageSearchQuery, setImageSearchQuery] = useState("");
+  const [imageCandidates, setImageCandidates] = useState<ImageSearchResultItem[]>([]);
+  const [imageSearchBusy, setImageSearchBusy] = useState(false);
+  const [imageInsertBusy, setImageInsertBusy] = useState<string>();
+  const [imageSearchOpen, setImageSearchOpen] = useState(false);
+  const [imagePreviewCandidate, setImagePreviewCandidate] = useState<ImageSearchResultItem>();
+  const [imageHistory, setImageHistory] = useState<ImageSearchHistoryRecord[]>([]);
+  const [imageHistoryOpen, setImageHistoryOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [coverCropImage, setCoverCropImage] = useState<SelectedImage>();
   const [settingsMaterials, setSettingsMaterials] = useState<WechatMaterial[]>([]);
@@ -126,6 +136,12 @@ export function ArticleWorkspace({
   const [awenInput, setAwenInput] = useState("");
   const [awenLoading, setAwenLoading] = useState(false);
   const [awenLoaded, setAwenLoaded] = useState(false);
+  const [awenLoadedContextKey, setAwenLoadedContextKey] = useState<string>();
+  const awenLoadRequestIdRef = useRef(0);
+  const awenLoadingContextKeyRef = useRef<string | undefined>(undefined);
+  const awenSuggestionSyncRequestIdRef = useRef(0);
+  const articleSaveInFlightRef = useRef(false);
+  const [articleSaveInFlight, setArticleSaveInFlight] = useState(false);
   const [pendingAwenSend, setPendingAwenSend] = useState<PendingAwenSend>();
   const [pendingAwenReviewBusy, setPendingAwenReviewBusy] = useState(false);
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
@@ -152,6 +168,16 @@ export function ArticleWorkspace({
     collectionName: ""
   });
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
+  const awenContextKeyRef = useRef(contextKey);
+  awenContextKeyRef.current = contextKey;
+  useEffect(() => {
+    if (leftTool !== "images") return;
+    let active = true;
+    void request<{ items: ImageSearchHistoryRecord[] }>(`/image-candidates/history?contextKey=${encodeURIComponent(contextKey)}`)
+      .then((result) => { if (active) setImageHistory(result.items); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [contextKey, leftTool]);
   const switchToMarkdown = (offset: number) => {
     setModeScrollOffset(offset);
     setEditorMode("markdown");
@@ -172,30 +198,45 @@ export function ArticleWorkspace({
   }, [editorMode, modeScrollOffset]);
   const openAwen = async () => {
     setAwenOpen(true);
-    if (awenLoaded) return;
+    if (awenLoaded && awenLoadedContextKey === contextKey) return;
+    const requestedContextKey = contextKey;
+    const requestId = ++awenLoadRequestIdRef.current;
+    awenLoadingContextKeyRef.current = requestedContextKey;
+    setAwenMessages([]);
     try {
-      const chat = await request<{ memory: string; messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(contextKey)}`);
+      const chat = await request<{ memory: string; messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(requestedContextKey)}`);
+      if (!isCurrentAwenLoad(requestId, awenLoadRequestIdRef.current, requestedContextKey, awenContextKeyRef.current)) return;
       const normalized = removeUnavailableAwenSuggestions(markUnansweredAwenMessages(chat.messages), markdown);
       setAwenMemory(chat.memory);
       setAwenMessages(normalized.messages);
       setAwenLoaded(true);
+      setAwenLoadedContextKey(requestedContextKey);
       // Suggestions whose original text no longer exists have already been
       // applied or superseded by a manual edit. Remove their persisted copy so
       // they cannot resurface on the next launch either.
       for (const stale of normalized.staleSuggestions) {
         try {
-          await request(`/article-chat/messages/${encodeURIComponent(stale.messageId)}/suggestions/${stale.index}`, { method: "PATCH", body: JSON.stringify({ status: "unavailable" }) });
+          await request(`/article-chat/messages/${encodeURIComponent(stale.messageId)}/suggestions/${stale.index}`, { method: "PATCH", body: JSON.stringify({ contextKey: requestedContextKey, status: "unavailable" }) });
         } catch {
           // The current session has already hidden it. A later open can retry
           // cleanup without interrupting the author with a non-actionable error.
         }
       }
-    } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法读取阿文的本文会话。"); }
+    } catch (cause) {
+      if (!isCurrentAwenLoad(requestId, awenLoadRequestIdRef.current, requestedContextKey, awenContextKeyRef.current)) return;
+      setWorkspaceError(cause instanceof Error ? cause.message : "无法读取阿文的本文会话。");
+    } finally {
+      if (awenLoadingContextKeyRef.current === requestedContextKey) awenLoadingContextKeyRef.current = undefined;
+    }
   };
+  useEffect(() => {
+    if (!shouldReloadAwenConversation(awenOpen, awenLoaded, awenLoadedContextKey, contextKey, awenLoadingContextKeyRef.current)) return;
+    void openAwen();
+  }, [awenOpen, awenLoaded, awenLoadedContextKey, contextKey]);
   const sendAwenMessage = async (retryMessage?: ArticleChatMessage, options?: { skipPendingReview?: boolean; message?: string }) => {
     const message = retryMessage?.content ?? options?.message ?? awenInput.trim();
     if (!message || awenLoading) return;
-    if (!awenLoaded && !retryMessage) {
+    if (!canSendAwenMessage(awenLoaded, awenLoadedContextKey, contextKey, Boolean(retryMessage))) {
       setWorkspaceError("正在读取阿文历史会话，请稍后再发送。");
       return;
     }
@@ -367,8 +408,38 @@ export function ArticleWorkspace({
       setSettingsSaving(false);
     }
   };
-  const persistAcceptedAwenSuggestions = async (ids: string[]): Promise<string[]> => {
+  const persistAcceptedAwenSuggestions = async (ids: string[], targetContextKey = contextKey): Promise<string[]> => {
+    const syncRequestId = ++awenSuggestionSyncRequestIdRef.current;
+    const canUpdateCurrentArticle = () => isCurrentAwenSuggestionSync(
+      syncRequestId,
+      awenSuggestionSyncRequestIdRef.current,
+      targetContextKey,
+      awenContextKeyRef.current
+    );
     const failed: string[] = [];
+    let messages = awenMessages;
+    let conversationReadSucceeded = true;
+    if (ids.some((id) => {
+      const [messageId, rawIndex] = id.split(":");
+      const index = Number(rawIndex);
+      return !messages.find((message) => message.id === messageId)?.suggestions[index];
+    })) {
+      conversationReadSucceeded = false;
+      try {
+        const chat = await request<{ memory: string; messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(targetContextKey)}`);
+        messages = chat.messages;
+        if (canUpdateCurrentArticle()) {
+          setAwenMemory(chat.memory);
+          setAwenMessages(messages);
+          setAwenLoaded(true);
+          setAwenLoadedContextKey(targetContextKey);
+        }
+        conversationReadSucceeded = true;
+      } catch {
+        // Without the refreshed conversation there is no safe way to verify
+        // the applied suggestion. Keep it pending so the next save can retry.
+      }
+    }
     for (const id of ids) {
       const [messageId, rawIndex] = id.split(":");
       const index = Number(rawIndex);
@@ -376,8 +447,8 @@ export function ArticleWorkspace({
         failed.push(id);
         continue;
       }
-      const suggestion = awenMessages.find((message) => message.id === messageId)?.suggestions[index];
-      if (!suggestion) {
+      const suggestion = messages.find((message) => message.id === messageId)?.suggestions[index];
+      if (!canFinalizeAwenSuggestionSync(conversationReadSucceeded, suggestion)) {
         failed.push(id);
         continue;
       }
@@ -385,36 +456,44 @@ export function ArticleWorkspace({
         // The accepted text may have been removed or replaced completely
         // before saving. Do not claim that this suggestion was saved.
         try {
-          await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "unavailable" }) });
-          setAwenSuggestionStatusInView(messageId, index, "unavailable");
+          await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: targetContextKey, status: "unavailable" }) });
+          if (canUpdateCurrentArticle()) setAwenSuggestionStatusInView(messageId, index, "unavailable");
         } catch {
           failed.push(id);
         }
         continue;
       }
       try {
-        await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "accepted" }) });
-        setAwenSuggestionStatusInView(messageId, index, "accepted");
+        const result = await request<{ suggestions: ArticleChatSuggestion[] }>(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: targetContextKey, status: "accepted" }) });
+        if (canUpdateCurrentArticle()) setAwenSuggestionsInView(messageId, result.suggestions);
       } catch {
         failed.push(id);
       }
     }
-    setUnsavedAwenSuggestionIds(new Set(failed));
+    if (canUpdateCurrentArticle()) setUnsavedAwenSuggestionIds(new Set(failed));
     return failed;
   };
   const saveArticleAndSettings = async (): Promise<boolean> => {
-    if (!await persistArticleSettings()) return false;
-    const pendingSuggestionIds = [...unsavedAwenSuggestionIds];
-    const result = await onSave();
-    if (result.success) {
-      setSavedMarkdown(result.markdown ?? markdown);
-      setSavedSettings(articleSettings);
-      const failedSuggestionSync = await persistAcceptedAwenSuggestions(pendingSuggestionIds);
-      setWorkspaceError(failedSuggestionSync.length > 0 ? "文章已保存，但阿文建议状态尚未同步完成。请再次点击“保存文章”重试。" : "");
-      return failedSuggestionSync.length === 0;
-    } else {
+    if (articleSaveInFlightRef.current) return false;
+    articleSaveInFlightRef.current = true;
+    setArticleSaveInFlight(true);
+    try {
+      if (!await persistArticleSettings()) return false;
+      const pendingSuggestionIds = [...unsavedAwenSuggestionIds];
+      const result = await onSave();
+      if (result.success) {
+        setSavedMarkdown(result.markdown ?? markdown);
+        setSavedSettings(articleSettings);
+        const savedContextKey = getArticleChatContextKey(result.sourceArticlePath, contextKey);
+        const failedSuggestionSync = await persistAcceptedAwenSuggestions(pendingSuggestionIds, savedContextKey);
+        setWorkspaceError(failedSuggestionSync.length > 0 ? "文章已保存，但阿文建议状态尚未同步完成。请再次点击“保存文章”重试。" : "");
+        return failedSuggestionSync.length === 0;
+      }
       setWorkspaceError(result.error ?? "文章保存失败，请查看运行日志。 ");
       return false;
+    } finally {
+      articleSaveInFlightRef.current = false;
+      setArticleSaveInFlight(false);
     }
   };
   const prepareFromWorkspace = async () => {
@@ -739,6 +818,77 @@ export function ArticleWorkspace({
       setWorkspaceError(cause instanceof Error ? cause.message : "远程图片下载失败。");
     }
   };
+  const searchImageCandidates = async () => {
+    const query = imageSearchQuery.trim();
+    if (!query) {
+      setWorkspaceError("请先输入想找的图片主题或描述。");
+      return;
+    }
+    setImageSearchBusy(true);
+    setWorkspaceError("");
+    try {
+      const result = await request<{ query: string; provider: string | null; items: ImageSearchResultItem[] }>("/image-candidates/search", {
+        method: "POST",
+        body: JSON.stringify({ query, limit: 12 })
+      });
+      let reviewedItems = result.items;
+      let historyProvider = result.provider;
+      if (result.items.length > 0) {
+        try {
+          const reviewed = await request<{ query: string; provider: string | null; items: ImageSearchResultItem[] }>("/image-candidates/review", {
+            method: "POST",
+            body: JSON.stringify({ query, items: result.items })
+          });
+          reviewedItems = reviewed.items;
+          historyProvider = reviewed.provider ?? historyProvider;
+        } catch {
+          // Candidate retrieval remains useful when the optional visual review
+          // model is unavailable; keep the unreviewed candidates visible.
+        }
+      }
+      setImageCandidates(reviewedItems);
+      try {
+        const saved = await request<{ item: ImageSearchHistoryRecord }>("/image-candidates/history", {
+          method: "POST",
+          body: JSON.stringify({ contextKey, query, provider: historyProvider, items: reviewedItems })
+        });
+        setImageHistory((current) => [saved.item, ...current.filter((item) => item.id !== saved.item.id)].slice(0, 30));
+      } catch {
+        // History is an auxiliary record; a database hiccup must not hide usable candidates.
+      }
+      if (reviewedItems.length === 0) setWorkspaceError("没有找到可用图片候选，请换个描述重试。");
+    } catch (cause) {
+      setImageCandidates([]);
+      setWorkspaceError(cause instanceof Error ? cause.message : "图片检索失败，请稍后重试。");
+    } finally {
+      setImageSearchBusy(false);
+    }
+  };
+  const restoreImageHistory = (record: ImageSearchHistoryRecord) => {
+    setImageSearchQuery(record.query);
+    setImageCandidates(record.items);
+    setImageHistoryOpen(false);
+  };
+  const insertImageCandidate = async (candidate: ImageSearchResultItem) => {
+    const label = candidate.caption || candidate.sourceTitle || "联网图片";
+    if (!window.confirm("确认下载这张图片并插入文章末尾吗？文渡会先保存到当前文章的本地 assets 目录。")) return;
+    setImageInsertBusy(candidate.imageUrl);
+    setWorkspaceError("");
+    try {
+      const endpoint = sourceArticlePath ? "/content-source/article-asset/import-remote" : "/content-assets/import-remote";
+      const saved = await request<{ assetUrl: string }>(endpoint, {
+        method: "POST",
+        body: JSON.stringify(sourceArticlePath ? { path: sourceArticlePath, url: candidate.imageUrl } : { contextId: assetContextId, url: candidate.imageUrl })
+      });
+      const separator = markdown.trimEnd() ? "\n\n" : "";
+      onChange(`${markdown.trimEnd()}${separator}![${label.replace(/[\[\]]/g, "")}](${saved.assetUrl})\n`);
+      setWorkspaceError("");
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "图片下载失败，文章没有写入远程地址。");
+    } finally {
+      setImageInsertBusy(undefined);
+    }
+  };
   const runSelectionDetection = async () => {
     const hasSelection = Boolean(selectionRange && selectionRange.end > selectionRange.start);
     const selectionSource = selectionDocumentMarkdown ?? markdown;
@@ -805,12 +955,15 @@ export function ArticleWorkspace({
     });
     setAwenMessages((current) => current.map((message) => message.id === messageId ? { ...message, suggestions: message.suggestions.map((item, itemIndex) => itemIndex === index ? { ...item, status } : item) } : message));
   };
+  const setAwenSuggestionsInView = (messageId: string, suggestions: ArticleChatSuggestion[]) => {
+    setAwenMessages((current) => current.map((message) => message.id === messageId ? { ...message, suggestions } : message));
+  };
   const dismissAwenSuggestion = async (id: string, options?: { suppressError?: boolean }) => {
     const [messageId, rawIndex] = id.split(":");
     const index = Number(rawIndex);
     if (!messageId || !Number.isInteger(index)) return false;
     try {
-      await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "rejected" }) });
+      await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey, status: "rejected" }) });
       setAwenSuggestionStatusInView(messageId, index, "rejected");
       return true;
     } catch (cause) {
@@ -828,7 +981,7 @@ export function ArticleWorkspace({
     if (updatedMarkdown === undefined) {
       setWorkspaceError("这条阿文建议已无法准确定位到原文；可能正文已经修改。请重新向阿文提问。");
       try {
-        await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ status: "unavailable" }) });
+        await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey, status: "unavailable" }) });
         setAwenSuggestionStatusInView(messageId, index, "unavailable");
       } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。"); }
       return;
@@ -850,7 +1003,7 @@ export function ArticleWorkspace({
   // Generating a summary is an AI request, not a save operation. It must not
   // disable the editor, save button, or the Ctrl/Cmd+S shortcut while the
   // provider is working; only the summary action itself is locked below.
-  const editorBusy = saving || settingsSaving || settingsCoverPromptBusy;
+  const editorBusy = saving || settingsSaving || settingsCoverPromptBusy || articleSaveInFlight;
   const busy = editorBusy;
   useEffect(() => {
     const saveWithShortcut = (event: KeyboardEvent) => {
@@ -904,7 +1057,7 @@ export function ArticleWorkspace({
         {leftTool === "body" && <div className="editor-stats"><span>{wordCount} 字</span><span>{images.length} 张图片</span><span>约 {Math.max(1, Math.ceil(wordCount / 500))} 分钟阅读</span></div>}
         {leftTool === "structure" && <div className="tool-detail"><strong>文章结构</strong>{headings.length ? headings.map((heading, index) => <button className="structure-link" key={index} style={{ paddingLeft: `${(heading[1].length - 1) * 10}px` }} onClick={() => scrollEditorToHeading(heading[2], index, markdown, editorMode)}>{heading[2]}</button>) : <small>正文中还没有标题。</small>}</div>}
         {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? <div className="article-source-links">{sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>)}</div> : <small>暂未识别到正文链接来源。</small>}{projectId && <>{savedResearchSources.length > 0 && <div className="temporary-research-results"><p><strong>已保存证据</strong><small>来自资料工作台；只有已采纳的卡会进入提纲和正文上下文。</small></p>{savedResearchSources.map((source) => <article className="temporary-research-card" key={source.id}><strong>{source.title}</strong><small>{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : "待核验"}</small><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p></article>)}</div>}<div className="temporary-research-box"><label>临时调研范围<select value={temporaryResearchScope} onChange={(event) => setTemporaryResearchScope(event.target.value as TemporaryResearchScope)} disabled={temporaryResearchBusy}><option value="selection">选中文本</option><option value="paragraph">当前段落</option><option value="article">整篇文章</option></select></label><small>结果只在本次编辑会话保留，不会自动改写正文或进入正式资料。</small><button type="button" className="secondary-button" onClick={() => void runTemporaryResearch()} disabled={temporaryResearchBusy}>{temporaryResearchBusy ? "正在临时调研…" : "开始临时调研"}</button>{temporaryResearch && <div className="temporary-research-results"><p><strong>临时结果</strong><small>{temporaryResearchScope === "selection" ? "选中文本" : temporaryResearchScope === "paragraph" ? "当前段落" : "整篇文章"} · 本次范围已记录</small></p>{temporaryResearch.sources.length ? temporaryResearch.sources.map((source) => <article className="temporary-research-card" key={`${source.url}-${source.title}`}><strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p>{source.keyClaims?.length ? <ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul> : null}{source.recommendation && <p><strong>为什么值得看：</strong>{source.recommendation}</p>}{source.freshness?.startsWith("易变：") && <p><strong>发布前复核：</strong>{source.freshness.slice(3)}</p>}{source.evidence?.snapshots?.[0]?.capturedAt && <small>抓取时间：{new Date(source.evidence.snapshots[0].capturedAt).toLocaleString()}</small>}<div className="temporary-research-actions"><button type="button" className="text-button" onClick={() => insertTemporaryText(source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为摘录</button><button type="button" className="text-button" onClick={() => insertTemporaryText(source.claim ?? source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为改写建议</button><button type="button" className="text-button" onClick={() => void saveTemporaryResearchSource(source)} disabled={temporaryResearchBusy}>保存为待核验证据</button></div>{!canInsertTemporaryText && <small>请选择当前正文中的一段文字后再插入。</small>}</article>) : <small>本次没有获得可核验资料卡。</small>}</div>}</div></>}</div>}
-        {leftTool === "images" && <div className="tool-detail"><strong>图片素材</strong>{images.length ? images.map((image, index) => <img key={`${image.src}-${index}`} src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />) : <small>正文中还没有图片。</small>}<button disabled className="text-button">独立素材库即将开放</button></div>}
+        {leftTool === "images" && <div className="tool-detail image-materials-panel"><div className="image-panel-heading"><div><strong>图片素材</strong><small>{images.length ? `正文已有 ${images.length} 张图片` : "正文中还没有图片"}</small></div><span>{imageCandidates.length ? `${imageCandidates.length} 个候选` : ""}</span></div><button type="button" className="secondary-button image-search-launcher" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>打开联网找图</button>{imageHistory.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(true); setImageSearchOpen(true); }}>查看搜图历史（{imageHistory.length}）</button>}<small>找图和候选初审会在宽版面板中进行，历史记录会按当前文章保存。</small>{imageCandidates.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>查看最近候选</button>}{images.length ? <div className="article-image-list">{images.map((image, index) => <img key={`${image.src}-${index}`} src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />)}</div> : <small>确认插入的图片会显示在这里。</small>}</div>}
       </aside>
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
@@ -1028,8 +1181,96 @@ export function ArticleWorkspace({
     {memoryManagerOpen && <AwenMemoryManager memories={formalMemories} candidates={memoryCandidates} busy={memoryManagerBusy} onPromote={(candidateId) => void promoteMemoryCandidate(candidateId)} onStatus={(memoryId, status) => void updateFormalMemory(memoryId, status)} onForget={(mode) => void forgetArticleMemory(mode)} onExport={() => void exportArticleMemory()} onImport={(file) => void importArticleMemory(file)} onClose={() => setMemoryManagerOpen(false)} />}
     {executionOpen && <div className="execution-modal-backdrop" role="presentation"><section className="execution-modal" role="dialog" aria-modal="true" aria-label="代码与工具执行"><div className="execution-modal-header"><div><p className="eyebrow">文章工具</p><h2>代码与工具</h2><p className="hint compact-hint">需要执行 Demo 或分析源码时再打开；授权目录可以跨文章复用。</p></div><button type="button" className="text-button" onClick={() => setExecutionOpen(false)}>关闭</button></div><ExecutionPanel projectId={projectId} onError={setWorkspaceError} onInsertCitation={(citation) => onChange(`${markdown}\n\n${citation}\n`)} onClose={() => setExecutionOpen(false)} /></section></div>}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
+    {imageSearchOpen && <ImageCandidateSearchModal query={imageSearchQuery} candidates={imageCandidates} history={imageHistory} historyOpen={imageHistoryOpen} busy={imageSearchBusy} insertBusy={imageInsertBusy} onQueryChange={setImageSearchQuery} onSearch={() => void searchImageCandidates()} onInsert={(candidate) => void insertImageCandidate(candidate)} onPreview={setImagePreviewCandidate} onToggleHistory={() => setImageHistoryOpen((open) => !open)} onSelectHistory={restoreImageHistory} onClose={() => setImageSearchOpen(false)} />}
+    {imagePreviewCandidate && <ImageCandidatePreviewModal candidate={imagePreviewCandidate} onClose={() => setImagePreviewCandidate(undefined)} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
     {leavePromptOpen && <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-label="保存文章修改"><div className="section-heading"><div><p className="eyebrow">离开文章</p><h2>文章还有未保存修改</h2></div><button type="button" className="text-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button></div><p className="hint">{unsavedAwenSuggestionIds.size > 0 ? `其中有 ${unsavedAwenSuggestionIds.size} 条阿文建议已经应用到当前草稿，但还没有保存到文章文件。` : "当前文章还有未保存的修改。"}</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button><button type="button" className="secondary-button" onClick={discardAndLeave} disabled={leaving}>放弃本次修改</button><button type="button" onClick={() => void saveAndLeave()} disabled={leaving}>{leaving ? "正在保存…" : "保存并返回"}</button></div></section></div>}
+  </div>;
+}
+
+function ImageCandidateSearchModal({
+  query,
+  candidates,
+  history,
+  historyOpen,
+  busy,
+  insertBusy,
+  onQueryChange,
+  onSearch,
+  onInsert,
+  onPreview,
+  onToggleHistory,
+  onSelectHistory,
+  onClose
+}: {
+  query: string;
+  candidates: ImageSearchResultItem[];
+  history: ImageSearchHistoryRecord[];
+  historyOpen: boolean;
+  busy: boolean;
+  insertBusy?: string;
+  onQueryChange: (value: string) => void;
+  onSearch: () => void;
+  onInsert: (candidate: ImageSearchResultItem) => void;
+  onPreview: (candidate: ImageSearchResultItem) => void;
+  onToggleHistory: () => void;
+  onSelectHistory: (record: ImageSearchHistoryRecord) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [busy, onClose]);
+
+  return <div className="image-search-backdrop" role="presentation">
+    <section className="image-search-modal" role="dialog" aria-modal="true" aria-label="联网找图">
+      <header className="image-search-modal-header">
+        <div><p className="eyebrow">文章配图</p><h2>联网找图</h2><p className="hint compact-hint">先搜索候选，再参考视觉初审结果；点击图片可看大图。确认后会把图片插入文章末尾，前后保留空行。</p></div>
+        <div className="image-search-header-actions"><button type="button" className="secondary-button compact-action" onClick={onToggleHistory} disabled={busy}>{historyOpen ? "返回候选" : `搜图历史${history.length ? `（${history.length}）` : ""}`}</button><button type="button" className="text-button" onClick={onClose} disabled={busy}>关闭</button></div>
+      </header>
+      <form className="image-search-form" onSubmit={(event) => { event.preventDefault(); onSearch(); }}>
+        <label><span>图片主题或描述</span><input autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="例如：Skill Recorder 操作界面" maxLength={500} /></label>
+        <button type="submit" disabled={busy || !query.trim()}>{busy ? "正在搜索并初审…" : "搜索图片"}</button>
+      </form>
+      {historyOpen ? <div className="image-search-history-list">{history.length === 0 ? <div className="image-search-empty"><strong>还没有搜图历史</strong><p>完成一次图片搜索后，搜索词和候选结果会保存在当前文章下。</p></div> : history.map((record) => <article className="image-search-history-item" key={record.id}><div><strong>{record.query}</strong><small>{new Date(record.createdAt).toLocaleString()} · {record.provider || "未记录服务"} · {record.items.length} 个候选</small><div className="image-history-thumbnails">{record.items.slice(0, 5).map((item) => <img key={item.imageUrl} src={item.thumbnailUrl ?? item.imageUrl} alt="" loading="lazy" />)}</div></div><button type="button" className="secondary-button compact-action" onClick={() => onSelectHistory(record)}>查看候选</button></article>)}</div> : <>
+        {busy && <div className="image-search-progress" role="status"><span className="loading-dot" aria-hidden="true" /><span>正在获取图片并进行初审，未确认的图片不会写入文章。</span></div>}
+        {!busy && candidates.length === 0 && <div className="image-search-empty"><strong>输入主题开始搜索</strong><p>结果会展示缩略图、来源和初审建议。图片来源与版权仍需要你在插入前确认。</p></div>}
+      {candidates.length > 0 && <div className="image-candidate-grid image-candidate-grid-wide">{candidates.map((candidate) => {
+        const review = candidate.review;
+        const reviewLabel = review?.status === "accepted" ? "初审通过" : review?.status === "rejected" ? "初审不建议" : review?.status === "uncertain" ? "需要人工判断" : review?.status === "failed" ? "初审失败" : "未初审";
+        return <article className="image-candidate image-candidate-wide" key={candidate.imageUrl}>
+          <button type="button" className="image-candidate-image-button" onClick={() => onPreview(candidate)} aria-label="查看图片大图">
+            <img src={candidate.thumbnailUrl ?? candidate.imageUrl} alt={candidate.caption || candidate.sourceTitle || "图片候选"} loading="lazy" onError={(event) => { const image = event.currentTarget; if (image.dataset.fallback === "1") { image.style.visibility = "hidden"; return; } image.dataset.fallback = "1"; image.src = `${apiBase}/image-candidates/preview?url=${encodeURIComponent(candidate.imageUrl)}`; }} />
+            <span>点击查看大图</span>
+          </button>
+          <div><span className={`image-review-badge image-review-${review?.status ?? "unreviewed"}`}>{reviewLabel}</span><strong>{candidate.caption || candidate.sourceTitle || "未命名图片"}</strong>{review?.reason && <small title={review.reason}>{review.reason}</small>}{candidate.sourceTitle && <small>{candidate.sourceTitle}</small>}<div className="image-candidate-links">{candidate.sourceUrl ? <a href={candidate.sourceUrl} target="_blank" rel="noreferrer">打开源网页</a> : <small>源网页未返回</small>}<a href={candidate.imageUrl} target="_blank" rel="noreferrer">打开原图</a></div><button type="button" onClick={() => onInsert(candidate)} disabled={insertBusy !== undefined}>{insertBusy === candidate.imageUrl ? "正在保存…" : "确认下载并插入文章末尾"}</button></div>
+        </article>;
+      })}</div>}
+      </>}
+    </section>
+  </div>;
+}
+
+function ImageCandidatePreviewModal({ candidate, onClose }: { candidate: ImageSearchResultItem; onClose: () => void }) {
+  const [directImage, setDirectImage] = useState(false);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  const previewUrl = `${apiBase}/image-candidates/preview?url=${encodeURIComponent(candidate.imageUrl)}`;
+  return <div className="image-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="image-preview-modal" role="dialog" aria-modal="true" aria-label="图片大图预览">
+      <header className="image-preview-header"><div><p className="eyebrow">图片预览</p><h2>{candidate.caption || candidate.sourceTitle || "图片候选"}</h2></div><button type="button" className="text-button" onClick={onClose}>关闭</button></header>
+      <div className="image-preview-stage"><img src={directImage ? candidate.imageUrl : previewUrl} alt={candidate.caption || candidate.sourceTitle || "图片候选"} onError={() => setDirectImage(true)} /></div>
+      <footer className="image-preview-footer"><div className="image-preview-meta">{candidate.review?.reason && <small>{candidate.review.reason}</small>}{candidate.sourceUrl ? <small>搜索服务返回了源网页，可以打开核对上下文。</small> : <small>搜索服务没有返回源网页，下面仅提供原图地址。</small>}</div><div className="modal-actions">{candidate.sourceUrl && <a className="secondary-button" href={candidate.sourceUrl} target="_blank" rel="noreferrer">打开源网页</a>}<a className="secondary-button" href={candidate.imageUrl} target="_blank" rel="noreferrer">打开原图</a></div></footer>
+    </section>
   </div>;
 }
 

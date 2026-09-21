@@ -4,6 +4,7 @@ import {
   type GenerateStructuredRequest,
   type GenerateStructuredResult,
   type GenerateMarkdownStreamRequest,
+  type ReviewImageRequest,
   type ModelProvider,
   type WebResearchOptions
 } from "./model-provider";
@@ -29,6 +30,7 @@ import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { createHash, randomUUID } from "node:crypto";
 import type { ResearchDepth, ResearchExecution } from "../../shared/research-state";
 import type { ResearchEvidence, ResearchEvidenceSnapshot } from "../../shared/research-evidence";
+import { loadAppSettings } from "../config/first-run";
 
 const RESEARCH_ROUNDS_BY_DEPTH: Record<ResearchDepth, number> = { quick: 1, balanced: 3, deep: 5 };
 type AuditMeta = { task: string; skillId: string; prompt: string; provider?: string; model?: string; correlationId?: string; retrieval?: { rounds: number; sources: number; provider: string | null } | null };
@@ -129,6 +131,38 @@ export class ConfiguredModelProvider implements ModelProvider {
     });
     request.onDelta(generated.value.markdown);
     return generated;
+  }
+
+  async reviewImage<T>(request: ReviewImageRequest<T>): Promise<GenerateStructuredResult<T>> {
+    const settings = loadAppSettings();
+    if (settings.imageReviewMode === "disabled") {
+      throw new ModelProviderUnavailableError("图片视觉初审尚未启用，请先在“技能与模型”中配置。");
+    }
+    const currentProvider = this.skills.get("awen-assistant").provider ?? "openai_codex";
+    const provider = settings.imageReviewMode === "specific"
+      ? settings.imageReviewProvider
+      : currentProvider;
+    if (!provider) throw new ModelProviderUnavailableError("图片视觉初审没有可用的模型连接。");
+    const connection = this.connections.get(provider);
+    if (!connection.enabled) throw new ModelProviderUnavailableError(`${connection.displayName} 连接已停用。`);
+    if (connection.visionInputSupport === "unsupported") {
+      throw new ModelProviderUnavailableError(`${connection.displayName} 当前不支持图片输入。`);
+    }
+    if (provider !== "openai_codex" || !this.codexProvider.reviewImage) {
+      throw new ModelProviderUnavailableError(`${connection.displayName} 的图片输入能力尚未完成适配，已回退人工判断。`);
+    }
+    const meta: AuditMeta = {
+      task: "image_review",
+      skillId: "image-review",
+      prompt: request.prompt,
+      provider,
+      model: connection.modelId,
+      correlationId: randomUUID()
+    };
+    return this.withAudit(meta, () => this.codexProvider.reviewImage!({
+      ...request,
+      modelId: connection.modelId
+    }));
   }
 
   /** Model-agnostic web research: app-owned retrieval + LLM synthesis.

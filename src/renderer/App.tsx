@@ -30,7 +30,7 @@ import { LibraryView } from "./views/LibraryView";
 import { LogsView } from "./views/LogsView";
 import { PublishView } from "./views/PublishView";
 import { SkillsView } from "./views/SkillsView";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, ResearchRun, ResearchTask, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, ResearchRun, ResearchTask, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ImageReviewSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse } from "./types";
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -839,14 +839,16 @@ export function App() {
   // 已处于 approved（冻结）态时仅建任务。冻结不可逆，故从草稿态进入前需在 UI 弹确认框。
   async function loadSkillsAndConnections() {
     try {
-      const [skillResult, connectionResult, searchSettingsResult] = await Promise.all([
+      const [skillResult, connectionResult, searchSettingsResult, imageReviewSettingsResult] = await Promise.all([
         request<{ items: ManagedSkill[] }>("/skills"),
         request<{ items: ModelConnection[] }>("/model-connections"),
-        request<WebSearchSettings>("/web-search/settings")
+        request<WebSearchSettings>("/web-search/settings"),
+        request<ImageReviewSettings>("/image-review/settings")
       ]);
       setSkills(skillResult.items);
       setModelConnections(connectionResult.items);
       setWebSearchSettings(searchSettingsResult);
+      setImageReviewSettings(imageReviewSettingsResult);
       setResearchProxyUrl(searchSettingsResult.researchProxyUrl ?? "");
       const coverSkill = skillResult.items.find((skill) => skill.id === "cover-generation");
       const coverProvider = coverSkill?.provider;
@@ -868,6 +870,10 @@ export function App() {
     setSelectedSkillIds,
     modelConnections,
     setModelConnections,
+    imageReviewSettings,
+    setImageReviewSettings,
+    imageReviewSaving,
+    saveImageReviewSettings,
     webSearchSettings,
     setWebSearchSettings,
     editingSkill,
@@ -1435,6 +1441,9 @@ export function App() {
       selectedSkillIds={selectedSkillIds}
       setSelectedSkillIds={setSelectedSkillIds}
       modelConnections={modelConnections}
+      imageReviewSettings={imageReviewSettings}
+      imageReviewSaving={imageReviewSaving}
+      saveImageReviewSettings={saveImageReviewSettings}
       settings={settings}
       setSettings={setSettings}
       webSearchSettings={webSearchSettings}

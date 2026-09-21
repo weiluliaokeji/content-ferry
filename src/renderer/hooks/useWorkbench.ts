@@ -238,7 +238,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
     finally { setSaving(false); }
   };
-  const saveSourceArticle = async (): Promise<{ success: boolean; markdown?: string; error?: string }> => {
+  const saveSourceArticle = async (): Promise<{ success: boolean; markdown?: string; error?: string; sourceArticlePath?: string }> => {
     if (!sourceArticle) return { success: false, error: "没有可保存的文章。" };
     setSaving(true);
     try {
@@ -249,7 +249,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setSourceArticle(saved);
       setSourcePreview(await request<ContentSourcePreview>("/content-source/preview"));
       setError("");
-      return { success: true, markdown: saved.markdown };
+      return { success: true, markdown: saved.markdown, sourceArticlePath: saved.relativePath };
     } catch (cause) { const message = cause instanceof Error ? cause.message : "文章保存失败。"; setError(message); return { success: false, error: message }; }
     finally { setSaving(false); }
   };

@@ -15,6 +15,21 @@ export type ModelProviderKey = ModelProviderId | (string & {});
 
 export const CUSTOM_PROVIDER_PREFIX = "custom:";
 
+export type VisionInputSupport = "supported" | "unknown" | "unsupported";
+
+/** Whether this connection can receive an image as model input.
+ *
+ * This is deliberately derived from the connection kind for now. It keeps
+ * older databases migration-free while making the UI honest: custom
+ * OpenAI-compatible endpoints are not assumed to support vision until the
+ * image-review adapter verifies them.
+ */
+export function visionInputSupportForProvider(provider: string): VisionInputSupport {
+  if (provider === "openai_codex") return "supported";
+  if (provider.startsWith(CUSTOM_PROVIDER_PREFIX)) return "unknown";
+  return "unsupported";
+}
+
 export function isModelProviderId(provider: string): provider is ModelProviderId {
   return (modelProviderIds as readonly string[]).includes(provider);
 }
@@ -34,6 +49,7 @@ export interface ModelConnection {
    *  presets are always false and cannot be deleted. */
   custom: boolean;
   credentialConfigured: boolean;
+  visionInputSupport: VisionInputSupport;
 }
 
 type ModelConnectionRow = {
@@ -56,9 +72,9 @@ export interface CustomConnectionInput {
 }
 
 const defaults: Record<ModelProviderId, Omit<ModelConnection, "credentialConfigured" | "custom">> = {
-  openai_codex: { provider: "openai_codex", displayName: "OpenAI Codex", modelId: "", baseUrl: "", proxyUrl: "", enabled: true, builtInSearch: true },
-  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Tongyi-MAI/Z-Image-Turbo", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true, builtInSearch: true },
-  agnes: { provider: "agnes", displayName: "Agnes AI", modelId: "agnes-image-2.1-flash", baseUrl: "https://apihub.agnes-ai.com/v1", proxyUrl: "", enabled: true, builtInSearch: true }
+  openai_codex: { provider: "openai_codex", displayName: "OpenAI Codex", modelId: "", baseUrl: "", proxyUrl: "", enabled: true, builtInSearch: true, visionInputSupport: "supported" },
+  modelscope: { provider: "modelscope", displayName: "ModelScope", modelId: "Tongyi-MAI/Z-Image-Turbo", baseUrl: "https://api-inference.modelscope.cn", proxyUrl: "", enabled: true, builtInSearch: true, visionInputSupport: "unsupported" },
+  agnes: { provider: "agnes", displayName: "Agnes AI", modelId: "agnes-image-2.1-flash", baseUrl: "https://apihub.agnes-ai.com/v1", proxyUrl: "", enabled: true, builtInSearch: true, visionInputSupport: "unsupported" }
 };
 
 export class ModelConnectionRepository {
@@ -140,7 +156,8 @@ export class ModelConnectionRepository {
       return {
         ...value,
         custom: false,
-        credentialConfigured: provider === "openai_codex" || this.credentials.configured(this.credentialKind(provider))
+        credentialConfigured: provider === "openai_codex" || this.credentials.configured(this.credentialKind(provider)),
+        visionInputSupport: visionInputSupportForProvider(provider)
       };
     }
     return {
@@ -152,11 +169,12 @@ export class ModelConnectionRepository {
       enabled: false,
       builtInSearch: true,
       custom: true,
-      credentialConfigured: this.credentials.configured(this.credentialKind(provider))
+      credentialConfigured: this.credentials.configured(this.credentialKind(provider)),
+      visionInputSupport: visionInputSupportForProvider(provider)
     };
   }
 
-  save(input: Omit<ModelConnection, "credentialConfigured" | "custom"> & { credential?: string; custom?: boolean }): ModelConnection {
+  save(input: Omit<ModelConnection, "credentialConfigured" | "custom" | "visionInputSupport"> & { credential?: string; custom?: boolean }): ModelConnection {
     const now = new Date().toISOString();
     this.db.prepare(`INSERT INTO model_connections
       (provider, display_name, model_id, base_url, proxy_url, enabled, built_in_search, custom, created_at, updated_at)
@@ -206,7 +224,8 @@ export class ModelConnectionRepository {
       enabled: Boolean(row.enabled),
       builtInSearch: Boolean(row.built_in_search),
       custom: Boolean(row.custom),
-      credentialConfigured: row.provider === "openai_codex" || this.credentials.configured(this.credentialKind(row.provider))
+      credentialConfigured: row.provider === "openai_codex" || this.credentials.configured(this.credentialKind(row.provider)),
+      visionInputSupport: visionInputSupportForProvider(row.provider)
     };
   }
 

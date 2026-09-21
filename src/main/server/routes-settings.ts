@@ -8,6 +8,31 @@ import {
 } from "./schemas";
 import type { ServerContext } from "./server-context";
 
+const imageReviewSettingsInput = z.object({
+  mode: z.enum(["disabled", "current", "specific"]),
+  provider: modelProviderSchema.nullable().optional()
+}).strict();
+
+function currentAwenProvider(ctx: Pick<ServerContext, "skills">): string {
+  return ctx.skills?.list().find((skill) => skill.id === "awen-assistant")?.provider ?? "openai_codex";
+}
+
+function imageReviewSettings(ctx: Pick<ServerContext, "skills" | "modelConnections">) {
+  const settings = loadAppSettings();
+  const currentProvider = currentAwenProvider(ctx);
+  const provider = settings.imageReviewMode === "specific"
+    ? settings.imageReviewProvider
+    : settings.imageReviewMode === "current" ? currentProvider : null;
+  const connection = provider ? ctx.modelConnections.get(provider) : null;
+  return {
+    mode: settings.imageReviewMode,
+    provider: settings.imageReviewProvider,
+    currentProvider,
+    effectiveProvider: provider,
+    effectiveVisionInputSupport: connection?.visionInputSupport ?? null
+  };
+}
+
 export function registerSettingsRoutes(ctx: ServerContext): void {
   const { server, accounts, appCredentials, getTavilyApiKey, modelConnections, skills, coverGenerator } = ctx;
 
@@ -35,6 +60,25 @@ export function registerSettingsRoutes(ctx: ServerContext): void {
   });
 
   server.get("/api/model-connections", async () => ({ items: modelConnections.list() }));
+
+  server.get("/api/image-review/settings", async () => imageReviewSettings(ctx));
+
+  server.put("/api/image-review/settings", async (request, reply) => {
+    const input = imageReviewSettingsInput.parse(request.body);
+    const provider = input.mode === "specific" ? input.provider ?? null : null;
+    if (input.mode === "specific" && !provider) {
+      return reply.code(400).send({ error: "指定模型模式必须选择一个模型连接。" });
+    }
+    if (provider) {
+      const connection = modelConnections.get(provider);
+      if (!connection.enabled) return reply.code(400).send({ error: "图片初审模型连接已停用，请先启用后再选择。" });
+      if (connection.visionInputSupport === "unsupported") {
+        return reply.code(400).send({ error: "该模型连接当前不支持图片输入，不能用于图片初审。" });
+      }
+    }
+    saveAppSettings({ imageReviewMode: input.mode, imageReviewProvider: provider });
+    return imageReviewSettings(ctx);
+  });
 
   server.get("/api/web-search/settings", async () => ({
     tavilyConfigured: appCredentials.configured("web_search:tavily_api_key") || Boolean(process.env.TAVILY_API_KEY?.trim()),

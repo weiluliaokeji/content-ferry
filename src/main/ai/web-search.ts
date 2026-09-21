@@ -18,18 +18,35 @@ export interface SearchResultItem {
   snippet: string;
 }
 
+export interface ImageSearchResultItem {
+  imageUrl: string;
+  thumbnailUrl: string | null;
+  caption: string;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  review?: {
+    status: "accepted" | "uncertain" | "rejected" | "unreviewed" | "failed";
+    score: number | null;
+    reason: string;
+  };
+}
+
 export interface WebSearchProvider {
   readonly id: string;
   isAvailable(): boolean;
   supportsSearch(): boolean;
   supportsExtract(): boolean;
   search(query: string, limit?: number): Promise<SearchResultItem[]>;
+  searchImages?(query: string, limit?: number): Promise<ImageSearchResultItem[]>;
   extract(url: string): Promise<{ content: string }>;
 }
 
 export interface WebSearchClient {
   /** Run a web search, returning cleaned result items. */
   search(query: string, limit?: number): Promise<SearchResultItem[]>;
+  /** Search image candidates. This is intentionally optional because the
+   * zero-key fallback providers do not provide a trustworthy image endpoint. */
+  searchImages?(query: string, limit?: number): Promise<ImageSearchResultItem[]>;
   /** Fetch a single URL and return its main text content. */
   extract(url: string): Promise<{ content: string }>;
   /** The provider id that handled the most recent search (for diagnostics). */
@@ -429,6 +446,27 @@ export class TavilyProvider implements WebSearchProvider {
     }));
   }
 
+  async searchImages(query: string, limit = 12): Promise<ImageSearchResultItem[]> {
+    const res = await safeFetch(this.fetchImpl, "https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        api_key: this.apiKey,
+        query,
+        max_results: Math.min(Math.max(limit, 1), 20),
+        search_depth: "advanced",
+        include_raw_content: false,
+        include_images: true,
+        include_image_descriptions: true
+      })
+    });
+    if (!res.ok) throw new WebSearchError(`Tavily 图片检索失败（HTTP ${res.status}）。`);
+    const data = await res.json() as TavilyImageSearchResponse;
+    const candidates = normalizeTavilyImages(data);
+    if (candidates.length === 0) throw new WebSearchError("Tavily 未返回可用图片，请换个检索词。");
+    return candidates.slice(0, Math.min(Math.max(limit, 1), 20));
+  }
+
   async extract(targetUrl: string): Promise<{ content: string }> {
     const res = await safeFetch(this.fetchImpl, "https://api.tavily.com/extract", {
       method: "POST",
@@ -508,10 +546,76 @@ export function createWebSearchClient(options: CreateWebSearchClientOptions = {}
         `联网检索暂时不可用。已尝试 ${searchProviders.map((provider) => provider.id).join("、")}。${errors.join(" ")} 可稍后重试；若需要更稳定的检索，可配置 Tavily 搜索服务（TAVILY_API_KEY）。`
       );
     },
+    async searchImages(query, limit = 12) {
+      const provider = getProviders().find((candidate) => candidate.id === "tavily" && candidate.isAvailable() && candidate.searchImages);
+      if (!provider?.searchImages) {
+        throw new WebSearchError("图片检索目前需要先在“技能与模型 → 联网检索服务”配置 Tavily。");
+      }
+      const results = await provider.searchImages(query, limit);
+      lastSearchProvider = provider.id;
+      return results;
+    },
     async extract(targetUrl) {
       const provider = pick("supportsExtract");
       if (!provider) throw new WebSearchError("未配置可用的网页抓取服务。");
       return provider.extract(targetUrl);
     }
   };
+}
+
+type TavilyImage = string | {
+  url?: string;
+  image_url?: string;
+  thumbnail_url?: string;
+  description?: string;
+  caption?: string;
+};
+
+type TavilyImageSearchResponse = {
+  images?: TavilyImage[];
+  results?: Array<{
+    title?: string;
+    url?: string;
+    content?: string;
+    images?: TavilyImage[];
+  }>;
+};
+
+function normalizeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeTavilyImage(
+  image: TavilyImage,
+  sourceUrl: string | null,
+  sourceTitle: string | null
+): ImageSearchResultItem | null {
+  const imageUrl = normalizeHttpUrl(typeof image === "string" ? image : image.url ?? image.image_url);
+  if (!imageUrl) return null;
+  const thumbnailUrl = typeof image === "string" ? null : normalizeHttpUrl(image.thumbnail_url);
+  const caption = typeof image === "string" ? "" : (image.caption ?? image.description ?? "").trim();
+  return { imageUrl, thumbnailUrl, caption, sourceUrl, sourceTitle };
+}
+
+export function normalizeTavilyImages(data: TavilyImageSearchResponse): ImageSearchResultItem[] {
+  const candidates: ImageSearchResultItem[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: ImageSearchResultItem | null): void => {
+    if (!candidate || seen.has(candidate.imageUrl)) return;
+    seen.add(candidate.imageUrl);
+    candidates.push(candidate);
+  };
+  for (const image of data.images ?? []) add(normalizeTavilyImage(image, null, null));
+  for (const result of data.results ?? []) {
+    const sourceUrl = normalizeHttpUrl(result.url);
+    const sourceTitle = result.title?.trim() || null;
+    for (const image of result.images ?? []) add(normalizeTavilyImage(image, sourceUrl, sourceTitle));
+  }
+  return candidates;
 }

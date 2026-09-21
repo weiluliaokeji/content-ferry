@@ -35,6 +35,16 @@ export interface GenerateStructuredResult<T> {
   usage: AiUsage | null;
 }
 
+export interface ReviewImageRequest<T> {
+  task: "image_review";
+  prompt: string;
+  imagePath: string;
+  outputSchema: object;
+  timeoutMs?: number;
+  modelId?: string;
+  parse(value: unknown): T;
+}
+
 export interface GenerateMarkdownStreamRequest {
   task: "outline" | "draft";
   skillId?: string;
@@ -57,6 +67,8 @@ export interface WebResearchOptions {
 export interface ModelProvider {
   readonly id: string;
   generateStructured<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>>;
+  /** Optional structured vision call used by image-candidate pre-review. */
+  reviewImage?<T>(request: ReviewImageRequest<T>): Promise<GenerateStructuredResult<T>>;
   generateMarkdownStream?(request: GenerateMarkdownStreamRequest): Promise<GenerateStructuredResult<{ markdown: string }>>;
   /** Model-agnostic web research: app-owned retrieval + LLM synthesis. */
   webResearch(context: WebResearchContext, onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>>;
@@ -73,6 +85,10 @@ export class UnavailableModelProvider implements ModelProvider {
   readonly id = "unavailable";
 
   async generateStructured<T>(_request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
+    throw new ModelProviderUnavailableError("AI 模型尚未在当前运行环境中启用。");
+  }
+
+  async reviewImage<T>(_request: ReviewImageRequest<T>): Promise<GenerateStructuredResult<T>> {
     throw new ModelProviderUnavailableError("AI 模型尚未在当前运行环境中启用。");
   }
 

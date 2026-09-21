@@ -312,6 +312,35 @@ export const modelCustomConnectionInput = z.object({
 });
 export const tavilySettingsInput = z.object({ apiKey: z.string().trim().min(1).max(10000) });
 export const tavilyTestInput = z.object({ apiKey: z.string().trim().min(1).max(10000).optional() });
+export const imageSearchInput = z.object({
+  query: z.string().trim().min(1).max(500),
+  limit: z.number().int().min(1).max(20).default(12)
+}).strict();
+const imageCandidateInput = z.object({
+  imageUrl: z.string().url().max(4000),
+  thumbnailUrl: z.string().url().max(4000).nullable(),
+  caption: z.string().max(500),
+  sourceUrl: z.string().url().max(4000).nullable(),
+  sourceTitle: z.string().max(500).nullable()
+}).strict();
+const imageHistoryCandidateInput = imageCandidateInput.extend({
+  review: z.object({
+    status: z.enum(["accepted", "uncertain", "rejected", "unreviewed", "failed"]),
+    score: z.number().min(0).max(1).nullable(),
+    reason: z.string().max(240)
+  }).strict().optional()
+}).strict();
+export const imageReviewInput = z.object({
+  query: z.string().trim().min(1).max(500),
+  items: z.array(imageCandidateInput).min(1).max(20)
+}).strict();
+export const imageSearchHistoryQuery = z.object({ contextKey: z.string().trim().min(1).max(1200) }).strict();
+export const imageSearchHistoryInput = z.object({
+  contextKey: z.string().trim().min(1).max(1200),
+  query: z.string().trim().min(1).max(500),
+  provider: z.string().trim().max(100).nullable(),
+  items: z.array(imageHistoryCandidateInput).max(20)
+}).strict();
 export const skillInput = z.object({
   markdown: z.string().min(1).max(100000),
   enabled: z.boolean(),
@@ -379,7 +408,10 @@ export const articleChatSuggestionParams = z.object({
   messageId: z.string().uuid(),
   suggestionIndex: z.coerce.number().int().min(0).max(4)
 });
-export const articleChatSuggestionStatusInput = z.object({ status: z.enum(["pending", "accepted", "rejected", "unavailable"]) });
+export const articleChatSuggestionStatusInput = z.object({
+  contextKey: z.string().trim().min(1).max(1200),
+  status: z.enum(["pending", "accepted", "rejected", "unavailable"])
+}).strict();
 
 export interface CsdnBrowserConfirmResult {
   remoteUrl: string | null;

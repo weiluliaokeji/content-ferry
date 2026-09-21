@@ -35,6 +35,7 @@ import type { ResearchTaskRepository } from "../content/research-task-repository
 import type { ResearchTaskRunner } from "../content/research-task-runner";
 import type { ResearchRunRepository } from "../content/research-run-repository";
 import type { WebSearchClient } from "../ai/web-search";
+import type { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
 export interface ServerContext {
@@ -62,6 +63,7 @@ export interface ServerContext {
   getTavilyApiKey: () => string | undefined;
   getResearchProxyUrl: () => string;
   webSearch: WebSearchClient;
+  imageSearchHistory: ImageSearchHistoryRepository;
   modelConnections: ModelConnectionRepository;
   skills?: SkillRegistry;
   aiAuditLog?: AiAuditLog;

@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { request, patchAppSettings } from "../api";
 import { skillModelGroups } from "../app-constants";
-import type { ManagedSkill, ModelConnection, ModelProviderId, SkillFileContent, WebSearchSettings } from "../types";
+import type { ImageReviewMode, ImageReviewSettings, ManagedSkill, ModelConnection, ModelProviderId, SkillFileContent, WebSearchSettings } from "../types";
 
 export interface UseSkillsSettingsParams {
   loadSkillsAndConnections: () => Promise<void>;
@@ -20,6 +20,8 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
   const [batchSaving, setBatchSaving] = useState(false);
   const [selectedSkillIds, setSelectedSkillIds] = useState<Record<string, boolean>>({});
   const [modelConnections, setModelConnections] = useState<ModelConnection[]>([]);
+  const [imageReviewSettings, setImageReviewSettings] = useState<ImageReviewSettings>({ mode: "disabled", provider: null, currentProvider: "openai_codex", effectiveProvider: null, effectiveVisionInputSupport: null });
+  const [imageReviewSaving, setImageReviewSaving] = useState(false);
   const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>({ tavilyConfigured: false, tavilyCredentialSource: "none", researchProxyUrl: "" });
   const [editingSkill, setEditingSkill] = useState<ManagedSkill>();
   const [editingSkillFile, setEditingSkillFile] = useState<SkillFileContent>();
@@ -144,7 +146,8 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
       enabled: true,
       builtInSearch: true,
       custom: true,
-      credentialConfigured: false
+      credentialConfigured: false,
+      visionInputSupport: "unknown"
     });
     setConnectionCredential("");
     setError("");
@@ -198,6 +201,21 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
       setError(cause instanceof Error ? cause.message : "模型连接删除失败。");
     } finally {
       setSaving(false);
+    }
+  };
+  const saveImageReviewSettings = async (mode: ImageReviewMode, provider: string | null) => {
+    setImageReviewSaving(true);
+    try {
+      const saved = await request<ImageReviewSettings>("/image-review/settings", {
+        method: "PUT",
+        body: JSON.stringify({ mode, provider })
+      });
+      setImageReviewSettings(saved);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "图片初审设置保存失败。");
+    } finally {
+      setImageReviewSaving(false);
     }
   };
   const openTavilySettings = () => {
@@ -308,6 +326,10 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
     setSelectedSkillIds,
     modelConnections,
     setModelConnections,
+    imageReviewSettings,
+    setImageReviewSettings,
+    imageReviewSaving,
+    saveImageReviewSettings,
     webSearchSettings,
     setWebSearchSettings,
     editingSkill,

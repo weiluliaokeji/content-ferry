@@ -51,6 +51,7 @@ import { describeValidationIssue } from "./helpers";
 import type { ServerContext } from "./server-context";
 import { registerSystemRoutes } from "./routes-system";
 import { registerContentSourceRoutes } from "./routes-content-source";
+import { registerImageSearchRoutes } from "./routes-image-search";
 import { registerChannelsRoutes } from "./routes-channels";
 import { registerJuejinRoutes } from "./routes-juejin";
 import { registerFiftyoneCtoRoutes } from "./routes-fiftyone-cto";
@@ -66,6 +67,7 @@ import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { ResearchTaskRepository } from "../content/research-task-repository";
 import { ResearchTaskRunner } from "../content/research-task-runner";
 import { ResearchRunRepository } from "../content/research-run-repository";
+import { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 import { SystemToolRegistry } from "../agent/system-tool-registry";
 import { PermissionGrantRepository } from "../agent/permission-grant-repository";
 import { GitSourceService } from "../agent/git-source-service";
@@ -154,6 +156,7 @@ export function buildServer(
     getResearchProxyUrl,
     visibleBrowserSearch: options?.visibleBrowserSearch
   });
+  const imageSearchHistory = new ImageSearchHistoryRepository(database.connection);
   const effectiveModelProvider = skills
     ? new ConfiguredModelProvider(
       modelConnections,
@@ -358,6 +361,7 @@ export function buildServer(
     getTavilyApiKey,
     getResearchProxyUrl,
     webSearch,
+    imageSearchHistory,
     modelConnections,
     skills,
     aiAuditLog,
@@ -380,6 +384,7 @@ export function buildServer(
 
   registerSystemRoutes(ctx);
   registerContentSourceRoutes(ctx);
+  registerImageSearchRoutes(ctx);
   registerChannelsRoutes(ctx);
   registerJuejinRoutes(ctx);
   registerFiftyoneCtoRoutes(ctx);

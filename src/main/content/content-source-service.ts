@@ -61,6 +61,11 @@ export interface StagedArticleDeletion {
   rollback(): void;
 }
 
+interface ReversibleDirectoryMove {
+  commit(): void;
+  rollback(): void;
+}
+
 type DeletionFileSystem = Pick<typeof fs,
   "renameSync" | "copyFileSync" | "unlinkSync" | "mkdirSync" | "existsSync" |
   "readdirSync" | "rmdirSync">;
@@ -180,38 +185,83 @@ export class ContentSourceService {
       : `${normalizedBody}\n`;
     let nextFilePath = filePath;
     let nextRelativePath = relativePath;
+    let sourceWrittenDuringRename = false;
     if (nextTitle && currentTitle && normalizeArticleTitle(nextTitle) !== normalizeArticleTitle(currentTitle)) {
       const articleDirectory = path.dirname(filePath);
       const articleRoot = pattern.baseDir ? path.resolve(rootPath, pattern.baseDir) : path.resolve(rootPath);
       if (path.basename(filePath).toLowerCase() === pattern.entryFile.toLowerCase() && isPathInside(articleRoot, articleDirectory)) {
-        const nextDirectory = path.join(path.dirname(articleDirectory), sanitizeArticleDirectoryName(nextTitle));
-        if (path.resolve(nextDirectory).toLowerCase() !== path.resolve(articleDirectory).toLowerCase()) {
-          if (fs.existsSync(nextDirectory)) throw new ContentSourceError(`文章标题对应的目录已存在：${path.basename(nextDirectory)}`);
-          try { fs.renameSync(articleDirectory, nextDirectory); }
-          catch (error) {
-            if (!isWindowsDirectoryBusyError(error)) throw error;
+          const nextDirectory = path.join(path.dirname(articleDirectory), sanitizeArticleDirectoryName(nextTitle));
+          if (path.resolve(nextDirectory).toLowerCase() !== path.resolve(articleDirectory).toLowerCase()) {
+            if (fs.existsSync(nextDirectory)) throw new ContentSourceError(`文章标题对应的目录已存在：${path.basename(nextDirectory)}`);
+            const directoryMove = moveDirectoryWithRollback(articleDirectory, nextDirectory);
+            nextFilePath = path.join(nextDirectory, pattern.entryFile);
+            nextRelativePath = toPortablePath(path.relative(rootPath, nextFilePath));
+            const now = new Date().toISOString();
             try {
-              copyDirectoryFileByFile(articleDirectory, nextDirectory, fs);
-              removeDirectoryFileByFile(articleDirectory, fs);
-            } catch (fallbackError) {
-              try { removeDirectoryFileByFile(nextDirectory, fs); } catch { /* keep the original as the source of truth */ }
-              throw new ContentSourceError("文章目录正在被其他程序占用，逐文件迁移也未能完成。请关闭 Obsidian 或资源管理器预览后重试。", { cause: fallbackError });
+              fs.writeFileSync(nextFilePath, nextSource, "utf8");
+              sourceWrittenDuringRename = true;
+              this.db.transaction(() => {
+              this.db.prepare("UPDATE content_projects SET source_relative_path = ?, updated_at = ? WHERE workspace_id = ? AND source_relative_path = ?")
+                .run(nextRelativePath, now, workspaceId, relativePath);
+              this.db.prepare("UPDATE article_settings SET context_key = ? WHERE context_key = ?")
+                .run(`source:${nextRelativePath}`, `source:${relativePath}`);
+              this.db.prepare("UPDATE image_search_history SET context_key = ? WHERE context_key = ?")
+                .run(`source:${nextRelativePath}`, `source:${relativePath}`);
+              this.migrateArticleContext(`source:${relativePath}`, `source:${nextRelativePath}`);
+            })();
+              directoryMove.commit();
+            } catch (error) {
+              let recoveryError: unknown;
+              try { fs.writeFileSync(nextFilePath, source, "utf8"); }
+              catch (restoreError) { recoveryError = restoreError; }
+              try {
+                directoryMove.rollback();
+              } catch (rollbackError) {
+                recoveryError ??= rollbackError;
+              }
+              if (recoveryError) throw new ContentSourceError("文章标题迁移失败，数据库与文章目录均未能恢复一致。请先备份文章目录，再联系支持人员处理。", { cause: recoveryError });
+              throw error;
             }
-          }
-          nextFilePath = path.join(nextDirectory, pattern.entryFile);
-          nextRelativePath = toPortablePath(path.relative(rootPath, nextFilePath));
-          const now = new Date().toISOString();
-          this.db.transaction(() => {
-            this.db.prepare("UPDATE content_projects SET source_relative_path = ?, updated_at = ? WHERE workspace_id = ? AND source_relative_path = ?")
-              .run(nextRelativePath, now, workspaceId, relativePath);
-            this.db.prepare("UPDATE article_settings SET context_key = ? WHERE context_key = ?")
-              .run(`source:${nextRelativePath}`, `source:${relativePath}`);
-          })();
         }
       }
     }
-    fs.writeFileSync(nextFilePath, nextSource, "utf8");
+    if (!sourceWrittenDuringRename) fs.writeFileSync(nextFilePath, nextSource, "utf8");
     return this.getArticle(workspaceId, nextRelativePath);
+  }
+
+  private migrateArticleContext(previousContextKey: string, nextContextKey: string): void {
+    const oldThread = this.db.prepare("SELECT memory, updated_at AS updatedAt FROM article_chat_threads WHERE context_key = ?")
+      .get(previousContextKey) as { memory: string; updatedAt: string } | undefined;
+    const newThread = this.db.prepare("SELECT memory, updated_at AS updatedAt FROM article_chat_threads WHERE context_key = ?")
+      .get(nextContextKey) as { memory: string; updatedAt: string } | undefined;
+
+    if (oldThread && !newThread) {
+      this.db.prepare("INSERT INTO article_chat_threads (context_key, memory, updated_at) VALUES (?, ?, ?)")
+        .run(nextContextKey, oldThread.memory, oldThread.updatedAt);
+    } else if (oldThread && newThread) {
+      const mergedMemory = [newThread.memory, oldThread.memory].filter(Boolean).join("\n");
+      this.db.prepare("UPDATE article_chat_threads SET memory = ?, updated_at = MAX(updated_at, ?) WHERE context_key = ?")
+        .run(mergedMemory, oldThread.updatedAt, nextContextKey);
+    }
+
+    this.db.prepare("UPDATE article_chat_messages SET context_key = ? WHERE context_key = ?")
+      .run(nextContextKey, previousContextKey);
+    if (oldThread) this.db.prepare("DELETE FROM article_chat_threads WHERE context_key = ?").run(previousContextKey);
+
+    this.db.prepare("UPDATE article_quality_checks SET context_key = ? WHERE context_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE agent_events SET scope_key = ? WHERE scope_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE memory_candidates SET scope_key = ? WHERE scope_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE agent_memories SET scope_key = ? WHERE scope_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE memory_maintenance_state SET scope_key = ? WHERE scope_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE writing_memories SET scope_key = ? WHERE scope_key = ?")
+      .run(nextContextKey, previousContextKey);
+    this.db.prepare("UPDATE memory_uses SET task_key = ? WHERE task_key = ?")
+      .run(`article-chat:${nextContextKey}`, `article-chat:${previousContextKey}`);
   }
 
   setArchived(workspaceId: string, relativePath: string, archived: boolean): ContentSourceArticle {
@@ -512,6 +562,37 @@ function copyDirectoryFileByFile(source: string, destination: string, fileSystem
       throw new ContentSourceError(`文章目录包含暂不支持安全删除的文件类型：${entry.name}`);
     }
   }
+}
+
+function moveDirectoryWithRollback(source: string, destination: string, fileSystem: DeletionFileSystem = fs): ReversibleDirectoryMove {
+  let copiedInsteadOfMoved = false;
+  try {
+    fileSystem.renameSync(source, destination);
+  } catch (error) {
+    if (!isWindowsDirectoryBusyError(error)) throw error;
+    copiedInsteadOfMoved = true;
+    try {
+      copyDirectoryFileByFile(source, destination, fileSystem);
+      removeDirectoryFileByFile(source, fileSystem);
+    } catch (fallbackError) {
+      try { removeDirectoryFileByFile(destination, fileSystem); } catch { /* keep the original as the source of truth */ }
+      throw new ContentSourceError("文章目录正在被其他程序占用，逐文件迁移也未能完成。请关闭 Obsidian 或资源管理器预览后重试。", { cause: fallbackError });
+    }
+  }
+  let active = true;
+  return {
+    commit: () => { active = false; },
+    rollback: () => {
+      if (!active) return;
+      if (copiedInsteadOfMoved) {
+        copyDirectoryFileByFile(destination, source, fileSystem);
+        removeDirectoryFileByFile(destination, fileSystem);
+      } else {
+        fileSystem.renameSync(destination, source);
+      }
+      active = false;
+    }
+  };
 }
 
 function removeDirectoryFileByFile(directory: string, fileSystem: DeletionFileSystem): void {

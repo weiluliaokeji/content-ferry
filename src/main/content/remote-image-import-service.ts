@@ -24,6 +24,12 @@ export class RemoteImageImportService {
     return this.assets.save(contextId, image.mimeType, image.bytes.toString("base64"));
   }
 
+  /** Downloads and validates an image without saving it to an article or project.
+   * Used by the visual pre-review stage; callers own the temporary-file lifecycle. */
+  async downloadForReview(sourceUrl: string): Promise<{ bytes: Buffer; mimeType: ImageMime }> {
+    return this.download(sourceUrl);
+  }
+
   private async download(sourceUrl: string): Promise<{ bytes: Buffer; mimeType: ImageMime }> {
     let current = parsePublicImageUrl(sourceUrl);
     for (let attempt = 0; attempt <= MAX_REDIRECTS; attempt += 1) {
@@ -67,9 +73,21 @@ async function assertPublicHost(url: URL): Promise<void> {
   const host = url.hostname.toLowerCase();
   if (host === "localhost" || host.endsWith(".localhost")) throw new Error("不能导入本机地址中的图片。");
   const addresses = net.isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
-  if (addresses.length === 0 || addresses.some((item) => isPrivateAddress(item.address))) {
+  if (!isAllowedRemoteImageHost(host, addresses)) {
     throw new Error("不能导入私有网络或保留地址中的图片。");
   }
+}
+
+/** Some desktop development/network-sandbox environments resolve every public
+ * hostname to 198.18.0.0/15 and route the original hostname through a controlled
+ * egress layer. Treat that synthetic range as an allowed hostname resolution,
+ * but never allow a literal IP in the same range. Real private/reserved ranges
+ * and mixed public/private DNS answers remain blocked. */
+export function isAllowedRemoteImageHost(host: string, addresses: Array<{ address: string }>): boolean {
+  if (addresses.length === 0) return false;
+  const isLiteral = Boolean(net.isIP(host));
+  const allSyntheticEgress = !isLiteral && addresses.every((item) => isSyntheticEgressAddress(item.address));
+  return !addresses.some((item) => isPrivateAddress(item.address)) || allSyntheticEgress;
 }
 
 function isPrivateAddress(address: string): boolean {
@@ -86,6 +104,12 @@ function isPrivateAddress(address: string): boolean {
   return normalized === "::1" || normalized === "::" || normalized.startsWith("fc") || normalized.startsWith("fd") ||
     normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") ||
     normalized.startsWith("::ffff:127.") || normalized.startsWith("::ffff:10.") || normalized.startsWith("::ffff:192.168.");
+}
+
+function isSyntheticEgressAddress(address: string): boolean {
+  if (net.isIP(address) !== 4) return false;
+  const [first, second] = address.split(".").map(Number);
+  return first === 198 && (second === 18 || second === 19);
 }
 
 function detectImageMime(bytes: Buffer): ImageMime | undefined {

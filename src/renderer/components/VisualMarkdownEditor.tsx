@@ -122,7 +122,7 @@ export function VisualMarkdownEditor({
       if (event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom + 8) revealToolbar();
     };
     root.addEventListener("pointermove", revealToolbarOnPointerMove);
-    ["pointerdown", "focusin", "keydown", "wheel"].forEach((eventName) => root.addEventListener(eventName, revealToolbar));
+    ["pointerdown", "focusin", "keydown"].forEach((eventName) => root.addEventListener(eventName, revealToolbar));
     revealToolbar();
     const markUserEdit = () => { userHasEdited = true; };
     const markToolbarEdit = (event: MouseEvent) => {
@@ -346,7 +346,7 @@ export function VisualMarkdownEditor({
       root.removeEventListener("copy", copySelection);
       root.removeEventListener("paste", importPastedImage, true);
       root.removeEventListener("pointermove", revealToolbarOnPointerMove);
-      ["pointerdown", "focusin", "keydown", "wheel"].forEach((eventName) => root.removeEventListener(eventName, revealToolbar));
+      ["pointerdown", "focusin", "keydown"].forEach((eventName) => root.removeEventListener(eventName, revealToolbar));
       if (toolbarIdleTimer !== undefined) window.clearTimeout(toolbarIdleTimer);
       root.classList.remove("toolbar-idle");
       void crepe.destroy();

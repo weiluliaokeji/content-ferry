@@ -39,6 +39,8 @@ function defaultSettings(): AppSettings {
     codexBinaryPath: null,
     auditAiCalls: false,
     researchProxyUrl: "",
+    imageReviewMode: "disabled",
+    imageReviewProvider: null,
     legacyArchiveMigrationDone: false,
     createdAt: now,
     updatedAt: now

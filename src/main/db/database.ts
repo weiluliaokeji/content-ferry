@@ -452,6 +452,18 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_article_chat_messages_context_created
       ON article_chat_messages(context_key, created_at ASC);
 
+    CREATE TABLE IF NOT EXISTS image_search_history (
+      id TEXT PRIMARY KEY,
+      context_key TEXT NOT NULL,
+      query TEXT NOT NULL,
+      provider TEXT,
+      items_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_image_search_history_context_created
+      ON image_search_history(context_key, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS content_reviews (
       project_id TEXT PRIMARY KEY REFERENCES content_projects(id) ON DELETE CASCADE,
       status TEXT NOT NULL DEFAULT 'pending',

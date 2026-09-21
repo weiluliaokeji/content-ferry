@@ -20,6 +20,9 @@ type AppSettingsContract = {
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
+  auditAiCalls: boolean;
+  imageReviewMode: "disabled" | "current" | "specific";
+  imageReviewProvider: string | null;
   createdAt: string;
   updatedAt: string;
 };

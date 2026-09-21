@@ -32,4 +32,11 @@ describe("ModelConnectionRepository defaults", () => {
       expect(connection.builtInSearch, `default "${connection.provider}" should enable built-in search`).toBe(true);
     }
   });
+
+  it("reports vision input support without requiring a database migration", () => {
+    const repo = new ModelConnectionRepository(stubDb(), stubCredentials());
+    expect(repo.get("openai_codex").visionInputSupport).toBe("supported");
+    expect(repo.get("modelscope").visionInputSupport).toBe("unsupported");
+    expect(repo.get("custom:example").visionInputSupport).toBe("unknown");
+  });
 });

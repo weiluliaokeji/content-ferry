@@ -33,8 +33,8 @@ export function registerChatRoutes(ctx: ServerContext): void {
   // status changes, allowing the author to review what Awen proposed later.
   server.patch("/api/article-chat/messages/:messageId/suggestions/:suggestionIndex", async (request, reply) => {
     const { messageId, suggestionIndex } = articleChatSuggestionParams.parse(request.params);
-    const { status } = articleChatSuggestionStatusInput.parse(request.body);
-    const suggestions = awen.updateSuggestion(messageId, suggestionIndex, status);
+    const { contextKey, status } = articleChatSuggestionStatusInput.parse(request.body);
+    const suggestions = awen.updateSuggestion(messageId, suggestionIndex, status, contextKey);
     if (!suggestions) return reply.code(404).send({ error: "未找到对应的阿文建议。" });
     return { messageId, suggestions };
   });

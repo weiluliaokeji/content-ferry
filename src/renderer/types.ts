@@ -7,6 +7,8 @@ export type AppSettingsContract = {
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
   auditAiCalls: boolean;
+  imageReviewMode: ImageReviewMode;
+  imageReviewProvider: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -145,9 +147,38 @@ export type ArticleSettings = {
   collectionName: string;
 };
 export type ModelProviderId = "openai_codex" | "modelscope" | "agnes" | (string & {});
+export type VisionInputSupport = "supported" | "unknown" | "unsupported";
 export type ModelConnection = {
   provider: ModelProviderId; displayName: string; modelId: string; baseUrl: string; proxyUrl: string;
-  enabled: boolean; builtInSearch: boolean; custom: boolean; credentialConfigured: boolean;
+  enabled: boolean; builtInSearch: boolean; custom: boolean; credentialConfigured: boolean; visionInputSupport: VisionInputSupport;
+};
+export type ImageReviewMode = "disabled" | "current" | "specific";
+export type ImageReviewSettings = {
+  mode: ImageReviewMode;
+  provider: string | null;
+  currentProvider: string;
+  effectiveProvider: string | null;
+  effectiveVisionInputSupport: VisionInputSupport | null;
+};
+export type ImageSearchResultItem = {
+  imageUrl: string;
+  thumbnailUrl: string | null;
+  caption: string;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  review?: {
+    status: "accepted" | "uncertain" | "rejected" | "unreviewed" | "failed";
+    score: number | null;
+    reason: string;
+  };
+};
+export type ImageSearchHistoryRecord = {
+  id: string;
+  contextKey: string;
+  query: string;
+  provider: string | null;
+  items: ImageSearchResultItem[];
+  createdAt: string;
 };
 export type WebSearchSettings = {
   tavilyConfigured: boolean;

@@ -4,6 +4,7 @@ import {
   ModelProviderUnavailableError,
   type GenerateStructuredRequest,
   type GenerateStructuredResult,
+  type ReviewImageRequest,
   type GenerateMarkdownStreamRequest,
   type ModelProvider,
   type WebResearchOptions
@@ -88,6 +89,52 @@ export class OpenAICodexProvider implements ModelProvider {
       if (error instanceof ModelProviderUnavailableError) throw error;
       if (controller.signal.aborted) {
         throw new ModelProviderUnavailableError("AI 生成超时，已安全停止本次任务。", { cause: error });
+      }
+      throw new ModelProviderUnavailableError(normalizeCodexError(error), { cause: error });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async reviewImage<T>(request: ReviewImageRequest<T>): Promise<GenerateStructuredResult<T>> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 120_000);
+    try {
+      const { Codex } = await importEsm("@openai/codex-sdk");
+      const codex = new Codex({ config: { mcp_servers: {} } });
+      const thread = codex.startThread({
+        workingDirectory: this.sandboxDirectory,
+        skipGitRepoCheck: true,
+        sandboxMode: "read-only",
+        approvalPolicy: "never",
+        networkAccessEnabled: false,
+        webSearchMode: "disabled",
+        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
+        modelReasoningEffort: "low"
+      });
+      const turn = await thread.run([
+        { type: "text", text: `${request.prompt}\n\n返回值必须符合此 JSON Schema：\n${JSON.stringify(request.outputSchema)}` },
+        { type: "local_image", path: request.imagePath }
+      ], {
+        outputSchema: request.outputSchema,
+        signal: controller.signal
+      });
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(turn.finalResponse);
+      } catch (error) {
+        throw new ModelProviderUnavailableError("视觉模型返回的内容格式不完整，请重试。", { cause: error });
+      }
+      return {
+        value: request.parse(decoded),
+        provider: this.id,
+        model: request.modelId?.trim() || null,
+        usage: mapUsage(turn.usage)
+      };
+    } catch (error) {
+      if (error instanceof ModelProviderUnavailableError) throw error;
+      if (controller.signal.aborted) {
+        throw new ModelProviderUnavailableError("图片视觉初审超时，已跳过本次初审。", { cause: error });
       }
       throw new ModelProviderUnavailableError(normalizeCodexError(error), { cause: error });
     } finally {

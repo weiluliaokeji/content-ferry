@@ -5,6 +5,7 @@ import {
   createWebSearchClient,
   DuckDuckGoProvider,
   TavilyProvider,
+  normalizeTavilyImages,
   type WebSearchClient,
   type SearchResultItem
 } from "./web-search";
@@ -102,6 +103,36 @@ describe("TavilyProvider", () => {
   it("is unavailable without an api key", () => {
     expect(new TavilyProvider("").isAvailable()).toBe(false);
   });
+
+  it("requests and normalizes query images with source metadata", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.include_images).toBe(true);
+      expect(body.include_image_descriptions).toBe(true);
+      return new Response(JSON.stringify({
+        images: [{ url: "https://cdn.example.com/query.png", description: "查询图片" }],
+        results: [{
+          title: "来源页面",
+          url: "https://example.com/article",
+          images: [{ url: "https://cdn.example.com/page.png", thumbnail_url: "https://cdn.example.com/thumb.png", description: "页面图片" }]
+        }]
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const items = await new TavilyProvider("tvly-xxx", fetchImpl).searchImages("测试图片", 10);
+    expect(items).toEqual([
+      { imageUrl: "https://cdn.example.com/query.png", thumbnailUrl: null, caption: "查询图片", sourceUrl: null, sourceTitle: null },
+      { imageUrl: "https://cdn.example.com/page.png", thumbnailUrl: "https://cdn.example.com/thumb.png", caption: "页面图片", sourceUrl: "https://example.com/article", sourceTitle: "来源页面" }
+    ]);
+  });
+
+  it("drops unsafe or duplicate Tavily image URLs", () => {
+    expect(normalizeTavilyImages({ images: [
+      { url: "javascript:alert(1)" },
+      { url: "https://example.com/a.png" },
+      { url: "https://example.com/a.png" },
+      "not-a-url"
+    ] })).toEqual([{ imageUrl: "https://example.com/a.png", thumbnailUrl: null, caption: "", sourceUrl: null, sourceTitle: null }]);
+  });
 });
 
 describe("createWebSearchClient registry + fallback", () => {
@@ -158,6 +189,11 @@ describe("createWebSearchClient registry + fallback", () => {
     const items = await client.search("测试");
     expect(client.activeProviderId).toBe("duckduckgo");
     expect(items.length).toBeGreaterThan(0);
+  });
+
+  it("requires Tavily for image candidates instead of silently using text search", async () => {
+    const client = createWebSearchClient({ fetchImpl: htmlFetch(DDG_HTML) });
+    await expect(client.searchImages?.("测试图片")).rejects.toThrow(/配置 Tavily/);
   });
 });
 
