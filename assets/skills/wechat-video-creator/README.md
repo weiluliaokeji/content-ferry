@@ -11,7 +11,7 @@
 - **ffmpeg**：确保在 PATH 中
 - **Inworld key**：从本地 `config/voice_cache.json` 读取（首次使用需根据 `config/voice_cache.example.json` 创建，真实凭据只保存在本地，不随技能迁移或提交）
 - **文章目录**：文档中的 `D:\Workbench\weiluliaokejiBlogs\docs\posts\...` 只是示例路径，执行时必须替换为实际文章目录的绝对路径；产物默认写入该文章目录下的 `assets/video-assets/`。
-- **片尾 CTA 音频**：`assets/audio/cta_tail.mp3` 当前是为微信公众号“围炉聊科技”准备的片尾配音。制作其他公众号的视频前，需要自行替换为对应账号的音频，并保持文件名为 `cta_tail.mp3`；替换后用 `ffprobe` 检查实际时长，`cta_config.json` 只负责 CTA 文案和样式，不能替代音频更换。
+- **片尾 CTA 音频**：技能自带模板为本技能包内的 `assets/audio/cta_tail.mp3`，当前是为微信公众号“围炉聊科技”准备的片尾配音。制作其他公众号的视频前，需要自行替换为对应账号的音频，并保持文件名为 `cta_tail.mp3`；替换后用 `ffprobe` 检查实际时长，`cta_config.json` 只负责 CTA 文案和样式，不能替代音频更换。**注意**：渲染前须把该音频复制到文章的 `assets/video-assets/composition/assets/audio/cta_tail.mp3`（HTML 模板按此相对路径加载，缺件 CTA 段无声音；此复制无脚本代劳）。
 
 ### 文件结构
 
@@ -106,15 +106,16 @@ wechat-video-creator/
 ```
 文章 assets/
 └── video-assets/
-    ├── composition/
-    │   ├── index.html
-    │   ├── assets/
-    │   │   ├── audio/narration.mp3
-    │   │   ├── img/
-    │   │   │   ├── cover.png
-    │   │   │   └── ...
-    │   │   └── vendor/gsap.min.js
-    │   └── SCRIPT.md
     ├── 视频号发布物料.md
-    └── 封面.png
+    ├── 封面.png
+    ├── output.mp4
+    └── composition/
+        ├── index.html
+        ├── assets/
+        │   ├── audio/narration.mp3
+        │   ├── img/
+        │   │   ├── cover.png
+        │   │   └── ...
+        │   └── vendor/gsap.min.js
+        └── SCRIPT.md
 ```

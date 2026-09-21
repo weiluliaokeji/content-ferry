@@ -3,3 +3,7 @@ config/voice_cache.json
 
 # Python 字节码缓存
 __pycache__/
+
+# 本地 Edge/Chromium 渲染 profile 缓存（渲染时通过 --user-data-dir 指向此目录，禁止进入文章产物）
+.cache/
+.edge-profile*

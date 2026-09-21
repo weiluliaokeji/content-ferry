@@ -14,7 +14,10 @@
 4. **禁止直接用纯背景图作发布封面**
 5. 输出 PNG（质量 95）
 
+> 在 `video-assets/` 目录内执行（命令引用的 `composition/assets/img/cover.png` 为相对路径）。最终封面**输出到 `video-assets/封面.png`**，与 `视频号发布物料.md` 同目录——**禁止**写 `composition/封面.png`。
+
 ```bash
+# 当前目录 = video-assets/
 python3 scripts/cover_overlay.py \
   --bg composition/assets/img/cover.png \
   --title "主标题\n可选第二行" \
@@ -38,7 +41,7 @@ python3 scripts/cover_overlay.py \
 3. 互动提问（1 句）
 4. 话题标签（8 个，如 `#AI大模型` `#免费API`）
 
-写入 `视频号发布物料.md`，末尾含发布清单（短标题已填 / **短标题符号合规——仅含白名单符号，逗号已换成空格** / 描述已粘贴 / 封面已上传 / 首屏文字可见）。
+写入 `video-assets/视频号发布物料.md`（与 `封面.png`、`output.mp4` 同目录），末尾含发布清单（短标题已填 / **短标题符号合规——仅含白名单符号，逗号已换成空格** / 描述已粘贴 / 封面已上传 / 首屏文字可见）。
 
 ## 片尾关注引导（CTA，固定模板）
 
@@ -58,4 +61,4 @@ python3 scripts/cover_overlay.py \
 - 每次重渲染必须生成 `-vN` 新文件（如 `-v2.mp4`），禁止覆盖旧版
 - 重录前环境清理：按 PID 精确 `taskkill /F /PID <占用19222进程>` + `rm frames/*` + `curl http://127.0.0.1:19222/json` 端口检测（不全杀 msedge）
 
-**产物位置**：CTA 配音 `assets/audio/cta_tail.mp3`；CTA 配置 `config/cta_config.json`。
+**产物位置**：CTA 配音——技能自带模板在技能包 `assets/audio/cta_tail.mp3`，文章运行时副本在 `composition/assets/audio/cta_tail.mp3`（渲染前须手动复制一次，无脚本代劳；详见 SKILL.md「依赖与环境」）；CTA 配置 `config/cta_config.json`。

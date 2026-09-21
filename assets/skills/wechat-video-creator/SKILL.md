@@ -35,6 +35,64 @@ version: "1.0.0"
 - >400 字：红灯阻断，禁止进配音
 - 统计口径：仅口播正文（`文案：` 后），排除字幕/画面/markdown。300 字 ≈ 90–105s 原始配音，是 1.2–1.7x 安全甜点。
 
+## 产物目录契约（唯一真值表）
+
+> 所有智能体必须产出**完全一致**的目录结构与命名。以本表为唯一规范，参考样本 `.../你从IDE切到ADE了吗？.../assets/video-assets/` 即此结构。差异只能源于本表允许的 `-vN` 重渲染版本，不允许任何自由发挥。
+
+`<article_dir>/assets/video-assets/` 下：
+
+```
+video-assets/
+├── 视频号发布物料.md          # 发布物料：唯一位置在 video-assets/ 根
+├── 封面.png                  # 最终封面（cover_overlay.py 输出，唯一命名；与发布物料同目录）
+├── output.mp4                # 最终视频（最新一版；与发布物料同目录）
+├── output-v2.mp4 …           # 重渲染版本（禁止覆盖，用 -vN 递增；同样在 video-assets/ 根）
+└── composition/              # 渲染工程根目录（仅放工程源与中间产物，不放最终交付文件）
+    ├── index.html            # 渲染源（fill_template.py 产物）
+    ├── index.html.orig       # customize.py 首跑备份（幂等重建用，可无）
+    ├── SCRIPT.md             # 口播脚本 + 分镜
+    ├── _tts.txt              # TTS 原始口播文本
+    ├── segments.json         # whisper 分段（所有时间参数唯一真值来源）
+    ├── customize.py          # 场景文案定制脚本（仅此一个脚本允许复制到 composition/，幂等）
+    ├── render.log            # 渲染日志
+    ├── assets/
+    │   ├── img/
+    │   │   ├── cover.png     # 封面背景源图（AI 生成、未叠加文字；cover_overlay.py 的输入）
+    │   │   ├── scene-01.png …# 场景配图（零填充两位编号）
+    │   │   └── screens/      # 文章真实截图（实操/产品类必放）
+    │   ├── audio/
+    │   │   ├── narration.mp3     # 主配音（已调速）
+    │   │   ├── narration_raw.mp3 # 调速前原始配音
+    │   │   ├── cta_tail.mp3      # CTA 片尾：渲染前须从技能包 assets/audio/cta_tail.mp3 复制到位
+    │   │   └── *.log             # speed_adjustment.log / key_rotation.log
+    │   └── vendor/
+    │       └── gsap.min.js   # 必须存在（渲染前 vendor 必检）
+    ├── frames/               # 逐帧中间产物 frame_%05d.jpg（ffmpeg 后可选清理）
+    └── _snap/                # 渲染前目检截图 snap_%05.1fs.jpg
+```
+
+**禁止出现在产物中的内容（硬性）**：
+
+- 任何浏览器 profile 目录：`.edge-profile*`、`Edge`/`Chromium` `User Data` 等——**绝不可**出现在 `composition/` 或 `video-assets/` 下（来源与规避见 Step 10）。
+- 技能脚本副本：`render_frames*.py`、`snapshot*.py`、`fill_template.py` 等 `scripts/` 下脚本**禁止复制进** `composition/`。一律从技能 `scripts/` 目录调用，把 article 路径作为参数传入。
+- 封面临时/变体命名：`封面_v1.png`、`封面_v1_旧版.png`、`封面_final.png`、`cover.png`、`cover_final.png` 等。最终封面**唯一定为 `video-assets/封面.png`**（与 `视频号发布物料.md` 同目录）；源背景**唯一定为 `composition/assets/img/cover.png`**（AI 生成、未叠字，是 `cover_overlay.py` 的输入，留在工程目录）。
+- 最终视频不得留在 `composition/` 内：必须输出到 `video-assets/output.mp4`（与 `视频号发布物料.md` 同目录）；重渲染版本 `output-vN.mp4` 同样在 `video-assets/` 根，禁止用 `composition/output.mp4` 之类路径。
+- `视频号发布物料.md` 出现在 `composition/` 内或 article 其它位置——唯一位置是 `video-assets/` 根。
+
+**产物合规自检（渲染前 / 交付前各跑一次）**：
+
+```bash
+# 在 video-assets/ 执行（与 视频号发布物料.md 同目录），期望全部无输出
+ls composition/ | grep -E '\.edge-profile|render_frames_|snapshot_'   # 期望：无
+ls composition/ | grep -E '封面'                                       # 期望：无（最终封面在 video-assets/ 根）
+ls | grep -E '封面.*(v[0-9]|_旧版|final)|^cover'                       # 期望：无（仅 封面.png）
+test -f 封面.png && echo OK_COVER
+test -f output.mp4 && echo OK_VIDEO
+test -f composition/assets/vendor/gsap.min.js && echo OK_VENDOR
+test -f 视频号发布物料.md && echo OK_MATERIAL
+test -f composition/assets/audio/cta_tail.mp3 && echo OK_CTA   # 关闭片尾 CTA 时可不检
+```
+
 ## 依赖与环境
 
 - **运行时**：Python 3.11+；`pip install websockets`；ffmpeg（PATH 中，libx264/aac）；faster-whisper；Edge/Chromium 无头（CDP）。
@@ -42,13 +100,24 @@ version: "1.0.0"
 - **文生图**：`cover-image-gen`（仅纯文生图，支持 ModelScope Qwen-Image 与 Agnes 两套 provider；不支持图生图/编辑/超分/扩图/局部重绘，相关场景改为复用文章真实截图或纯色/渐变背景，不要假装支持）。
 - **CTA 文案/样式**：`config/cta_config.json`（可设 `"enabled": false` 关闭片尾）。
 - **文章目录**：文档中的 `D:\Workbench\weiluliaokejiBlogs\docs\posts\...` 只是示例，实际执行必须传入文章目录的绝对路径；产物默认写入 `<article_dir>/assets/video-assets/`。
-- **CTA 音频**：`assets/audio/cta_tail.mp3` 当前针对微信公众号“围炉聊科技”；其他公众号需要自行替换同名文件，并用 `ffprobe` 重新确认实际时长。
-- **环境预检（渲染前确认）**：`where msedge` / `where ffmpeg` / `python -c "import websockets"` 均可用；`ffprobe -v error -show_entries format=duration assets/audio/cta_tail.mp3` 读 CTA 实际时长。
+- **CTA 音频（两个位置，禁止混用）**：
+  - **技能自带模板**：技能包内 `assets/audio/cta_tail.mp3`（针对微信公众号“围炉聊科技”；换号需替换同名文件并重跑 `ffprobe` 确认时长）。`audio_post_process.py` 拼接主配音+CTA 时读的是这一个（按 `SKILL_ROOT` 解析）。
+  - **文章运行时副本**：**必须**在渲染前复制到 `composition/assets/audio/cta_tail.mp3`。HTML 模板以 `<audio src="assets/audio/cta_tail.mp3">` 加载它，缺文件则 CTA 段无声音。**该复制没有脚本代劳**（拼接脚本只读取技能自带模板、不会往文章里写），需手动复制一次。
+- **环境预检（渲染前确认）**：`where msedge` / `where ffmpeg` / `python -c "import websockets"` 均可用；`ffprobe -v error -show_entries format=duration composition/assets/audio/cta_tail.mp3` 读 CTA 实际时长。
 
 ## 工作流（步骤索引）
 
 源文章用 `<article_dir>` 指代（如 `D:\Workbench\weiluliaokejiBlogs\docs\posts\{标题}`），产物落 `<article_dir>/assets/video-assets/`。各步明细见 `references/`：
 
+0. **初始化产物目录（必做，建骨架）**：开跑前一次性建好，之后各步只往既有目录里放文件，禁止临时自建新目录名
+   ```bash
+   # 在 <article_dir> 执行
+   mkdir -p assets/video-assets/composition/assets/img/screens \
+            assets/video-assets/composition/assets/audio \
+            assets/video-assets/composition/assets/vendor \
+            assets/video-assets/composition/frames \
+            assets/video-assets/composition/_snap
+   ```
 1. **读取源文章** → 提炼 3–5 核心论点 [`references/01-article-script.md`]
 2. **撰写口播脚本 + 分镜**（钩子优先）[同上]
 3. **脚本复核**（原文比对：数据/术语/结论/逻辑）[同上]
@@ -71,6 +140,8 @@ version: "1.0.0"
 - [ ] `unset HTTP_PROXY`（沙箱代理会假 502）；路径用 Windows 原生 `D:/...` 非 `/d/...`；ffmpeg 不接 `tail`/`head` 管道
 - [ ] **vendor 目录必检（新增）**：`Test-Path composition/assets/vendor/gsap.min.js` 为 True；缺失则 `Invoke-WebRequest "https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" -OutFile composition/assets/vendor/gsap.min.js`。缺失会导致 `FATAL: page not ready` 超时退出（`is_ready` 检查含 `!!window.__timelines.main`，gsap 加载失败时短路为 false）（详见 `references/06-troubleshooting.md` 坑 6）
 - [ ] **evaluate 返回值须为标量（新增）**：所有 `window.__timelines.main.time(t)` / `.progress(p)` 调用须包 IIFE 返回 number（`(() => { ...; return 0; })()`），否则 playwright 序列化 GSAP timeline 对象（含循环引用）会递归卡死；CDP 路径虽默认 `returnByValue: false` 不受影响，但 IIFE 仍是最佳实践（详见坑 7）
+- [ ] **CTA 配音已落位**：`composition/assets/audio/cta_tail.mp3` 存在——缺失则 CTA 段无声音。从技能包 `assets/audio/cta_tail.mp3` 复制（该复制无脚本代劳，须手动做一次）；`cta_config.json` 关闭片尾时可跳过
+- [ ] **产物目录合规（见「产物目录契约」）**：`composition/` 下无 `.edge-profile*`、无 `render_frames_*` / `snapshot_*` 脚本副本、无 `封面*.png`；最终 `封面.png` 与 `output.mp4`（及 `output-vN.mp4`）在 `video-assets/` 根、与 `视频号发布物料.md` 同目录；`视频号发布物料.md` 在 `video-assets/` 根。任一不符即未达统一规范，交付前必须整改
 
 ## 排错
 

@@ -43,6 +43,9 @@
 `fill_template.py` 只填时间/字幕占位符，**不替换演示文案**。模板自带标题/内容区是占位符，只跑它不跑本步会显示"主标题 高亮词"等占位文字。
 
 **做法**：复制 `templates/customize.py` 到 `composition/`，改 `SCENES` / `CHROME` 两字典，运行 `python customize.py`。脚本按 section id 精确替换三类内容并断言成功（`n==1`）：
+
+> ⚠️ **只有 `customize.py` 允许复制到 `composition/`**。`render_frames.py` / `snapshot_frames.py` / `fill_template.py` 等 `scripts/` 下脚本**禁止复制进 article**——一律在技能 `scripts/` 目录调用，把 `<article_dir>/assets/video-assets/composition/...` 作为路径参数传入。参考样本曾出现 `render_frames_p19231.py`、`snapshot_p19231.py` 等带 PID 的脚本副本，属违规污染，须删除。
+
 1. `<h2 class="section-title">` 内文（`<em>` 渲染绿色高亮）
 2. `</h2>` 后注释块 → 真实内容，四类结构（密度上限为硬约束）：`.steps` / `.tag-row` / `.warn-bar` / `.matrix`
 3. chrome 的 `.label`（GUIDE/NOTICE/PICK 01/MATRIX/TAKEAWAY）
@@ -70,14 +73,26 @@ python3 scripts/snapshot_frames.py composition/index.html _snap 3,26,70,92
 
 ## Step 10：逐帧渲染（Edge CDP，render_frames.py）
 
-**启动干净 Edge CDP**（命令行必须含 `--disable-extensions`，否则插件悬浮窗混入成片）：
+**渲染前素材必检**（HTML 以相对 `composition/` 的路径加载，缺件会静音/白屏）：
+
+```bash
+test -f composition/assets/vendor/gsap.min.js            # 缺则 FATAL: page not ready（坑 6）
+test -f composition/assets/audio/narration.mp3           # 主配音
+test -f composition/assets/audio/cta_tail.mp3            # CTA 片尾；缺则 CTA 段无声音
+```
+> `cta_tail.mp3` **没有脚本自动拷贝**：`audio_post_process.py` 拼接时读的是技能包自带模板（`SKILL_ROOT/assets/audio/cta_tail.mp3`），不会写进文章。渲染前须手动复制一次到 `composition/assets/audio/cta_tail.mp3`（`cta_config.json` 关闭片尾时不需要）。
+
+**启动干净 Edge CDP**（命令行必须含 `--disable-extensions`，否则插件悬浮窗混入成片；且必须含固定 `--user-data-dir`，见下方硬性约束）：
 ```bash
 # Windows（可常驻方式：Bash run_in_background 直接 msedge.exe，避免会话结束被回收）
-msedge.exe --headless --disable-extensions --disable-background-networking --disable-sync --remote-debugging-port=19222 about:blank
+#   --user-data-dir 必须指向 article 目录之外（示例用 %TEMP%），禁止落到 composition/ 或 video-assets/
+msedge.exe --headless --disable-extensions --disable-background-networking --disable-sync --user-data-dir="%TEMP%\.cf-edge-profile" --remote-debugging-port=19222 about:blank
 # macOS
-/Applications/Microsoft\ Edge.app/Contents/MacOS/Microsoft\ Edge --headless --disable-extensions --disable-background-networking --disable-sync --remote-debugging-port=19222 about:blank
+/Applications/Microsoft\ Edge.app/Contents/MacOS/Microsoft\ Edge --headless --disable-extensions --disable-background-networking --disable-sync --user-data-dir="$TMPDIR/.cf-edge-profile" --remote-debugging-port=19222 about:blank
 ```
 启动后 `curl --noproxy 127.0.0.1 http://127.0.0.1:19222/json` 应无 `extension://` / `background_page` target。
+
+> ⚠️ **`--user-data-dir` 硬性约束（防止浏览器 profile 污染产物）**：必须指向 `<article_dir>` **之外**的固定路径（如 `%TEMP%\.cf-edge-profile` / `$TMPDIR/.cf-edge-profile`）。**绝对禁止** `--user-data-dir=.edge-profile-<pid>` 或任何落在 `composition/` / `video-assets/` 内的相对/绝对路径——否则整个 Chromium profile（数百 MB 的 `hyphen-data`、`component_crx_cache`、`Edge Wallet` 等）会被写进产物目录，严重污染 `git` 与发布物料（参考样本曾因此被 `.edge-profile-19235` 整包污染）。若某次运行已在 `composition/` 下生成 `.edge-profile*`，须整目录删除后重渲染。详见 SKILL.md「产物目录契约」。
 
 **端口清理（续渲不杀）**：`render_frames.py` 连外部拉起的 CDP 实例，杀它自己就断连。启动先 `GET /json`——有可用 page target 直接复用不杀；仅端口占但 CDP 无响应（残留崩溃）才按 PID `taskkill /F /PID <pid>`，绝不 `taskkill /F /IM msedge.exe` 全杀。手动清理前先 `curl --noproxy 127.0.0.1` 确认无响应再按 PID 精确 kill。
 
@@ -90,12 +105,15 @@ python3 scripts/render_frames.py <index.html_path> <frames_dir> <fps> [start_fra
 
 ## Step 11：ffmpeg 合成 MP4
 
+> 在 `composition/` 目录内执行（命令引用的 `frames/`、`assets/` 均为相对路径）。最终视频**必须输出到上级 `video-assets/` 根**，与 `视频号发布物料.md` 同目录——**禁止**写 `composition/output.mp4`。
+
 ```bash
+# 当前目录 = composition/
 ffmpeg -y -framerate 25 -i frames/frame_%05d.jpg -i assets/audio/narration.mp3 \
   -c:v libx264 -crf 20 -preset medium -pix_fmt yuv420p \
   -c:a aac -b:a 192k -shortest -movflags +faststart \
-  output.mp4
+  ../output.mp4
 ```
 **调速合成**（owner 要求一律 1.3x）：`[0:v]setpts=PTS/1.3[v];[1:a]atempo=1.3[a]` 后 `-map [v] -map [a]`。
 
-校验：`ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,r_frame_rate output.mp4` → `duration`≈配音时长、`1080x1920`、`h264+aac`。
+校验：`ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,width,height,r_frame_rate ../output.mp4` → `duration`≈配音时长、`1080x1920`、`h264+aac`。

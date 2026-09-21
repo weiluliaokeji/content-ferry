@@ -3,9 +3,9 @@
 Video cover image overlay: compose a 1080x1920 WeChat-video cover
 from a vertical AI-generated background + title / subtitle / brand.
 
-Usage:
+Usage (run from the article's video-assets/ directory):
     python cover_overlay.py \
-        --bg "assets/img/cover.png" \
+        --bg composition/assets/img/cover.png \
         --title "主标题\n第二行" \
         --subtitle "零成本基建系列" \
         --brand "围炉聊科技" \
