@@ -24,11 +24,19 @@ export interface ImageSearchResultItem {
   caption: string;
   sourceUrl: string | null;
   sourceTitle: string | null;
+  placement?: ImagePlacementRecommendation;
   review?: {
     status: "accepted" | "uncertain" | "rejected" | "unreviewed" | "failed";
     score: number | null;
     reason: string;
   };
+}
+
+export interface ImagePlacementRecommendation {
+  position: "before" | "after" | "end";
+  anchor: string;
+  reason: string;
+  rank: number;
 }
 
 export interface WebSearchProvider {

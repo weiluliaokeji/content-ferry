@@ -386,7 +386,11 @@ export const articleChatSuggestion = z.object({
   operation: z.enum(["replace", "insert_before", "insert_after"]).default("replace"),
   status: z.enum(["pending", "accepted", "rejected", "unavailable"]).default("pending")
 });
-export const articleChatOutput = z.object({ reply: z.string().trim().min(1).max(20000), memorySuggestion: z.string().trim().max(1000).default(""), writingMemorySuggestion: z.string().trim().max(1000).default(""), suggestions: z.array(articleChatSuggestion).max(5).default([]) });
+export const articleChatImageSearchRequest = z.object({
+  query: z.string().trim().min(2).max(500),
+  limit: z.number().int().min(1).max(12).default(8)
+}).nullable().default(null);
+export const articleChatOutput = z.object({ reply: z.string().trim().min(1).max(20000), memorySuggestion: z.string().trim().max(1000).default(""), writingMemorySuggestion: z.string().trim().max(1000).default(""), suggestions: z.array(articleChatSuggestion).max(5).default([]), imageSearchRequest: articleChatImageSearchRequest });
 export const articleChatMemoryInput = z.object({ contextKey: z.string().trim().min(1).max(1200), memory: z.string().trim().min(1).max(1000) });
 export const agentMemoryQuery = z.object({
   scopeKey: z.string().trim().min(1).max(1200),

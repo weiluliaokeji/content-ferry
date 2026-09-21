@@ -166,6 +166,12 @@ export type ImageSearchResultItem = {
   caption: string;
   sourceUrl: string | null;
   sourceTitle: string | null;
+  placement?: {
+    position: "before" | "after" | "end";
+    anchor: string;
+    reason: string;
+    rank: number;
+  };
   review?: {
     status: "accepted" | "uncertain" | "rejected" | "unreviewed" | "failed";
     score: number | null;
@@ -192,6 +198,13 @@ export type ManagedSkill = {
 };
 export type SkillFileContent = { relativePath: string; content: string; size: number };
 export type ArticleChatSuggestionOperation = "replace" | "insert_before" | "insert_after";
+export type ArticleChatImageSearch = {
+  query: string;
+  provider: string | null;
+  status: "ready" | "failed";
+  error?: string;
+  items: ImageSearchResultItem[];
+};
 export type ArticleChatSuggestion = { original: string; replacement: string; reason: string; kind?: "content" | "feedback"; operation?: ArticleChatSuggestionOperation; status?: "pending" | "accepted" | "rejected" | "unavailable" };
 export type ArticleChatMessage = {
   id: string;
@@ -199,6 +212,7 @@ export type ArticleChatMessage = {
   content: string;
   memorySuggestion: string;
   suggestions: ArticleChatSuggestion[];
+  imageSearch?: ArticleChatImageSearch;
   createdAt: string;
   deliveryState?: "sending" | "failed";
 };

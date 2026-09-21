@@ -47,6 +47,11 @@ export function markUnansweredAwenMessages(messages: ArticleChatMessage[]): Arti
     : message);
 }
 
+export function getAwenDeliveryStateLabel(message: Pick<ArticleChatMessage, "role" | "deliveryState">): string | undefined {
+  if (message.deliveryState !== "sending") return undefined;
+  return message.role === "user" ? "已发送，阿文正在处理…" : "阿文正在处理…";
+}
+
 export function shouldAutoScrollAwenTranscript(previousMessageCount: number | undefined, previousLoading: boolean | undefined, messageCount: number, loading: boolean): boolean {
   if (previousMessageCount === undefined) return true;
   return messageCount > previousMessageCount || (loading && !previousLoading);
@@ -142,7 +147,7 @@ export function AwenBottomPanel({ messages, memory, value, loading, unsavedSugge
           {messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}>
             <strong>{message.role === "user" ? "你" : "阿文"}</strong>
             <div>{message.content}</div>
-            {message.deliveryState === "sending" && <small className="awen-message-state">正在发送…</small>}
+            {message.deliveryState === "sending" && <small className="awen-message-state">{getAwenDeliveryStateLabel(message)}</small>}
             {message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading}>↻ 重新发送</button></small>}
             {message.role === "assistant" && message.suggestions.map((suggestion, index) => <details className="awen-conversation-suggestion" key={`${message.id}:${index}`} open>
                <summary>建议 {index + 1}：{suggestionOperation(suggestion) === "replace" ? "替换原文" : suggestionOperation(suggestion) === "insert_after" ? "追加到原文后" : "插入到原文前"}{getAwenAlternativeSuggestionIds(messages, `${message.id}:${index}`).length > 0 ? " · 同段落互斥方案" : ""} · {suggestion.reason}</summary>
@@ -234,7 +239,7 @@ export function LegacyAwenBottomPanel({ messages, memory, value, loading, onChan
 }) {
   const transcriptRef = useRef<HTMLDivElement>(null);
   useAwenTranscriptAutoScroll(transcriptRef, messages, loading);
-  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文"><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><div className="awen-bottom-layout"><div className="awen-history">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？也可以直接说“给出 3 条可直接应用的修改建议”。</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.deliveryState === "sending" && <small className="awen-message-state">正在发送…</small>}{message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading} title="重新发送">↻ 重新发送</button></small>}{message.role === "assistant" && message.suggestions.length > 0 && <small className="awen-memory-note">已生成 {message.suggestions.length} 条可应用建议，已标记在正文对应位置。</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div></div><aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside></div></section>;
+  return <section className="awen-bottom-panel" aria-label="与阿文讨论本文"><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><div className="awen-bottom-layout"><div className="awen-history">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<div className="awen-transcript" ref={transcriptRef}>{messages.length === 0 && <div className="awen-empty">可以问阿文：这篇文章的核心论点是否清楚？哪里读起来像模板？也可以直接说“给出 3 条可直接应用的修改建议”。</div>}{messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}><strong>{message.role === "user" ? "你" : "阿文"}</strong><div>{message.content}</div>{message.deliveryState === "sending" && <small className="awen-message-state">{getAwenDeliveryStateLabel(message)}</small>}{message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading} title="重新发送">↻ 重新发送</button></small>}{message.role === "assistant" && message.suggestions.length > 0 && <small className="awen-memory-note">已生成 {message.suggestions.length} 条可应用建议，已标记在正文对应位置。</small>}</article>)}{loading && <article className="awen-message assistant"><strong>阿文</strong><div>正在阅读文章并组织建议…</div></article>}</div></div><aside className="awen-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading} /><button type="button" onClick={onSend} disabled={!value.trim() || loading}>发送</button></aside></div></section>;
 }
 
 export function AwenChatModal({ messages, memory, value, loading, onChange, onSend, onRemember, onClose }: {

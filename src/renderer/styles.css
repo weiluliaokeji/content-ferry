@@ -380,6 +380,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .image-history-thumbnails img { width: 48px; height: 38px; border-radius: 5px; object-fit: cover; background: #eef2f7; }
 .image-candidate-grid-wide { grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; overflow: auto; padding: 1rem 1.35rem 1.35rem; }
 .image-candidate-wide { padding: .6rem; }
+.image-placement-recommendation { padding: .28rem .4rem; border-radius: 5px; background: #f1f5ff; color: #315bd8; line-height: 1.45; }
 .image-candidate-image-button { position: relative; display: block; width: 100%; padding: 0; overflow: hidden; border: 0; border-radius: 6px; background: #eef2f7; cursor: zoom-in; }
 .image-candidate > .image-candidate-image-button { padding: 0; }
 .image-candidate-image-button > img { display: block; width: 100%; height: 170px; object-fit: cover; }
@@ -392,9 +393,10 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .image-preview-backdrop { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 2rem; background: rgb(15 23 42 / 58%); }
 .image-preview-modal { box-sizing: border-box; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(1100px, 100%); max-height: calc(100vh - 4rem); overflow: hidden; border: 1px solid #d7dfed; border-radius: 16px; background: #fff; box-shadow: 0 24px 80px rgb(15 23 42 / 32%); }
 .image-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem .85rem; border-bottom: 1px solid #e5eaf2; }
-.image-preview-header h2 { margin: .1rem 0 0; overflow: hidden; font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }
-.image-preview-stage { display: grid; place-items: center; min-height: 260px; overflow: auto; padding: 1rem; background: #111827; }
-.image-preview-stage img { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; }
+.image-preview-header > div:first-child { min-width: 0; flex: 1; }
+.image-preview-header h2 { margin: .1rem 0 0; font-size: 1rem; line-height: 1.35; overflow-wrap: anywhere; white-space: normal; word-break: break-word; }
+.image-preview-stage { display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 260px; overflow: auto; padding: 1rem; background: #111827; }
+.image-preview-stage img { display: block; width: auto; height: auto; max-width: 100%; max-height: 65vh; object-fit: contain; }
 .image-preview-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; padding: .9rem 1.25rem 1rem; }
 .image-preview-meta { display: grid; gap: .25rem; min-width: 0; color: #667085; }
 .image-preview-meta small { overflow-wrap: anywhere; }

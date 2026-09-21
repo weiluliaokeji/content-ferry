@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { buildServer } from "./create-server";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
-import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, WebResearchOptions } from "../ai/model-provider";
+import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, ReviewImageRequest, WebResearchOptions } from "../ai/model-provider";
 import type { ResearchCard, WebResearchContext } from "../ai/research-prompts";
 import type { WebSearchClient } from "../ai/web-search";
 import { extractWebResearchTargets } from "../ai/awen-conversation-service";
@@ -450,6 +450,137 @@ describe("local API scaffold", () => {
     expect(webSearch.extract).toHaveBeenCalledWith("https://herdr.dev/docs/agent-skill/");
     expect(prompts[0]).toContain("官方页面正文：https://herdr.dev/docs/agent-skill/");
     expect(prompts[0]).toContain("应用侧联网核验结果");
+  });
+
+  it("lets Awen use the structured image search request and persists candidates in history", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-images-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-image-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        if (request.prompt.includes("请为文章配图候选推荐插入位置")) {
+          return {
+            value: request.parse({ placements: [
+              { imageUrl: "https://images.example.test/tmux.png", position: "after", anchor: "这是一段足够长的正文，用来测试图片推荐位置。", reason: "候选说明与该段主题一致。", rank: 1 }
+            ] }),
+            provider: "test-awen-image-ai",
+            model: "test-model",
+            usage: null
+          };
+        }
+        const outputSchema = request.outputSchema as {
+          properties?: {
+            imageSearchRequest?: {
+              anyOf?: Array<{ required?: string[] }>;
+            };
+          };
+        };
+        expect(outputSchema.properties?.imageSearchRequest?.anyOf?.[0]?.required).toEqual(["query", "limit"]);
+        return {
+          value: request.parse({ reply: "我会先检索候选。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: { query: "tmux multiple panes screenshot", limit: 6 } }),
+          provider: "test-awen-image-ai",
+          model: "test-model",
+          usage: null
+        };
+      },
+      async reviewImage<T>(request: ReviewImageRequest<T>) {
+        expect(fs.existsSync(request.imagePath)).toBe(true);
+        return {
+          value: request.parse({ decision: "accept", score: 0.96, reason: "图片内容与 tmux 多 pane 运行场景匹配。" }),
+          provider: "test-awen-image-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    const searchImages = vi.fn(async () => [{
+      imageUrl: "https://images.example.test/recorder.png",
+      thumbnailUrl: "https://images.example.test/recorder-thumb.png",
+      caption: "Skill Recorder 操作界面",
+      sourceUrl: "https://github.com/microsoft/skill-recorder",
+      sourceTitle: "Skill Recorder"
+    }, {
+      imageUrl: "https://images.example.test/tmux.png",
+      thumbnailUrl: "https://images.example.test/tmux-thumb.png",
+      caption: "tmux 多 pane 终端运行界面",
+      sourceUrl: "https://github.com/tmux/tmux",
+      sourceTitle: "tmux"
+    }]);
+    const webSearch: WebSearchClient = {
+      activeProviderId: "tavily",
+      search: vi.fn(async () => []),
+      searchImages,
+      extract: vi.fn(async () => ({ content: "" }))
+    };
+    const imageReviewImageSource = {
+      downloadForReview: vi.fn(async () => ({ bytes: Buffer.from("test-image"), mimeType: "image/png" }))
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory, webSearch, imageReviewImageSource });
+    const reviewSettings = await server.inject({ method: "PUT", url: "/api/image-review/settings", payload: { mode: "current", provider: null } });
+    expect(reviewSettings.statusCode).toBe(200);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/article-chat/messages",
+      payload: {
+        contextKey: "source:posts/awen-images/index.md",
+        title: "联网找图测试",
+        markdown: "这是一段足够长的正文，用来测试图片推荐位置。",
+        message: "有没有 tmux 运行时的图片可以放到文章中"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(searchImages).toHaveBeenCalledWith("tmux multiple panes screenshot", 6);
+    expect(response.json().message.imageSearch).toMatchObject({
+      status: "ready",
+      query: "tmux multiple panes screenshot",
+        provider: "tavily",
+      items: [
+        { imageUrl: "https://images.example.test/tmux.png", review: { status: "accepted", score: 0.96 }, placement: { position: "after", rank: 1 } },
+        { imageUrl: "https://images.example.test/recorder.png", review: { status: "accepted", score: 0.96 }, placement: { position: "end", rank: 3 } }
+      ]
+    });
+    expect(response.json().message.content).toContain("已在图片素材窗口打开");
+    const history = await server.inject({ method: "GET", url: "/api/image-candidates/history?contextKey=source%3Aposts%2Fawen-images%2Findex.md" });
+    expect(history.json().items).toHaveLength(1);
+    expect(history.json().items[0].provider).toBe("tavily");
+    const thread = await server.inject({ method: "GET", url: "/api/article-chat?contextKey=source%3Aposts%2Fawen-images%2Findex.md" });
+    expect(thread.json().messages.at(-1).imageSearch.items).toHaveLength(2);
+  });
+
+  it("does not claim image search succeeded when the image search tool returns no candidates", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-image-failure-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-image-failure-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return {
+          value: request.parse({ reply: "我会先检索候选。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: { query: "不可用图片", limit: 4 } }),
+          provider: "test-awen-image-failure-ai",
+          model: "test-model",
+          usage: null
+        };
+      }
+    };
+    const webSearch: WebSearchClient = {
+      activeProviderId: "tavily",
+      search: vi.fn(async () => []),
+      searchImages: vi.fn(async () => []),
+      extract: vi.fn(async () => ({ content: "" }))
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory, webSearch });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/article-chat/messages",
+      payload: { contextKey: "source:posts/awen-image-failure/index.md", title: "找图失败", markdown: "正文。", message: "请找图" }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().message.imageSearch).toMatchObject({ status: "failed", items: [], error: "图片检索未返回可用候选，请换个描述重试。" });
+    expect(response.json().message.content).toContain("图片检索没有成功");
+    expect(response.json().message.content).not.toContain("找到 0 个候选");
   });
 
   it("renders escaped newlines from an Awen reply as actual newlines", async () => {

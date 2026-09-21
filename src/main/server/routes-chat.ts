@@ -14,13 +14,15 @@ import { AwenConversationService } from "../ai/awen-conversation-service";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 
 export function registerChatRoutes(ctx: ServerContext): void {
-  const { server, database, accounts, skills, effectiveModelProvider, coverGenerator, webSearch } = ctx;
+  const { server, database, accounts, skills, effectiveModelProvider, coverGenerator, webSearch, imageSearchHistory, imageCandidateReview } = ctx;
   const awen = new AwenConversationService(
     database.connection,
     effectiveModelProvider,
     skills,
     webSearch,
-    (error) => server.log.error({ err: error }, "Agent memory maintenance failed")
+    (error) => server.log.error({ err: error }, "Agent memory maintenance failed"),
+    imageSearchHistory,
+    imageCandidateReview
   );
   const agentMemory = new AgentMemoryRepository(database.connection);
 

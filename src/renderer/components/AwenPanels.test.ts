@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { removeUnavailableAwenSuggestions, shouldAutoScrollAwenTranscript } from "./AwenPanels";
+import { getAwenDeliveryStateLabel, removeUnavailableAwenSuggestions, shouldAutoScrollAwenTranscript } from "./AwenPanels";
 import { applyAwenSuggestionToMarkdown, getPendingAwenSuggestionIds, isAwenSuggestionApplied, shouldPersistAcceptedAwenSuggestion } from "./awen-suggestion-utils";
 import type { ArticleChatMessage } from "../types";
 
@@ -108,5 +108,11 @@ describe("Awen transcript scrolling", () => {
     expect(shouldAutoScrollAwenTranscript(4, false, 5, false)).toBe(true);
     expect(shouldAutoScrollAwenTranscript(4, false, 4, true)).toBe(true);
     expect(shouldAutoScrollAwenTranscript(4, true, 4, false)).toBe(false);
+  });
+});
+
+describe("Awen message delivery state", () => {
+  it("shows an already submitted user message as sent while Awen is processing", () => {
+    expect(getAwenDeliveryStateLabel({ role: "user", deliveryState: "sending" })).toBe("已发送，阿文正在处理…");
   });
 });

@@ -14,6 +14,8 @@ import { ContentResearchError, ContentResearchRepository } from "../content/cont
 import { ContentReviewRepository } from "../content/content-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
+import type { ImageReviewImageSource } from "../ai/image-candidate-review-service";
+import { ImageCandidateReviewService } from "../ai/image-candidate-review-service";
 import { AiContentService } from "../ai/ai-content-service";
 import { createWebSearchClient, type VisibleBrowserSearch, type WebSearchClient } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
@@ -111,6 +113,8 @@ export function buildServer(
     visibleBrowserSearch?: VisibleBrowserSearch;
     /** 可选注入：文章对话使用的应用侧网页检索客户端（测试和桌面装配共用）。 */
     webSearch?: WebSearchClient;
+    /** 可选注入：图片初审下载源（测试替换远程图片下载，桌面使用默认服务）。 */
+    imageReviewImageSource?: ImageReviewImageSource;
     csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
     /** 可选注入：外部提供博客园渠道稿服务实例（默认由 buildServer 内部构造）。 */
     cnblogsChannel?: CnblogsChannelService;
@@ -166,6 +170,7 @@ export function buildServer(
       webSearch
     )
     : modelProvider;
+  const imageCandidateReview = new ImageCandidateReviewService(options?.imageReviewImageSource ?? remoteImages, effectiveModelProvider, modelConnections, skills);
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
   const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore);
   const cnblogsChannels = options?.cnblogsChannel
@@ -362,6 +367,7 @@ export function buildServer(
     getResearchProxyUrl,
     webSearch,
     imageSearchHistory,
+    imageCandidateReview,
     modelConnections,
     skills,
     aiAuditLog,

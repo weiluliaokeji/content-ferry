@@ -10,6 +10,7 @@ import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { ExecutionPanel } from "./ExecutionPanel";
+import { isCurrentImageSearchRequest } from "./image-search-utils";
 import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord } from "../types";
 
 type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
@@ -91,6 +92,8 @@ export function ArticleWorkspace({
   const [imagePreviewCandidate, setImagePreviewCandidate] = useState<ImageSearchResultItem>();
   const [imageHistory, setImageHistory] = useState<ImageSearchHistoryRecord[]>([]);
   const [imageHistoryOpen, setImageHistoryOpen] = useState(false);
+  const imageSearchRequestIdRef = useRef(0);
+  const imageSearchAbortRef = useRef<AbortController | undefined>(undefined);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [coverCropImage, setCoverCropImage] = useState<SelectedImage>();
   const [settingsMaterials, setSettingsMaterials] = useState<WechatMaterial[]>([]);
@@ -170,6 +173,20 @@ export function ArticleWorkspace({
   const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
   const awenContextKeyRef = useRef(contextKey);
   awenContextKeyRef.current = contextKey;
+  const imageSearchContextKeyRef = useRef(contextKey);
+  imageSearchContextKeyRef.current = contextKey;
+  useEffect(() => {
+    setImageSearchBusy(false);
+    setImageCandidates([]);
+    setImagePreviewCandidate(undefined);
+    setImageSearchOpen(false);
+    setImageHistoryOpen(false);
+    return () => {
+      imageSearchRequestIdRef.current += 1;
+      imageSearchAbortRef.current?.abort();
+      imageSearchAbortRef.current = undefined;
+    };
+  }, [contextKey]);
   useEffect(() => {
     if (leftTool !== "images") return;
     let active = true;
@@ -247,6 +264,7 @@ export function ArticleWorkspace({
         return;
       }
     }
+    const requestContextKey = contextKey;
     const optimistic: ArticleChatMessage = retryMessage
       ? { ...retryMessage, deliveryState: "sending" }
       : { id: crypto.randomUUID(), role: "user", content: message, memorySuggestion: "", suggestions: [], createdAt: new Date().toISOString(), deliveryState: "sending" };
@@ -257,11 +275,23 @@ export function ArticleWorkspace({
     }
     setAwenLoading(true);
     try {
-      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey, clientMessageId: optimistic.id, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
+      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey: requestContextKey, clientMessageId: optimistic.id, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
+      if (requestContextKey !== awenContextKeyRef.current) return;
       setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message.id, deliveryState: undefined }, result.message]);
       setAwenMemory(result.memory);
       setAwenLoaded(true);
+      const imageSearch = result.message.imageSearch;
+      if (imageSearch?.status === "ready" && imageSearch.items.length > 0) {
+        setImageSearchQuery(imageSearch.query);
+        setImageCandidates(imageSearch.items);
+        setImageHistoryOpen(false);
+        setImageSearchOpen(true);
+        void request<{ items: ImageSearchHistoryRecord[] }>(`/image-candidates/history?contextKey=${encodeURIComponent(requestContextKey)}`)
+          .then((history) => { if (requestContextKey === awenContextKeyRef.current) setImageHistory(history.items); })
+          .catch(() => undefined);
+      }
     } catch (cause) {
+      if (requestContextKey !== awenContextKeyRef.current) return;
       // The server stores the user message before it calls the model. Do not
       // erase an optimistic message on an interrupted model/network request:
       // disappearing author input is worse than a visible failure state.
@@ -824,45 +854,77 @@ export function ArticleWorkspace({
       setWorkspaceError("请先输入想找的图片主题或描述。");
       return;
     }
+    const requestedContextKey = contextKey;
+    const requestId = ++imageSearchRequestIdRef.current;
+    imageSearchAbortRef.current?.abort();
+    const controller = new AbortController();
+    imageSearchAbortRef.current = controller;
+    const timeoutId = window.setTimeout(() => controller.abort(), 180_000);
+    const isCurrentRequest = () => isCurrentImageSearchRequest(
+      requestId,
+      imageSearchRequestIdRef.current,
+      requestedContextKey,
+      imageSearchContextKeyRef.current
+    );
     setImageSearchBusy(true);
     setWorkspaceError("");
     try {
       const result = await request<{ query: string; provider: string | null; items: ImageSearchResultItem[] }>("/image-candidates/search", {
         method: "POST",
-        body: JSON.stringify({ query, limit: 12 })
+        body: JSON.stringify({ query, limit: 12 }),
+        signal: controller.signal
       });
+      if (!isCurrentRequest()) return;
       let reviewedItems = result.items;
       let historyProvider = result.provider;
       if (result.items.length > 0) {
         try {
           const reviewed = await request<{ query: string; provider: string | null; items: ImageSearchResultItem[] }>("/image-candidates/review", {
             method: "POST",
-            body: JSON.stringify({ query, items: result.items })
+            body: JSON.stringify({ query, items: result.items }),
+            signal: controller.signal
           });
+          if (!isCurrentRequest()) return;
           reviewedItems = reviewed.items;
-          historyProvider = reviewed.provider ?? historyProvider;
         } catch {
           // Candidate retrieval remains useful when the optional visual review
           // model is unavailable; keep the unreviewed candidates visible.
+          if (controller.signal.aborted) throw new Error("图片初审请求超时或已取消。");
+          if (!isCurrentRequest()) return;
         }
       }
+      if (!isCurrentRequest()) return;
       setImageCandidates(reviewedItems);
       try {
         const saved = await request<{ item: ImageSearchHistoryRecord }>("/image-candidates/history", {
           method: "POST",
-          body: JSON.stringify({ contextKey, query, provider: historyProvider, items: reviewedItems })
+          body: JSON.stringify({ contextKey: requestedContextKey, query, provider: historyProvider, items: reviewedItems }),
+          signal: controller.signal
         });
-        setImageHistory((current) => [saved.item, ...current.filter((item) => item.id !== saved.item.id)].slice(0, 30));
+        if (isCurrentRequest()) setImageHistory((current) => [saved.item, ...current.filter((item) => item.id !== saved.item.id)].slice(0, 30));
       } catch {
         // History is an auxiliary record; a database hiccup must not hide usable candidates.
+        if (controller.signal.aborted && !isCurrentRequest()) return;
       }
-      if (reviewedItems.length === 0) setWorkspaceError("没有找到可用图片候选，请换个描述重试。");
+      if (reviewedItems.length === 0 && isCurrentRequest()) setWorkspaceError("没有找到可用图片候选，请换个描述重试。");
     } catch (cause) {
+      if (!isCurrentRequest()) return;
       setImageCandidates([]);
-      setWorkspaceError(cause instanceof Error ? cause.message : "图片检索失败，请稍后重试。");
+      setWorkspaceError(controller.signal.aborted ? "图片检索超时或已取消，请重试。" : cause instanceof Error ? cause.message : "图片检索失败，请稍后重试。");
     } finally {
-      setImageSearchBusy(false);
+      window.clearTimeout(timeoutId);
+      if (imageSearchAbortRef.current === controller) {
+        imageSearchAbortRef.current = undefined;
+        if (isCurrentRequest()) setImageSearchBusy(false);
+      }
     }
+  };
+  const closeImageSearch = () => {
+    imageSearchRequestIdRef.current += 1;
+    imageSearchAbortRef.current?.abort();
+    imageSearchAbortRef.current = undefined;
+    setImageSearchBusy(false);
+    setImageSearchOpen(false);
   };
   const restoreImageHistory = (record: ImageSearchHistoryRecord) => {
     setImageSearchQuery(record.query);
@@ -871,7 +933,11 @@ export function ArticleWorkspace({
   };
   const insertImageCandidate = async (candidate: ImageSearchResultItem) => {
     const label = candidate.caption || candidate.sourceTitle || "联网图片";
-    if (!window.confirm("确认下载这张图片并插入文章末尾吗？文渡会先保存到当前文章的本地 assets 目录。")) return;
+    const placement = resolveImagePlacement(markdown, candidate.placement);
+    const placementLabel = placement.position === "end"
+      ? "文章末尾"
+      : `“${placement.anchor.slice(0, 80)}${placement.anchor.length > 80 ? "…" : ""}”${placement.position === "after" ? "之后" : "之前"}`;
+    if (!window.confirm(`确认下载这张图片并插入${placementLabel}吗？文渡会先保存到当前文章的本地 assets 目录。`)) return;
     setImageInsertBusy(candidate.imageUrl);
     setWorkspaceError("");
     try {
@@ -880,8 +946,8 @@ export function ArticleWorkspace({
         method: "POST",
         body: JSON.stringify(sourceArticlePath ? { path: sourceArticlePath, url: candidate.imageUrl } : { contextId: assetContextId, url: candidate.imageUrl })
       });
-      const separator = markdown.trimEnd() ? "\n\n" : "";
-      onChange(`${markdown.trimEnd()}${separator}![${label.replace(/[\[\]]/g, "")}](${saved.assetUrl})\n`);
+      const imageMarkdown = `![${label.replace(/[\[\]]/g, "")}](${saved.assetUrl})`;
+      onChange(insertMarkdownAtPlacement(markdown, imageMarkdown, placement));
       setWorkspaceError("");
     } catch (cause) {
       setWorkspaceError(cause instanceof Error ? cause.message : "图片下载失败，文章没有写入远程地址。");
@@ -1181,7 +1247,7 @@ export function ArticleWorkspace({
     {memoryManagerOpen && <AwenMemoryManager memories={formalMemories} candidates={memoryCandidates} busy={memoryManagerBusy} onPromote={(candidateId) => void promoteMemoryCandidate(candidateId)} onStatus={(memoryId, status) => void updateFormalMemory(memoryId, status)} onForget={(mode) => void forgetArticleMemory(mode)} onExport={() => void exportArticleMemory()} onImport={(file) => void importArticleMemory(file)} onClose={() => setMemoryManagerOpen(false)} />}
     {executionOpen && <div className="execution-modal-backdrop" role="presentation"><section className="execution-modal" role="dialog" aria-modal="true" aria-label="代码与工具执行"><div className="execution-modal-header"><div><p className="eyebrow">文章工具</p><h2>代码与工具</h2><p className="hint compact-hint">需要执行 Demo 或分析源码时再打开；授权目录可以跨文章复用。</p></div><button type="button" className="text-button" onClick={() => setExecutionOpen(false)}>关闭</button></div><ExecutionPanel projectId={projectId} onError={setWorkspaceError} onInsertCitation={(citation) => onChange(`${markdown}\n\n${citation}\n`)} onClose={() => setExecutionOpen(false)} /></section></div>}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
-    {imageSearchOpen && <ImageCandidateSearchModal query={imageSearchQuery} candidates={imageCandidates} history={imageHistory} historyOpen={imageHistoryOpen} busy={imageSearchBusy} insertBusy={imageInsertBusy} onQueryChange={setImageSearchQuery} onSearch={() => void searchImageCandidates()} onInsert={(candidate) => void insertImageCandidate(candidate)} onPreview={setImagePreviewCandidate} onToggleHistory={() => setImageHistoryOpen((open) => !open)} onSelectHistory={restoreImageHistory} onClose={() => setImageSearchOpen(false)} />}
+    {imageSearchOpen && <ImageCandidateSearchModal query={imageSearchQuery} candidates={imageCandidates} history={imageHistory} historyOpen={imageHistoryOpen} busy={imageSearchBusy} insertBusy={imageInsertBusy} onQueryChange={setImageSearchQuery} onSearch={() => void searchImageCandidates()} onInsert={(candidate) => void insertImageCandidate(candidate)} onPreview={setImagePreviewCandidate} onToggleHistory={() => setImageHistoryOpen((open) => !open)} onSelectHistory={restoreImageHistory} onClose={closeImageSearch} />}
     {imagePreviewCandidate && <ImageCandidatePreviewModal candidate={imagePreviewCandidate} onClose={() => setImagePreviewCandidate(undefined)} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
     {leavePromptOpen && <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-label="保存文章修改"><div className="section-heading"><div><p className="eyebrow">离开文章</p><h2>文章还有未保存修改</h2></div><button type="button" className="text-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button></div><p className="hint">{unsavedAwenSuggestionIds.size > 0 ? `其中有 ${unsavedAwenSuggestionIds.size} 条阿文建议已经应用到当前草稿，但还没有保存到文章文件。` : "当前文章还有未保存的修改。"}</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button><button type="button" className="secondary-button" onClick={discardAndLeave} disabled={leaving}>放弃本次修改</button><button type="button" onClick={() => void saveAndLeave()} disabled={leaving}>{leaving ? "正在保存…" : "保存并返回"}</button></div></section></div>}
@@ -1228,7 +1294,7 @@ function ImageCandidateSearchModal({
   return <div className="image-search-backdrop" role="presentation">
     <section className="image-search-modal" role="dialog" aria-modal="true" aria-label="联网找图">
       <header className="image-search-modal-header">
-        <div><p className="eyebrow">文章配图</p><h2>联网找图</h2><p className="hint compact-hint">先搜索候选，再参考视觉初审结果；点击图片可看大图。确认后会把图片插入文章末尾，前后保留空行。</p></div>
+        <div><p className="eyebrow">文章配图</p><h2>联网找图</h2><p className="hint compact-hint">先搜索候选，再参考视觉初审结果；点击图片可看大图。阿文会推荐相关段落，确认后按推荐位置插入；无法匹配时才插入文章末尾。</p></div>
         <div className="image-search-header-actions"><button type="button" className="secondary-button compact-action" onClick={onToggleHistory} disabled={busy}>{historyOpen ? "返回候选" : `搜图历史${history.length ? `（${history.length}）` : ""}`}</button><button type="button" className="text-button" onClick={onClose} disabled={busy}>关闭</button></div>
       </header>
       <form className="image-search-form" onSubmit={(event) => { event.preventDefault(); onSearch(); }}>
@@ -1246,7 +1312,7 @@ function ImageCandidateSearchModal({
             <img src={candidate.thumbnailUrl ?? candidate.imageUrl} alt={candidate.caption || candidate.sourceTitle || "图片候选"} loading="lazy" onError={(event) => { const image = event.currentTarget; if (image.dataset.fallback === "1") { image.style.visibility = "hidden"; return; } image.dataset.fallback = "1"; image.src = `${apiBase}/image-candidates/preview?url=${encodeURIComponent(candidate.imageUrl)}`; }} />
             <span>点击查看大图</span>
           </button>
-          <div><span className={`image-review-badge image-review-${review?.status ?? "unreviewed"}`}>{reviewLabel}</span><strong>{candidate.caption || candidate.sourceTitle || "未命名图片"}</strong>{review?.reason && <small title={review.reason}>{review.reason}</small>}{candidate.sourceTitle && <small>{candidate.sourceTitle}</small>}<div className="image-candidate-links">{candidate.sourceUrl ? <a href={candidate.sourceUrl} target="_blank" rel="noreferrer">打开源网页</a> : <small>源网页未返回</small>}<a href={candidate.imageUrl} target="_blank" rel="noreferrer">打开原图</a></div><button type="button" onClick={() => onInsert(candidate)} disabled={insertBusy !== undefined}>{insertBusy === candidate.imageUrl ? "正在保存…" : "确认下载并插入文章末尾"}</button></div>
+          <div><span className={`image-review-badge image-review-${review?.status ?? "unreviewed"}`}>{reviewLabel}</span><strong>{candidate.caption || candidate.sourceTitle || "未命名图片"}</strong>{review?.reason && <small title={review.reason}>{review.reason}</small>}{candidate.sourceTitle && <small>{candidate.sourceTitle}</small>}{candidate.placement && <small className="image-placement-recommendation">推荐位置：{candidate.placement.position === "end" ? "文章末尾" : candidate.placement.position === "after" ? "当前段落之后" : "当前段落之前"}{candidate.placement.position !== "end" ? `：${candidate.placement.anchor.slice(0, 90)}${candidate.placement.anchor.length > 90 ? "…" : ""}` : ""}<br />{candidate.placement.reason}</small>}<div className="image-candidate-links">{candidate.sourceUrl ? <a href={candidate.sourceUrl} target="_blank" rel="noreferrer">打开源网页</a> : <small>源网页未返回</small>}<a href={candidate.imageUrl} target="_blank" rel="noreferrer">打开原图</a></div><button type="button" onClick={() => onInsert(candidate)} disabled={insertBusy !== undefined}>{insertBusy === candidate.imageUrl ? "正在保存…" : candidate.placement?.position === "end" ? "确认下载并插入文章末尾" : "确认下载并插入推荐位置"}</button></div>
         </article>;
       })}</div>}
       </>}
@@ -1272,6 +1338,25 @@ function ImageCandidatePreviewModal({ candidate, onClose }: { candidate: ImageSe
       <footer className="image-preview-footer"><div className="image-preview-meta">{candidate.review?.reason && <small>{candidate.review.reason}</small>}{candidate.sourceUrl ? <small>搜索服务返回了源网页，可以打开核对上下文。</small> : <small>搜索服务没有返回源网页，下面仅提供原图地址。</small>}</div><div className="modal-actions">{candidate.sourceUrl && <a className="secondary-button" href={candidate.sourceUrl} target="_blank" rel="noreferrer">打开源网页</a>}<a className="secondary-button" href={candidate.imageUrl} target="_blank" rel="noreferrer">打开原图</a></div></footer>
     </section>
   </div>;
+}
+
+function resolveImagePlacement(markdown: string, placement?: ImageSearchResultItem["placement"]): NonNullable<ImageSearchResultItem["placement"]> {
+  if (!placement || placement.position === "end") return { position: "end", anchor: "", reason: placement?.reason || "文章末尾", rank: placement?.rank || 1 };
+  const first = markdown.indexOf(placement.anchor);
+  if (!placement.anchor || first < 0 || first !== markdown.lastIndexOf(placement.anchor)) return { position: "end", anchor: "", reason: "推荐段落已变化，回退到文章末尾。", rank: placement.rank };
+  return placement;
+}
+
+function insertMarkdownAtPlacement(markdown: string, imageMarkdown: string, placement: NonNullable<ImageSearchResultItem["placement"]>): string {
+  if (placement.position === "end" || !placement.anchor) {
+    const separator = markdown.trimEnd() ? "\n\n" : "";
+    return `${markdown.trimEnd()}${separator}${imageMarkdown}\n`;
+  }
+  const anchorIndex = markdown.indexOf(placement.anchor);
+  const insertionIndex = placement.position === "after" ? anchorIndex + placement.anchor.length : anchorIndex;
+  const before = markdown.slice(0, insertionIndex).trimEnd();
+  const after = markdown.slice(insertionIndex).trimStart();
+  return `${before}\n\n${imageMarkdown}\n\n${after}`.trimEnd() + "\n";
 }
 
 function markdownLineNearOffset(markdown: string, offset: number): string {

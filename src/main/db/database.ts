@@ -317,6 +317,7 @@ export function initialiseDatabase(db: Database.Database): void {
       content TEXT NOT NULL,
       memory_suggestion TEXT NOT NULL DEFAULT '',
       suggestions_json TEXT NOT NULL DEFAULT '[]',
+      image_search_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
 
@@ -869,6 +870,9 @@ export function initialiseDatabase(db: Database.Database): void {
   const articleChatColumns = db.prepare("PRAGMA table_info(article_chat_messages)").all() as Array<{ name: string }>;
   if (!articleChatColumns.some((column) => column.name === "suggestions_json")) {
     db.exec("ALTER TABLE article_chat_messages ADD COLUMN suggestions_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!articleChatColumns.some((column) => column.name === "image_search_json")) {
+    db.exec("ALTER TABLE article_chat_messages ADD COLUMN image_search_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   const publishJobColumns = db.prepare("PRAGMA table_info(wechat_publish_jobs)").all() as Array<{ name: string }>;
