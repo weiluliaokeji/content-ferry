@@ -1,10 +1,13 @@
 import type { PermissionResult, ToolPermissionGrant, ToolPermissionRequest } from "./permission-policy";
 import { evaluatePermission } from "./permission-policy";
+import type { ExecutionAuthorizationRecord } from "./execution-repository";
 
 export interface ToolExecutionContext {
   signal?: AbortSignal;
   projectId?: string;
   workspaceId?: string;
+  target?: string;
+  authorization?: ExecutionAuthorizationRecord;
 }
 
 export interface ToolAdapter {
@@ -41,7 +44,12 @@ export class ToolRunner {
     const adapter = this.adapters.get(invocation.toolId);
     if (!adapter) return { status: "failed", toolId: invocation.toolId, permission, error: `未注册工具：${invocation.toolId}` };
     try {
-      return { status: "completed", toolId: invocation.toolId, output: await adapter.run(invocation.input, context), permission };
+      const authorization: ExecutionAuthorizationRecord = {
+        confirmed: true,
+        decisionSource: permission.matchedScope ? "permission_grant" : "default_policy",
+        checks: [{ action: invocation.action, decision: permission.decision, reason: permission.reason, matchedScope: permission.matchedScope }]
+      };
+      return { status: "completed", toolId: invocation.toolId, output: await adapter.run(invocation.input, { ...context, target: invocation.target, authorization }), permission };
     } catch (error) {
       return { status: "failed", toolId: invocation.toolId, permission, error: error instanceof Error ? error.message : String(error) };
     }

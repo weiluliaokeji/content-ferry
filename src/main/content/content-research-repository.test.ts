@@ -224,7 +224,23 @@ describe("ContentResearchRepository", () => {
         }
       });
       expect(result.sources[0].provenance?.executionRunId).toBe("run-3");
+      expect(result.sources[0].adoptionStatus).toBe("pending_verification");
+      expect(result.sources[0].selected).toBe(false);
       expect(result.sources[0].excerpt).toContain("仅适用于记录的目标");
+
+      repository.addExecutionObservation("project-3", {
+        observationId: "observation-3-new-id",
+        executionRunId: "run-3",
+        title: "运行结果 2",
+        claim: "示例执行成功 2。",
+        artifacts: [],
+        provenance: {
+          kind: "execution_observation", executionRunId: "run-3", observationId: "observation-3-new-id", status: "pending",
+          targetType: "host_trusted", runtime: "python", command: ["python", "demo.py"], networkPolicy: "disabled", artifacts: []
+        }
+      });
+      expect(database.connection.prepare("SELECT COUNT(*) AS count FROM content_research_sources WHERE url = ?").get("execution://run-3")).toEqual({ count: 1 });
+      expect(database.connection.prepare("SELECT id, title FROM experimental_observations WHERE execution_run_id = ?").get("run-3")).toEqual({ id: "observation-3", title: "运行结果" });
     } finally {
       database.close();
     }

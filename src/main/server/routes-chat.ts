@@ -22,7 +22,17 @@ export function registerChatRoutes(ctx: ServerContext): void {
     webSearch,
     (error) => server.log.error({ err: error }, "Agent memory maintenance failed"),
     imageSearchHistory,
-    imageCandidateReview
+    imageCandidateReview,
+    {
+      provider: effectiveModelProvider,
+      webSearch,
+      systemTools: ctx.systemTools,
+      contentSources: ctx.contentSources,
+      contentProjects: ctx.contentProjects,
+      permissionGrants: ctx.permissionGrants,
+      workflowRepository: ctx.toolWorkflows,
+      gitSources: ctx.gitSources
+    }
   );
   const agentMemory = new AgentMemoryRepository(database.connection);
 
@@ -47,6 +57,35 @@ export function registerChatRoutes(ctx: ServerContext): void {
     if (!skill.enabled) return reply.code(409).send({ error: "“阿文 · 文章顾问”技能已停用。" });
     const input = articleChatInput.parse(request.body);
     return awen.send(input);
+  });
+
+  server.get("/api/article-chat/workflows/:workflowId", async (request) => {
+    const workflowId = z.object({ workflowId: z.string().uuid() }).parse(request.params).workflowId;
+    return awen.getWorkflow(workflowId);
+  });
+
+  server.get("/api/article-chat/workflows", async (request) => {
+    const contextKey = z.object({ contextKey: z.string().trim().min(1).max(400) }).parse(request.query).contextKey;
+    return { items: awen.listWorkflows(contextKey) };
+  });
+
+  server.post("/api/article-chat/workflows/:workflowId/resume", async (request) => {
+    const workflowId = z.object({ workflowId: z.string().uuid() }).parse(request.params).workflowId;
+    return awen.resumeWorkflow(workflowId);
+  });
+
+  server.post("/api/article-chat/workflows/:workflowId/permission", async (request) => {
+    const workflowId = z.object({ workflowId: z.string().uuid() }).parse(request.params).workflowId;
+    const response = z.object({ decision: z.enum(["allow", "deny"]), scope: z.enum(["run", "task", "project"]).optional() }).strict().superRefine((value, issue) => {
+      if (value.decision === "allow" && !value.scope) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "允许执行时必须指定授权范围。" });
+      if (value.decision === "deny" && value.scope) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "拒绝执行时不能携带授权范围。" });
+    }).parse(request.body);
+    return awen.respondToWorkflow(workflowId, response.decision === "allow" ? { decision: "allow", scope: response.scope! } : { decision: "deny" });
+  });
+
+  server.post("/api/article-chat/workflows/:workflowId/cancel", async (request) => {
+    const workflowId = z.object({ workflowId: z.string().uuid() }).parse(request.params).workflowId;
+    return awen.cancelWorkflow(workflowId);
   });
 
   server.post("/api/article-chat/memory", async (request) => {

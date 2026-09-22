@@ -7,6 +7,8 @@ export interface StoredPermissionGrant extends ToolPermissionGrant {
   createdAt: string;
 }
 
+export const DEFAULT_PROJECT_PERMISSION_LEASE_MS = 24 * 60 * 60 * 1000;
+
 export class PermissionGrantRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -24,13 +26,16 @@ export class PermissionGrantRepository {
   create(input: ToolPermissionGrant): StoredPermissionGrant {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
+    const expiresAt = input.scope === "project"
+      ? input.expiresAt ?? new Date(Date.parse(createdAt) + DEFAULT_PROJECT_PERMISSION_LEASE_MS).toISOString()
+      : input.expiresAt;
     this.db.prepare(`INSERT INTO agent_permission_grants
       (id, scope, decision, tool_id, action, project_id, target_prefix, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, input.scope, input.decision, input.toolId ?? null, input.action ?? null,
-      input.projectId ?? null, input.targetPrefix ?? null, input.expiresAt ?? null, createdAt
+      input.projectId ?? null, input.targetPrefix ?? null, expiresAt ?? null, createdAt
     );
-    return { ...input, id, createdAt };
+    return { ...input, ...(expiresAt ? { expiresAt } : {}), id, createdAt };
   }
 
   remove(id: string): void {

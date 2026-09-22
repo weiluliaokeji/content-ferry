@@ -41,6 +41,7 @@ import {
   markCodexLoginRequired,
   markCodexReady,
   markFirstRunCompleted,
+  resolveAgentWorkspaceDir,
   resolveDataDir,
   saveAppSettings
 } from "../config/first-run";
@@ -72,6 +73,7 @@ import { ResearchRunRepository } from "../content/research-run-repository";
 import { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 import { SystemToolRegistry } from "../agent/system-tool-registry";
 import { PermissionGrantRepository } from "../agent/permission-grant-repository";
+import { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
 import { GitSourceService } from "../agent/git-source-service";
 
 const LEGACY_ARCHIVE_CUTOFF = "2026-08-11 00:00:00";
@@ -187,7 +189,10 @@ export function buildServer(
   server.addHook("onClose", async () => researchTaskRunner.stop());
   const systemTools = new SystemToolRegistry();
   const permissionGrants = new PermissionGrantRepository(database.connection);
-  const gitSources = new GitSourceService(execution, executionRuns);
+  const toolWorkflows = new ToolWorkflowRepository(database.connection);
+  const interruptedToolWorkflows = toolWorkflows.recoverInterrupted();
+  if (interruptedToolWorkflows > 0) server.log.warn({ interruptedToolWorkflows }, "Agent tool workflows marked interrupted after restart");
+  const gitSources = new GitSourceService(execution, executionRuns, () => loadAppSettings().agentWorkspaceDir);
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
@@ -268,6 +273,7 @@ export function buildServer(
   const appSettingsInput = z
     .object({
       dataDir: z.string().trim().min(1).max(1000).optional(),
+      agentWorkspaceDir: z.string().trim().min(1).max(1000).optional(),
       aiInitStatus: z
         .enum(["not_initialized", "ready", "login_required", "binary_missing"])
         .optional(),
@@ -289,6 +295,11 @@ export function buildServer(
           return reply.code(400).send({ error: resolved.reason ?? "数据目录不可用。" } as never);
         }
         patch.dataDir = resolved.path;
+      }
+      if (patch.agentWorkspaceDir !== undefined) {
+        const resolved = resolveAgentWorkspaceDir(patch.agentWorkspaceDir);
+        if (!resolved.ok) return reply.code(400).send({ error: resolved.reason ?? "阿文工作区不可用。" } as never);
+        patch.agentWorkspaceDir = resolved.path;
       }
       return saveAppSettings(patch);
     }
@@ -385,6 +396,7 @@ export function buildServer(
     researchTaskRunner,
     systemTools,
     permissionGrants,
+    toolWorkflows,
     gitSources
   };
 

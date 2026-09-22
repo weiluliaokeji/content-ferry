@@ -23,6 +23,7 @@ export interface ExecutionRunRecord {
 
 export interface ExecutionAuthorizationRecord {
   confirmed: boolean;
+  decisionSource: "default_policy" | "permission_grant";
   checks: Array<{
     action: string;
     decision: "allow" | "ask";

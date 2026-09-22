@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import os from "node:os";
+import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import path from "node:path";
 import type { ExecutionRequest } from "./execution-service";
@@ -36,7 +37,41 @@ export interface GitAnalysisResult {
 
 /** Builds a bounded, reproducible clone request; it never accepts shell text. */
 export class GitSourceService {
-  constructor(private readonly execution: ExecutionService, private readonly runs: ExecutionRepository) {}
+  constructor(
+    private readonly execution: ExecutionService,
+    private readonly runs: ExecutionRepository,
+    private readonly awenWorkspaceRoot: string | (() => string) = path.join(os.tmpdir(), "contentferry-awen-git")
+  ) {}
+
+  createAwenStagingDestination(repositoryUrl: string): string {
+    const label = repositoryUrl
+      .replace(/^https?:\/\//iu, "")
+      .replace(/[^A-Za-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 60) || "repository";
+    const root = this.getAwenWorkspaceRoot();
+    const stagingRoot = path.join(root, "git-sources");
+    fs.mkdirSync(stagingRoot, { recursive: true });
+    return path.join(stagingRoot, `${label}-${randomUUID()}`);
+  }
+
+  assertAwenWorkspacePath(candidate: string): void {
+    const root = this.getAwenWorkspaceRoot();
+    const resolved = path.resolve(candidate);
+    if (!isPathInside(root, resolved)) throw new ExecutionPolicyError("阿文工具只能读写已配置的专属工作区。");
+    assertNoSymlinkAncestors(resolved);
+  }
+
+  getAwenWorkspaceRootPath(): string {
+    return this.getAwenWorkspaceRoot();
+  }
+
+  private getAwenWorkspaceRoot(): string {
+    const configured = typeof this.awenWorkspaceRoot === "function" ? this.awenWorkspaceRoot() : this.awenWorkspaceRoot;
+    const resolved = path.resolve(configured);
+    fs.mkdirSync(resolved, { recursive: true });
+    return fs.realpathSync.native(resolved);
+  }
 
   toExecutionRequest(input: GitSourceRequest): ExecutionRequest {
     const url = normalizeRepositoryUrl(input.repositoryUrl);

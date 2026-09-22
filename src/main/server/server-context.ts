@@ -30,6 +30,7 @@ import type { ExecutionService } from "../agent/execution-service";
 import type { ExecutionRepository } from "../agent/execution-repository";
 import type { SystemToolRegistry } from "../agent/system-tool-registry";
 import type { PermissionGrantRepository } from "../agent/permission-grant-repository";
+import type { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
 import type { GitSourceService } from "../agent/git-source-service";
 import type { ResearchTaskRepository } from "../content/research-task-repository";
 import type { ResearchTaskRunner } from "../content/research-task-runner";
@@ -83,5 +84,6 @@ export interface ServerContext {
   researchTaskRunner?: ResearchTaskRunner;
   systemTools: SystemToolRegistry;
   permissionGrants: PermissionGrantRepository;
+  toolWorkflows: ToolWorkflowRepository;
   gitSources: GitSourceService;
 }

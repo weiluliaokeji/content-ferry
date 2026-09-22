@@ -18,6 +18,7 @@ import {
   markCodexLoginRequired,
   markCodexReady,
   markFirstRunCompleted,
+  resolveAgentWorkspaceDir,
   resolveDataDir,
   saveAppSettings
 } from "./config/first-run";
@@ -82,7 +83,13 @@ async function registerAppSettingsIpcHandlers(): Promise<void> {
     if (typeof patch !== "object" || patch === null) {
       throw new Error("设置更新参数无效。");
     }
-    return saveAppSettings(patch as Partial<AppSettingsContract>);
+    const nextPatch = { ...(patch as Partial<AppSettingsContract>) };
+    if (nextPatch.agentWorkspaceDir !== undefined) {
+      const resolved = resolveAgentWorkspaceDir(nextPatch.agentWorkspaceDir);
+      if (!resolved.ok) throw new Error(resolved.reason ?? "阿文工作区不可用。");
+      nextPatch.agentWorkspaceDir = resolved.path;
+    }
+    return saveAppSettings(nextPatch);
   });
   ipcMain.handle("app:choose-data-dir", async () => {
     const result = state.mainWindow
@@ -111,6 +118,21 @@ async function registerAppSettingsIpcHandlers(): Promise<void> {
       throw new Error(resolved.reason ?? "无法使用所选目录。");
     }
     return saveAppSettings({ dataDir: resolved.path });
+  });
+  ipcMain.handle("app:choose-agent-workspace-dir", async () => {
+    const result = state.mainWindow
+      ? await dialog.showOpenDialog(state.mainWindow, {
+          title: "选择阿文专属工作区",
+          properties: ["openDirectory", "createDirectory"]
+        })
+      : await dialog.showOpenDialog({
+          title: "选择阿文专属工作区",
+          properties: ["openDirectory", "createDirectory"]
+        });
+    if (result.canceled) return undefined;
+    const resolved = resolveAgentWorkspaceDir(result.filePaths[0]);
+    if (!resolved.ok) throw new Error(resolved.reason ?? "无法使用所选工作区。");
+    return resolved.path;
   });
   ipcMain.handle("app:detect-codex", async () => {
     const status = await inspectCodexStatus();

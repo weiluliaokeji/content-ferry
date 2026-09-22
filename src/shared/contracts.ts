@@ -39,6 +39,8 @@ export type ImageReviewMode = "disabled" | "current" | "specific";
 export interface AppSettings {
   schemaVersion: 1;
   dataDir: string;
+  /** 阿文和受控工具使用的本机专属工作区根目录。 */
+  agentWorkspaceDir: string;
   firstRunCompleted: boolean;
   aiInitStatus: CodexAiInitStatus;
   codexBinaryPath: string | null;

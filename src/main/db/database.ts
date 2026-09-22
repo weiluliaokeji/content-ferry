@@ -450,6 +450,27 @@ export function initialiseDatabase(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_permission_grants_scope
       ON agent_permission_grants(scope, project_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS agent_tool_workflows (
+      id TEXT PRIMARY KEY,
+      project_id TEXT REFERENCES content_projects(id) ON DELETE SET NULL,
+      context_key TEXT NOT NULL,
+      input_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL,
+      round INTEGER NOT NULL DEFAULT 0,
+      user_request TEXT NOT NULL,
+      transcript_json TEXT NOT NULL DEFAULT '[]',
+      events_json TEXT NOT NULL DEFAULT '[]',
+      tool_results_json TEXT NOT NULL DEFAULT '[]',
+      pending_permission_json TEXT NOT NULL DEFAULT 'null',
+      final_text TEXT,
+      warning_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_tool_workflows_context_updated
+      ON agent_tool_workflows(context_key, updated_at DESC);
+
     CREATE INDEX IF NOT EXISTS idx_article_chat_messages_context_created
       ON article_chat_messages(context_key, created_at ASC);
 

@@ -103,13 +103,15 @@ export function registerExecutionRoutes(ctx: ServerContext): void {
     if (run.status !== "completed") throw new ExecutionPolicyError("只有成功完成的执行记录才能保存为实验观察。");
     if (!run.projectId) throw new ExecutionPolicyError("该执行记录没有关联文章项目，不能进入资料卡。");
     const input = executionObservationInput.parse(request.body);
-    const observationId = randomUUID();
+    const existingObservationId = contentResearch.findExecutionObservationId(run.id);
+    const updating = Boolean(existingObservationId);
+    const observationId = existingObservationId ?? run.id;
     const research = contentResearch.addExecutionObservation(run.projectId, {
       observationId,
       executionRunId: run.id,
       title: input.title,
       claim: input.claim,
-      artifacts: run.artifacts,
+      artifacts: input.artifacts ?? run.artifacts.map((artifact) => ({ path: artifact.path, sha256: artifact.sha256 })),
       provenance: {
         kind: "execution_observation",
         executionRunId: run.id,
@@ -119,10 +121,10 @@ export function registerExecutionRoutes(ctx: ServerContext): void {
         runtime: run.request.runtime,
         command: [run.preflight.executable, ...run.request.args],
         networkPolicy: run.request.networkPolicy,
-        artifacts: run.artifacts.map((artifact) => ({ path: artifact.path, sha256: artifact.sha256 }))
+        artifacts: input.artifacts ?? run.artifacts.map((artifact) => ({ path: artifact.path, sha256: artifact.sha256 }))
       }
     });
-    return reply.code(201).send({ observationId, research });
+    return reply.code(201).send({ observationId, updated: updating, research });
   });
 }
 
@@ -158,6 +160,7 @@ function assertGitPermission(ctx: ServerContext, projectId: string, action: Tool
 function toAuthorization(confirmed: boolean, actions: string[], results: PermissionResult[]): ExecutionAuthorizationRecord {
   return {
     confirmed,
+    decisionSource: results.some((result) => result.matchedScope) ? "permission_grant" : "default_policy",
     checks: results.map((result, index) => ({
       action: actions[index] ?? "unknown",
       decision: result.decision === "deny" ? "ask" : result.decision,

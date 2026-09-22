@@ -3,6 +3,7 @@ import { useEffect, useMemo, useReducer, useState } from "react";
 type AppSettings = {
   schemaVersion: 1;
   dataDir: string;
+  agentWorkspaceDir: string;
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;

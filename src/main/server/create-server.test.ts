@@ -411,6 +411,43 @@ describe("local API scaffold", () => {
     expect(userMessageCount.count).toBe(1);
   });
 
+  it("repairs a malformed final reply after a tool completed", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-workflow-final-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let round = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-workflow-final-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const value = round++ === 0
+          ? { kind: "tool_calls", text: null, calls: [{ toolId: "list_system_tools", action: "read", target: null, input: {} }] }
+          : round === 2
+            ? { kind: "final", text: "工具已经完成，但这不是结构化 JSON", calls: null }
+            : { kind: "final", text: JSON.stringify({ reply: "系统工具读取完成。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }), calls: null };
+        return { value: request.parse(value), provider: "test-awen-workflow-final-ai", model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/article-chat/messages",
+      payload: {
+        contextKey: "source:posts/workflow-final-failure/index.md",
+        clientMessageId: "44444444-4444-4444-8444-444444444444",
+        title: "工具最终回复失败",
+        markdown: "正文。",
+        message: "请读取系统工具并回复。",
+        workflowMode: "tool"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().workflow.status).toBe("completed");
+    expect(response.json().workflow.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining(["tool_completed", "workflow_completed"]));
+    expect(response.json().message.content).toContain("系统工具读取完成");
+  });
+
   it("preloads requested web pages into the Awen prompt", async () => {
     database = openInMemoryDatabase();
     const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-web-skills-"));
@@ -448,8 +485,8 @@ describe("local API scaffold", () => {
 
     expect(response.statusCode).toBe(200);
     expect(webSearch.extract).toHaveBeenCalledWith("https://herdr.dev/docs/agent-skill/");
-    expect(prompts[0]).toContain("官方页面正文：https://herdr.dev/docs/agent-skill/");
-    expect(prompts[0]).toContain("应用侧联网核验结果");
+    expect(prompts.some((prompt) => prompt.includes("官方页面正文：https://herdr.dev/docs/agent-skill/"))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("应用侧联网核验结果"))).toBe(true);
   });
 
   it("lets Awen use the structured image search request and persists candidates in history", async () => {

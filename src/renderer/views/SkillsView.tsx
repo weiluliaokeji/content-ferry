@@ -43,10 +43,16 @@ export function SkillsView(props: SkillsViewProps) {
   } = props;
   const [pendingImageReviewMode, setPendingImageReviewMode] = useState<ImageReviewMode>(imageReviewSettings.mode);
   const [pendingImageReviewProvider, setPendingImageReviewProvider] = useState<string>(imageReviewSettings.provider ?? "");
+  const [agentWorkspaceDir, setAgentWorkspaceDir] = useState(settings?.agentWorkspaceDir ?? "");
+  const [agentWorkspaceSaving, setAgentWorkspaceSaving] = useState(false);
+  const [agentWorkspaceMessage, setAgentWorkspaceMessage] = useState("");
   useEffect(() => {
     setPendingImageReviewMode(imageReviewSettings.mode);
     setPendingImageReviewProvider(imageReviewSettings.provider ?? "");
   }, [imageReviewSettings.mode, imageReviewSettings.provider]);
+  useEffect(() => {
+    setAgentWorkspaceDir(settings?.agentWorkspaceDir ?? "");
+  }, [settings?.agentWorkspaceDir]);
   const visionLabel = (support: ModelConnection["visionInputSupport"]): string => support === "supported" ? "支持图片输入" : support === "unknown" ? "图片输入待验证" : "不支持图片输入";
   const visionTone = imageReviewSettings.effectiveVisionInputSupport === "supported"
     ? "已配置"
@@ -140,6 +146,39 @@ export function SkillsView(props: SkillsViewProps) {
         <button className="text-button" onClick={async () => { try { await request<void>("/app/audit-log/clear", { method: "POST" }); } catch (error) { setError(error instanceof Error ? error.message : "清空审计日志失败。"); } }}>清空审计日志</button>
       </div>
       {auditDir && <p className="hint compact-hint">日志路径：{auditDir}（按天分文件，保留 30 天）</p>}
+    </section>
+    <section className="card">
+      <div className="section-heading"><div><h2>阿文专属工作区</h2><p className="hint compact-hint">用于阿文的 Git 取证 staging 与源码分析。保存后，阿文只能在这个目录及其子目录中读写，工作区内不再重复申请目录授权；越界目标会被拒绝。</p></div></div>
+      <label>工作区目录<input value={agentWorkspaceDir} onChange={(event) => { setAgentWorkspaceDir(event.target.value); setAgentWorkspaceMessage(""); }} placeholder="例如：D:\\ContentFerry\\AwenWorkspace" /></label>
+      <div className="inline-actions">
+        <button type="button" className="secondary-button" onClick={async () => {
+          try {
+            if (!window.contentFerry?.app) {
+              setAgentWorkspaceMessage("浏览目录需要在文渡桌面应用中使用；你也可以直接填写路径后保存。");
+              return;
+            }
+            const chosen = await window.contentFerry.app.chooseAgentWorkspaceDir();
+            if (chosen) { setAgentWorkspaceDir(chosen); setAgentWorkspaceMessage("目录已选定，请点击“保存工作区”。"); }
+          } catch (error) {
+            setAgentWorkspaceMessage(error instanceof Error ? error.message : "选择工作区失败，请重试。");
+          }
+        }}>浏览目录</button>
+        <button type="button" disabled={agentWorkspaceSaving || !agentWorkspaceDir.trim()} onClick={async () => {
+          setAgentWorkspaceSaving(true);
+          setAgentWorkspaceMessage("");
+          try {
+            const updated = await patchAppSettings({ agentWorkspaceDir: agentWorkspaceDir.trim() });
+            setSettings((previous) => previous ? { ...previous, agentWorkspaceDir: updated.agentWorkspaceDir } : previous);
+            setAgentWorkspaceDir(updated.agentWorkspaceDir);
+            setAgentWorkspaceMessage("工作区已保存。之后阿文的 Git 目标会放在该目录下。");
+          } catch (error) {
+            setAgentWorkspaceMessage(error instanceof Error ? error.message : "保存工作区失败，请检查目录后重试。");
+          } finally {
+            setAgentWorkspaceSaving(false);
+          }
+        }}>{agentWorkspaceSaving ? "正在保存…" : "保存工作区"}</button>
+      </div>
+      {agentWorkspaceMessage && <p className="hint compact-hint" role="status">{agentWorkspaceMessage}</p>}
     </section>
   </>;
 }

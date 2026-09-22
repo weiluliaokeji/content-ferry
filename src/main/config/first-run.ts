@@ -34,6 +34,7 @@ function defaultSettings(): AppSettings {
   return {
     schemaVersion: SCHEMA_VERSION,
     dataDir: path.join(app.getPath("userData"), "data"),
+    agentWorkspaceDir: path.join(app.getPath("documents"), "ContentFerry Workspace"),
     firstRunCompleted: false,
     aiInitStatus: "not_initialized",
     codexBinaryPath: null,
@@ -134,6 +135,27 @@ export function resolveDataDir(candidate: string): {
   } catch {
     // Sentinel is best-effort; a read-only mount may forbid it but still
     // permit the SQLite database to open.
+  }
+  return { ok: true, path: resolved };
+}
+
+export function resolveAgentWorkspaceDir(candidate: string): {
+  ok: boolean;
+  path: string;
+  reason?: string;
+} {
+  if (typeof candidate !== "string" || candidate.trim().length === 0) {
+    return { ok: false, path: "", reason: "阿文工作区不能为空。" };
+  }
+  const resolved = path.resolve(candidate);
+  try {
+    fs.mkdirSync(resolved, { recursive: true });
+    fs.accessSync(resolved, fs.constants.W_OK | fs.constants.R_OK);
+    const probe = path.join(resolved, ".contentferry-workspace-check");
+    fs.writeFileSync(probe, "ok", "utf8");
+    fs.rmSync(probe, { force: true });
+  } catch (error) {
+    return { ok: false, path: resolved, reason: `阿文工作区不可读写：${(error as Error).message}` };
   }
   return { ok: true, path: resolved };
 }

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
-import type { AgentMemoryCandidateRecord, AgentMemoryRecord, ArticleChatMessage } from "../types";
+import type { AgentMemoryCandidateRecord, AgentMemoryRecord, ArticleChatMessage, ToolWorkflowSnapshot } from "../types";
+import { request } from "../api";
 import { findUniqueSuggestionRange, getAwenAlternativeSuggestionIds, suggestionOperation } from "./awen-suggestion-utils";
 
 type AwenResizeTarget = "panel" | "transcript";
+type GitAnalysisResult = { runId: string; commitSha: string; files: Array<{ path: string; sha256: string; excerpt: string }> };
 
 const clampPercentage = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 
@@ -48,8 +50,191 @@ export function markUnansweredAwenMessages(messages: ArticleChatMessage[]): Arti
 }
 
 export function getAwenDeliveryStateLabel(message: Pick<ArticleChatMessage, "role" | "deliveryState">): string | undefined {
+  if (message.deliveryState === "waiting_permission") return "等待你授权工具操作";
   if (message.deliveryState !== "sending") return undefined;
   return message.role === "user" ? "已发送，阿文正在处理…" : "阿文正在处理…";
+}
+
+const workflowStatusLabels: Record<ToolWorkflowSnapshot["status"], string> = {
+  queued: "排队中", planning: "规划中", running: "执行中", waiting_user: "等待授权", replanning: "重新规划中",
+  completed: "已完成", completed_with_warnings: "完成但有提醒", failed: "失败", cancel_requested: "正在取消", cancelled: "已取消", interrupted: "已中断"
+};
+
+function AwenWorkflowPermissionCard({ workflow, loading, compact, onWorkflowPermission, onCancelWorkflow, onResumeWorkflow }: {
+  workflow: ToolWorkflowSnapshot;
+  loading: boolean;
+  compact?: boolean;
+  onWorkflowPermission: (decision: "allow" | "deny", scope?: "run" | "task" | "project") => void;
+  onCancelWorkflow?: () => void;
+  onResumeWorkflow?: () => void;
+}) {
+  const pending = workflow.pendingPermission;
+  if (!pending && workflow.status !== "interrupted") return null;
+  return <section className="awen-tool-permission" role={pending ? "alertdialog" : undefined} aria-label={pending ? "阿文请求工具授权" : "阿文工作流已中断"}>
+    {pending ? <>
+      <strong>{workflow.status === "interrupted" ? "重启后仍需重新授权" : `${compact ? "阿文需要授权" : "需要授权"}：${pending.request.toolId}`}</strong>
+      <p>{pending.permission.reason}</p>
+      <small>动作：{pending.request.action} · 目标：{pending.request.target || "当前工作区"}{!compact && " · 这是一次新的高风险操作，授权范围由你决定。"}</small>
+      <details><summary>查看本次工具参数</summary><pre>{JSON.stringify(pending.request.input, null, 2)}</pre></details>
+      {workflow.status === "waiting_user" && <div className="awen-pending-review-actions">
+        <button type="button" onClick={() => onWorkflowPermission("allow", "run")} disabled={loading}>仅允许这一次</button>
+        <button type="button" className="secondary-button" onClick={() => onWorkflowPermission("allow", "task")} disabled={loading}>允许本次任务同类操作</button>
+        <button type="button" className="secondary-button" onClick={() => onWorkflowPermission("allow", "project")} disabled={loading}>允许当前文章同类操作</button>
+        <button type="button" className="secondary-button" onClick={() => onWorkflowPermission("deny")} disabled={loading}>{compact ? "拒绝并让阿文重规划" : "拒绝并重规划"}</button>
+        {compact && onCancelWorkflow && <button type="button" className="text-button" onClick={onCancelWorkflow} disabled={loading}>取消工作流</button>}
+      </div>}
+      {workflow.status === "interrupted" && onResumeWorkflow && <button type="button" onClick={onResumeWorkflow} disabled={loading}>恢复并重新授权</button>}
+    </> : <>
+      <strong>为避免重放副作用，未自动继续</strong>
+      <p>恢复会重新规划并重新评估权限；可能写入本机或网络的动作不会被静默重放。</p>
+      {onResumeWorkflow && <button type="button" onClick={onResumeWorkflow} disabled={loading}>恢复并重新规划</button>}
+    </>}
+  </section>;
+}
+
+type AwenToolWorkflowActivityProps = {
+  workflow?: ToolWorkflowSnapshot;
+  projectId?: string;
+  loading: boolean;
+  onWorkflowPermission: (decision: "allow" | "deny", scope?: "run" | "task" | "project") => void;
+  onCancelWorkflow: () => void;
+  onResumeWorkflow: () => void;
+  onExpand?: () => void;
+  showHeader?: boolean;
+};
+
+export function AwenToolWorkflowActivity({ workflow, projectId, loading, onWorkflowPermission, onCancelWorkflow, onResumeWorkflow, onExpand, showHeader = true }: AwenToolWorkflowActivityProps) {
+  if (!workflow) return <div className="side-panel-content awen-activity-empty"><h3>执行活动</h3><p className="hint">{getAwenActivityEmptyMessage(loading)}</p></div>;
+  const gitAnalysis = readGitAnalysis(workflow);
+  const active = ["queued", "planning", "running", "waiting_user", "replanning", "cancel_requested"].includes(workflow.status);
+  return <div className={`side-panel-content awen-activity-panel${showHeader ? "" : " awen-activity-modal-body"}`}>
+    {showHeader && <div className="assistant-heading"><div><p className="eyebrow">阿文 · 执行活动</p><h3>{workflowStatusLabels[workflow.status]}</h3></div><div className="awen-activity-heading-actions"><small>第 {workflow.round} 轮</small>{onExpand && <button type="button" className="secondary-button compact-action" onClick={onExpand}>展开查看</button>}</div></div>}
+    <p className="hint compact-hint">工作流 {workflow.workflowId}</p>
+    <AwenWorkflowPermissionCard workflow={workflow} loading={loading} onWorkflowPermission={onWorkflowPermission} onResumeWorkflow={onResumeWorkflow} />
+    {gitAnalysis && projectId && <AwenGitEvidenceCard analysis={gitAnalysis} projectId={projectId} />}
+    {active && workflow.status !== "waiting_user" && workflow.status !== "cancel_requested" && <button type="button" className="text-button" onClick={onCancelWorkflow} disabled={loading}>取消工作流</button>}
+    <section className="awen-activity-events" aria-label="工具事件"><h4>事件时间线</h4><ol>{workflow.events.map((event) => <li key={event.id}><time>{new Date(event.at).toLocaleTimeString()}</time><div><strong>{event.type}</strong><span>{event.message}</span>{event.data && <code>{JSON.stringify(event.data)}</code>}</div></li>)}</ol></section>
+    <details className="awen-activity-transcript"><summary>查看工作流回传（{workflow.transcript.length} 条）</summary>{workflow.transcript.map((message, index) => <article key={`${workflow.workflowId}:${index}`}><small>{message.role}</small><pre>{message.content}</pre></article>)}</details>
+  </div>;
+}
+
+export function AwenToolWorkflowActivityModal({ onClose, ...activityProps }: AwenToolWorkflowActivityProps & { onClose: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  if (!activityProps.workflow) return null;
+  return <div className="modal-backdrop priority-modal awen-activity-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="modal-card awen-activity-modal" role="dialog" aria-modal="true" aria-label="阿文完整执行活动">
+      <div className="section-heading awen-activity-modal-header">
+        <div><p className="eyebrow">阿文 · 执行活动</p><h2>{workflowStatusLabels[activityProps.workflow.status]}</h2><p className="hint compact-hint">工作流 {activityProps.workflow.workflowId} · 第 {activityProps.workflow.round} 轮</p></div>
+        <button type="button" className="text-button" onClick={onClose}>关闭</button>
+      </div>
+      <AwenToolWorkflowActivity {...activityProps} showHeader={false} />
+    </section>
+  </div>;
+}
+
+export function getAwenActivityEmptyMessage(loading: boolean): string {
+  return loading ? "正在创建新的执行活动…" : "阿文调用本地工具后，目标、权限、进度和结果会显示在这里。";
+}
+
+function readGitAnalysis(workflow: ToolWorkflowSnapshot): GitAnalysisResult | undefined {
+  for (const result of [...workflow.toolResults].reverse()) {
+    if (result.toolId !== "git_analyze_source") continue;
+    const parsed = parseGitAnalysisResult(result.output);
+    if (parsed) return parsed;
+  }
+  for (const message of [...workflow.transcript].reverse()) {
+    if (message.role !== "tool" || !message.content.includes("git_analyze_source")) continue;
+    const start = message.content.indexOf("{");
+    if (start < 0) continue;
+    try {
+      const parsed = parseGitAnalysisResult(JSON.parse(message.content.slice(start)) as unknown);
+      if (parsed) return parsed;
+    } catch {
+      // The transcript may be bounded and contain a deliberately truncated result.
+    }
+  }
+  return undefined;
+}
+
+function AwenGitEvidenceCard({ analysis, projectId }: { analysis: GitAnalysisResult; projectId: string }) {
+  const [observationTitle, setObservationTitle] = useState("");
+  const [observationClaim, setObservationClaim] = useState("");
+  const [observationSaved, setObservationSaved] = useState(false);
+  const [observationMessage, setObservationMessage] = useState("");
+  const [observationBusy, setObservationBusy] = useState(false);
+  const [observationAdopted, setObservationAdopted] = useState(false);
+  const [adoptionBusy, setAdoptionBusy] = useState(false);
+  const clearStatus = () => {
+    setObservationSaved(false);
+    setObservationAdopted(false);
+    setObservationMessage("");
+  };
+  const saveObservation = async () => {
+    setObservationBusy(true);
+    setObservationMessage("");
+    try {
+      const result = await request<{ updated: boolean }>(`/execution/runs/${encodeURIComponent(analysis.runId)}/observation`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: observationTitle.trim(),
+          claim: observationClaim.trim(),
+          artifacts: analysis.files.map((file) => ({ path: file.path, sha256: file.sha256 }))
+        })
+      });
+      setObservationSaved(true);
+      setObservationMessage(result.updated ? "已有同一执行记录的待核验证据，原内容未覆盖。" : "已保存为待核验证据；请在资料来源中单独采纳后再用于提纲或正文。" );
+    } catch (cause: unknown) {
+      setObservationMessage(cause instanceof Error ? `保存失败：${cause.message}` : "保存失败，请检查网络后重试。" );
+    } finally {
+      setObservationBusy(false);
+    }
+  };
+  const adoptObservation = async () => {
+    setAdoptionBusy(true);
+    try {
+      await request(`/content-projects/${encodeURIComponent(projectId)}/research/sources/${encodeURIComponent(analysis.runId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ adoptionStatus: "adopted" })
+      });
+      setObservationAdopted(true);
+      setObservationMessage("已采纳为证据卡；之后仍会保留执行条件和来源链。" );
+    } catch (cause: unknown) {
+      setObservationMessage(cause instanceof Error ? `采纳失败：${cause.message}` : "采纳失败，请重试。" );
+    } finally {
+      setAdoptionBusy(false);
+    }
+  };
+  return <section className="awen-tool-permission awen-evidence-card">
+    <strong>Git 取证结果</strong>
+    <small>commit {analysis.commitSha} · {analysis.files.length} 个文件 · 执行记录 {analysis.runId}</small>
+    {analysis.files.slice(0, 5).map((file) => <details key={file.path}><summary>{file.path} · SHA-256 {file.sha256}</summary><pre>{file.excerpt}</pre></details>)}
+    <input value={observationTitle} onChange={(event) => { clearStatus(); setObservationTitle(event.target.value); }} placeholder="观察标题" />
+    <textarea value={observationClaim} onChange={(event) => { clearStatus(); setObservationClaim(event.target.value); }} rows={3} placeholder="这次取证实际支持了什么主张？" />
+    <button type="button" onClick={() => void saveObservation()} disabled={observationBusy || observationSaved || !observationTitle.trim() || !observationClaim.trim()}>保存为待核验证据</button>
+    {observationSaved && <button type="button" className="secondary-button" onClick={() => void adoptObservation()} disabled={adoptionBusy || observationAdopted}>{adoptionBusy ? "正在采纳…" : observationAdopted ? "已采纳为证据卡" : "采纳为证据卡"}</button>}
+    {observationMessage && <small className={observationSaved ? undefined : "error"} role={observationSaved ? undefined : "alert"}>{observationMessage}</small>}
+  </section>;
+}
+
+function parseGitAnalysisResult(value: unknown): { runId: string; commitSha: string; files: Array<{ path: string; sha256: string; excerpt: string }> } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { run?: { id?: unknown }; commitSha?: unknown; files?: unknown };
+  if (typeof record.run?.id !== "string" || typeof record.commitSha !== "string" || !Array.isArray(record.files)) return undefined;
+  const files = record.files.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const file = item as { path?: unknown; sha256?: unknown; excerpt?: unknown };
+        return typeof file.path === "string" && typeof file.sha256 === "string" && typeof file.excerpt === "string"
+          ? [{ path: file.path, sha256: file.sha256, excerpt: file.excerpt }]
+          : [];
+      });
+  return files.length > 0 ? { runId: record.run.id, commitSha: record.commitSha, files } : undefined;
 }
 
 export function shouldAutoScrollAwenTranscript(previousMessageCount: number | undefined, previousLoading: boolean | undefined, messageCount: number, loading: boolean): boolean {
@@ -69,11 +254,12 @@ function useAwenTranscriptAutoScroll(transcriptRef: RefObject<HTMLDivElement | n
   }, [messages, loading, transcriptRef]);
 }
 
-export function AwenBottomPanel({ messages, memory, value, loading, unsavedSuggestionIds, pendingSuggestionCount, pendingSuggestionReviewOpen, pendingSuggestionReviewBusy, bottomHeightPercent, transcriptUserPercent, onBottomHeightChange, onTranscriptUserPercentChange, onChange, onSend, onRetry, onAcceptSuggestion, onRejectSuggestion, onLocateSuggestion, onOpenMemoryManager, onRejectPendingAndContinue, onKeepPendingAndContinue, onCancelPendingSend, onClose }: {
+export function AwenBottomPanel({ messages, memory, value, loading, workflow, unsavedSuggestionIds, pendingSuggestionCount, pendingSuggestionReviewOpen, pendingSuggestionReviewBusy, bottomHeightPercent, transcriptUserPercent, onBottomHeightChange, onTranscriptUserPercentChange, onChange, onSend, onRetry, onAcceptSuggestion, onRejectSuggestion, onLocateSuggestion, onOpenMemoryManager, onRejectPendingAndContinue, onKeepPendingAndContinue, onCancelPendingSend, onOpenWorkflowActivity, onClose }: {
   messages: ArticleChatMessage[];
   memory: string;
   value: string;
   loading: boolean;
+  workflow?: ToolWorkflowSnapshot;
   unsavedSuggestionIds: ReadonlySet<string>;
   pendingSuggestionCount: number;
   pendingSuggestionReviewOpen: boolean;
@@ -92,6 +278,7 @@ export function AwenBottomPanel({ messages, memory, value, loading, unsavedSugge
   onRejectPendingAndContinue: () => void;
   onKeepPendingAndContinue: () => void;
   onCancelPendingSend: () => void;
+  onOpenWorkflowActivity: () => void;
   onClose: () => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -147,7 +334,7 @@ export function AwenBottomPanel({ messages, memory, value, loading, unsavedSugge
           {messages.map((message) => <article className={`awen-message ${message.role}`} key={message.id}>
             <strong>{message.role === "user" ? "你" : "阿文"}</strong>
             <div>{message.content}</div>
-            {message.deliveryState === "sending" && <small className="awen-message-state">{getAwenDeliveryStateLabel(message)}</small>}
+            {(message.deliveryState === "sending" || message.deliveryState === "waiting_permission") && <small className="awen-message-state">{getAwenDeliveryStateLabel(message)}</small>}
             {message.deliveryState === "failed" && <small className="awen-message-state error">阿文未能完成回复；这条消息已保留。<button type="button" className="text-button awen-retry-button" onClick={() => onRetry(message)} disabled={loading}>↻ 重新发送</button></small>}
             {message.role === "assistant" && message.suggestions.map((suggestion, index) => <details className="awen-conversation-suggestion" key={`${message.id}:${index}`} open>
                <summary>建议 {index + 1}：{suggestionOperation(suggestion) === "replace" ? "替换原文" : suggestionOperation(suggestion) === "insert_after" ? "追加到原文后" : "插入到原文前"}{getAwenAlternativeSuggestionIds(messages, `${message.id}:${index}`).length > 0 ? " · 同段落互斥方案" : ""} · {suggestion.reason}</summary>
@@ -171,7 +358,12 @@ export function AwenBottomPanel({ messages, memory, value, loading, unsavedSugge
             <button type="button" className="text-button" onClick={onCancelPendingSend} disabled={pendingSuggestionReviewBusy}>取消发送</button>
           </div>
         </div>}
-        <textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading || pendingSuggestionReviewOpen} />
+        {workflow && ["waiting_user", "interrupted"].includes(workflow.status) && <section className="awen-tool-permission awen-workflow-handoff" role="status">
+          <strong>{workflow.status === "waiting_user" ? "阿文正在等待授权" : "阿文工作流需要恢复"}</strong>
+          <p>授权按钮和完整工具参数统一放在右侧“执行活动”中处理，避免同一个操作出现两张授权卡。</p>
+          <button type="button" onClick={onOpenWorkflowActivity}>查看执行活动</button>
+        </section>}
+        <textarea value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onSend(); } }} placeholder="输入问题，Ctrl+Enter 发送" disabled={loading || pendingSuggestionReviewOpen || Boolean(workflow)} />
         <div className="awen-composer-actions"><div className="awen-memory-actions">{memory && <details className="awen-memory"><summary>本文已提炼 {memory.split("\n").filter(Boolean).length} 条记忆</summary><pre>{memory}</pre></details>}<button type="button" className="secondary-button memory-manage-button" onClick={onOpenMemoryManager}><span aria-hidden="true">⚙</span>管理本文记忆</button></div><button type="button" className="text-button awen-collapse-button" onClick={onClose}>收起</button><button type="button" onClick={onSend} disabled={!value.trim() || loading || pendingSuggestionReviewOpen}>发送</button></div>
       </aside>
     </div>

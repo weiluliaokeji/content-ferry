@@ -17,6 +17,7 @@ type ZhuqueDetectionResponse = {
 type AppSettingsContract = {
   schemaVersion: 1;
   dataDir: string;
+  agentWorkspaceDir: string;
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
@@ -70,6 +71,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
       ipcRenderer.invoke("app:get-settings") as Promise<AppSettingsContract>,
     chooseDataDir: (): Promise<string | undefined> =>
       ipcRenderer.invoke("app:choose-data-dir") as Promise<string | undefined>,
+    chooseAgentWorkspaceDir: (): Promise<string | undefined> =>
+      ipcRenderer.invoke("app:choose-agent-workspace-dir") as Promise<string | undefined>,
     setDataDir: (target: string): Promise<AppSettingsContract> =>
       ipcRenderer.invoke("app:set-data-dir", target) as Promise<AppSettingsContract>,
     detectCodex: (): Promise<CodexStatusContract> =>

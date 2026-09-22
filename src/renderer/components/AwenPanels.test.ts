@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAwenDeliveryStateLabel, removeUnavailableAwenSuggestions, shouldAutoScrollAwenTranscript } from "./AwenPanels";
+import { getAwenActivityEmptyMessage, getAwenDeliveryStateLabel, removeUnavailableAwenSuggestions, shouldAutoScrollAwenTranscript } from "./AwenPanels";
 import { applyAwenSuggestionToMarkdown, getPendingAwenSuggestionIds, isAwenSuggestionApplied, shouldPersistAcceptedAwenSuggestion } from "./awen-suggestion-utils";
 import type { ArticleChatMessage } from "../types";
 
@@ -114,5 +114,12 @@ describe("Awen transcript scrolling", () => {
 describe("Awen message delivery state", () => {
   it("shows an already submitted user message as sent while Awen is processing", () => {
     expect(getAwenDeliveryStateLabel({ role: "user", deliveryState: "sending" })).toBe("已发送，阿文正在处理…");
+  });
+});
+
+describe("Awen activity loading state", () => {
+  it("does not present an old workflow while a new activity is being created", () => {
+    expect(getAwenActivityEmptyMessage(true)).toBe("正在创建新的执行活动…");
+    expect(getAwenActivityEmptyMessage(false)).toBe("阿文调用本地工具后，目标、权限、进度和结果会显示在这里。");
   });
 });

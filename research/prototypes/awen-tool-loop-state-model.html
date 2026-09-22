@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阿文工具调用循环 · 状态模型原型</title>
+  <style>
+    :root { color-scheme: light; --ink:#18212f; --muted:#64748b; --line:#dbe3ec; --panel:#fff; --bg:#f5f7fa; --accent:#2563eb; --good:#087443; --warn:#a16207; --bad:#b42318; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+    main { max-width:1120px; margin:0 auto; padding:36px 22px 64px; }
+    h1 { margin:0 0 8px; font-size:28px; letter-spacing:-.02em; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    h3 { margin:18px 0 8px; font-size:15px; }
+    p { margin:6px 0 12px; }
+    .intro { color:var(--muted); max-width:880px; }
+    .prototype-badge { display:inline-block; margin-bottom:12px; padding:4px 9px; border-radius:999px; background:#dbeafe; color:#1d4ed8; font-size:12px; font-weight:700; }
+    .grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; margin-top:18px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 2px 8px #1725540a; }
+    .state-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .field { padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#fbfcfe; }
+    .field span { display:block; color:var(--muted); font-size:12px; }
+    .field strong { display:block; margin-top:2px; }
+    .status { color:var(--accent); }
+    .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+    button { border:1px solid #bfd0e5; border-radius:9px; padding:8px 11px; margin:4px 5px 4px 0; background:#fff; color:var(--ink); cursor:pointer; font:inherit; }
+    button:hover { border-color:var(--accent); color:var(--accent); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:white; }
+    button.danger { color:var(--bad); border-color:#f1b8b2; }
+    button:disabled { cursor:not-allowed; opacity:.45; }
+    .actions { display:flex; flex-wrap:wrap; gap:2px; }
+    .call { padding:12px; border-radius:10px; background:#eff6ff; border:1px solid #bfdbfe; }
+    .call strong { display:block; }
+    .call small { color:#475569; }
+    .log { max-height:270px; overflow:auto; margin:0; padding:0; list-style:none; }
+    .log li { padding:8px 0; border-bottom:1px solid #edf1f5; }
+    .log time { color:var(--muted); font-size:12px; margin-right:8px; }
+    .walkthroughs { margin-top:16px; }
+    .tabs { display:flex; flex-wrap:wrap; gap:6px; border-bottom:1px solid var(--line); padding-bottom:10px; }
+    .tab { border-radius:999px; padding:7px 12px; margin:0; }
+    .tab.active { background:#e0ecff; color:#1d4ed8; border-color:#93b4ef; }
+    .scenario { padding-top:12px; }
+    .scenario p { color:var(--muted); }
+    .step { display:inline-flex; align-items:center; gap:6px; }
+    .step.done { color:var(--good); }
+    code { padding:1px 4px; border-radius:4px; background:#eef2f7; }
+    @media (max-width:760px) { .grid { grid-template-columns:1fr; } .state-grid { grid-template-columns:1fr; } main { padding:24px 14px 48px; } }
+  </style>
+</head>
+<body>
+<main>
+  <span class="prototype-badge">PROTOTYPE · 不接入生产数据</span>
+  <h1>阿文工具调用循环与授权请求</h1>
+  <p class="intro"><strong>要回答的问题：</strong>低风险工具调用是否可以连续自动执行？动作被拒绝后，阿文能否在不绕过拒绝的前提下继续寻找替代方案？执行目标切换是否由统一权限策略决定？</p>
+
+  <section class="panel">
+    <h2>当前状态</h2>
+    <div id="state" class="state-grid"></div>
+    <h3>当前调用</h3>
+    <div id="call" class="call">暂无调用</div>
+    <h3>阿文可继续做什么</h3>
+    <div id="hint"></div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>自由操作</h2>
+      <p class="intro">按钮故意始终可见，方便尝试不合常理的顺序。每次操作都会重新渲染完整状态。</p>
+      <div class="actions">
+        <button class="primary" data-action="user-request">用户要求调研/求证</button>
+        <button data-action="auto-allow-read">策略自动放行只读调用</button>
+        <button data-action="complete-read">完成当前调用</button>
+        <button data-action="request-boundary">遇到需授权动作</button>
+        <button data-action="allow-once">仅允许下一步</button>
+        <button data-action="allow-task">允许本次任务内同类动作</button>
+        <button data-action="reject-call" class="danger">拒绝当前动作</button>
+        <button data-action="propose-alternative">寻找替代方案</button>
+        <button data-action="switch-wsl">切到 WSL 做同范围只读检查</button>
+        <button data-action="complete-alternative">完成替代调用</button>
+        <button data-action="cancel" class="danger">停止后续调用</button>
+        <button data-action="set-new">切换为新草稿</button>
+        <button data-action="set-edit">切换为编辑已有文章</button>
+        <button data-action="reset">重置</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>执行活动</h2>
+      <ul id="log" class="log"></ul>
+    </section>
+  </div>
+
+  <section class="panel walkthroughs">
+    <h2>引导场景</h2>
+    <div id="tabs" class="tabs"></div>
+    <div id="scenario" class="scenario"></div>
+  </section>
+</main>
+
+<script>
+  // 可移植的纯状态转换：生产实现可以把 reducer 与事件类型单独提取。
+  const initialState = () => ({
+    phase: "idle",
+    articleMode: "new",
+    target: "Windows Sandbox",
+    permission: "未产生权限请求",
+    lease: "无",
+    currentCall: null,
+    outcome: "尚未开始",
+    nextPlan: "等待用户要求或阿文发现事实缺口",
+    logs: []
+  });
+
+  function reduce(state, action) {
+    const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const add = (nextState, tone = "") => ({
+      ...nextState,
+      logs: [{ now, message: nextState.outcome || nextState.nextPlan || "状态已更新", tone }, ...state.logs].slice(0, 12)
+    });
+    switch (action.type) {
+      case "reset": return initialState();
+      case "set-mode": return { ...state, articleMode: action.mode, logs: [{ now, message: `创作上下文切换为${action.mode === "new" ? "新草稿" : "编辑已有文章"}` }, ...state.logs].slice(0, 12) };
+      case "user-request": return add({ ...state, phase: "planned", currentCall: { name: "读取资料/源码并核对事实", effect: "只读；不修改正文", decision: "等待策略判断" }, nextPlan: "先执行已授权低风险读取；遇到边界再询问", outcome: "已生成结构化工具计划" }, "status");
+      case "auto-allow-read": return add({ ...state, phase: "running", permission: "allow · 项目/任务范围内低风险只读", lease: "本次任务内同类只读调用", currentCall: { name: "读取已授权资料", effect: "只读", decision: "策略自动放行" }, nextPlan: "可以连续执行下一项同类只读调用", outcome: "调用进行中" }, "good");
+      case "complete-read": return add({ ...state, phase: "completed", currentCall: null, outcome: state.articleMode === "new" ? "结果已吸收进新草稿，并保留来源映射" : "结果已形成编辑建议，等待用户应用", nextPlan: "可以继续补研，或结束本轮" }, "good");
+      case "request-boundary": return add({ ...state, phase: "waiting_user", permission: "ask · 当前动作超出已有授权", lease: "保持原授权不变", currentCall: { name: "运行验证 Demo", effect: "可能执行代码并产生临时产物", decision: "等待用户决定" }, nextPlan: "暂停后续调用；用户可允许一次、允许本任务或拒绝", outcome: "等待授权" }, "warn");
+      case "allow-once": return add({ ...state, phase: "running", permission: "allow · 仅当前调用", lease: "一次性", currentCall: { name: "运行验证 Demo", effect: "受限执行", decision: "用户允许一次" }, nextPlan: "完成后授权自动失效", outcome: "调用进行中" }, "good");
+      case "allow-task": return add({ ...state, phase: "running", permission: "allow · 本次任务内同类动作", lease: "任务级租约", currentCall: { name: "运行验证 Demo", effect: "受限执行", decision: "用户允许同类调用" }, nextPlan: "同类调用无需重复询问；越界仍会暂停", outcome: "调用进行中" }, "good");
+      case "reject-call": return add({ ...state, phase: "denied", permission: "deny · 当前动作被拒绝", lease: "原授权仍有效；不得扩大", currentCall: null, nextPlan: "可以寻找不执行该动作的替代路径", outcome: "当前动作未执行" }, "bad");
+      case "propose-alternative": return add({ ...state, phase: "replanning", currentCall: { name: "改为只读检查固定源码", effect: "不运行 Demo；不写文章", decision: "重新经过策略判断" }, nextPlan: "若替代调用仍在授权范围内即可自动继续", outcome: "阿文正在重新规划" }, "status");
+      case "switch-wsl": return add({ ...state, phase: "running", target: "WSL", permission: "allow · 同一授权目录内只读", lease: "复用原只读租约", currentCall: { name: "在 WSL 检查文件是否存在", effect: "同范围只读；无网络/写入", decision: "策略自动允许目标切换" }, nextPlan: "目标切换被记录；若路径、网络或副作用扩大则重新询问", outcome: "替代调用进行中" }, "good");
+      case "complete-alternative": return add({ ...state, phase: "completed", currentCall: null, outcome: state.articleMode === "new" ? "替代结果已吸收进新草稿，并保留来源映射" : "替代结果已形成建议，等待用户应用", nextPlan: "用户目的部分/完整实现；原被拒绝动作没有执行" }, "good");
+      case "cancel": return add({ ...state, phase: "cancelled", currentCall: null, nextPlan: "已停止后续调用；已产生结果仍可查看", outcome: "用户停止了后续调用" }, "warn");
+      default: return state;
+    }
+  }
+
+  let state = initialState();
+  let activeScenario = "happy";
+  const scenarios = {
+    happy: { title: "新草稿：低风险自动连续执行", text: "用户要求核实一个技术事实。观察：只读调用不弹窗，结果可直接进入新草稿。", steps: [{ label: "开始", type: "reset" }, { label: "切换为新草稿", type: "set-new" }, { label: "用户提出核实要求", type: "user-request" }, { label: "策略自动放行只读调用", type: "auto-allow-read" }, { label: "完成并吸收进草稿", type: "complete-read" }] },
+    denied: { title: "编辑已有文章：拒绝后寻找替代路径", text: "验证 Demo 需要更高权限，用户拒绝。观察：阿文不执行被拒绝动作，但继续规划并执行授权范围内的只读替代方案。", steps: [{ label: "开始", type: "reset" }, { label: "切换为编辑已有文章", type: "set-edit" }, { label: "用户提出核实要求", type: "user-request" }, { label: "遇到需授权动作", type: "request-boundary" }, { label: "拒绝当前动作", type: "reject-call" }, { label: "寻找替代方案", type: "propose-alternative" }, { label: "切到 WSL 只读检查", type: "switch-wsl" }, { label: "完成并生成建议", type: "complete-alternative" }] },
+    target: { title: "目标切换：同一授权范围内自动改用 WSL", text: "本机工具不适配当前文件格式，阿文提出 WSL 只读检查。观察：目标切换由策略判断，不是固定要求人工选择。", steps: [{ label: "开始", type: "reset" }, { label: "切换为编辑已有文章", type: "set-edit" }, { label: "用户提出核实要求", type: "user-request" }, { label: "切到 WSL 只读检查", type: "switch-wsl" }, { label: "完成并生成建议", type: "complete-alternative" }] }
+  };
+
+  function dispatch(type, extra = {}) { state = reduce(state, { type, ...extra }); render(); }
+  function text(value) { return value == null ? "—" : String(value); }
+  function esc(value) { return text(value).replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch])); }
+  function render() {
+    const fields = [
+      ["阶段", state.phase, state.phase === "waiting_user" ? "warn" : state.phase === "denied" ? "bad" : state.phase === "completed" ? "good" : "status"],
+      ["文章上下文", state.articleMode === "new" ? "新草稿" : "编辑已有文章", ""],
+      ["执行目标", state.target, ""],
+      ["权限决定", state.permission, state.permission.startsWith("deny") ? "bad" : state.permission.startsWith("ask") ? "warn" : state.permission.startsWith("allow") ? "good" : ""],
+      ["授权租约", state.lease, ""],
+      ["结果", state.outcome, ""]
+    ];
+    document.querySelector("#state").innerHTML = fields.map(([label, value, tone]) => `<div class="field"><span>${esc(label)}</span><strong class="${tone}">${esc(value)}</strong></div>`).join("");
+    document.querySelector("#call").innerHTML = state.currentCall ? `<strong>${esc(state.currentCall.name)}</strong><small>副作用：${esc(state.currentCall.effect)} · ${esc(state.currentCall.decision)}</small>` : "暂无调用";
+    document.querySelector("#hint").innerHTML = `<p>${esc(state.nextPlan)}</p>`;
+    document.querySelector("#log").innerHTML = state.logs.length ? state.logs.map((item) => `<li><time>${esc(item.now)}</time><span class="${item.tone}">${esc(item.message)}</span></li>`).join("") : "<li>还没有执行活动。</li>";
+    document.querySelector("#tabs").innerHTML = Object.entries(scenarios).map(([key, scenario]) => `<button class="tab ${key === activeScenario ? "active" : ""}" data-scenario="${key}">${esc(scenario.title)}</button>`).join("");
+    const scenario = scenarios[activeScenario];
+    document.querySelector("#scenario").innerHTML = `<p>${esc(scenario.text)}</p><div>${scenario.steps.map((step, index) => `<button class="step" data-step="${index}" data-type="${step.type}">${index + 1}. ${esc(step.label)}</button>`).join("")}</div>`;
+  }
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.action) dispatch(button.dataset.action === "set-new" ? "set-mode" : button.dataset.action === "set-edit" ? "set-mode" : button.dataset.action, button.dataset.action === "set-new" ? { mode: "new" } : button.dataset.action === "set-edit" ? { mode: "edit" } : {});
+    if (button.dataset.scenario) { activeScenario = button.dataset.scenario; render(); }
+    if (button.dataset.step) dispatch(button.dataset.type, button.dataset.type === "set-new" ? { mode: "new" } : button.dataset.type === "set-edit" ? { mode: "edit" } : {});
+  });
+  render();
+</script>
+</body>
+</html>

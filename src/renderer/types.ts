@@ -3,6 +3,7 @@ import type { ResearchPlan } from "../shared/research-state";
 export type AppSettingsContract = {
   schemaVersion: 1;
   dataDir: string;
+  agentWorkspaceDir: string;
   firstRunCompleted: boolean;
   aiInitStatus: "not_initialized" | "ready" | "login_required" | "binary_missing";
   codexBinaryPath: string | null;
@@ -214,8 +215,22 @@ export type ArticleChatMessage = {
   suggestions: ArticleChatSuggestion[];
   imageSearch?: ArticleChatImageSearch;
   createdAt: string;
-  deliveryState?: "sending" | "failed";
+  deliveryState?: "sending" | "waiting_permission" | "failed";
 };
+export type ToolWorkflowStatus = "queued" | "planning" | "running" | "waiting_user" | "replanning" | "completed" | "completed_with_warnings" | "failed" | "cancel_requested" | "cancelled" | "interrupted";
+export type ToolWorkflowSnapshot = {
+  workflowId: string;
+  status: ToolWorkflowStatus;
+  round: number;
+  userRequest: string;
+  transcript: Array<{ role: "user" | "assistant" | "tool"; content: string }>;
+  events: Array<{ id: string; type: string; at: string; callId?: string; toolId?: string; message: string; data?: Record<string, string | number | boolean | null> }>;
+  toolResults: Array<{ callId: string; toolId: string; output: unknown }>;
+  pendingPermission: { callId: string; request: { toolId: string; action: string; target?: string; input: unknown }; permission: { decision: "allow" | "ask" | "deny"; reason: string; matchedScope: string | null } } | null;
+  finalText: string | null;
+  warningCount: number;
+};
+export type ArticleChatWorkflowResult = { workflow?: ToolWorkflowSnapshot; memory: string; writingMemory: string; provider?: string | null; model?: string | null; message?: ArticleChatMessage };
 export type AgentMemoryRecord = { id: string; scopeKey: string; kind: string; content: string; sourceEventIds: string[]; status: string; confidence: number; importance: number; recallCount: number; createdAt: string; updatedAt: string; expiresAt: string | null };
 export type AgentMemoryCandidateRecord = { id: string; scopeKey: string; kind: string; content: string; sourceEventIds: string[]; status: string; supportCount: number; confidence: number; importance: number; promotedMemoryId: string | null; createdAt: string; updatedAt: string; expiresAt: string | null };
 export type ZhuqueReport = {

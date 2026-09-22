@@ -148,7 +148,8 @@ export const executionRequestInput = z.object({
 export const executionProjectQuery = z.object({ projectId: z.string().uuid().optional() });
 export const executionObservationInput = z.object({
   title: z.string().trim().min(1).max(300),
-  claim: z.string().trim().min(1).max(3000)
+  claim: z.string().trim().min(1).max(3000),
+  artifacts: z.array(z.object({ path: z.string().trim().min(1).max(2000), sha256: z.string().regex(/^[0-9a-f]{64}$/i) })).max(500).optional()
 }).strict();
 export const executionRunParams = z.object({ runId: z.string().uuid() });
 export const gitSourceInput = z.object({
@@ -373,7 +374,9 @@ export const articleChatQuery = z.object({ contextKey: z.string().trim().min(1).
 export const articleChatInput = z.object({
   contextKey: z.string().trim().min(1).max(1200),
   clientMessageId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
   accountId: z.string().uuid().optional(),
+  workflowMode: z.enum(["legacy", "tool"]).default("legacy"),
   title: z.string().trim().max(500).default(""),
   markdown: z.string().max(500000),
   message: z.string().trim().min(1).max(12000)

@@ -40,4 +40,16 @@ describe("GitSourceService", () => {
       expect(() => service.toExecutionRequest({ repositoryUrl: "https://github.com/example/repo?token=secret", destination: path.join(root, "repo"), networkPolicy: "direct" })).toThrow("公开 HTTPS");
     } finally { database.close(); }
   });
+
+  it("keeps Awen staging destinations inside the configured workspace", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-workspace-"));
+      const service = new GitSourceService(new ExecutionService(), new ExecutionRepository(database.connection), workspace);
+      const destination = service.createAwenStagingDestination("https://github.com/example/repo");
+      expect(destination.startsWith(path.join(workspace, "git-sources"))).toBe(true);
+      expect(() => service.assertAwenWorkspacePath(destination)).not.toThrow();
+      expect(() => service.assertAwenWorkspacePath(path.join(workspace, "..", "outside"))).toThrow("专属工作区");
+    } finally { database.close(); }
+  });
 });

@@ -585,9 +585,55 @@ CSDN 渠道稿由主稿派生，但与主稿、微信公众号稿保持独立版
 
 代码执行不是普通 HTTP 调用，也不是把模型输出直接交给 shell。执行请求必须使用结构化 `argv`、规范化工作目录、目录读写授权、网络策略、依赖计划、超时和输出上限，并在每次执行前由用户确认；全局或项目级目录授权只能减少重复填写目录，不能替代本次命令、目标和网络确认。系统保存执行目标、运行时、策略摘要、实际确认状态、权限决策与匹配范围、状态、退出码、标准输出/错误和产物 SHA-256，文章引用只能把结果标为 `experimental_observation`，不能自动当成通用事实。
 
-当前实现位于 `src/main/agent/execution-service.ts`、`execution-repository.ts`、`permission-grant-repository.ts`、`git-source-service.ts` 与 `system-tool-registry.ts`：已支持显式确认的本机、WSL、Docker、Windows Sandbox 目标，Python/Node/Git/自定义运行时、超时、输出限制、重启中断恢复和产物索引，并提供 `/api/execution/preflight`、`/api/execution/run`、`/api/execution/runs` 接口。前置检查使用异步探测，避免在主进程同步阻塞；Docker 执行固定内存、CPU、进程数和只读根文件系统。首次正文起草前，`content_practice_plans` 保存阿文生成且作者可修改的最小实践计划，状态为 `draft`、`confirmed` 或 `skipped`；计划以同一项目的执行面板运行或记录已有实践，但不能代替执行记录。文章编辑器的“代码与工具”面板提供目标、目录、网络、参数确认和前置检查入口，并通过只读 `/api/tools/system` 探测已安装工具。权限授权可按全局/项目/单次范围保存；敏感凭据目录、符号链接/junction 越界和不支持的目标或网络策略会明确失败，禁止静默回退；成功执行会记录受作用域限制的工具使用记忆。当前阿文只提出结构化工具计划，实际执行必须由用户在“代码与工具”面板确认并触发；模型直接发起工具调用、权限询问和结果回传闭环仍属后续实现，未在界面上宣称为自动执行。
+当前实现位于 `src/main/agent/execution-service.ts`、`execution-repository.ts`、`permission-grant-repository.ts`、`git-source-service.ts` 与 `system-tool-registry.ts`：已支持显式确认的本机、WSL、Docker、Windows Sandbox 目标，Python/Node/Git/自定义运行时、超时、输出限制、重启中断恢复和产物索引，并提供 `/api/execution/preflight`、`/api/execution/run`、`/api/execution/runs` 接口。前置检查使用异步探测，避免在主进程同步阻塞；Docker 执行固定内存、CPU、进程数和只读根文件系统。首次正文起草前，`content_practice_plans` 保存阿文生成且作者可修改的最小实践计划，状态为 `draft`、`confirmed` 或 `skipped`；计划以同一项目的执行面板运行或记录已有实践，但不能代替执行记录。文章编辑器的“代码与工具”面板提供目标、目录、网络、参数确认和前置检查入口，并通过只读 `/api/tools/system` 探测已安装工具。权限授权可按全局/项目/单次范围保存；项目级租约默认 24 小时，单次和任务级租约只留在当前工作流；敏感凭据目录、符号链接/junction 越界和不支持的目标或网络策略会明确失败，禁止静默回退。阿文工作流可自动执行策略允许的低风险工具，高风险动作仍在应用侧授权卡确认；模型不能直接执行命令或把只读会话当成 Git 不可用的理由。
 
 Git 源码取证通过 `/api/execution/git/preflight`、`/api/execution/git/clone` 和 `/api/execution/git/analyze` 接入：仅接受无凭据的公开 HTTPS 地址，使用浅克隆，固定 commit SHA 和文件清单；clone、commit 读取、文件清单读取和文件分析各自留下执行记录。clone/analyze 必须经过统一权限评估、目录边界检查和本次确认；分析拒绝符号链接路径，并对单文件读取设置字节上限。分析结果带固定 commit SHA、执行记录和文件 SHA-256/行号范围，源码摘要有长度上限；编辑器可将摘要插入正文引用。成功执行可在编辑器中保存为带目标、运行时、网络策略、产物 hash 和执行记录 ID 的 `experimental_observation` 资料卡，提纲/正文提示会保留实验观察边界。工具记忆只能帮助发现工具，不能授予权限；模型可以提出执行计划，但不能伪造用户确认。
+
+### 19.1 阿文工具工作流协议（已实现第一阶段）
+
+本节实现已覆盖起草和编辑阶段：已有文章即使尚未关联 `content_project`，也可以按需使用 Git 取证、公开网络检索和系统工具发现。低风险只读操作可在策略允许范围内连续执行，高风险操作进入应用侧授权卡，由用户确认后才执行；前文关于“阿文只提出计划”的旧描述不再适用于本节所述生产工作流。
+
+当前生产实现已接入主进程内的 `ToolWorkflowRunner` 多回合编排模块：模型只返回结构化计划、工具调用请求或最终文本，工具输入先由协议校验，再统一交给 `ToolRunner` 和权限策略评估。旧“代码与工具”面板仍保留为完整参数控制和兼容回退路径。
+
+每次工作流使用 `workflowId`/`correlationId`，每个调用使用唯一 `callId`，并通过事件记录计划、策略决定、授权等待、执行结果、拒绝后的重规划和最终完成。`allow` 调用可连续执行；`ask` 只暂停当前调用及其依赖；`deny` 不执行且禁止等价绕过，但允许在同一工作流内提出替代调用，替代调用必须重新评估。模型最终回复还必须通过应用侧 JSON/领域 schema 校验；校验失败时在同一 workflow 内最多自动请求两次“只修复最终回复”的重生成，记录 `model_output_repair_requested` 事件，禁止重复已经完成的工具调用，耗尽次数后才进入 `failed`。主机、WSL、Docker 和 Windows Sandbox 是统一策略中的执行目标维度，跨目标调用按新调用重新计算风险。
+
+该协议的详细对象、状态机、错误语义和迁移关系记录在 `research/wayfinder-issue-31-tool-protocol-and-orchestration.md`。当前已接入低风险网页检索、系统工具发现、文章库只读和高风险 Git 授权暂停；更多工具适配器及更细粒度事件投影仍属于后续增强。
+
+### 19.2 权限矩阵与授权租约（第一阶段已实现）
+
+应用设置中的 `agentWorkspaceDir` 是用户显式选择的阿文专属工作区根目录。Git staging 只能创建在其 `git-sources/` 子目录下；工作区授权作为当前阿文 Git 目录边界使用，数据库中的显式拒绝仍优先。工作区内的阿文 Git 读写不重复询问目录授权，越界目标直接拒绝；未配置工作区或其他高风险请求仍通过右侧唯一授权卡处理。
+
+工具调用的策略判定顺序为：协议/schema 校验和硬性安全不变量、显式 `deny`、匹配的显式授权租约、默认风险规则。模型风险标签和工具记忆只能用于解释，不能授予权限；任何匹配的显式拒绝都优先于允许。默认协作模式下，授权范围内的非敏感低风险只读、公开网络读取和不扩大副作用的执行目标切换可以自动连续执行；新目录、新主机、安装、删除、写入、宿主机高风险执行、敏感读取和外部写入进入 `ask` 或拒绝。
+
+授权租约按单次调用、本次任务同类调用和当前项目同类调用分层，必须同时约束工具、动作、项目/工作流、规范化目标、网络范围、执行目标、副作用包络和有效期。目标从本机切到 WSL、Docker 或 Windows Sandbox 不是绕过权限，而是带着新目标重新评估；不可用目标不得静默回退到更高风险目标。被拒绝的调用不执行，阿文可以在同一工作流提出替代路径，但替代调用必须独立经过策略判定。
+
+详细矩阵、模式差异和迁移要求记录在 `research/wayfinder-issue-32-permission-matrix.md`。当前工作流已支持单次调用、本次任务同类调用和当前项目同类调用三种授权响应；本次任务授权只保存在当前工作流内，项目授权才写入持久化授权表，并默认带 24 小时有效期。执行记录中的 `confirmed` 是应用侧执行闸门，不等同于“用户刚刚点击确认”；同时保存 `decisionSource` 与匹配范围以区分默认低风险策略和授权租约。
+
+### 19.3 Git 与本地工具结果的证据链（规划中）
+
+工具结果、实验观察和证据卡是三个不同层次：工具结果属于工作流运行记录，实验观察是作者明确保存且绑定执行条件的有界主张，证据卡才是可供作者选择进入文章资料链的资料单元。保存实验观察不等于作者采纳，AI 推荐也不等于采纳；失败、取消、超时、非零退出码或输出超限不得生成已验证事实。
+
+Git 证据必须固定规范化仓库 URL、完整 commit SHA、受跟踪的相对文件路径、行号范围、内容 SHA-256、摘录和对应执行记录；不同 commit 不得覆盖旧快照。clone、remote/commit 校验、文件清单和文件读取属于同一取证链，任一关键步骤失败时保留运行记录但不得形成可采纳证据。新草稿可以在保留 provenance 映射的前提下临时使用结果，编辑已有文章时结果只形成建议；系统不自动把链接、脚注或归因写入公众正文。
+
+当前 `experimental_observations` 已保存 `pending/accepted/rejected`，执行观察保持 `pending_verification` 且不会自动选中；Git 文件路径和 SHA-256 会作为 provenance artifacts 一并保存。同一执行记录重复保存时保持原有待核验标题、主张和 provenance，不允许后一次请求覆盖前一次记录。详细领域模型、边界和后续扩展记录在 `research/wayfinder-issue-33-evidence-provenance-model.md`。
+
+### 19.4 执行进度、审计、取消与恢复（部分实现，整体规划中）
+
+阿文工具工作流和单次执行尝试分别保存状态；执行进度由不可变事件投影，不形成可独立修改的第二事实源。工作流状态至少区分 `queued`、`planning`、`running`、`waiting_user`、`replanning`、`completed`、`completed_with_warnings`、`failed`、`cancel_requested`、`cancelled` 和 `interrupted`；单次尝试区分策略等待、前置检查、运行、完成、拒绝、失败、超时、输出超限、取消和中断。拒绝不等于取消，取消也不覆盖已经完成的结果。
+
+用户取消先停止新调度，再通过 `AbortSignal` 请求活动适配器终止；当前 `ToolWorkflowRunner` 已实现工作流内的 `cancel_requested`/`cancelled` 状态、活动适配器的 `AbortSignal` 传播、取消后的调度短路和幂等收尾，并将最终快照持久化。应用重启后未完成调用进入 `interrupted`；恢复会沿用原 workflowId，带待授权请求的记录可恢复为 `waiting_user` 并要求重新授权，其他中断记录只能由用户显式启动同一记录上的重新规划，不会自动重放。已有 `cancel_requested` 的记录会保留这一事实并显示为中断，不等同于用户已完成取消。更细粒度的 attempt/checkpoint 和外部副作用不确定性记录仍属于后续增强。
+
+运行元数据、权限决定、AI 完整调用审计和证据 provenance 分层保存，并使用 workflow/call/attempt/correlation 标识关联。详细事件、检查点、幂等和恢复语义记录在 `research/wayfinder-issue-34-progress-audit-cancellation-recovery.md`；当前实现中的 `execution_runs` 恢复基础和 `AiAuditLog` 仅作为迁移起点，不能把现有 `interrupted` 标记误认为已经具备完整工作流恢复。
+
+### 19.5 工具编排核心当前实现状态（2026-09-21，部分接入）
+
+编辑器内授权卡只在右侧“执行活动”渲染；底部阿文面板在等待授权时只显示状态和“查看执行活动”跳转。Git 未指定目标时由应用在 `agentWorkspaceDir/git-sources/` 下创建 staging 目录。
+
+`src/main/agent/tool-workflow-runner.ts` 已实现第一阶段的主进程编排核心：模型回合只能返回结构化工具请求或最终文本，应用侧负责回合推进、请求解析、风险映射、权限暂停/恢复、拒绝后的替代方案重规划以及 `workflowId`/`callId`/事件记录。模型返回 `confirmed`、`grant`、`lease`、`permission` 等权限控制字段时会被拒绝；工具适配器仍必须经过现有 `ToolRunner` 和权限策略。`awen-tool-workflow.ts` 已把该核心接入阿文对话：低风险网页检索、系统工具发现和文章库只读可连续执行；Git staging 克隆/分析在工作区外进入统一 `waiting_user` 授权卡，工作区内使用应用设置明确给出的边界，不重复询问目录授权，授权响应只由应用路由接收。
+
+当前已通过既有 `ModelProvider.generateStructured` 适配真实模型回合，新增阿文工作流授权、取消、列表和恢复路由，并将请求、快照、工具事件和工具结果保存到 `agent_tool_workflows`；工作流失败也会保留快照和已完成工具调用，不再静默回退旧版直答路径。编辑器内已显示右侧独立执行活动、授权卡、参数详情、取消和恢复入口。Git 克隆缺少 destination 时由应用在 `agentWorkspaceDir/git-sources/` 下创建 staging 目录并展示实际目标；若未配置工作区则使用受控临时目录并进入授权流程。Git 分析结果可从活动视图查看、保存为待核验证据并单独采纳为证据卡，保存时带执行记录、commit、文件路径和 SHA-256 provenance。旧“代码与工具”面板及其 `confirmed` 护栏仍保留，作为显式参数控制路径。将结果应用为文章建议仍需补齐独立 UI 动作，不能在文档中宣称已实现。后续增强是更细粒度的事件/attempt 投影和更多本地工具适配器。
+
+文章对话接口的 `workflowMode` 为 `tool` 时显式进入结构化工具工作流；编辑器当前使用该模式，旧客户端缺省为 `legacy`。服务端不再根据用户消息文本的正则猜测是否启动工作流。相关接口为 `GET /api/article-chat/workflows`、`GET /api/article-chat/workflows/:workflowId`、`POST /api/article-chat/workflows/:workflowId/permission`、`POST /api/article-chat/workflows/:workflowId/resume` 和 `POST /api/article-chat/workflows/:workflowId/cancel`；它们共享同一个工作流快照和授权状态。
 
 ## 20. 版本记录
 

@@ -13,6 +13,10 @@ import { AgentMemoryRepository } from "./agent-memory-repository";
 import type { ImagePlacementRecommendation, ImageSearchResultItem, WebSearchClient } from "./web-search";
 import type { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 import type { ImageCandidateReviewService } from "./image-candidate-review-service";
+import { createAwenToolWorkflowSession, parseWorkflowFinalText, type AwenToolWorkflowServices, type AwenToolWorkflowSession } from "./awen-tool-workflow";
+import type { PermissionResponse } from "../agent/tool-workflow-runner";
+import type { ToolWorkflowSnapshot } from "../agent/tool-workflow-runner";
+import type { StoredToolWorkflow } from "../agent/tool-workflow-repository";
 
 export type ArticleChatInput = z.infer<typeof articleChatInput>;
 export type ArticleChatSuggestion = z.infer<typeof articleChatSuggestion>;
@@ -51,6 +55,31 @@ export interface ArticleChatThread {
   messages: Array<ArticleChatMessage & { suggestionsJson?: string }>;
 }
 
+export interface ArticleChatWorkflowResult {
+  workflow: ToolWorkflowSnapshot;
+  memory: string;
+  writingMemory: string;
+  provider: string | null;
+  model: string | null;
+}
+
+const MAX_ACTIVE_TOOL_WORKFLOWS = 100;
+
+interface AwenWorkflowEntry {
+  session: AwenToolWorkflowSession;
+  input: ArticleChatInput;
+  userEventId: string | null;
+  thread: ArticleChatThread;
+  writingMemory: string;
+  writingMemoryScope: string;
+  platform?: string;
+  seriesScope?: string;
+  articleMemoryContext: ReturnType<AgentMemoryRepository["retrieveContext"]>;
+  writingMemoryContext: ReturnType<AgentMemoryRepository["retrieveContext"]>;
+  provider: string | null;
+  model: string | null;
+}
+
 /**
  * Deep module for the Awen article conversation.
  *
@@ -64,6 +93,7 @@ export class AwenConversationService {
   private maintenanceScheduled = false;
   private maintenanceRunning = false;
   private maintenancePending = false;
+  private readonly workflowEntries = new Map<string, AwenWorkflowEntry>();
 
   constructor(
     private readonly db: Database.Database,
@@ -72,7 +102,8 @@ export class AwenConversationService {
     private readonly webSearch?: WebSearchClient,
     private readonly onMaintenanceError?: (error: unknown) => void,
     private readonly imageSearchHistory?: ImageSearchHistoryRepository,
-    private readonly imageCandidateReview?: ImageCandidateReviewService
+    private readonly imageCandidateReview?: ImageCandidateReviewService,
+    private readonly toolWorkflowServices?: AwenToolWorkflowServices
   ) {
     this.memory = new SqliteMemoryStore(db);
     this.formalMemory = new AgentMemoryRepository(db);
@@ -163,18 +194,67 @@ export class AwenConversationService {
     const article = input.markdown.length > 100000
       ? `${input.markdown.slice(0, 100000)}\n\n[正文过长，已截取前 100000 个字符]`
       : input.markdown;
-    const webResearch = await collectWebResearch(input, this.webSearch);
+    // The editor sends a project id for the autonomous workflow path. Keep the
+    // older endpoint shape fully compatible for callers that only identify a
+    // conversation context; those callers still use the preloaded web context
+    // and the direct article-chat response contract.
+    // Existing source articles may not have a content-project row yet. They
+    // still need the same Awen tool workflow for Git research and web lookup;
+    // projectId only scopes durable project permissions and workflow metadata.
+    // The renderer explicitly selects the tool workflow for the current
+    // editor experience. Project conversations retain the same behaviour for
+    // older callers, while legacy/browser clients are not guessed from the
+    // user's wording and remain on the legacy contract.
+    const workflowEnabled = Boolean(this.toolWorkflowServices && (input.projectId || input.workflowMode === "tool"));
+    let webResearch = workflowEnabled ? "" : await collectWebResearch(input, this.webSearch);
+    let prompt = buildPrompt(
+      input,
+      writingMemoryContext.text || writingMemory,
+      articleMemoryContext.text || thread.memory,
+      history,
+      article,
+      webResearch
+    );
+    if (workflowEnabled && this.toolWorkflowServices) {
+      let provider: string | null = null;
+      let model: string | null = null;
+      const session = createAwenToolWorkflowSession(this.toolWorkflowServices, {
+        projectId: input.projectId,
+        prompt,
+        validateFinal: (text) => { articleChatOutput.parse(parseWorkflowFinalText(text)); },
+        onModelResult: (nextProvider, nextModel) => { provider = nextProvider; model = nextModel; }
+      });
+      const workflow = await session.start();
+      const entry: AwenWorkflowEntry = {
+        session,
+        input,
+        userEventId,
+        thread,
+        writingMemory,
+        writingMemoryScope,
+        platform,
+        seriesScope,
+        articleMemoryContext,
+        writingMemoryContext,
+        provider,
+        model
+      };
+      this.toolWorkflowServices.workflowRepository?.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
+      if (workflow.status === "failed") {
+        return { workflow, memory: thread.memory, writingMemory, provider, model } satisfies ArticleChatWorkflowResult;
+      }
+      this.rememberWorkflowEntry(workflow.workflowId, entry);
+      if (workflow.finalText) {
+        this.workflowEntries.delete(workflow.workflowId);
+        const parsed = articleChatOutput.parse(parseWorkflowFinalText(workflow.finalText));
+        return { ...await this.persistAssistantResponse(entry, parsed), workflow };
+      }
+      return { workflow, memory: thread.memory, writingMemory, provider, model } satisfies ArticleChatWorkflowResult;
+    }
     const generated = await this.provider.generateStructured({
       task: "assistant",
       skillId: "awen-assistant",
-      prompt: buildPrompt(
-        input,
-        writingMemoryContext.text || writingMemory,
-        articleMemoryContext.text || thread.memory,
-        history,
-        article,
-        webResearch
-      ),
+      prompt,
       outputSchema: {
         type: "object",
         properties: {
@@ -349,6 +429,151 @@ export class AwenConversationService {
     } catch {
       return items.map((item, index) => ({ ...item, placement: fallbackImagePlacement(index) }));
     }
+  }
+
+  async respondToWorkflow(workflowId: string, response: PermissionResponse): Promise<ArticleChatWorkflowResult> {
+    const entry = this.workflowEntries.get(workflowId);
+    if (!entry) throw new Error("找不到仍在等待处理的阿文工具工作流；应用重启后的工作流不能自动重放，请重新发起请求。");
+    const pending = entry.session.runner.getSnapshot(workflowId).pendingPermission;
+    let workflowResponse = response;
+    if (response.decision === "allow" && response.scope === "project") {
+      if (!entry.input.projectId || !pending) throw new Error("当前工作流没有可保存到文章项目的授权范围。");
+      const grant = this.toolWorkflowServices?.permissionGrants.create({ scope: "project", decision: "allow", toolId: pending.request.toolId, action: pending.request.action, projectId: entry.input.projectId, targetPrefix: pending.request.target ?? undefined });
+      workflowResponse = { ...response, ...(grant?.expiresAt ? { expiresAt: grant.expiresAt } : {}) };
+    }
+    const workflow = await entry.session.respond(workflowResponse);
+    this.toolWorkflowServices?.workflowRepository?.save(workflow, { contextKey: entry.input.contextKey, projectId: entry.input.projectId, request: entry.input as unknown as Record<string, unknown> });
+    if (!workflow.finalText) return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider: entry.provider, model: entry.model };
+    this.workflowEntries.delete(workflowId);
+    const parsed = articleChatOutput.parse(parseWorkflowFinalText(workflow.finalText));
+    return { ...await this.persistAssistantResponse(entry, parsed), workflow };
+  }
+
+  getWorkflow(workflowId: string): ToolWorkflowSnapshot {
+    const entry = this.workflowEntries.get(workflowId);
+    if (!entry) {
+      const stored = this.toolWorkflowServices?.workflowRepository?.require(workflowId);
+      if (stored) return stored.snapshot;
+      throw new Error("找不到阿文工具工作流。");
+    }
+    return entry.session.runner.getSnapshot(workflowId);
+  }
+
+  listWorkflows(contextKey: string): StoredToolWorkflow[] {
+    return this.toolWorkflowServices?.workflowRepository?.list(contextKey) ?? [];
+  }
+
+  async resumeWorkflow(workflowId: string): Promise<ArticleChatWorkflowResult> {
+    const repository = this.toolWorkflowServices?.workflowRepository;
+    if (!repository) throw new Error("工具工作流持久化尚未初始化。");
+    const stored = repository.require(workflowId);
+    if (stored.snapshot.status !== "interrupted") throw new Error("只有已中断的工具工作流可以恢复。");
+    const input = articleChatInput.parse(stored.input ?? {});
+    let provider: string | null = null;
+    let model: string | null = null;
+    const session = createAwenToolWorkflowSession(this.toolWorkflowServices!, {
+      projectId: input.projectId,
+      prompt: stored.snapshot.userRequest,
+      validateFinal: (text) => { articleChatOutput.parse(parseWorkflowFinalText(text)); },
+      onModelResult: (nextProvider, nextModel) => { provider = nextProvider; model = nextModel; }
+    });
+    const entry = this.createResumedWorkflowEntry(input, session, input.clientMessageId ?? null, provider, model);
+    if (stored.snapshot.pendingPermission) {
+      const workflow = session.restoreWaiting(stored.snapshot);
+      repository.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
+      this.rememberWorkflowEntry(workflow.workflowId, entry);
+      return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
+    }
+    const workflow = await session.resumeInterrupted(stored.snapshot);
+    repository.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
+    if (workflow.status === "failed") return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
+    this.rememberWorkflowEntry(workflow.workflowId, entry);
+    if (!workflow.finalText) return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
+    this.workflowEntries.delete(workflow.workflowId);
+    const parsed = articleChatOutput.parse(parseWorkflowFinalText(workflow.finalText));
+    return { ...await this.persistAssistantResponse(entry, parsed), workflow };
+  }
+
+  async cancelWorkflow(workflowId: string): Promise<ToolWorkflowSnapshot> {
+    const entry = this.workflowEntries.get(workflowId);
+    if (!entry) throw new Error("找不到阿文工具工作流。");
+    const requested = entry.session.runner.cancel(workflowId);
+    const snapshot = requested.status === "cancel_requested"
+      ? await entry.session.runner.waitForSettled(workflowId)
+      : requested;
+    this.toolWorkflowServices?.workflowRepository?.save(snapshot, { contextKey: entry.input.contextKey, projectId: entry.input.projectId, request: entry.input as unknown as Record<string, unknown> });
+    this.workflowEntries.delete(workflowId);
+    return snapshot;
+  }
+
+  private createResumedWorkflowEntry(input: ArticleChatInput, session: AwenToolWorkflowSession, userEventId: string | null, provider: string | null, model: string | null): AwenWorkflowEntry {
+    const thread = this.getThread(input.contextKey);
+    const writingMemoryScope = input.accountId ? `account:${input.accountId}` : "workspace:default";
+    const platform = input.accountId
+      ? (this.db.prepare("SELECT platform FROM media_accounts WHERE id = ? AND deleted_at IS NULL").get(input.accountId) as { platform?: string } | undefined)?.platform
+      : undefined;
+    const seriesScope = deriveSeriesScope(input.title);
+    const writingMemoryScopes = [...new Set(["workspace:default", writingMemoryScope, platform ? `platform:${platform}` : "", seriesScope ?? ""].filter(Boolean))];
+    const writingMemory = writingMemoryScopes.map((scope) => this.memory.getWriting(scope)).filter(Boolean).join("\n");
+    const articleMemoryScopes = [input.contextKey, ...(seriesScope ? [seriesScope] : []), ...(platform ? [`platform:${platform}`] : [])];
+    const articleMemoryContext = this.formalMemory.retrieveContext(articleMemoryScopes, input.message, 8);
+    const writingMemoryContext = this.formalMemory.retrieveContext(writingMemoryScopes, input.message, 8);
+    return { session, input, userEventId, thread, writingMemory, writingMemoryScope, platform, seriesScope, articleMemoryContext, writingMemoryContext, provider, model };
+  }
+
+  private rememberWorkflowEntry(workflowId: string, entry: AwenWorkflowEntry): void {
+    this.workflowEntries.set(workflowId, entry);
+    while (this.workflowEntries.size > MAX_ACTIVE_TOOL_WORKFLOWS) {
+      const oldestEntry = [...this.workflowEntries.entries()].find(([candidateId, candidate]) => {
+        if (candidateId === workflowId) return false;
+        const status = candidate.session.runner.getSnapshot(candidateId).status;
+        return status !== "waiting_user" && status !== "cancel_requested";
+      });
+      const oldestId = oldestEntry?.[0];
+      if (!oldestId) break;
+      const oldest = this.workflowEntries.get(oldestId);
+      if (oldest) {
+        const snapshot = oldest.session.runner.getSnapshot(oldestId);
+        this.toolWorkflowServices?.workflowRepository?.save(
+          { ...snapshot, status: "interrupted" },
+          { contextKey: oldest.input.contextKey, projectId: oldest.input.projectId, request: oldest.input as unknown as Record<string, unknown> }
+        );
+      }
+      this.workflowEntries.delete(oldestId);
+    }
+  }
+
+  private async persistAssistantResponse(entry: AwenWorkflowEntry, value: z.infer<typeof articleChatOutput>) {
+    const normalized = normalizeArticleChatOutput(value);
+    const suggestions = filterActionableArticleSuggestions(entry.input.markdown, normalized.suggestions);
+    const imageSearch = await this.runImageSearchTool(entry.input, normalized.imageSearchRequest);
+    const assistantMessage: ArticleChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      content: appendImageSearchStatus(normalized.reply, imageSearch),
+      memorySuggestion: normalized.memorySuggestion,
+      suggestions,
+      imageSearch,
+      createdAt: new Date().toISOString()
+    };
+    this.db.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, image_search_json, created_at)
+      VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`)
+      .run(assistantMessage.id, entry.input.contextKey, assistantMessage.content, assistantMessage.memorySuggestion, JSON.stringify(suggestions), JSON.stringify(imageSearch ?? null), assistantMessage.createdAt);
+    const assistantEventId = this.formalMemory.appendEvent({
+      scopeKey: entry.input.contextKey,
+      eventType: "article_chat.assistant_message",
+      payload: { messageId: assistantMessage.id, content: assistantMessage.content, suggestions }
+    });
+    const sourceEventIds = [entry.userEventId, assistantEventId].filter((value): value is string => Boolean(value));
+    if (normalized.memorySuggestion) this.formalMemory.addCandidate({ scopeKey: entry.input.contextKey, kind: "article_fact", content: normalized.memorySuggestion, sourceEventIds });
+    if (normalized.writingMemorySuggestion) {
+      for (const scopeKey of new Set([entry.writingMemoryScope, ...(entry.platform ? [`platform:${entry.platform}`] : []), ...(entry.seriesScope ? [entry.seriesScope] : [])])) {
+        this.formalMemory.addCandidate({ scopeKey, kind: "writing_preference", content: normalized.writingMemorySuggestion, sourceEventIds });
+      }
+    }
+    this.formalMemory.recordUse([...entry.articleMemoryContext.ids, ...entry.writingMemoryContext.ids], `article-chat:${entry.input.contextKey}`);
+    this.scheduleMemoryMaintenance();
+    return { message: assistantMessage, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider: entry.provider, model: entry.model };
   }
 
   mergeArticleMemory(contextKey: string, candidate: string): string {

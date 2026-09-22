@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export type PermissionScope = "global" | "project" | "run";
+export type PermissionScope = "global" | "project" | "task" | "run";
 export type PermissionDecision = "allow" | "ask" | "deny";
 export type ToolRisk = "low" | "medium" | "high";
 export type ToolAction = "read" | "network_read" | "write" | "delete" | "install" | "external_write" | "publish" | "sensitive_read";
@@ -81,9 +81,9 @@ function looksLikePath(value: string): boolean {
 }
 
 function scopeRank(scope: PermissionScope): number {
-  return scope === "run" ? 3 : scope === "project" ? 2 : 1;
+  return scope === "run" ? 4 : scope === "task" ? 3 : scope === "project" ? 2 : 1;
 }
 
 function scopeName(scope: PermissionScope): string {
-  return scope === "run" ? "单次" : scope === "project" ? "项目" : "全局默认";
+  return scope === "run" ? "单次" : scope === "task" ? "本次任务" : scope === "project" ? "项目" : "全局默认";
 }

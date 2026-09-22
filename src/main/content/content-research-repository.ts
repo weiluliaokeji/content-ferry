@@ -370,24 +370,36 @@ export class ContentResearchRepository {
   }): ContentResearch {
     const now = new Date().toISOString();
     const url = `execution://${input.executionRunId}`;
+    const existing = this.db.prepare("SELECT id FROM experimental_observations WHERE execution_run_id = ?")
+      .get(input.executionRunId) as { id?: string } | undefined;
+    if (existing?.id) return this.get(projectId);
+    const observationId = existing?.id ?? input.observationId;
+    const provenance = { ...input.provenance, observationId };
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO experimental_observations
         (id, project_id, execution_run_id, title, claim, status, provenance_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
         ON CONFLICT(execution_run_id) DO UPDATE SET title = excluded.title, claim = excluded.claim,
           provenance_json = excluded.provenance_json, updated_at = excluded.updated_at`)
-        .run(input.observationId, projectId, input.executionRunId, input.title.trim(), input.claim.trim(), JSON.stringify(input.provenance), now, now);
+        .run(observationId, projectId, input.executionRunId, input.title.trim(), input.claim.trim(), JSON.stringify(provenance), now, now);
       this.db.prepare(`INSERT INTO content_research_sources
         (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_history_json, adoption_status, source_type, retrieved_at, selected)
-        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', '[]', 'adopted', 'public', ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '{}', '[]', 'pending_verification', 'public', ?, 0)
         ON CONFLICT(id) DO UPDATE SET title = excluded.title, excerpt = excluded.excerpt,
           claims_json = excluded.claims_json, provenance_json = excluded.provenance_json, retrieved_at = excluded.retrieved_at`)
-        .run(input.observationId, projectId, `实验观察 · ${input.title.trim()}`, url,
+        .run(observationId, projectId, `实验观察 · ${input.title.trim()}`, url,
           `${input.claim.trim()}\n执行记录：${input.executionRunId}；结果仅适用于记录的目标、版本和输入。`,
-          JSON.stringify([input.claim.trim(), `复现条件见执行记录 ${input.executionRunId}`]), JSON.stringify(input.provenance), now);
+          JSON.stringify([input.claim.trim(), `复现条件见执行记录 ${input.executionRunId}`]), JSON.stringify(provenance), now);
     })();
     return this.get(projectId);
   }
+
+  findExecutionObservationId(executionRunId: string): string | null {
+    const row = this.db.prepare("SELECT id FROM experimental_observations WHERE execution_run_id = ? LIMIT 1")
+      .get(executionRunId) as { id?: string } | undefined;
+    return row?.id ?? null;
+  }
+
 }
 
 export function normalizeResearchUrl(value: string): string {

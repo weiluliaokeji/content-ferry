@@ -4,14 +4,14 @@ import { apiBase, platformName, request } from "../api";
 import { extractMarkdownImages, renderPhonePreview, resolveArticleImageUrl } from "../markdown-preview";
 import { locateMarkdownSelection } from "../markdown-selection";
 import { markdownOffsetAtTextareaTop, readImageUrl, scrollEditorToHeading, scrollTextareaToMarkdownOffset } from "../utils";
-import { AwenBottomPanel, AwenMemoryManager, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
+import { AwenBottomPanel, AwenMemoryManager, AwenToolWorkflowActivity, AwenToolWorkflowActivityModal, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
 import { applyAwenSuggestionToMarkdown, canFinalizeAwenSuggestionSync, canSendAwenMessage, findUniqueSuggestionRange, getArticleChatContextKey, getAwenAlternativeSuggestionIds, getPendingAwenSuggestionIds, isCurrentAwenLoad, isCurrentAwenSuggestionSync, shouldPersistAcceptedAwenSuggestion, shouldReloadAwenConversation } from "./awen-suggestion-utils";
 import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { ExecutionPanel } from "./ExecutionPanel";
 import { isCurrentImageSearchRequest } from "./image-search-utils";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord } from "../types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
 
 type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
 
@@ -61,7 +61,7 @@ export function ArticleWorkspace({
   // 非微信平台的发布在渠道稿中进行：这里提供入口，直接打开对应平台的渠道稿。
   onEnterChannel?: (platform: AccountPlatform) => void;
 }) {
-  const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">(initialRightPanel);
+  const [rightPanel, setRightPanel] = useState<"assistant" | "activity" | "preview" | "settings">(initialRightPanel);
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const [modeScrollOffset, setModeScrollOffset] = useState(0);
   const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
@@ -138,6 +138,9 @@ export function ArticleWorkspace({
   const [awenMemory, setAwenMemory] = useState("");
   const [awenInput, setAwenInput] = useState("");
   const [awenLoading, setAwenLoading] = useState(false);
+  const [awenWorkflow, setAwenWorkflow] = useState<ToolWorkflowSnapshot>();
+  const [awenActivityExpanded, setAwenActivityExpanded] = useState(false);
+  const awenWorkflowActive = Boolean(awenWorkflow && ["queued", "planning", "running", "waiting_user", "replanning", "cancel_requested"].includes(awenWorkflow.status));
   const [awenLoaded, setAwenLoaded] = useState(false);
   const [awenLoadedContextKey, setAwenLoadedContextKey] = useState<string>();
   const awenLoadRequestIdRef = useRef(0);
@@ -228,6 +231,13 @@ export function ArticleWorkspace({
       setAwenMessages(normalized.messages);
       setAwenLoaded(true);
       setAwenLoadedContextKey(requestedContextKey);
+      try {
+        const activities = await request<{ items: Array<{ snapshot: ToolWorkflowSnapshot }> }>(`/article-chat/workflows?contextKey=${encodeURIComponent(requestedContextKey)}`);
+        const latest = activities.items[0]?.snapshot;
+        if (latest && requestedContextKey === awenContextKeyRef.current) setAwenWorkflow(latest);
+      } catch {
+        // Activity history is supplementary; conversation loading remains usable.
+      }
       // Suggestions whose original text no longer exists have already been
       // applied or superseded by a manual edit. Remove their persisted copy so
       // they cannot resurface on the next launch either.
@@ -252,7 +262,7 @@ export function ArticleWorkspace({
   }, [awenOpen, awenLoaded, awenLoadedContextKey, contextKey]);
   const sendAwenMessage = async (retryMessage?: ArticleChatMessage, options?: { skipPendingReview?: boolean; message?: string }) => {
     const message = retryMessage?.content ?? options?.message ?? awenInput.trim();
-    if (!message || awenLoading) return;
+    if (!message || awenLoading || awenWorkflowActive) return;
     if (!canSendAwenMessage(awenLoaded, awenLoadedContextKey, contextKey, Boolean(retryMessage))) {
       setWorkspaceError("正在读取阿文历史会话，请稍后再发送。");
       return;
@@ -273,11 +283,33 @@ export function ArticleWorkspace({
       setAwenInput("");
       setAwenMessages((current) => [...current, optimistic]);
     }
+    // The POST response only contains the new workflow after its first model
+    // turn. Clear the previous workflow immediately so the activity panel does
+    // not look frozen on an older run while the new one is being created.
+    setAwenWorkflow(undefined);
+    setAwenActivityExpanded(false);
+    setRightPanel("activity");
     setAwenLoading(true);
     try {
-      const result = await request<{ message: ArticleChatMessage; memory: string }>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey: requestContextKey, clientMessageId: optimistic.id, accountId: articleSettings.accountId || undefined, title, markdown, message }) });
+      const result = await request<ArticleChatWorkflowResult>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey: requestContextKey, clientMessageId: optimistic.id, projectId: projectId || undefined, accountId: articleSettings.accountId || undefined, workflowMode: "tool", title, markdown, message }) });
       if (requestContextKey !== awenContextKeyRef.current) return;
-      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message.id, deliveryState: undefined }, result.message]);
+      if (result.workflow?.status === "waiting_user") {
+        setAwenWorkflow(result.workflow);
+        setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "waiting_permission" } : item));
+        setAwenLoading(false);
+        return;
+      }
+      if (result.workflow?.status === "failed") {
+        setAwenWorkflow(result.workflow);
+        setRightPanel("activity");
+        setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "failed" as const } : item));
+        const failure = [...result.workflow.events].reverse().find((event) => event.type === "workflow_failed")?.message;
+        setWorkspaceError(failure ?? "阿文工具工作流失败；执行活动中保留了审计记录，可重试或人工接管。 ");
+        return;
+      }
+      if (!result.message) throw new Error("阿文没有返回最终消息。");
+      setAwenWorkflow(result.workflow);
+      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message!.id, deliveryState: undefined }, result.message!]);
       setAwenMemory(result.memory);
       setAwenLoaded(true);
       const imageSearch = result.message.imageSearch;
@@ -298,6 +330,57 @@ export function ArticleWorkspace({
       setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "failed" } : item));
       setWorkspaceError(cause instanceof Error ? cause.message : "阿文暂时无法回答。你的消息已保留，请稍后重新提问。");
     } finally { setAwenLoading(false); }
+  };
+  const respondAwenWorkflowPermission = async (decision: "allow" | "deny", scope?: "run" | "task" | "project") => {
+    const workflow = awenWorkflow;
+    if (!workflow || (decision === "allow" && !scope)) return;
+    setAwenLoading(true);
+    try {
+      const result = await request<ArticleChatWorkflowResult>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}/permission`, {
+        method: "POST",
+        body: JSON.stringify(decision === "allow" ? { decision, scope } : { decision })
+      });
+      if (result.workflow?.status === "waiting_user") {
+        setAwenWorkflow(result.workflow);
+        return;
+      }
+      if (result.message) {
+        setAwenMessages((current) => [...current.filter((item) => item.deliveryState !== "waiting_permission"), result.message!]);
+      }
+      setAwenWorkflow(result.workflow);
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "阿文工具授权处理失败。");
+    } finally {
+      setAwenLoading(false);
+    }
+  };
+  const cancelAwenWorkflow = async () => {
+    const workflow = awenWorkflow;
+    if (!workflow) return;
+    setAwenLoading(true);
+    try {
+      const result = await request<ToolWorkflowSnapshot>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}/cancel`, { method: "POST" });
+      setAwenWorkflow(result);
+      setAwenMessages((current) => current.map((item) => item.deliveryState === "waiting_permission" ? { ...item, deliveryState: "failed" as const } : item));
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "取消阿文工具工作流失败。");
+    } finally {
+      setAwenLoading(false);
+    }
+  };
+  const resumeAwenWorkflow = async () => {
+    const workflow = awenWorkflow;
+    if (!workflow || workflow.status !== "interrupted") return;
+    setAwenLoading(true);
+    try {
+      const result = await request<ArticleChatWorkflowResult>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}/resume`, { method: "POST" });
+      setAwenWorkflow(result.workflow);
+      if (result.message) setAwenMessages((current) => [...current, result.message!]);
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "恢复阿文工具工作流失败。");
+    } finally {
+      setAwenLoading(false);
+    }
   };
   const continueAwenSend = async () => {
     const pending = pendingAwenSend;
@@ -1134,9 +1217,11 @@ export function ArticleWorkspace({
       <aside className="editor-right-panel">
         <div className="panel-tabs">
           <button className={rightPanel === "assistant" ? "active" : ""} onClick={() => setRightPanel("assistant")}>AI 助手</button>
+          <button className={rightPanel === "activity" ? "active" : ""} onClick={() => setRightPanel("activity")}>执行活动{awenWorkflowActive ? " · 进行中" : ""}</button>
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
+        {rightPanel === "activity" && <AwenToolWorkflowActivity workflow={awenWorkflow} projectId={projectId} loading={awenLoading} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onExpand={() => setAwenActivityExpanded(true)} />}
         {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><label className="selection-instruction"><span>补充要求（可选）</span><textarea value={selectionAiInstruction} onChange={(event) => setSelectionAiInstruction(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void runSelectionAi(); } }} disabled={!selectionRange || selectionAiBusy} maxLength={1000} placeholder="例如：保留技术术语，语气更直接；不要使用营销化表达" /></label><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>{selectionRange ? "针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。" : "未选中段落时会检测当前文章全文；朱雀或 ContentAny 任一结果都可作为优化参考。"}</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!markdown.trim() || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : selectionRange ? "检测选中内容" : "检测全文内容"}</button></div>{!selectionRange && <small>你也可以先选中一段文字，只检测这一段。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
@@ -1243,7 +1328,8 @@ export function ArticleWorkspace({
         </div>}
       </aside>
     </div>
-    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} unsavedSuggestionIds={unsavedAwenSuggestionIds} pendingSuggestionCount={pendingAwenSuggestionCount} pendingSuggestionReviewOpen={Boolean(pendingAwenSend)} pendingSuggestionReviewBusy={pendingAwenReviewBusy} bottomHeightPercent={awenBottomHeightPercent} transcriptUserPercent={awenTranscriptUserPercent} onBottomHeightChange={setAwenBottomHeightPercent} onTranscriptUserPercentChange={setAwenTranscriptUserPercent} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onLocateSuggestion={locateAwenSuggestion} onOpenMemoryManager={() => void openMemoryManager()} onRejectPendingAndContinue={() => void rejectPendingAwenSuggestionsAndContinue()} onKeepPendingAndContinue={() => void continueAwenSend()} onCancelPendingSend={cancelPendingAwenSend} onClose={() => setAwenOpen(false)} />}
+    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} workflow={awenWorkflowActive ? awenWorkflow : undefined} unsavedSuggestionIds={unsavedAwenSuggestionIds} pendingSuggestionCount={pendingAwenSuggestionCount} pendingSuggestionReviewOpen={Boolean(pendingAwenSend)} pendingSuggestionReviewBusy={pendingAwenReviewBusy} bottomHeightPercent={awenBottomHeightPercent} transcriptUserPercent={awenTranscriptUserPercent} onBottomHeightChange={setAwenBottomHeightPercent} onTranscriptUserPercentChange={setAwenTranscriptUserPercent} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onLocateSuggestion={locateAwenSuggestion} onOpenMemoryManager={() => void openMemoryManager()} onRejectPendingAndContinue={() => void rejectPendingAwenSuggestionsAndContinue()} onKeepPendingAndContinue={() => void continueAwenSend()} onCancelPendingSend={cancelPendingAwenSend} onOpenWorkflowActivity={() => setRightPanel("activity")} onClose={() => setAwenOpen(false)} />}
+    {awenActivityExpanded && awenWorkflow && <AwenToolWorkflowActivityModal workflow={awenWorkflow} projectId={projectId} loading={awenLoading} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onClose={() => setAwenActivityExpanded(false)} />}
     {memoryManagerOpen && <AwenMemoryManager memories={formalMemories} candidates={memoryCandidates} busy={memoryManagerBusy} onPromote={(candidateId) => void promoteMemoryCandidate(candidateId)} onStatus={(memoryId, status) => void updateFormalMemory(memoryId, status)} onForget={(mode) => void forgetArticleMemory(mode)} onExport={() => void exportArticleMemory()} onImport={(file) => void importArticleMemory(file)} onClose={() => setMemoryManagerOpen(false)} />}
     {executionOpen && <div className="execution-modal-backdrop" role="presentation"><section className="execution-modal" role="dialog" aria-modal="true" aria-label="代码与工具执行"><div className="execution-modal-header"><div><p className="eyebrow">文章工具</p><h2>代码与工具</h2><p className="hint compact-hint">需要执行 Demo 或分析源码时再打开；授权目录可以跨文章复用。</p></div><button type="button" className="text-button" onClick={() => setExecutionOpen(false)}>关闭</button></div><ExecutionPanel projectId={projectId} onError={setWorkspaceError} onInsertCitation={(citation) => onChange(`${markdown}\n\n${citation}\n`)} onClose={() => setExecutionOpen(false)} /></section></div>}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
