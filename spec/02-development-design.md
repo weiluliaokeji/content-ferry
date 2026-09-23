@@ -335,7 +335,7 @@ AI 特征偏高默认给出低创作度/限流风险提示或要求二审；用�
 
 ## 10. 跨平台渠道发布生命周期
 
-跨平台发布由共享 `PublishTaskModule` 负责本地任务的幂等、冻结快照引用、规范状态迁移、重试、人工校正和追加式事件记录；平台 adapter 只负责平台差异：内容转换、凭据/登录、素材处理、提交和回执读取。当前采用渐进式迁移：CSDN 与博客园已由同一个主进程模块装配并共享 `publish_lifecycle_jobs`、`publish_lifecycle_events`，掘金和 51CTO 暂保留原有生命周期实现，后续按同一 seam 迁移；原有平台任务表继续保留，作为平台细节和升级兼容层。
+跨平台发布由共享 `PublishTaskModule` 负责本地任务的幂等、冻结快照引用、规范状态迁移、重试、人工校正和追加式事件记录；平台 adapter 只负责平台差异：内容转换、凭据/登录、素材处理、提交和回执读取。当前四个平台（CSDN、博客园、掘金、51CTO）均由同一个主进程模块装配并共享 `publish_lifecycle_jobs`、`publish_lifecycle_events`；原有平台任务表继续保留，作为平台细节和升级兼容层。CSDN 仍由用户启动浏览器辅助流程，其他三个渠道的任务先以 `queued` 持久化，再由共享运行器异步推进，渲染层持续展示和轮询该状态。
 
 规范状态为：`queued`、`preparing`、`waiting_user`、`ready`、`submitting`、`published`、`needs_credentials`、`failed`、`needs_manual_reconciliation` 和 `cancelled`。`waiting_user` 表示提交尚未完成、等待登录或最终确认；`needs_manual_reconciliation` 表示请求可能已经到达平台但结果无法判定。平台内部的 `draft_creating`、`needs_login`、`ready_for_final_confirmation` 等状态只作为 adapter 详情，并通过映射提供规范状态。
 

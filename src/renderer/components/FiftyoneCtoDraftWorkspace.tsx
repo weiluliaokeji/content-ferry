@@ -13,7 +13,7 @@ export type FiftyoneCtoDraftPatch = Partial<Pick<FiftyoneCtoChannelDraftShape, "
 
 interface FiftyoneCtoPublishJobShape {
   id: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null;
   errorMessage: string | null;
   remoteUrl: string | null;
@@ -79,6 +79,7 @@ interface FiftyoneCtoDraftWorkspaceProps {
 
 function fiftyoneCtoJobLabel(status: FiftyoneCtoPublishJobShape["status"]): string {
   switch (status) {
+    case "queued": return "排队中，等待发布到 51CTO";
     case "draft_creating": return "正在发布到 51CTO";
     case "draft_created": return "草稿已创建，待确认公开";
     case "confirming": return "正在公开发布";
@@ -496,6 +497,7 @@ export function FiftyoneCtoDraftWorkspace({ draft, accountDisplay, saving, job, 
         {job && <span className="hint cnblogs-inline-status">{fiftyoneCtoJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {!job && <button onClick={() => handlePublish()} disabled={saving}>发布到 51CTO</button>}
+        {jobStatus === "queued" && <span className="status-badge neutral">已排队，等待发布到 51CTO…</span>}
         {jobStatus === "draft_creating" && <span className="status-badge neutral">正在发布到 51CTO…</span>}
         {jobStatus === "published" && (job?.remoteUrl ? <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a> : <span className="status-badge success">已发布</span>)}
         {jobStatus === "published" && <button onClick={() => handlePublish(job?.id)} disabled={saving}>重新发布</button>}

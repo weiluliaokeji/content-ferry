@@ -14,7 +14,7 @@ export type CnblogsDraftPatch = Partial<Pick<CnblogsChannelDraftShape, "title" |
 
 interface CnblogsPublishJobShape {
   id: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null;
   errorMessage: string | null;
   remoteUrl: string | null;
@@ -54,6 +54,7 @@ interface CnblogsDraftWorkspaceProps {
 
 function cnblogsJobLabel(status: CnblogsPublishJobShape["status"]): string {
   switch (status) {
+    case "queued": return "排队中，等待创建博客园草稿";
     case "draft_creating": return "正在创建博客园草稿";
     case "draft_created": return "博客园草稿已创建，待确认公开";
     case "confirming": return "正在公开发布";
@@ -419,6 +420,7 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
         {job && <span className="hint cnblogs-inline-status">{cnblogsJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {!job && <button onClick={handlePublish} disabled={saving}>发布到博客园</button>}
+        {jobStatus === "queued" && <span className="status-badge neutral">已排队，等待创建博客园草稿…</span>}
         {jobStatus === "draft_creating" && <span className="status-badge neutral">正在创建博客园草稿…</span>}
         {jobStatus === "draft_created" && <>
           {job?.remoteUrl && <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="secondary-button">查看博客园草稿</a>}

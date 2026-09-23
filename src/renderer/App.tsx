@@ -1082,7 +1082,7 @@ export function App() {
   // 博客园任务进行中时轮询最新状态：draft_creating → draft_created → confirming → published。
   useEffect(() => {
     if (!cnblogsPublishJob) return;
-    const active = ["draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(cnblogsPublishJob.status);
+    const active = ["queued", "draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(cnblogsPublishJob.status);
     if (!active) return;
     const timer = setInterval(() => void refreshCnblogsPublishJob(), 3000);
     return () => clearInterval(timer);
@@ -1090,11 +1090,20 @@ export function App() {
   // 掘金任务进行中时轮询最新状态：draft_creating → draft_created → confirming → published。
   useEffect(() => {
     if (!juejinPublishJob) return;
-    const active = ["draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(juejinPublishJob.status);
+    const active = ["queued", "draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(juejinPublishJob.status);
     if (!active) return;
     const timer = setInterval(() => void refreshJuejinPublishJob(), 3000);
     return () => clearInterval(timer);
   }, [juejinPublishJob?.id, juejinPublishJob?.status]);
+
+  // 51CTO 任务创建后先持久化为 queued，再由主进程异步完成单阶段发布。
+  useEffect(() => {
+    if (!fiftyoneCtoPublishJob) return;
+    const active = ["queued", "draft_creating", "confirming", "needs_credentials", "needs_manual_reconciliation"].includes(fiftyoneCtoPublishJob.status);
+    if (!active) return;
+    const timer = setInterval(() => void refreshFiftyoneCtoPublishJob(), 3000);
+    return () => clearInterval(timer);
+  }, [fiftyoneCtoPublishJob?.id, fiftyoneCtoPublishJob?.status]);
 
   useEffect(() => {
     if (outlineEditorMode !== "markdown") return;

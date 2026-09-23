@@ -57,6 +57,7 @@ export function csdnJobCanCorrect(job: CsdnPublishJob): boolean {
 
 export function cnblogsJobLabel(job: CnblogsPublishJob): string {
   switch (job.status) {
+    case "queued": return "排队中，等待创建博客园草稿";
     case "draft_creating": return "正在创建博客园草稿";
     case "draft_created": return "草稿已创建，待确认公开";
     case "confirming": return "正在公开博客园文章";
@@ -70,6 +71,7 @@ export function cnblogsJobLabel(job: CnblogsPublishJob): string {
 
 export function juejinJobLabel(job: JuejinPublishJob): string {
   switch (job.status) {
+    case "queued": return "排队中，等待创建掘金草稿";
     case "draft_creating": return "正在创建掘金草稿";
     case "draft_created": return "草稿已创建，待确认公开";
     case "confirming": return "正在公开掘金文章";
@@ -83,6 +85,7 @@ export function juejinJobLabel(job: JuejinPublishJob): string {
 
 export function fiftyoneCtoJobLabel(job: FiftyoneCtoPublishJob): string {
   switch (job.status) {
+    case "queued": return "排队中，等待发布到 51CTO";
     case "draft_creating": return "正在发布到 51CTO";
     case "draft_created": return "草稿已创建，待确认公开";
     case "confirming": return "正在公开 51CTO 文章";

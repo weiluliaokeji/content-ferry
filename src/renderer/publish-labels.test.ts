@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defaultCorrectionStatus, isSettledPublishStatus, publishRecordBadge, type PublishJobLike } from "./publish-labels";
+import { cnblogsJobLabel, defaultCorrectionStatus, fiftyoneCtoJobLabel, isSettledPublishStatus, juejinJobLabel, publishRecordBadge, type PublishJobLike } from "./publish-labels";
+import type { CnblogsPublishJob, FiftyoneCtoPublishJob, JuejinPublishJob } from "./types";
 
 const job = (status: string, statusSource?: string): PublishJobLike => ({ status, statusSource });
 
@@ -22,6 +23,14 @@ describe("isSettledPublishStatus", () => {
     expect(isSettledPublishStatus(job("filling", "system"))).toBe(false);
     expect(isSettledPublishStatus(job("ready_for_final_confirmation"))).toBe(false);
     expect(isSettledPublishStatus(job("needs_manual_reconciliation"))).toBe(false);
+  });
+});
+
+describe("queued channel job labels", () => {
+  it("shows that async channel jobs are waiting for the shared runner", () => {
+    expect(cnblogsJobLabel({ status: "queued" } as CnblogsPublishJob)).toBe("排队中，等待创建博客园草稿");
+    expect(juejinJobLabel({ status: "queued" } as JuejinPublishJob)).toBe("排队中，等待创建掘金草稿");
+    expect(fiftyoneCtoJobLabel({ status: "queued" } as FiftyoneCtoPublishJob)).toBe("排队中，等待发布到 51CTO");
   });
 });
 

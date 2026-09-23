@@ -117,6 +117,7 @@ export function PublishView(props: PublishViewProps) {
             const cnblogsLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看博客园草稿" : "查看已发布文章";
             return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{cnblogsJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{cnblogsLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
               {job.status === "draft_creating" && <span className="status-badge">正在创建博客园草稿</span>}
+              {job.status === "queued" && <span className="status-badge">排队中，等待创建博客园草稿</span>}
               {(job.status === "draft_created" || job.status === "confirming") && <>
                 <button className="secondary-button" onClick={() => void confirmCnblogsPublish(job.id)} disabled={cnblogsDraftSaving}>确认公开</button>
                 <button className="text-button" onClick={() => openCnblogsStatusCorrection(job)} disabled={cnblogsDraftSaving}>校正状态</button>
@@ -142,6 +143,7 @@ export function PublishView(props: PublishViewProps) {
             const juejinLinkLabel = job.status === "draft_created" || job.status === "confirming" ? "查看掘金草稿" : "查看已发布文章";
             return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{juejinJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">{juejinLinkLabel}</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
               {job.status === "draft_creating" && <span className="status-badge">正在创建掘金草稿</span>}
+              {job.status === "queued" && <span className="status-badge">排队中，等待创建掘金草稿</span>}
               {(job.status === "draft_created" || job.status === "confirming") && <>
                 <button className="secondary-button" onClick={() => void confirmJuejinPublish(job.id)} disabled={juejinDraftSaving}>确认公开</button>
                 <button className="text-button" onClick={() => openJuejinStatusCorrection(job)} disabled={juejinDraftSaving}>校正状态</button>
@@ -165,6 +167,7 @@ export function PublishView(props: PublishViewProps) {
           const draft = fiftyoneCtoDrafts.find((item) => item.id === job.channelDraftId);
           return <li key={job.id}><span><strong>{draft?.title ?? "51CTO 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{fiftyoneCtoJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
             {job.status === "draft_creating" && <span className="status-badge">正在发布到 51CTO</span>}
+            {job.status === "queued" && <span className="status-badge">排队中，等待发布到 51CTO</span>}
             {job.status === "needs_credentials" && <>
               <button className="secondary-button" onClick={() => void openFiftyoneCtoCredentialEntry(job.accountId)}>配置 51CTO 凭据</button>
               <button className="text-button" onClick={() => openFiftyoneCtoStatusCorrection(job)} disabled={fiftyoneCtoDraftSaving}>校正状态</button>

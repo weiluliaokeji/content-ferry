@@ -68,7 +68,7 @@ export type CnblogsChannelDraft = {
 };
 export type CnblogsPublishJob = {
   id: string; accountId: string; channelDraftId: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
@@ -87,7 +87,7 @@ export type JuejinChannelDraft = {
 };
 export type JuejinPublishJob = {
   id: string; accountId: string; channelDraftId: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";
@@ -105,7 +105,7 @@ export type FiftyoneCtoChannelDraft = {
 };
 export type FiftyoneCtoPublishJob = {
   id: string; accountId: string; channelDraftId: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   lifecycleStatus: "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
   statusNote: string | null; errorMessage: string | null;
   statusSource: "system" | "manual";

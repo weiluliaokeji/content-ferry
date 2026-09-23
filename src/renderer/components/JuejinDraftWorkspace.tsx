@@ -15,7 +15,7 @@ export type JuejinDraftPatch = Partial<Pick<JuejinChannelDraftShape, "title" | "
 
 interface JuejinPublishJobShape {
   id: string;
-  status: "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
+  status: "queued" | "draft_creating" | "draft_created" | "confirming" | "published" | "failed" | "needs_manual_reconciliation" | "cancelled" | "needs_credentials";
   statusNote: string | null;
   errorMessage: string | null;
   remoteUrl: string | null;
@@ -47,6 +47,7 @@ interface JuejinDraftWorkspaceProps {
 
 function juejinJobLabel(status: JuejinPublishJobShape["status"]): string {
   switch (status) {
+    case "queued": return "排队中，等待创建掘金草稿";
     case "draft_creating": return "正在创建掘金草稿";
     case "draft_created": return "掘金草稿已创建，待确认公开";
     case "confirming": return "正在公开发布";
@@ -437,6 +438,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
         {job && <span className="hint cnblogs-inline-status">{juejinJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {!job && <button onClick={handlePublish} disabled={saving || !publishCategory || selectedTagIds.length === 0}>发布到掘金</button>}
+        {jobStatus === "queued" && <span className="status-badge neutral">已排队，等待创建掘金草稿…</span>}
         {jobStatus === "draft_creating" && <span className="status-badge neutral">正在创建掘金草稿…</span>}
         {jobStatus === "draft_created" && <>
           {job?.remoteUrl && <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="secondary-button">查看掘金草稿</a>}
