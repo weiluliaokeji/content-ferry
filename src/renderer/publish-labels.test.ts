@@ -24,6 +24,11 @@ describe("isSettledPublishStatus", () => {
     expect(isSettledPublishStatus(job("ready_for_final_confirmation"))).toBe(false);
     expect(isSettledPublishStatus(job("needs_manual_reconciliation"))).toBe(false);
   });
+
+  it("跨平台任务优先以规范生命周期分栏，不被平台细节状态覆盖", () => {
+    expect(isSettledPublishStatus({ status: "draft_created", lifecycleStatus: "published" })).toBe(true);
+    expect(isSettledPublishStatus({ status: "published", lifecycleStatus: "needs_manual_reconciliation" })).toBe(false);
+  });
 });
 
 describe("queued channel job labels", () => {
@@ -59,5 +64,13 @@ describe("publishRecordBadge", () => {
 
   it("发布成功显示绿色 已完成", () => {
     expect(publishRecordBadge(job("published"))).toEqual({ text: "已完成", tone: "success" });
+  });
+
+  it("发布记录徽标优先使用规范生命周期", () => {
+    expect(publishRecordBadge({ status: "published", lifecycleStatus: "failed" })).toEqual({ text: "已失败", tone: "danger" });
+  });
+
+  it("校正默认值优先使用规范生命周期", () => {
+    expect(defaultCorrectionStatus({ status: "published", lifecycleStatus: "failed" })).toBe("failed");
   });
 });

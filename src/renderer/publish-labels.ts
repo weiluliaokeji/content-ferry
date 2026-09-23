@@ -107,8 +107,9 @@ export function fiftyoneCtoJobCanCorrect(job: FiftyoneCtoPublishJob): boolean {
 
 // 人工校正可选的三档最终状态。
 export type PublishCorrectionStatus = "published" | "failed" | "cancelled";
-// 五个平台发布任务的公共最小形状，便于统一判定归属。
-export type PublishJobLike = { status: string; statusSource?: string };
+// 发布任务的公共最小形状。跨平台分栏优先使用规范生命周期；status
+// 仅作为尚未接入生命周期表的旧任务兼容回退，以及平台细节展示。
+export type PublishJobLike = { status: string; lifecycleStatus?: string; statusSource?: string };
 
 /**
  * 判断一条发布任务是否已经归档，即应当出现在「发布记录」而不是「待处理」。
@@ -119,8 +120,9 @@ export type PublishJobLike = { status: string; statusSource?: string };
  *   （statusSource === "manual"）才视为已处理完毕并归档。
  */
 export function isSettledPublishStatus(job: PublishJobLike): boolean {
-  if (job.status === "published" || job.status === "cancelled") return true;
-  return job.status === "failed" && job.statusSource === "manual";
+  const status = job.lifecycleStatus ?? job.status;
+  if (status === "published" || status === "cancelled") return true;
+  return status === "failed" && job.statusSource === "manual";
 }
 
 /**
@@ -128,12 +130,14 @@ export function isSettledPublishStatus(job: PublishJobLike): boolean {
  * 失败任务默认停在「发布失败」，用户直接确认即可把它归档到发布记录。
  */
 export function defaultCorrectionStatus(job: PublishJobLike): PublishCorrectionStatus {
-  return job.status === "failed" || job.status === "cancelled" ? job.status : "published";
+  const status = job.lifecycleStatus ?? job.status;
+  return status === "failed" || status === "cancelled" ? status : "published";
 }
 
 /** 发布记录区右侧徽标的文案与配色。 */
 export function publishRecordBadge(job: PublishJobLike): { text: string; tone: "success" | "warning" | "danger" } {
-  if (job.status === "cancelled") return { text: "已取消", tone: "warning" };
-  if (job.status === "failed") return { text: "已失败", tone: "danger" };
+  const status = job.lifecycleStatus ?? job.status;
+  if (status === "cancelled") return { text: "已取消", tone: "warning" };
+  if (status === "failed") return { text: "已失败", tone: "danger" };
   return { text: "已完成", tone: "success" };
 }
