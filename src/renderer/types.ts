@@ -25,7 +25,7 @@ export type PublishLifecycleEvent = {
   jobId: string;
   previousStatus: PublishLifecycleStatus | "";
   newStatus: PublishLifecycleStatus;
-  source: "system" | "manual" | "legacy_sync";
+  source: "system" | "manual" | "platform" | "legacy_sync";
   reason: string;
   createdAt: string;
 };

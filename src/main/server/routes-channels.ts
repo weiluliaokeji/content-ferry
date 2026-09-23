@@ -19,8 +19,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
   server.get("/api/publish-lifecycle/jobs/:jobId/events", async (request) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
     const job = ctx.publishTasks.get(params.jobId);
-    if (!job) throw new Error("找不到对应的发布任务。");
-    return { jobId: job.id, status: job.status, events: ctx.publishTasks.listEvents(job.id) };
+    if (job) return { jobId: job.id, status: job.status, events: ctx.publishTasks.listEvents(job.id) };
+    const wechatJob = ctx.wechat.findJob(params.jobId);
+    if (wechatJob) {
+      const events = ctx.wechat.listEvents(wechatJob.id);
+      return { jobId: wechatJob.id, status: events[0]?.newStatus ?? "failed", events };
+    }
+    throw new Error("找不到对应的发布任务。");
   });
 
   server.get("/api/integrations/csdn/capabilities/:accountId", async (request) => {

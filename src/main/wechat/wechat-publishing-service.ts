@@ -8,6 +8,7 @@ import { appendArticleSignature } from "../publishing/article-signature";
 import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
 import { convertHighlightInline } from "../../shared/markdown-highlight";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
+import type { PublishLifecycleStatus } from "../publishing/publish-lifecycle";
 
 type FetchLike = typeof fetch;
 type PublishMode = "publish" | "mass";
@@ -110,11 +111,14 @@ export class WechatPublishingService {
 
     const now = new Date().toISOString();
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
-      .run(id, account.workspaceId, account.id, input.projectId, input.projectId, row.topic, result.media_id,
-        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO wechat_publish_jobs
+        (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, (SELECT source_relative_path FROM content_projects WHERE id = ?), 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
+        .run(id, account.workspaceId, account.id, input.projectId, input.projectId, row.topic, result.media_id,
+          input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+      insertWechatEvent(this.db, id, "", "draft_ready", "system", "创建微信公众号草稿", now);
+    })();
     return this.requireJob(id);
   }
 
@@ -161,11 +165,14 @@ export class WechatPublishingService {
     if (!result.media_id) throw new WechatApiError("微信没有返回草稿 media_id。");
     const now = new Date().toISOString();
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO wechat_publish_jobs
-      (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
-      .run(id, account.workspaceId, account.id, article.relativePath, title, result.media_id,
-        input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+    this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO wechat_publish_jobs
+        (id, workspace_id, account_id, project_id, source_relative_path, mode, title, draft_media_id, status, declare_original, enable_reward, is_ai_generated, collection_name, created_at, updated_at)
+        VALUES (?, ?, ?, NULL, ?, 'draft', ?, ?, 'draft_ready', ?, ?, ?, ?, ?, ?)`)
+        .run(id, account.workspaceId, account.id, article.relativePath, title, result.media_id,
+          input.declareOriginal ? 1 : 0, input.enableReward ? 1 : 0, input.isAiGenerated ? 1 : 0, input.collectionName?.trim().slice(0, 80) || "", now, now);
+      insertWechatEvent(this.db, id, "", "draft_ready", "system", "创建微信公众号草稿", now);
+    })();
     return this.requireJob(id);
   }
 
@@ -185,13 +192,21 @@ export class WechatPublishingService {
             send_ignore_reprint: 0
           });
       const now = new Date().toISOString();
-      this.db.prepare(`UPDATE wechat_publish_jobs SET mode = ?, publish_id = ?, message_id = ?,
-        status = 'submitted', error_message = NULL, status_source = 'system', status_note = NULL, updated_at = ? WHERE id = ?`)
-        .run(mode, result.publish_id ?? null, result.msg_id == null ? null : String(result.msg_id), now, jobId);
+      this.db.transaction(() => {
+        this.db.prepare(`UPDATE wechat_publish_jobs SET mode = ?, publish_id = ?, message_id = ?,
+          status = 'submitted', error_message = NULL, status_source = 'system', status_note = NULL, updated_at = ? WHERE id = ?`)
+          .run(mode, result.publish_id ?? null, result.msg_id == null ? null : String(result.msg_id), now, jobId);
+        insertWechatEvent(this.db, jobId, job.status, "submitted", "system", "微信公众号提交任务已接受，等待最终回执", now);
+      })();
       return this.requireJob(jobId);
     } catch (error) {
-      this.db.prepare("UPDATE wechat_publish_jobs SET mode = ?, status = 'failed', error_message = ?, status_source = 'system', status_note = NULL, updated_at = ? WHERE id = ?")
-        .run(mode, error instanceof Error ? error.message : String(error), new Date().toISOString(), jobId);
+      const now = new Date().toISOString();
+      const reason = error instanceof Error ? error.message : String(error);
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE wechat_publish_jobs SET mode = ?, status = 'failed', error_message = ?, status_source = 'system', status_note = NULL, updated_at = ? WHERE id = ?")
+          .run(mode, reason, now, jobId);
+        insertWechatEvent(this.db, jobId, job.status, "failed", "system", `微信公众号提交失败：${reason}`, now);
+      })();
       throw error;
     }
   }
@@ -200,6 +215,46 @@ export class WechatPublishingService {
     const rows = this.db.prepare("SELECT * FROM wechat_publish_jobs WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT 100")
       .all(workspaceId) as Array<Record<string, string | null>>;
     return rows.map(mapJob);
+  }
+
+  getJob(jobId: string): WechatPublishJob {
+    return this.requireJob(jobId);
+  }
+
+  findJob(jobId: string): WechatPublishJob | null {
+    const row = this.db.prepare("SELECT * FROM wechat_publish_jobs WHERE id = ?").get(jobId) as Record<string, string | null> | undefined;
+    return row ? mapJob(row) : null;
+  }
+
+  listEvents(jobId: string, limit = 100): WechatPublishLifecycleEvent[] {
+    const job = this.requireJob(jobId);
+    const safeLimit = Number.isFinite(limit) ? Math.min(100, Math.max(1, Math.trunc(limit))) : 100;
+    const rows = this.db.prepare(`SELECT id, job_id, previous_status, new_status, source, reason, created_at
+      FROM wechat_publish_job_events WHERE job_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(jobId, safeLimit) as Array<Record<string, string | null>>;
+    const events = rows.map(mapWechatEvent);
+    if (events.length === 0) {
+      events.push({
+        id: `legacy-${job.id}`,
+        jobId: job.id,
+        previousStatus: "",
+        newStatus: toWechatLifecycleStatus(job.status),
+        source: "legacy_sync",
+        reason: "兼容旧版微信公众号发布任务的当前状态",
+        createdAt: job.createdAt
+      });
+    } else if (!rows.some((row) => !row.previous_status)) {
+      events.push({
+        id: `legacy-${job.id}`,
+        jobId: job.id,
+        previousStatus: "",
+        newStatus: toWechatLifecycleStatus(rows.at(-1)?.previous_status ?? job.status),
+        source: "legacy_sync",
+        reason: "兼容旧版微信公众号发布事件记录",
+        createdAt: job.createdAt
+      });
+    }
+    return events.slice(0, safeLimit);
   }
 
   deleteJob(jobId: string): void {
@@ -457,6 +512,55 @@ export interface WechatPublishJob {
   collectionName: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface WechatPublishLifecycleEvent {
+  id: string;
+  jobId: string;
+  previousStatus: PublishLifecycleStatus | "";
+  newStatus: PublishLifecycleStatus;
+  source: "system" | "manual" | "platform" | "legacy_sync";
+  reason: string;
+  createdAt: string;
+}
+
+function insertWechatEvent(
+  db: Database.Database,
+  jobId: string,
+  previousStatus: string,
+  newStatus: string,
+  source: "system" | "manual" | "browser" | "wechat",
+  reason: string,
+  createdAt: string
+): void {
+  db.prepare(`INSERT INTO wechat_publish_job_events
+    (id, job_id, previous_status, new_status, source, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), jobId, previousStatus, newStatus, source, reason, createdAt);
+}
+
+function toWechatLifecycleStatus(status: string): PublishLifecycleStatus {
+  switch (status) {
+    case "draft_ready": return "ready";
+    case "browser_editing": return "waiting_user";
+    case "submitted": return "submitting";
+    case "published": return "published";
+    case "failed": return "failed";
+    case "cancelled": return "cancelled";
+    default: return "failed";
+  }
+}
+
+function mapWechatEvent(row: Record<string, string | null>): WechatPublishLifecycleEvent {
+  return {
+    id: row.id ?? "",
+    jobId: row.job_id ?? "",
+    previousStatus: row.previous_status ? toWechatLifecycleStatus(row.previous_status) : "",
+    newStatus: toWechatLifecycleStatus(row.new_status ?? "failed"),
+    source: row.source === "manual" ? "manual" : row.source === "wechat" ? "platform" : row.source === "legacy_sync" ? "legacy_sync" : "system",
+    reason: row.reason ?? "",
+    createdAt: row.created_at ?? ""
+  };
 }
 
 function mapJob(row: Record<string, string | null>): WechatPublishJob {

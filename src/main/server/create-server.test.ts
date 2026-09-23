@@ -1714,8 +1714,18 @@ describe("local API scaffold", () => {
       } });
       expect(draft.statusCode).toBe(201);
       expect(draft.json()).toMatchObject({ draftMediaId: "draft-media-id", status: "draft_ready", isAiGenerated: true });
+      const draftEvents = await server.inject({ method: "GET", url: `/api/publish-lifecycle/jobs/${draft.json().id}/events` });
+      expect(draftEvents.statusCode).toBe(200);
+      expect(draftEvents.json()).toMatchObject({
+        status: "ready",
+        events: [expect.objectContaining({ newStatus: "ready", source: "system" })]
+      });
       const submitted = await server.inject({ method: "POST", url: `/api/integrations/wechat/jobs/${draft.json().id}/submit`, payload: { mode: "publish" } });
       expect(submitted.json()).toMatchObject({ publishId: "publish-id-1", status: "submitted", mode: "publish" });
+      const submittedEvents = await server.inject({ method: "GET", url: `/api/publish-lifecycle/jobs/${draft.json().id}/events` });
+      expect(submittedEvents.json().events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ previousStatus: "ready", newStatus: "submitting", source: "system" })
+      ]));
       const corrected = await server.inject({
         method: "PATCH",
         url: `/api/integrations/wechat/jobs/${draft.json().id}/status`,
@@ -1743,6 +1753,10 @@ describe("local API scaffold", () => {
         payload: `<xml><Event><![CDATA[PUBLISHJOBFINISH]]></Event><publish_id><![CDATA[publish-id-1]]></publish_id><publish_status>0</publish_status></xml>`
       });
       expect(callback.statusCode).toBe(200);
+      const callbackEvents = await server.inject({ method: "GET", url: `/api/publish-lifecycle/jobs/${draft.json().id}/events` });
+      expect(callbackEvents.json().events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ newStatus: "published", source: "platform" })
+      ]));
       const callbackLogs = await server.inject({ method: "GET", url: "/api/runtime-logs?limit=20" });
       expect(callbackLogs.json().items).toEqual(expect.arrayContaining([
         expect.objectContaining({

@@ -53,7 +53,7 @@ function PublishLifecycleHistory({ jobId, platform, title }: { jobId: string; pl
       {!loading && !error && events.length === 0 && <p className="hint">暂时没有可显示的状态事件。</p>}
       {!loading && !error && events.length > 0 && <ol className="publish-lifecycle-events">
         {events.map((event) => <li key={event.id}>
-          <div><strong>{lifecycleStatusLabel(event.newStatus)}</strong><small>{new Date(event.createdAt).toLocaleString()} · {event.source === "manual" ? "人工" : event.source === "legacy_sync" ? "兼容同步" : "系统"}</small></div>
+          <div><strong>{lifecycleStatusLabel(event.newStatus)}</strong><small>{new Date(event.createdAt).toLocaleString()} · {event.source === "manual" ? "人工" : event.source === "platform" ? "平台回执" : event.source === "legacy_sync" ? "兼容同步" : "系统"}</small></div>
           <p>{event.previousStatus ? `${lifecycleStatusLabel(event.previousStatus)} → ${lifecycleStatusLabel(event.newStatus)}` : `创建任务 → ${lifecycleStatusLabel(event.newStatus)}`}</p>
           <small>{event.reason}</small>
         </li>)}
@@ -252,7 +252,7 @@ export function PublishView(props: PublishViewProps) {
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
             const badge = publishRecordBadge(job);
-            return <li key={job.id}><span><strong>{job.title}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && <small className="manual-status-note">人工校正：{job.statusNote}</small>}</span><span className={`status-badge ${badge.tone}`}>{badge.text}</span></li>;
+            return <li key={job.id}><span><strong>{job.title}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && <small className="manual-status-note">人工校正：{job.statusNote}</small>}</span><span className="publish-record-actions"><PublishLifecycleHistory jobId={job.id} platform="微信公众号" title={job.title} /><span className={`status-badge ${badge.tone}`}>{badge.text}</span></span></li>;
           }
           if (entry.kind === "csdn") {
             const job = entry.job;
