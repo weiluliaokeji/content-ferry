@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
     "test": "npm run rebuild:native && npm run test:electron",
     "test:electron": "cross-env ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run --config vitest.config.ts",
+    "postinstall": "electron-rebuild -w better-sqlite3",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "pack": "node scripts/build-installer.mjs --dir",
     "dist": "node scripts/build-installer.mjs",
