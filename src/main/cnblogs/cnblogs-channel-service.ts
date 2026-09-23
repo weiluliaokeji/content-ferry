@@ -429,8 +429,8 @@ export class CnblogsChannelService {
     job = this.transitionJob(job, "confirming", {
       statusNote: "正在将博客园草稿公开为正式文章。",
       errorMessage: null
-    });
-    this.publishTasks.recordPlatformTransition(job.id, "submitting", {
+    }, false);
+    this.publishTasks.recordLifecycleTransition(job.id, "submitting", {
       statusNote: "正在提交博客园公开操作。",
       errorMessage: null
     }, "开始提交博客园公开");

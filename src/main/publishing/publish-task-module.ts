@@ -117,6 +117,16 @@ export class PublishTaskModule {
     return this.transition(id, toPublishLifecycleStatus(platformStatus), patch, reason);
   }
 
+  /** Record a transition that is already expressed in canonical lifecycle terms. */
+  recordLifecycleTransition(
+    id: string,
+    status: PublishLifecycleStatus,
+    patch: PublishTaskTransitionPatch,
+    reason: string
+  ): PublishLifecycleJob {
+    return this.transition(id, status, patch, reason);
+  }
+
   private transition(
     id: string,
     status: PublishLifecycleStatus,

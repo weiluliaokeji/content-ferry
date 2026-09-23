@@ -180,8 +180,8 @@ export function buildServer(
   const cnblogsChannels = options?.cnblogsChannel
     ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore, fetch, publishTasks);
   const juejinChannels = options?.juejinChannel
-    ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
-  const fiftyoneCtoChannels = new FiftyoneCtoChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
+    ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore, fetch, publishTasks);
+  const fiftyoneCtoChannels = new FiftyoneCtoChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore, fetch, publishTasks);
   const coverGenerator = new CoverGenerationService(database.connection, modelConnections, assetStore, contentSources, fetch, aiAuditLog);
   const execution = new ExecutionService();
   const executionRuns = new ExecutionRepository(database.connection);

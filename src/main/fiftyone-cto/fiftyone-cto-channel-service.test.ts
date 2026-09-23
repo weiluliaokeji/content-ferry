@@ -213,8 +213,8 @@ describe("FiftyoneCtoChannelService", () => {
     const approved = service.approveDraft(draft.id);
 
     const job = service.createPublishJob(approved.id);
-    expect(job.status).toBe("draft_creating");
-    expect(job.lifecycleStatus).toBe("preparing");
+    expect(job.status).toBe("queued");
+    expect(job.lifecycleStatus).toBe("queued");
 
     const published = await waitForJob(service, job.id, "published");
     expect(published.remoteUrl).toBe(`https://blog.51cto.com/${"999999"}`);

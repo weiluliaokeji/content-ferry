@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS juejin_publish_jobs (
   rendered_package_hash TEXT NOT NULL,
   idempotency_key TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (status IN (
-    'draft_creating', 'draft_created', 'confirming',
+    'queued', 'draft_creating', 'draft_created', 'confirming',
     'published', 'failed', 'needs_manual_reconciliation', 'cancelled',
     'needs_credentials'
   )),
@@ -144,7 +144,7 @@ draft → approved（审核冻结，冻结后不可改）
 发布任务状态（`juejin_publish_jobs.status`）：
 
 ```
-createPublishJob → draft_creating
+createPublishJob → queued → draft_creating
   → article_draft/create 成功 → draft_created（UI 展示草稿链接 + 确认公开按钮）
   → 用户确认 → confirming → article/publish 成功 → published（保存回执）
 旁路：
@@ -156,7 +156,8 @@ createPublishJob → draft_creating
 
 - `idempotency_key` UNIQUE：格式 `juejin:{accountId}:{draftId}:{renderedPackageHash}:publish`；已终止任务重试追加 `:retry:{uuid}` 生成新键，防止重复创建/重复公开。
 - 草稿创建并发去重：`createRemoteDraftPromises` 按 job 缓存进行中的 Promise，避免重复请求。
-- 可重启状态：`draft_creating` / `draft_created` / `confirming` / `needs_credentials` / `failed` 命中已有任务时复用并继续推进。
+- `queued` 由共享 `PublishTaskModule` 自动准备；`preparing` / `submitting` 的统一状态在应用重启后只做安全核对，无法确认时进入人工核对，不盲目重放外部副作用。
+- 可重试状态：`queued` / `draft_creating` / `needs_credentials` / `failed` 命中已有任务时复用并继续推进；已公开或待人工核对任务不由普通重试复用。
 - `status_source = 'system' | 'manual'`：区分系统流转与人工校正。
 
 ## 6. 图片处理

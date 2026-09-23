@@ -34,7 +34,12 @@ import {
   toPublishLifecycleStatus,
   type PublishLifecycleStatus
 } from "../publishing/publish-lifecycle";
-import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
+import {
+  mapPlatformStatusToAdapterResult,
+  PublishTaskModule,
+  type PublishTaskStatusMapping,
+  type PublishTaskAdapterResult
+} from "../publishing/publish-task-module";
 
 const juejinDraftSchema = {
   type: "object",
@@ -72,6 +77,7 @@ const JUEJIN_MAX_BRIEF_LEN = 100;
 export type JuejinChannelDraftStatus = "draft" | "approved" | "superseded";
 export type JuejinChannelDraftGenerationMode = "rewrite" | "source";
 export type JuejinPublishJobStatus =
+  | "queued"
   | "draft_creating"
   | "draft_created"
   | "confirming"
@@ -123,8 +129,25 @@ export interface JuejinPublishJob {
 
 type FetchLike = typeof fetch;
 
+const JUEJIN_PREPARE_STATUS_MAP = {
+  draft_created: { outcome: "confirmed", completedPhase: "prepare" },
+  needs_credentials: { outcome: "blocked", completedPhase: "prepare" },
+  failed: { outcome: "retryable", completedPhase: "prepare" },
+  needs_manual_reconciliation: { outcome: "uncertain", completedPhase: "prepare" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
+const JUEJIN_RECONCILE_STATUS_MAP = {
+  draft_created: { outcome: "confirmed", completedPhase: "prepare" },
+  published: { outcome: "confirmed", completedPhase: "submit" },
+  needs_credentials: { outcome: "blocked" },
+  failed: { outcome: "retryable" },
+  confirming: { outcome: "uncertain" },
+  draft_creating: { outcome: "uncertain" },
+  needs_manual_reconciliation: { outcome: "uncertain" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
 export class JuejinChannelService {
-  private readonly lifecycle: PublishLifecycleService;
+  private readonly publishTasks: PublishTaskModule;
   /** 缓存分类 ID 和 tag IDs 以避免重复 lookup。 */
   private readonly publishOptionsCache = new Map<string, { categoryId: string; tagIds: string[] }>();
   /** 草稿创建并发去重。 */
@@ -137,9 +160,16 @@ export class JuejinChannelService {
     private readonly contentSources: ContentSourceService,
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
-    private readonly fetcher: FetchLike = fetch
+    private readonly fetcher: FetchLike = fetch,
+    publishTasks?: PublishTaskModule
   ) {
-    this.lifecycle = new PublishLifecycleService(db);
+    this.publishTasks = publishTasks ?? new PublishTaskModule(db);
+    this.publishTasks.registerAdapter({
+      platform: "juejin",
+      autoPrepare: true,
+      prepare: async (task) => this.preparePublishTask(task.id),
+      reconcile: async (task) => this.reconcilePublishTask(task.id)
+    });
   }
 
   /** 掘金走纯 API 直发，不需要浏览器辅助。 */
@@ -421,34 +451,44 @@ export class JuejinChannelService {
             errorMessage: null
           });
         }
-        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
+        if (foundJob.status === "queued" || foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
           this.publishOptionsCache.set(foundJob.id, publishOptions);
-          void this.createRemoteDraft(foundJob.id).catch(() => {});
+          this.publishTasks.scheduleAutoPreparation(foundJob.id);
         }
         return foundJob;
       }
       idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
+    const active = this.publishTasks.findActiveBySnapshot({
+      platform: "juejin",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      renderedPackageHash
+    });
+    if (active) {
+      this.publishOptionsCache.set(active.id, publishOptions);
+      return this.requireJob(active.id);
     }
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO juejin_publish_jobs
         (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
           "已创建掘金发布任务，正在创建掘金草稿。", now, now);
       this.db.prepare(`INSERT INTO juejin_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
-        VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
+        VALUES (?, ?, '', 'queued', 'system', '创建发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
-    this.lifecycle.create({
+    this.publishTasks.create({
       id, platform: "juejin", workspaceId: draft.workspaceId, accountId: draft.accountId,
-      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
       statusNote: "已创建掘金发布任务，正在创建掘金草稿。"
     });
     this.publishOptionsCache.set(id, publishOptions);
-    void this.createRemoteDraft(id).catch(() => {});
+    this.publishTasks.scheduleAutoPreparation(id);
     return this.requireJob(id);
   }
 
@@ -471,14 +511,19 @@ export class JuejinChannelService {
    * 若草稿尚未创建成功，先补齐草稿；草稿就绪后进入 confirming，调用 article/publish 公开。
    */
   async confirmPublish(jobId: string): Promise<JuejinPublishJob> {
+    return this.publishTasks.runSubmitExclusive(jobId, () => this.executeConfirmPublish(jobId));
+  }
+
+  private async executeConfirmPublish(jobId: string): Promise<JuejinPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "published") throw new JuejinChannelError("该掘金任务已发布，请勿重复提交。");
     if (job.status === "cancelled") throw new JuejinChannelError("该掘金任务已取消，无法确认公开。");
     if (job.status === "needs_manual_reconciliation") throw new JuejinChannelError("该掘金任务已进入人工校正，请先通过校正表单处理。");
     if (job.status === "confirming") throw new JuejinChannelError("该掘金任务正在确认公开，请稍候。");
 
-    if (job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
-      job = await this.createRemoteDraft(job.id);
+    if (job.status === "queued" || job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
+      await this.publishTasks.prepare(job.id);
+      job = this.requireJob(job.id);
       if (job.status !== "draft_created") return job;
     }
     if (job.status !== "draft_created") throw new JuejinChannelError("当前任务状态不允许确认公开。");
@@ -486,7 +531,11 @@ export class JuejinChannelService {
     job = this.transitionJob(job, "confirming", {
       statusNote: "正在将掘金草稿公开为正式文章。",
       errorMessage: null
-    });
+    }, false);
+    this.publishTasks.recordLifecycleTransition(job.id, "submitting", {
+      statusNote: "正在提交掘金公开操作。",
+      errorMessage: null
+    }, "开始提交掘金公开");
     try {
       return await this.publishRemotePost(job.id);
     } catch (error) {
@@ -526,7 +575,7 @@ export class JuejinChannelService {
   correctStatus(jobId: string, status: "published" | "failed" | "cancelled", reason: string): JuejinPublishJob {
     const job = this.requireJob(jobId);
     const correctable: JuejinPublishJobStatus[] = [
-      "draft_creating", "draft_created", "confirming",
+      "queued", "draft_creating", "draft_created", "confirming",
       "needs_manual_reconciliation", "failed", "needs_credentials"
     ];
     if (!correctable.includes(job.status)) {
@@ -550,7 +599,7 @@ export class JuejinChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
-    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+    this.publishTasks.recordPlatformTransition(jobId, status, {
       statusNote: note,
       errorMessage: status === "failed" ? note : null,
       statusSource: "manual"
@@ -559,25 +608,31 @@ export class JuejinChannelService {
   }
 
   /** 两段式第一步：article_draft/create 创建掘金草稿。 */
-  private async createRemoteDraft(jobId: string): Promise<JuejinPublishJob> {
+  private async createRemoteDraft(jobId: string, syncLifecycle = true): Promise<JuejinPublishJob> {
     const existing = this.createRemoteDraftPromises.get(jobId);
     if (existing) return existing;
-    const promise = this.executeCreateRemoteDraft(jobId);
+    const promise = this.executeCreateRemoteDraft(jobId, syncLifecycle);
     this.createRemoteDraftPromises.set(jobId, promise);
     promise.finally(() => this.createRemoteDraftPromises.delete(jobId)).catch(() => {});
     return promise;
   }
 
-  private async executeCreateRemoteDraft(jobId: string): Promise<JuejinPublishJob> {
+  private async executeCreateRemoteDraft(jobId: string, syncLifecycle = true): Promise<JuejinPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "draft_created" || job.status === "published" || job.status === "needs_manual_reconciliation") return job;
+    if (job.status === "queued") {
+      job = this.transitionJob(job, "draft_creating", {
+        statusNote: "正在创建掘金草稿。",
+        errorMessage: null
+      }, syncLifecycle);
+    }
 
     const account = this.accounts.requireAccount(job.accountId);
     if (account.platform !== "juejin") {
       return this.transitionJob(job, "failed", {
         statusNote: "所选账号不是掘金账号。",
         errorMessage: "所选账号不是掘金账号。"
-      });
+      }, syncLifecycle);
     }
 
     let client: JuejinClient;
@@ -591,7 +646,7 @@ export class JuejinChannelService {
       return this.transitionJob(job, "needs_credentials", {
         statusNote: reason,
         errorMessage: reason
-      });
+      }, syncLifecycle);
     }
 
     try {
@@ -630,7 +685,7 @@ export class JuejinChannelService {
         return this.transitionJob(job, "failed", {
           statusNote: reason,
           errorMessage: reason
-        });
+        }, syncLifecycle);
       }
 
       if (inlineResult.uploadedCount > 0) {
@@ -649,7 +704,7 @@ export class JuejinChannelService {
         return this.transitionJob(job, "failed", {
           statusNote: reason,
           errorMessage: reason
-        });
+        }, syncLifecycle);
       }
 
       // 掘金 title 字段已单独提交文章标题，正文首行的 "# {title}"（本地预览
@@ -675,19 +730,19 @@ export class JuejinChannelService {
         remoteUrl: postUrl,
         statusNote: "掘金草稿已创建，请检查后点击「确认公开」。",
         errorMessage: null
-      });
+      }, syncLifecycle);
     } catch (error) {
       const reason = messageOf(error);
       if (error instanceof JuejinCredentialsError) {
         return this.transitionJob(job, "needs_credentials", {
           statusNote: `掘金凭据校验失败：${reason}`,
           errorMessage: reason
-        });
+        }, syncLifecycle);
       }
       return this.transitionJob(job, "failed", {
         statusNote: `创建掘金草稿失败：${reason}`,
         errorMessage: reason
-      });
+      }, syncLifecycle);
     }
   }
 
@@ -707,6 +762,26 @@ export class JuejinChannelService {
       statusNote: linkUrl ? `已发布：${linkUrl}` : "掘金文章已发布。",
       errorMessage: null
     });
+  }
+
+  private async preparePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = await this.createRemoteDraft(jobId, false);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      JUEJIN_PREPARE_STATUS_MAP,
+      { outcome: "retryable", completedPhase: "prepare" },
+      { statusNote: job.statusNote, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
+  }
+
+  private async reconcilePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = this.requireJob(jobId);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      JUEJIN_RECONCILE_STATUS_MAP,
+      { outcome: "uncertain", statusNote: "掘金远端草稿或公开结果无法自动确认，请人工核对。" },
+      { statusNote: job.statusNote ?? undefined, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
   }
 
   /** 读取并解密掘金凭据（cookie + aid + uuid）。 */
@@ -735,7 +810,8 @@ export class JuejinChannelService {
   private transitionJob(
     job: JuejinPublishJob,
     nextStatus: JuejinPublishJobStatus,
-    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
+    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null },
+    syncLifecycle = true
   ): JuejinPublishJob {
     const now = new Date().toISOString();
     const statusNote = patch.statusNote !== undefined ? patch.statusNote : job.statusNote;
@@ -752,13 +828,15 @@ export class JuejinChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
-    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
-      statusNote,
-      errorMessage,
-      remoteUrl,
-      remoteContentId,
-      statusSource: "system"
-    }, patch.statusNote ?? `掘金状态变更为 ${nextStatus}`);
+    if (syncLifecycle) {
+      this.publishTasks.recordPlatformTransition(job.id, nextStatus, {
+        statusNote,
+        errorMessage,
+        remoteUrl,
+        remoteContentId,
+        statusSource: "system"
+      }, patch.statusNote ?? `掘金状态变更为 ${nextStatus}`);
+    }
     return this.requireJob(job.id);
   }
 
@@ -772,7 +850,7 @@ export class JuejinChannelService {
     const row = this.db.prepare("SELECT * FROM juejin_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new JuejinChannelError("找不到对应的掘金发布任务。");
     const job = mapJob(row);
-    const lifecycle = this.lifecycle.ensure({
+    const lifecycle = this.publishTasks.ensure({
       id: job.id, platform: "juejin", workspaceId: job.workspaceId, accountId: job.accountId,
       channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
       idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,

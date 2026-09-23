@@ -302,13 +302,13 @@ describe("JuejinChannelService", () => {
 
 
   it("creates an idempotent publish job that reaches draft_created", async () => {
-    const { account, service, calls } = setupHarness();
+    const { account, service, calls, database: db } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
     const approved = service.approveDraft(draft.id);
 
     const first = service.createPublishJob(approved.id);
-    expect(first.status).toBe("draft_creating");
-    expect(first.lifecycleStatus).toBe("preparing");
+    expect(first.status).toBe("queued");
+    expect(first.lifecycleStatus).toBe("queued");
 
     await waitForJob(service, first.id, "draft_created");
 
@@ -364,7 +364,7 @@ describe("JuejinChannelService", () => {
   });
 
   it("drives the full lifecycle draft_creating → draft_created → confirming → published", async () => {
-    const { account, service, calls } = setupHarness();
+    const { account, service, calls, database: db } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
     const approved = service.approveDraft(draft.id);
     const job = service.createPublishJob(approved.id);
@@ -377,6 +377,11 @@ describe("JuejinChannelService", () => {
     expect(published.status).toBe("published");
     expect(published.remoteUrl).toBe("https://juejin.cn/post/article-123");
     expect(published.remoteContentId).toBe("draft-123");
+
+    const lifecycleStatuses = (db.connection.prepare("SELECT new_status FROM publish_lifecycle_events WHERE job_id = ? ORDER BY created_at, rowid").all(job.id) as Array<{ new_status: string }>)
+      .map((event) => event.new_status);
+    expect(lifecycleStatuses).not.toContain("waiting_user");
+    expect(lifecycleStatuses).toContain("submitting");
 
     const endpoints = calls.map((call) => call.endpoint);
     expect(endpoints.indexOf("article_draft/create")).toBeLessThan(endpoints.indexOf("article/publish"));

@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS cnblogs_publish_jobs (
   rendered_package_hash TEXT NOT NULL,
   idempotency_key TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL CHECK (status IN (
-    'draft_creating', 'draft_created', 'confirming',
+    'queued', 'draft_creating', 'draft_created', 'confirming',
     'published', 'failed', 'needs_manual_reconciliation', 'cancelled',
     'needs_credentials'
   )),
@@ -142,7 +142,7 @@ draft → approved（审核冻结，冻结后不可改）
 发布任务状态（`cnblogs_publish_jobs.status`）：
 
 ```
-createPublishJob → draft_creating
+createPublishJob → queued → draft_creating
   → newPost(publish=false) 成功 → draft_created（UI 展示草稿链接 + 确认公开按钮）
   → 用户确认 → confirming → editPost(publish=true) 成功 → published（保存回执）
 旁路：

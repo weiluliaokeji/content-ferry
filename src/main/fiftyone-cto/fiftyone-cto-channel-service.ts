@@ -34,7 +34,12 @@ import {
   toPublishLifecycleStatus,
   type PublishLifecycleStatus
 } from "../publishing/publish-lifecycle";
-import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
+import {
+  mapPlatformStatusToAdapterResult,
+  PublishTaskModule,
+  type PublishTaskStatusMapping,
+  type PublishTaskAdapterResult
+} from "../publishing/publish-task-module";
 
 export { FiftyoneCtoChannelError, FiftyoneCtoCredentialsError } from "./fiftyone-cto-channel-error";
 
@@ -51,6 +56,7 @@ const fiftyoneCtoDraftSchema = {
 export type FiftyoneCtoChannelDraftStatus = "draft" | "approved" | "superseded";
 export type FiftyoneCtoChannelDraftGenerationMode = "rewrite" | "source";
 export type FiftyoneCtoPublishJobStatus =
+  | "queued"
   | "draft_creating"
   | "draft_created"
   | "confirming"
@@ -113,8 +119,24 @@ export interface FiftyoneCtoPublishOptions {
 
 type FetchLike = typeof fetch;
 
+const FIFTYONE_CTO_PREPARE_STATUS_MAP = {
+  published: { outcome: "confirmed", completedPhase: "submit" },
+  needs_credentials: { outcome: "blocked", completedPhase: "submit" },
+  failed: { outcome: "retryable", completedPhase: "submit" },
+  needs_manual_reconciliation: { outcome: "uncertain", completedPhase: "submit" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
+const FIFTYONE_CTO_RECONCILE_STATUS_MAP = {
+  published: { outcome: "confirmed", completedPhase: "submit" },
+  needs_credentials: { outcome: "blocked" },
+  failed: { outcome: "retryable" },
+  draft_creating: { outcome: "uncertain" },
+  confirming: { outcome: "uncertain" },
+  needs_manual_reconciliation: { outcome: "uncertain" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
 export class FiftyoneCtoChannelService {
-  private readonly lifecycle: PublishLifecycleService;
+  private readonly publishTasks: PublishTaskModule;
   private readonly publishOptionsCache = new Map<string, FiftyoneCtoPublishOptions>();
 
   constructor(
@@ -124,9 +146,16 @@ export class FiftyoneCtoChannelService {
     private readonly contentSources: ContentSourceService,
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
-    private readonly fetcher: FetchLike = fetch
+    private readonly fetcher: FetchLike = fetch,
+    publishTasks?: PublishTaskModule
   ) {
-    this.lifecycle = new PublishLifecycleService(db);
+    this.publishTasks = publishTasks ?? new PublishTaskModule(db);
+    this.publishTasks.registerAdapter({
+      platform: "51cto",
+      autoPrepare: true,
+      prepare: async (task) => this.preparePublishTask(task.id),
+      reconcile: async (task) => this.reconcilePublishTask(task.id)
+    });
   }
 
   capabilities(_accountId: string): PublishCapabilities {
@@ -356,13 +385,23 @@ export class FiftyoneCtoChannelService {
             errorMessage: null
           });
         }
-        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
+        if (foundJob.status === "queued" || foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
           this.publishOptionsCache.set(foundJob.id, finalOptions);
-          void this.executePublish(foundJob.id).catch(() => {});
+          this.publishTasks.scheduleAutoPreparation(foundJob.id);
         }
         return foundJob;
       }
       idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
+    const active = this.publishTasks.findActiveBySnapshot({
+      platform: "51cto",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      renderedPackageHash
+    });
+    if (active) {
+      this.publishOptionsCache.set(active.id, finalOptions);
+      return this.requireJob(active.id);
     }
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -372,21 +411,21 @@ export class FiftyoneCtoChannelService {
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO fiftyone_cto_publish_jobs
         (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, pid, cate_id, tags, blog_type, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
           initialNote, finalOptions.pid, finalOptions.cateId, JSON.stringify(finalOptions.tags ?? []), finalOptions.blogType, now, now);
       this.db.prepare(`INSERT INTO fiftyone_cto_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
-        VALUES (?, ?, '', 'draft_creating', 'system', ?, ?)`)
+        VALUES (?, ?, '', 'queued', 'system', ?, ?)`)
         .run(randomUUID(), id, republishFromJobId ? `重新发布（参考旧任务 ${republishFromJobId.slice(0, 8)}）` : '创建发布任务', now);
     })();
-    this.lifecycle.create({
+    this.publishTasks.create({
       id, platform: "51cto", workspaceId: draft.workspaceId, accountId: draft.accountId,
-      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
       statusNote: initialNote
     });
     this.publishOptionsCache.set(id, finalOptions);
-    void this.executePublish(id).catch(() => {});
+    this.publishTasks.scheduleAutoPreparation(id);
     return this.requireJob(id);
   }
 
@@ -409,8 +448,9 @@ export class FiftyoneCtoChannelService {
     let job = this.requireJob(jobId);
     if (job.status === "published") throw new FiftyoneCtoChannelError("该 51CTO 任务已发布，请勿重复提交。");
     if (job.status === "cancelled") throw new FiftyoneCtoChannelError("该 51CTO 任务已取消，无法确认公开。");
-    if (job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
-      job = await this.executePublish(job.id);
+    if (job.status === "queued" || job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
+      await this.publishTasks.prepare(job.id);
+      job = this.requireJob(job.id);
     }
     return job;
   }
@@ -443,7 +483,7 @@ export class FiftyoneCtoChannelService {
   correctStatus(jobId: string, status: "published" | "failed" | "cancelled", reason: string): FiftyoneCtoPublishJob {
     const job = this.requireJob(jobId);
     const correctable: FiftyoneCtoPublishJobStatus[] = [
-      "draft_creating", "needs_manual_reconciliation", "failed", "needs_credentials", "cancelled", "published"
+      "queued", "draft_creating", "needs_manual_reconciliation", "failed", "needs_credentials", "cancelled", "published"
     ];
     if (!correctable.includes(job.status)) {
       throw new FiftyoneCtoChannelError("该 51CTO 发布任务状态不可人工校正。");
@@ -466,7 +506,7 @@ export class FiftyoneCtoChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
-    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+    this.publishTasks.recordPlatformTransition(jobId, status, {
       statusNote: note,
       errorMessage: status === "failed" ? note : null,
       statusSource: "manual"
@@ -475,16 +515,22 @@ export class FiftyoneCtoChannelService {
   }
 
   /** 单步发布：抓取配置 → 内联本地图片 → 转为 HTML → POST。 */
-  private async executePublish(jobId: string): Promise<FiftyoneCtoPublishJob> {
+  private async executePublish(jobId: string, syncLifecycle = true): Promise<FiftyoneCtoPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "published") return job;
+    if (job.status === "queued") {
+      job = this.transitionJob(job, "draft_creating", {
+        statusNote: "正在准备 51CTO 发布。",
+        errorMessage: null
+      }, syncLifecycle);
+    }
 
     const account = this.accounts.requireAccount(job.accountId);
     if (account.platform !== "51cto") {
       return this.transitionJob(job, "failed", {
         statusNote: "所选账号不是 51CTO 账号。",
         errorMessage: "所选账号不是 51CTO 账号。"
-      });
+      }, syncLifecycle);
     }
 
     let client: CTOClient;
@@ -492,7 +538,7 @@ export class FiftyoneCtoChannelService {
       client = this.buildClient(account);
     } catch (error) {
       const reason = messageOf(error);
-      return this.transitionJob(job, "needs_credentials", { statusNote: reason, errorMessage: reason });
+      return this.transitionJob(job, "needs_credentials", { statusNote: reason, errorMessage: reason }, syncLifecycle);
     }
 
     try {
@@ -531,7 +577,7 @@ export class FiftyoneCtoChannelService {
           .map((f) => `${f.source}（${f.reason.slice(0, 400)}）`)
           .join("、");
         const note = `本地图片上传 51CTO 图床失败 ${imageResult.failed.length} 张，文章未发布：${detail}`;
-        return this.transitionJob(job, "failed", { statusNote: note, errorMessage: imageResult.failed[0].reason });
+        return this.transitionJob(job, "failed", { statusNote: note, errorMessage: imageResult.failed[0].reason }, syncLifecycle);
       }
 
       const imageSummary: string[] = [];
@@ -559,14 +605,34 @@ export class FiftyoneCtoChannelService {
         remoteContentId: result.blogId ?? null,
         statusNote: finalNote,
         errorMessage: null
-      });
+      }, syncLifecycle);
     } catch (error) {
       const reason = messageOf(error);
       if (error instanceof FiftyoneCtoCredentialsError) {
-        return this.transitionJob(job, "needs_credentials", { statusNote: `51CTO 凭据校验失败：${reason}`, errorMessage: reason });
+        return this.transitionJob(job, "needs_credentials", { statusNote: `51CTO 凭据校验失败：${reason}`, errorMessage: reason }, syncLifecycle);
       }
-      return this.transitionJob(job, "failed", { statusNote: `发布到 51CTO 失败：${reason}`, errorMessage: reason });
+      return this.transitionJob(job, "failed", { statusNote: `发布到 51CTO 失败：${reason}`, errorMessage: reason }, syncLifecycle);
     }
+  }
+
+  private async preparePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = await this.executePublish(jobId, false);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      FIFTYONE_CTO_PREPARE_STATUS_MAP,
+      { outcome: "retryable", completedPhase: "submit" },
+      { statusNote: job.statusNote, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
+  }
+
+  private async reconcilePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = this.requireJob(jobId);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      FIFTYONE_CTO_RECONCILE_STATUS_MAP,
+      { outcome: "uncertain", statusNote: "51CTO 提交结果无法自动确认，请人工核对。" },
+      { statusNote: job.statusNote ?? undefined, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
   }
 
   private loadCredentials(account: MediaAccount): { cookie: string } {
@@ -588,7 +654,8 @@ export class FiftyoneCtoChannelService {
   private transitionJob(
     job: FiftyoneCtoPublishJob,
     nextStatus: FiftyoneCtoPublishJobStatus,
-    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
+    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null },
+    syncLifecycle = true
   ): FiftyoneCtoPublishJob {
     const now = new Date().toISOString();
     const statusNote = patch.statusNote !== undefined ? patch.statusNote : job.statusNote;
@@ -605,13 +672,15 @@ export class FiftyoneCtoChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
-    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
-      statusNote,
-      errorMessage,
-      remoteUrl,
-      remoteContentId,
-      statusSource: "system"
-    }, patch.statusNote ?? `51CTO 状态变更为 ${nextStatus}`);
+    if (syncLifecycle) {
+      this.publishTasks.recordPlatformTransition(job.id, nextStatus, {
+        statusNote,
+        errorMessage,
+        remoteUrl,
+        remoteContentId,
+        statusSource: "system"
+      }, patch.statusNote ?? `51CTO 状态变更为 ${nextStatus}`);
+    }
     return this.requireJob(job.id);
   }
 
@@ -625,7 +694,7 @@ export class FiftyoneCtoChannelService {
     const row = this.db.prepare("SELECT * FROM fiftyone_cto_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new FiftyoneCtoChannelError("找不到对应的 51CTO 发布任务。");
     const job = mapJob(row);
-    const lifecycle = this.lifecycle.ensure({
+    const lifecycle = this.publishTasks.ensure({
       id: job.id, platform: "51cto", workspaceId: job.workspaceId, accountId: job.accountId,
       channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
       idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,

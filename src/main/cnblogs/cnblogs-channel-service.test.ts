@@ -288,6 +288,7 @@ describe("CnblogsChannelService", () => {
     expect(published.remoteUrl).toBe("https://www.cnblogs.com/weiluliaokeji/p/post-123.html");
     expect(published.remoteContentId).toBe("post-123");
     const lifecycleStatuses = (db.connection.prepare("SELECT new_status FROM publish_lifecycle_events WHERE job_id = ? ORDER BY created_at, rowid").all(job.id) as Array<{ new_status: string }>).map((event) => event.new_status);
+    expect(lifecycleStatuses).not.toContain("waiting_user");
     expect(lifecycleStatuses).toContain("submitting");
     expect(calls.filter((call) => call.methodName === "metaWeblog.editPost")).toHaveLength(1);
 

@@ -161,6 +161,60 @@ describe("cnblogs_publish_jobs migration (old schema without queued)", () => {
   });
 });
 
+describe("juejin_publish_jobs migration (old schema without queued)", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("rebuilds the old table without losing existing jobs or events", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    conn.exec("DROP TABLE IF EXISTS juejin_publish_job_events");
+    conn.exec("DROP TABLE IF EXISTS juejin_publish_jobs");
+    conn.exec(`CREATE TABLE juejin_publish_jobs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+      account_id TEXT NOT NULL REFERENCES media_accounts(id),
+      channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+      rendered_package_hash TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('draft_creating', 'draft_created', 'confirming', 'published', 'failed', 'needs_manual_reconciliation', 'cancelled', 'needs_credentials')),
+      remote_url TEXT,
+      remote_content_id TEXT,
+      status_note TEXT,
+      error_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system' CHECK (status_source IN ('system', 'manual')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    conn.exec(`CREATE TABLE juejin_publish_job_events (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES juejin_publish_jobs(id) ON DELETE CASCADE,
+      previous_status TEXT,
+      new_status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    )`);
+    conn.exec("INSERT INTO workspaces (id, display_name, timezone, created_at) VALUES ('w1', 'w', 'Asia/Shanghai', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO media_accounts (id, workspace_id, platform, display_name, created_at) VALUES ('a1', 'w1', 'juejin', 'a', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO channel_drafts (id, workspace_id, account_id, source_relative_path, source_hash, title, markdown, status, created_at, updated_at) VALUES ('d1', 'w1', 'a1', 'p', 'h', 't', 'm', 'approved', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
+    conn.exec(`INSERT INTO juejin_publish_jobs
+      (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
+      VALUES ('j1', 'w1', 'a1', 'd1', 'h1', 'k1', 'draft_creating', '正在创建', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`);
+    conn.exec(`INSERT INTO juejin_publish_job_events
+      (id, job_id, previous_status, new_status, source, reason, created_at)
+      VALUES ('e1', 'j1', '', 'draft_creating', 'system', '创建', '2026-01-01T00:00:00Z')`);
+
+    initialiseDatabase(conn);
+
+    const tableSql = conn.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='juejin_publish_jobs'").get() as { sql: string };
+    expect(tableSql.sql).toContain("'queued'");
+    expect(conn.prepare("SELECT status FROM juejin_publish_jobs WHERE id = 'j1'").get()).toEqual({ status: "draft_creating" });
+    expect(conn.prepare("SELECT id FROM juejin_publish_job_events WHERE id = 'e1'").get()).toEqual({ id: "e1" });
+  });
+});
+
 describe("fiftyone_cto_publish_jobs migration (old schema without pid/cate_id/tags/blog_type)", () => {
   let database: AppDatabase | undefined;
 
