@@ -314,11 +314,21 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .pagination-size-label { display: inline-flex; align-items: center; gap: .35rem; color: #516078; font-size: .85rem; white-space: nowrap; }
 .pagination-size-label > span { line-height: 1; }
 .pagination-size { padding: .2rem .4rem; border: 1px solid #d7deeb; border-radius: .375rem; background: #fff; color: #334155; font-size: .85rem; cursor: pointer; }
-.juejin-tag-options { display: flex; flex-wrap: wrap; gap: .45rem; margin: .5rem 0 .35rem; }
+.juejin-tag-options-scroll { max-height: 11rem; overflow-y: auto; margin: .5rem 0 .35rem; padding-right: .25rem; }
+.juejin-tag-options { display: flex; flex-wrap: wrap; gap: .45rem; }
 .juejin-tag-options button { padding: .28rem .7rem; border: 1px solid #d7deeb; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; font-size: .85rem; }
 .juejin-tag-options button:hover:not(:disabled) { border-color: #2b5fd0; color: #2b5fd0; }
 .juejin-tag-options button.active { background: #2b5fd0; border-color: #2b5fd0; color: #fff; }
 .juejin-tag-options button:disabled { opacity: .55; cursor: not-allowed; }
+.juejin-tag-expand { margin: 0 0 .4rem; padding: .35rem .9rem; border: 1px dashed #2b5fd0; border-radius: 999px; background: #f6f9ff; color: #2b5fd0; cursor: pointer; font-size: .82rem; }
+.juejin-tag-expand:hover:not(:disabled) { background: #eaf0fd; }
+.juejin-tag-expand:disabled { opacity: .55; cursor: not-allowed; }
+.juejin-selected-tags { display: flex; flex-wrap: wrap; gap: .4rem; margin: .25rem 0 .55rem; }
+.juejin-selected-tag { display: inline-flex; align-items: center; gap: .3rem; padding: .28rem .55rem .28rem .7rem; border: 1px solid #2b5fd0; border-radius: 999px; background: #eaf0fd; color: #2b5fd0; cursor: pointer; font-size: .85rem; line-height: 1.2; }
+.juejin-selected-tag:hover:not(:disabled) { background: #dbe6fb; }
+.juejin-selected-tag:disabled { opacity: .6; cursor: not-allowed; }
+.juejin-selected-tag-remove { font-size: 1rem; line-height: 1; opacity: .7; }
+.juejin-selected-tag:hover:not(:disabled) .juejin-selected-tag-remove { opacity: 1; }
 .status-badge.info { background: #e7effd; color: #2b5fd0; }
 .editor-workspace { height: 100vh; overflow: hidden; background: #eef2f8; color: #172033; }
 .editor-topbar { box-sizing: border-box; height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .4rem 1rem; border-bottom: 1px solid #dfe5f0; background: #fff; }
@@ -707,6 +717,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .phone-screen { height: 500px; overflow: auto; padding: 1rem; font-family: "Microsoft YaHei", sans-serif; }
 .phone-screen h2 { font-size: 1.25rem; line-height: 1.4; }
 .phone-byline { display: block; margin: -.2rem 0 1.1rem; color: #8a94a6; }
+.preview-loading { padding: .5rem 0; color: #8a94a6; font-size: .85rem; }
 .phone-screen h3 { margin: 1.2rem 0 .5rem; font-size: 1rem; }
 .phone-screen p { font-size: .88rem; line-height: 1.75; }
 .preview-table-scroll { width: 100%; margin: .9rem 0; overflow-x: auto; }

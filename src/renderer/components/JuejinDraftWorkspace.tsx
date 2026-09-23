@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { VisualMarkdownEditor } from "./VisualMarkdownEditor";
 import type { VisualMarkdownSelection } from "./VisualMarkdownEditor";
 import { request, apiBase, renderPhonePreview, resolveArticleImageUrl, extractMarkdownImages } from "../main";
@@ -89,6 +89,41 @@ const SELECTION_ACTIONS: Array<{ value: "humanize" | "rewrite" | "expand" | "sho
   { value: "example", label: "补充案例" }
 ];
 
+// 同一掘金账号的官方标签列表对外几乎不变，按账号缓存避免每次进入编辑页
+// 都打一次网络请求（以及随之而来的 loading 状态抖动与自动推断 cascade）。
+const JUEJIN_TAG_TTL_MS = 5 * 60 * 1000;
+const juejinTagCache = new Map<string, { items: Array<{ id: string; name: string }>; expires: number }>();
+
+// 未搜索时只挂载前 N 个标签按钮，避免一次渲染全部约 200 个 DOM 节点；
+// 输入关键词后展示全部匹配项，不影响选到任意官方标签。
+const JUEJIN_TAG_VISIBLE_LIMIT = 100;
+
+// 手机预览默认在编辑页右侧展示；整篇 Markdown 的同步解析（含 mermaid 块）
+// 较重，若内联在首次挂载的 render 里会阻塞首帧、表现为“编辑器出来后短暂卡死”。
+// 这里把解析推迟到 requestAnimationFrame（首帧绘制之后）再算，先给出骨架占位。
+function PhonePreview({ title, byline, markdown, assetContextId, sourceArticlePath }: {
+  title: string; byline: string; markdown: string; assetContextId: string; sourceArticlePath: string | undefined;
+}) {
+  const [nodes, setNodes] = useState<ReactNode[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const handle = requestAnimationFrame(() => {
+      if (cancelled) return;
+      setNodes(renderPhonePreview(markdown, assetContextId, sourceArticlePath, title));
+    });
+    return () => { cancelled = true; cancelAnimationFrame(handle); };
+  }, [markdown, assetContextId, sourceArticlePath, title]);
+  return (
+    <div className="phone-frame">
+      <div className="phone-screen">
+        <h2>{title}</h2>
+        <small className="phone-byline">{byline}</small>
+        {nodes ?? <div className="preview-loading">正在渲染手机预览…</div>}
+      </div>
+    </div>
+  );
+}
+
 export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error, onClearError, onChange, onSave, onPublish, onConfirmPublish, onCorrectStatus, onGoToCredentials, onDelete, onBack }: JuejinDraftWorkspaceProps) {
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "images">("body");
   const [rightPanel, setRightPanel] = useState<"assistant" | "preview" | "settings">("preview");
@@ -105,6 +140,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
   const [tagsLoading, setTagsLoading] = useState(true);
   const [tagsError, setTagsError] = useState("");
   const [tagSearch, setTagSearch] = useState("");
+  const [showAllTags, setShowAllTags] = useState(false);
   const [correcting, setCorrecting] = useState(false);
   const [correctionStatus, setCorrectionStatus] = useState<"published" | "failed" | "cancelled">("published");
   const [correctionReason, setCorrectionReason] = useState("已在掘金后台核实");
@@ -254,9 +290,31 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
   // 或任务已取消/失败（可重新发布）时才允许重新选择分类与标签。
   const canEditPublishOptions = isDraft || !job || jobStatus === "cancelled" || jobStatus === "failed";
 
+  // 未搜索且未手动展开时，只挂载前 JUEJIN_TAG_VISIBLE_LIMIT 个标签按钮，减少初次
+  // 进入编辑页的 DOM 节点数；输入关键词或点击「展开全部」后展示全部匹配项，
+  // 不影响选到任意官方标签。
+  const visibleTags = useMemo(() => {
+    const filtered = availableTags.filter((tag) => tag.name.includes(tagSearch.trim()));
+    const expanded = tagSearch.trim() !== "" || showAllTags;
+    return expanded ? filtered : filtered.slice(0, JUEJIN_TAG_VISIBLE_LIMIT);
+  }, [availableTags, tagSearch, showAllTags]);
+
+  // 已选标签的展示名（列表未加载时退化为标签 id），用于在搜索框上方以可移除
+  // chip 形式直观展示当前选择，而不只靠按钮高亮。
+  const selectedTagList = useMemo(
+    () => selectedTagIds.map((id) => ({ id, name: availableTags.find((tag) => tag.id === id)?.name ?? id })),
+    [selectedTagIds, availableTags]
+  );
+
   // 加载掘金官方标签选项（掘金要求至少 1 个标签，且必须是官方 tag_id）。
   useEffect(() => {
     let cancelled = false;
+    const cached = juejinTagCache.get(draft.accountId);
+    if (cached && cached.expires > Date.now()) {
+      setAvailableTags(cached.items);
+      setTagsLoading(false);
+      return () => { cancelled = true; };
+    }
     setTagsLoading(true);
     setTagsError("");
     request<{ items: Array<{ id: string; name: string }> }>(`/integrations/juejin/tags/${draft.accountId}`)
@@ -264,6 +322,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
         if (cancelled) return;
         const items = Array.isArray(payload?.items) ? payload.items : [];
         if (items.length === 0) throw new Error("掘金标签列表为空。");
+        juejinTagCache.set(draft.accountId, { items, expires: Date.now() + JUEJIN_TAG_TTL_MS });
         setAvailableTags(items);
       })
       .catch((cause) => {
@@ -501,7 +560,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
           {selectionResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={applySelectionResult}>应用替换</button><button type="button" className="text-button" onClick={() => setSelectionResult("")}>忽略</button></div></div>}
           {aiChatLog.length > 0 && <div className="assistant-chat-log"><h4>与阿文的对话</h4>{aiChatLog.map((message, index) => <div className={`assistant-message ${message.role}`} key={index}><span className="assistant-role">{message.role === "user" ? "你" : "阿文"}</span><p>{message.content}</p></div>)}</div>}
         </div>}
-        {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{draft.title}</h2><small className="phone-byline">{draft.author || accountDisplay}</small>{renderPhonePreview(draft.markdown, draft.id, draft.sourceRelativePath, draft.title)}</div></div>}
+        {rightPanel === "preview" && <PhonePreview title={draft.title} byline={draft.author || accountDisplay} markdown={draft.markdown} assetContextId={draft.id} sourceArticlePath={draft.sourceRelativePath} />}
         {rightPanel === "settings" && <div className="side-panel-content">
           <h3>发布设置</h3>
           {assistantError && <p className="error editor-inline-error">{assistantError}</p>}
@@ -526,13 +585,29 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
           <label>分类（必选）<select value={publishCategory} disabled={!canEditPublishOptions} onChange={(event) => { userTouchedPublishRef.current = true; setPublishCategory(event.target.value); }}><option value="">请选择分类…</option>{JUEJIN_CATEGORIES.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select><small>掘金要求必选一个分类；草稿已创建且任务进行中时不可修改。</small></label>
           <label>标签（必选 1~{JUEJIN_MAX_TAGS} 个）
             {tagsLoading ? <p className="hint">正在加载掘金官方标签…</p> : <>
+              {selectedTagList.length > 0 && (
+                <div className="juejin-selected-tags">
+                  {selectedTagList.map((tag) => (
+                    <button type="button" key={tag.id} className="juejin-selected-tag" disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)} title="点击移除该标签">
+                      {tag.name}<span className="juejin-selected-tag-remove" aria-hidden>×</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <input value={tagSearch} disabled={!canEditPublishOptions} onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索掘金标签…" />
-              <div className="juejin-tag-options">
-                {availableTags.filter((tag) => tag.name.includes(tagSearch.trim())).map((tag) => (
-                  <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)}>{tag.name}</button>
-                ))}
+              <div className="juejin-tag-options-scroll">
+                <div className="juejin-tag-options">
+                  {visibleTags.map((tag) => (
+                    <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)}>{tag.name}</button>
+                  ))}
+                </div>
               </div>
-              <small>已选 {selectedTagIds.length}/{JUEJIN_MAX_TAGS} 个 · 掘金最多允许 {JUEJIN_MAX_TAGS} 个{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。</small>
+              {tagSearch.trim() === "" && availableTags.length > JUEJIN_TAG_VISIBLE_LIMIT && (
+                <button type="button" className="juejin-tag-expand" disabled={!canEditPublishOptions} onClick={() => setShowAllTags((value) => !value)}>
+                  {showAllTags ? `收起，仅显示前 ${JUEJIN_TAG_VISIBLE_LIMIT} 个` : `展开全部 ${availableTags.length} 个标签`}
+                </button>
+              )}
+              <small>已选 {selectedTagIds.length}/{JUEJIN_MAX_TAGS} 个 · 掘金最多允许 {JUEJIN_MAX_TAGS} 个{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。{tagSearch.trim() === "" && availableTags.length > JUEJIN_TAG_VISIBLE_LIMIT ? `（标签区可滚动，点击上方按钮${showAllTags ? "收起" : "展开全部"}）` : ""}</small>
             </>}
           </label>
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>1. 点击「发布到掘金」，渠道稿冻结为快照并创建掘金草稿；2. 草稿创建完成后可先到掘金草稿箱预览；3. 点击「确认公开」后文章正式对外可见。</small></div>
