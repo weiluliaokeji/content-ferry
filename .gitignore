@@ -31,3 +31,4 @@ build/*
 .mermaid-verify/out/
 .cto-image-verify/out/
 .mermaid-verify/*.txt
+.claude/
