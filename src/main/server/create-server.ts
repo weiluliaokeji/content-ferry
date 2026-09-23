@@ -75,6 +75,7 @@ import { SystemToolRegistry } from "../agent/system-tool-registry";
 import { PermissionGrantRepository } from "../agent/permission-grant-repository";
 import { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
 import { GitSourceService } from "../agent/git-source-service";
+import { PublishTaskModule } from "../publishing/publish-task-module";
 
 const LEGACY_ARCHIVE_CUTOFF = "2026-08-11 00:00:00";
 
@@ -174,9 +175,10 @@ export function buildServer(
     : modelProvider;
   const imageCandidateReview = new ImageCandidateReviewService(options?.imageReviewImageSource ?? remoteImages, effectiveModelProvider, modelConnections, skills);
   const aiContent = new AiContentService(database.connection, effectiveModelProvider);
-  const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore);
+  const publishTasks = new PublishTaskModule(database.connection);
+  const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore, publishTasks);
   const cnblogsChannels = options?.cnblogsChannel
-    ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
+    ?? new CnblogsChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore, fetch, publishTasks);
   const juejinChannels = options?.juejinChannel
     ?? new JuejinChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
   const fiftyoneCtoChannels = new FiftyoneCtoChannelService(database.connection, accounts, vault, contentSources, effectiveModelProvider, assetStore);
@@ -187,6 +189,7 @@ export function buildServer(
   if (interruptedExecutionRuns > 0) server.log.warn({ interruptedExecutionRuns }, "Execution runs marked interrupted after restart");
   const researchTaskRunner = new ResearchTaskRunner(database, researchTasks, researchRuns, contentProjects, contentResearch, aiContent, server.log);
   server.addHook("onClose", async () => researchTaskRunner.stop());
+  server.addHook("onClose", async () => publishTasks.stop());
   const systemTools = new SystemToolRegistry();
   const permissionGrants = new PermissionGrantRepository(database.connection);
   const toolWorkflows = new ToolWorkflowRepository(database.connection);
@@ -386,6 +389,7 @@ export function buildServer(
     aiContent,
     csdnChannels,
     cnblogsChannels,
+    publishTasks,
     juejinChannels,
     fiftyoneCtoChannels,
     coverGenerator,
@@ -428,6 +432,15 @@ export function buildServer(
   setTimeout(() => {
     if (!database.connection.open) return;
     researchTaskRunner.start();
+  }, 0);
+
+  setTimeout(() => {
+    if (!database.connection.open) return;
+    void publishTasks.recover()
+      .then((result) => {
+        if (result.scheduled || result.reconciled) server.log.info({ ...result }, "Publish task recovery completed");
+      })
+      .catch((error: unknown) => server.log.warn({ err: error }, "Publish task recovery failed"));
   }, 0);
 
   if (options?.runMigrations) {

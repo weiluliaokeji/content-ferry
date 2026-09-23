@@ -627,7 +627,7 @@ export function initialiseDatabase(db: Database.Database): void {
       rendered_package_hash TEXT NOT NULL,
       idempotency_key TEXT NOT NULL UNIQUE,
       status TEXT NOT NULL CHECK (status IN (
-        'draft_creating', 'draft_created', 'confirming',
+        'queued', 'draft_creating', 'draft_created', 'confirming',
         'published', 'failed', 'needs_manual_reconciliation', 'cancelled',
         'needs_credentials'
       )),
@@ -764,6 +764,8 @@ export function initialiseDatabase(db: Database.Database): void {
       ON publish_lifecycle_jobs(workspace_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_publish_lifecycle_jobs_platform_updated
       ON publish_lifecycle_jobs(platform, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_publish_lifecycle_jobs_snapshot
+      ON publish_lifecycle_jobs(platform, account_id, channel_draft_id, rendered_package_hash, status, updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS publish_lifecycle_events (
       id TEXT PRIMARY KEY,
@@ -1002,6 +1004,56 @@ export function initialiseDatabase(db: Database.Database): void {
       )`);
       db.exec(`INSERT INTO csdn_publish_job_events SELECT * FROM csdn_publish_job_events_backup`);
       db.exec(`DROP TABLE csdn_publish_job_events_backup`);
+    })();
+  }
+
+  // 迁移：允许博客园发布任务先以 queued 持久化，再由主进程运行器开始创建远端草稿。
+  // SQLite 不能直接修改 CHECK 约束，因此重建表并保留现有任务与事件。
+  const cnblogsJobTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='cnblogs_publish_jobs'").get() as { sql: string } | undefined;
+  if (cnblogsJobTableSql && !/\bqueued\b/.test(cnblogsJobTableSql.sql)) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE cnblogs_publish_jobs_new (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        account_id TEXT NOT NULL REFERENCES media_accounts(id),
+        channel_draft_id TEXT NOT NULL REFERENCES channel_drafts(id),
+        rendered_package_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN (
+          'queued', 'draft_creating', 'draft_created', 'confirming',
+          'published', 'failed', 'needs_manual_reconciliation', 'cancelled',
+          'needs_credentials'
+        )),
+        remote_url TEXT,
+        remote_content_id TEXT,
+        status_note TEXT,
+        error_message TEXT,
+        status_source TEXT NOT NULL DEFAULT 'system' CHECK (status_source IN ('system', 'manual')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`);
+      db.exec(`INSERT INTO cnblogs_publish_jobs_new
+        (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key,
+         status, remote_url, remote_content_id, status_note, error_message, status_source, created_at, updated_at)
+        SELECT id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key,
+          status, remote_url, remote_content_id, status_note, error_message, status_source, created_at, updated_at
+        FROM cnblogs_publish_jobs`);
+      db.exec(`CREATE TABLE cnblogs_publish_job_events_backup AS SELECT * FROM cnblogs_publish_job_events`);
+      db.exec(`DROP TABLE cnblogs_publish_job_events`);
+      db.exec(`DROP TABLE cnblogs_publish_jobs`);
+      db.exec(`ALTER TABLE cnblogs_publish_jobs_new RENAME TO cnblogs_publish_jobs`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_cnblogs_publish_jobs_account_updated ON cnblogs_publish_jobs(account_id, updated_at DESC)`);
+      db.exec(`CREATE TABLE cnblogs_publish_job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES cnblogs_publish_jobs(id) ON DELETE CASCADE,
+        previous_status TEXT,
+        new_status TEXT NOT NULL,
+        source TEXT NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL
+      )`);
+      db.exec(`INSERT INTO cnblogs_publish_job_events SELECT * FROM cnblogs_publish_job_events_backup`);
+      db.exec(`DROP TABLE cnblogs_publish_job_events_backup`);
     })();
   }
 

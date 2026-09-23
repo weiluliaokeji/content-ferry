@@ -21,7 +21,12 @@ import {
   toPublishLifecycleStatus,
   type PublishLifecycleStatus
 } from "../publishing/publish-lifecycle";
-import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
+import {
+  mapPlatformStatusToAdapterResult,
+  PublishTaskModule,
+  type PublishTaskAdapterResult,
+  type PublishTaskStatusMapping
+} from "../publishing/publish-task-module";
 
 const cnblogsDraftSchema = {
   type: "object",
@@ -51,6 +56,7 @@ class CnblogsCredentialsError extends Error {
 export type CnblogsChannelDraftStatus = "draft" | "approved" | "superseded";
 export type CnblogsChannelDraftGenerationMode = "rewrite" | "source";
 export type CnblogsPublishJobStatus =
+  | "queued"
   | "draft_creating"
   | "draft_created"
   | "confirming"
@@ -105,8 +111,21 @@ export interface CnblogsPublishOptions {
 
 type FetchLike = typeof fetch;
 
+const CNBLOGS_PREPARE_STATUS_MAP = {
+  draft_created: { outcome: "confirmed", completedPhase: "prepare" },
+  needs_credentials: { outcome: "blocked", completedPhase: "prepare" },
+  needs_manual_reconciliation: { outcome: "uncertain", completedPhase: "prepare" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
+const CNBLOGS_RECONCILE_STATUS_MAP = {
+  draft_created: { outcome: "confirmed", completedPhase: "prepare" },
+  published: { outcome: "confirmed", completedPhase: "submit" },
+  needs_credentials: { outcome: "blocked" },
+  failed: { outcome: "retryable" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
 export class CnblogsChannelService {
-  private readonly lifecycle: PublishLifecycleService;
+  private readonly publishTasks: PublishTaskModule;
   /** 两段式发布的关键缓存：draft_created 阶段构建的完整 post 对象，公开阶段必须原样复用来避免 editPost 完全替换陷阱。 */
   private readonly payloadCache = new Map<string, CnblogsPostPayload>();
   private readonly publishOptionsCache = new Map<string, CnblogsPublishOptions>();
@@ -120,9 +139,16 @@ export class CnblogsChannelService {
     private readonly contentSources: ContentSourceService,
     private readonly modelProvider: ModelProvider,
     private readonly assetStore?: LocalAssetStore,
-    private readonly fetcher: FetchLike = fetch
+    private readonly fetcher: FetchLike = fetch,
+    publishTasks?: PublishTaskModule
   ) {
-    this.lifecycle = new PublishLifecycleService(db);
+    this.publishTasks = publishTasks ?? new PublishTaskModule(db);
+    this.publishTasks.registerAdapter({
+      platform: "cnblogs",
+      autoPrepare: true,
+      prepare: async (task) => this.preparePublishTask(task.id),
+      reconcile: async (task) => this.reconcilePublishTask(task.id)
+    });
   }
 
   capabilities(_accountId: string): PublishCapabilities {
@@ -320,35 +346,45 @@ export class CnblogsChannelService {
             errorMessage: null
           });
         }
-        if (foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
+        if (foundJob.status === "queued" || foundJob.status === "draft_creating" || foundJob.status === "needs_credentials") {
           this.publishOptionsCache.set(foundJob.id, publishOptions);
-          void this.createRemoteDraft(foundJob.id).catch(() => {});
+          this.publishTasks.scheduleAutoPreparation(foundJob.id);
         }
         return foundJob;
       }
       idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
+    const active = this.publishTasks.findActiveBySnapshot({
+      platform: "cnblogs",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      renderedPackageHash
+    });
+    if (active) {
+      this.publishOptionsCache.set(active.id, publishOptions);
+      return this.requireJob(active.id);
     }
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO cnblogs_publish_jobs
         (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'draft_creating', ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
-          "已创建博客园发布任务，正在创建博客园草稿。", now, now);
+          "已创建博客园发布任务，等待后台准备博客园草稿。", now, now);
       this.db.prepare(`INSERT INTO cnblogs_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
-        VALUES (?, ?, '', 'draft_creating', 'system', '创建发布任务', ?)`)
+        VALUES (?, ?, '', 'queued', 'system', '创建发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
-    this.lifecycle.create({
+    this.publishTasks.create({
       id, platform: "cnblogs", workspaceId: draft.workspaceId, accountId: draft.accountId,
-      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "preparing",
-      statusNote: "已创建博客园发布任务，正在创建博客园草稿。"
+      channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
+      statusNote: "已创建博客园发布任务，等待后台准备博客园草稿。"
     });
     this.publishOptionsCache.set(id, publishOptions);
     // 后台创建草稿：所有失败路径都已在 createRemoteDraft 内部落库，这里仅作兜底防未处理拒绝。
-    void this.createRemoteDraft(id).catch(() => {});
+    this.publishTasks.scheduleAutoPreparation(id);
     return this.requireJob(id);
   }
 
@@ -368,19 +404,24 @@ export class CnblogsChannelService {
 
   /**
    * 用户确认公开：单次提交完成两段式第二步。
-   * 若草稿尚未创建成功（draft_creating / needs_credentials / failed），先补齐草稿；
+   * 若草稿尚未创建成功（queued / draft_creating / needs_credentials / failed），先补齐草稿；
    * 草稿就绪后进入 confirming，editPost 传完整 post 对象 publish=true 公开。
    * 公开失败（草稿已存在）转入 needs_manual_reconciliation，由人工校正表单处理。
    */
   async confirmPublish(jobId: string): Promise<CnblogsPublishJob> {
+    return this.publishTasks.runSubmitExclusive(jobId, () => this.executeConfirmPublish(jobId));
+  }
+
+  private async executeConfirmPublish(jobId: string): Promise<CnblogsPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "published") throw new CnblogsChannelError("该博客园任务已发布，请勿重复提交。");
     if (job.status === "cancelled") throw new CnblogsChannelError("该博客园任务已取消，无法确认公开。");
     if (job.status === "needs_manual_reconciliation") throw new CnblogsChannelError("该博客园任务已进入人工校正，请先通过校正表单处理。");
     if (job.status === "confirming") throw new CnblogsChannelError("该博客园任务正在确认公开，请稍候。");
 
-    if (job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
-      job = await this.createRemoteDraft(job.id);
+    if (job.status === "queued" || job.status === "draft_creating" || job.status === "failed" || job.status === "needs_credentials") {
+      await this.publishTasks.prepare(job.id);
+      job = this.requireJob(job.id);
       if (job.status !== "draft_created") return job;
     }
     if (job.status !== "draft_created") throw new CnblogsChannelError("当前任务状态不允许确认公开。");
@@ -389,6 +430,10 @@ export class CnblogsChannelService {
       statusNote: "正在将博客园草稿公开为正式文章。",
       errorMessage: null
     });
+    this.publishTasks.recordPlatformTransition(job.id, "submitting", {
+      statusNote: "正在提交博客园公开操作。",
+      errorMessage: null
+    }, "开始提交博客园公开");
     try {
       return await this.publishRemotePost(job.id);
     } catch (error) {
@@ -457,7 +502,7 @@ export class CnblogsChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
-    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+    this.publishTasks.recordPlatformTransition(jobId, status, {
       statusNote: note,
       errorMessage: status === "failed" ? note : null,
       statusSource: "manual"
@@ -467,29 +512,35 @@ export class CnblogsChannelService {
 
   /**
    * 两段式第一步：newPost(publish=false) 创建博客园草稿。
-   * 可重试（draft_creating / needs_credentials / failed）场景下可重复调用；
+   * 可重试（queued / draft_creating / needs_credentials / failed）场景下可重复调用；
    * 草稿已创建或已终态时直接返回，幂等安全。
    * 并发去重：同一 job 的调用共享一个 Promise，避免连点重试造成重复 newPost。
    */
-  private async createRemoteDraft(jobId: string): Promise<CnblogsPublishJob> {
+  private async createRemoteDraft(jobId: string, syncLifecycle = true): Promise<CnblogsPublishJob> {
     const existing = this.createRemoteDraftPromises.get(jobId);
     if (existing) return existing;
-    const promise = this.executeCreateRemoteDraft(jobId);
+    const promise = this.executeCreateRemoteDraft(jobId, syncLifecycle);
     this.createRemoteDraftPromises.set(jobId, promise);
     promise.finally(() => this.createRemoteDraftPromises.delete(jobId)).catch(() => {});
     return promise;
   }
 
-  private async executeCreateRemoteDraft(jobId: string): Promise<CnblogsPublishJob> {
+  private async executeCreateRemoteDraft(jobId: string, syncLifecycle = true): Promise<CnblogsPublishJob> {
     let job = this.requireJob(jobId);
     if (job.status === "draft_created" || job.status === "published" || job.status === "needs_manual_reconciliation") return job;
+    if (job.status === "queued") {
+      job = this.transitionJob(job, "draft_creating", {
+        statusNote: "正在创建博客园草稿。",
+        errorMessage: null
+      }, syncLifecycle);
+    }
 
     const account = this.accounts.requireAccount(job.accountId);
     if (account.platform !== "cnblogs") {
       return this.transitionJob(job, "failed", {
         statusNote: "所选账号不是博客园账号。",
         errorMessage: "所选账号不是博客园账号。"
-      });
+      }, syncLifecycle);
     }
 
     let credentials: { username: string; apiKey: string };
@@ -500,7 +551,7 @@ export class CnblogsChannelService {
       return this.transitionJob(job, "needs_credentials", {
         statusNote: reason,
         errorMessage: reason
-      });
+      }, syncLifecycle);
     }
 
     try {
@@ -514,20 +565,20 @@ export class CnblogsChannelService {
         remoteUrl: draftEditUrl(postId),
         statusNote: "博客园草稿已创建，请检查后点击“确认公开”。",
         errorMessage: null
-      });
+      }, syncLifecycle);
     } catch (error) {
       const reason = messageOf(error);
       if (error instanceof CnblogsCredentialsError) {
         return this.transitionJob(job, "needs_credentials", {
           statusNote: `博客园凭据校验失败：${reason}`,
           errorMessage: reason
-        });
+        }, syncLifecycle);
       }
       // 图片上传失败（failedAssets 明细）、newPost fault、网络异常等一律记为 failed，可重试。
       return this.transitionJob(job, "failed", {
         statusNote: `创建博客园草稿失败：${reason}`,
         errorMessage: reason
-      });
+      }, syncLifecycle);
     }
   }
 
@@ -557,6 +608,26 @@ export class CnblogsChannelService {
   }
 
   /** 读取并解密博客园凭据（username + api_key），缺失抛配置类错误。 */
+  private async preparePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = await this.createRemoteDraft(jobId, false);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      CNBLOGS_PREPARE_STATUS_MAP,
+      { outcome: "retryable", completedPhase: "prepare" },
+      { statusNote: job.statusNote, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
+  }
+
+  private async reconcilePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = this.requireJob(jobId);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      CNBLOGS_RECONCILE_STATUS_MAP,
+      { outcome: "uncertain", statusNote: "博客园远端草稿或提交结果无法自动确认，请人工核对。" },
+      { statusNote: job.statusNote ?? undefined, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
+  }
+
   private loadCredentials(account: MediaAccount): { username: string; apiKey: string } {
     let username = "";
     let apiKey = "";
@@ -681,7 +752,8 @@ export class CnblogsChannelService {
   private transitionJob(
     job: CnblogsPublishJob,
     nextStatus: CnblogsPublishJobStatus,
-    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
+    patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null },
+    syncLifecycle = true
   ): CnblogsPublishJob {
     const now = new Date().toISOString();
     // 注意：字段未提供(undefined)时保留原值；显式传 null 时必须真正清空（COALESCE 无法区分 null 与未提供，会导致成功路径残留旧错误）。
@@ -707,13 +779,15 @@ export class CnblogsChannelService {
         VALUES (?, ?, ?, ?, 'system', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
-    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
-      statusNote,
-      errorMessage,
-      remoteUrl,
-      remoteContentId,
-      statusSource: "system"
-    }, patch.statusNote ?? `博客园状态变更为 ${nextStatus}`);
+    if (syncLifecycle) {
+      this.publishTasks.recordPlatformTransition(job.id, nextStatus, {
+        statusNote,
+        errorMessage,
+        remoteUrl,
+        remoteContentId,
+        statusSource: "system"
+      }, patch.statusNote ?? `博客园状态变更为 ${nextStatus}`);
+    }
     return this.requireJob(job.id);
   }
 
@@ -727,7 +801,7 @@ export class CnblogsChannelService {
     const row = this.db.prepare("SELECT * FROM cnblogs_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new CnblogsChannelError("找不到对应的博客园发布任务。");
     const job = mapJob(row);
-    const lifecycle = this.lifecycle.ensure({
+    const lifecycle = this.publishTasks.ensure({
       id: job.id, platform: "cnblogs", workspaceId: job.workspaceId, accountId: job.accountId,
       channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
       idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,

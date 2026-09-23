@@ -203,14 +203,14 @@ describe("CnblogsChannelService", () => {
     expect((db.connection.prepare("SELECT COUNT(*) AS count FROM cnblogs_publish_job_events WHERE job_id = ?").get(job.id) as { count: number }).count).toBeGreaterThan(0);
   });
 
-  it("creates an idempotent publish job that reaches draft_created", async () => {
+  it("creates an idempotent queued publish job that reaches draft_created", async () => {
     const { account, service, calls } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
     const approved = service.approveDraft(draft.id);
 
     const first = service.createPublishJob(approved.id);
-    expect(first.status).toBe("draft_creating");
-    expect(first.lifecycleStatus).toBe("preparing");
+    expect(first.status).toBe("queued");
+    expect(first.lifecycleStatus).toBe("queued");
 
     // 等待后台草稿创建完成后再验证幂等：draft_created 是已创建态，再次调用不会重启草稿创建。
     await waitForJob(service, first.id, "draft_created");
@@ -269,20 +269,27 @@ describe("CnblogsChannelService", () => {
     }).toThrow(/UNIQUE/);
   });
 
-  it("drives the full lifecycle draft_creating → draft_created → confirming → published", async () => {
-    const { account, service, calls } = setupHarness();
+  it("drives the full lifecycle queued → draft_creating → draft_created → confirming → published", async () => {
+    const { account, service, calls, database: db } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
     const approved = service.approveDraft(draft.id);
     const job = service.createPublishJob(approved.id);
     await waitForJob(service, job.id, "draft_created");
 
-    const confirming = await service.confirmPublish(job.id);
+    const [confirming, duplicateConfirmation] = await Promise.all([
+      service.confirmPublish(job.id),
+      service.confirmPublish(job.id)
+    ]);
     expect(confirming.status).toBe("published");
+    expect(duplicateConfirmation.status).toBe("published");
 
     const published = service.getJob(job.id);
     expect(published.status).toBe("published");
     expect(published.remoteUrl).toBe("https://www.cnblogs.com/weiluliaokeji/p/post-123.html");
     expect(published.remoteContentId).toBe("post-123");
+    const lifecycleStatuses = (db.connection.prepare("SELECT new_status FROM publish_lifecycle_events WHERE job_id = ? ORDER BY created_at, rowid").all(job.id) as Array<{ new_status: string }>).map((event) => event.new_status);
+    expect(lifecycleStatuses).toContain("submitting");
+    expect(calls.filter((call) => call.methodName === "metaWeblog.editPost")).toHaveLength(1);
 
     const methods = calls.map((call) => call.methodName);
     expect(methods.indexOf("blogger.getUsersBlogs")).toBeLessThan(methods.indexOf("metaWeblog.newPost"));

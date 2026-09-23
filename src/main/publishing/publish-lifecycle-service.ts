@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { toPublishLifecycleStatus, type PublishLifecycleStatus } from "./publish-lifecycle";
+import { isTerminalPublishStatus, toPublishLifecycleStatus, type PublishLifecycleStatus } from "./publish-lifecycle";
 
 export type PublishLifecycleSource = "system" | "manual" | "legacy_sync";
 
@@ -43,8 +43,14 @@ export class PublishLifecycleService {
   constructor(private readonly db: Database.Database) {}
 
   create(input: PublishLifecycleJobInput): PublishLifecycleJob {
-    const existing = this.get(input.id) ?? this.getByIdempotencyKey(input.idempotencyKey);
+    const existing = this.get(input.id)
+      ?? this.getByIdempotencyKey(input.idempotencyKey)
+      ?? this.getActiveBySnapshot(input);
     if (existing) return existing;
+    return this.insert(input);
+  }
+
+  private insert(input: PublishLifecycleJobInput): PublishLifecycleJob {
     const now = new Date().toISOString();
     const source = input.statusSource ?? "system";
     this.db.transaction(() => {
@@ -72,9 +78,13 @@ export class PublishLifecycleService {
 
   /** Backfill old platform jobs without overwriting the canonical lifecycle state. */
   ensure(input: PublishLifecycleJobInput): PublishLifecycleJob {
-    const existing = this.get(input.id);
+    const existing = this.get(input.id) ?? this.getByIdempotencyKey(input.idempotencyKey);
     if (existing) return existing;
-    return this.create({ ...input, statusSource: "legacy_sync" });
+    return this.insert({ ...input, statusSource: "legacy_sync" });
+  }
+
+  findActiveBySnapshot(input: Pick<PublishLifecycleJobInput, "platform" | "accountId" | "channelDraftId" | "renderedPackageHash">): PublishLifecycleJob | null {
+    return this.getActiveBySnapshot(input);
   }
 
   transition(
@@ -88,11 +98,19 @@ export class PublishLifecycleService {
     const nextSource = patch.statusSource ?? "system";
     this.db.transaction(() => {
       this.db.prepare(`UPDATE publish_lifecycle_jobs SET
-        status = ?, status_note = COALESCE(?, status_note), error_message = COALESCE(?, error_message),
-        remote_url = COALESCE(?, remote_url), remote_content_id = COALESCE(?, remote_content_id),
+        status = ?, status_note = ?, error_message = ?,
+        remote_url = ?, remote_content_id = ?,
         status_source = ?, updated_at = ? WHERE id = ?`)
-        .run(status, patch.statusNote ?? null, patch.errorMessage ?? null, patch.remoteUrl ?? null,
-          patch.remoteContentId ?? null, nextSource, now, id);
+        .run(
+          status,
+          patch.statusNote !== undefined ? patch.statusNote : current.statusNote,
+          patch.errorMessage !== undefined ? patch.errorMessage : current.errorMessage,
+          patch.remoteUrl !== undefined ? patch.remoteUrl : current.remoteUrl,
+          patch.remoteContentId !== undefined ? patch.remoteContentId : current.remoteContentId,
+          nextSource,
+          now,
+          id
+        );
       this.db.prepare(`INSERT INTO publish_lifecycle_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -111,9 +129,36 @@ export class PublishLifecycleService {
       .all(workspaceId) as Array<Record<string, string | null>>).map(mapLifecycleJob);
   }
 
+  listByStatuses(statuses: PublishLifecycleStatus[]): PublishLifecycleJob[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(", ");
+    return (this.db.prepare(`SELECT * FROM publish_lifecycle_jobs WHERE status IN (${placeholders}) ORDER BY updated_at ASC`)
+      .all(...statuses) as Array<Record<string, string | null>>).map(mapLifecycleJob);
+  }
+
   private getByIdempotencyKey(idempotencyKey: string): PublishLifecycleJob | null {
     const row = this.db.prepare("SELECT * FROM publish_lifecycle_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
     return row ? mapLifecycleJob(row) : null;
+  }
+
+  private getActiveBySnapshot(input: Pick<PublishLifecycleJobInput, "platform" | "accountId" | "channelDraftId" | "renderedPackageHash">): PublishLifecycleJob | null {
+    const activeStatuses: PublishLifecycleStatus[] = [
+      "queued", "preparing", "waiting_user", "ready", "submitting", "needs_credentials", "failed"
+    ];
+    const placeholders = activeStatuses.map(() => "?").join(", ");
+    const row = this.db.prepare(`SELECT * FROM publish_lifecycle_jobs
+      WHERE platform = ? AND account_id = ? AND channel_draft_id = ? AND rendered_package_hash = ?
+        AND status IN (${placeholders})
+      ORDER BY updated_at DESC LIMIT 1`).get(
+      input.platform,
+      input.accountId,
+      input.channelDraftId,
+      input.renderedPackageHash,
+      ...activeStatuses
+    ) as Record<string, string | null> | undefined;
+    return row && !isTerminalPublishStatus(toPublishLifecycleStatus(row.status ?? "failed"))
+      ? mapLifecycleJob(row)
+      : null;
   }
 
   private require(id: string): PublishLifecycleJob {

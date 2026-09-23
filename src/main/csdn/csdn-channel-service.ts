@@ -13,7 +13,12 @@ import {
   toPublishLifecycleStatus,
   type PublishLifecycleStatus
 } from "../publishing/publish-lifecycle";
-import { PublishLifecycleService } from "../publishing/publish-lifecycle-service";
+import {
+  mapPlatformStatusToAdapterResult,
+  PublishTaskModule,
+  type PublishTaskAdapterResult,
+  type PublishTaskStatusMapping
+} from "../publishing/publish-task-module";
 import { resolveCsdnImagesForBrowser, resolveCoverToDataUrl } from "./csdn-image-inliner";
 import { appendArticleSignature } from "../publishing/article-signature";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
@@ -86,16 +91,36 @@ export interface CsdnPublishJob {
   updatedAt: string;
 }
 
+const CSDN_RECONCILE_STATUS_MAP = {
+  published: { outcome: "confirmed", completedPhase: "submit" },
+  needs_login: { outcome: "blocked" },
+  submitting: { outcome: "uncertain" },
+  needs_manual_reconciliation: { outcome: "uncertain" },
+  failed: { outcome: "retryable" },
+  failed_before_submit: { outcome: "retryable" }
+} as const satisfies Readonly<Record<string, PublishTaskStatusMapping>>;
+
 export class CsdnChannelService {
-  private readonly lifecycle: PublishLifecycleService;
+  private readonly publishTasks: PublishTaskModule;
   constructor(
     private readonly db: Database.Database,
     private readonly accounts: AccountRepository,
     private readonly contentSources: ContentSourceService,
     private readonly modelProvider: ModelProvider,
-    private readonly assetStore?: LocalAssetStore
+    private readonly assetStore?: LocalAssetStore,
+    publishTasks?: PublishTaskModule
   ) {
-    this.lifecycle = new PublishLifecycleService(db);
+    this.publishTasks = publishTasks ?? new PublishTaskModule(db);
+    this.publishTasks.registerAdapter({
+      platform: "csdn",
+      autoPrepare: false,
+      prepare: async () => ({
+        outcome: "confirmed",
+        nextStatus: "waiting_user",
+        statusNote: "等待用户启动 CSDN 浏览器辅助流程。"
+      }),
+      reconcile: async (task) => this.reconcilePublishTask(task.id)
+    });
   }
 
   capabilities(_accountId: string): PublishCapabilities {
@@ -286,6 +311,13 @@ export class CsdnChannelService {
       // 终态：放弃复用，改用带 retry 后缀的新幂等键，避免与旧任务的 UNIQUE 约束冲突。
       idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
     }
+    const active = this.publishTasks.findActiveBySnapshot({
+      platform: "csdn",
+      accountId: draft.accountId,
+      channelDraftId: draft.id,
+      renderedPackageHash
+    });
+    if (active) return this.requireJob(active.id);
     const now = new Date().toISOString();
     const id = randomUUID();
     this.db.transaction(() => {
@@ -299,7 +331,7 @@ export class CsdnChannelService {
         VALUES (?, ?, '', 'queued', 'system', '创建冻结版本的发布任务', ?)`)
         .run(randomUUID(), id, now);
     })();
-    this.lifecycle.create({
+    this.publishTasks.create({
       id, platform: "csdn", workspaceId: draft.workspaceId, accountId: draft.accountId,
       channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
       statusNote: "已创建 CSDN 发布任务，等待在浏览器中完成登录、填充与最终确认发布。"
@@ -507,7 +539,7 @@ export class CsdnChannelService {
         VALUES (?, ?, ?, ?, 'manual', ?, ?)`)
         .run(randomUUID(), jobId, job.status, status, normalizedReason, now);
     })();
-    this.lifecycle.transition(jobId, toPublishLifecycleStatus(status), {
+    this.publishTasks.recordPlatformTransition(jobId, status, {
       statusNote: note,
       errorMessage: status === "failed" ? note : null,
       statusSource: "manual"
@@ -521,17 +553,20 @@ export class CsdnChannelService {
     patch: { statusNote?: string | null; errorMessage?: string | null; remoteUrl?: string | null; remoteContentId?: string | null }
   ): CsdnPublishJob {
     const now = new Date().toISOString();
+    const statusNote = patch.statusNote !== undefined ? patch.statusNote : job.statusNote;
+    const errorMessage = patch.errorMessage !== undefined ? patch.errorMessage : job.errorMessage;
+    const remoteUrl = patch.remoteUrl !== undefined ? patch.remoteUrl : job.remoteUrl;
+    const remoteContentId = patch.remoteContentId !== undefined ? patch.remoteContentId : job.remoteContentId;
     this.db.transaction(() => {
       this.db.prepare(`UPDATE csdn_publish_jobs
-        SET status = ?, status_note = COALESCE(?, status_note), error_message = COALESCE(?, error_message),
-          remote_url = COALESCE(?, remote_url), remote_content_id = COALESCE(?, remote_content_id), updated_at = ?
+        SET status = ?, status_note = ?, error_message = ?, remote_url = ?, remote_content_id = ?, updated_at = ?
         WHERE id = ?`)
         .run(
           nextStatus,
-          patch.statusNote !== undefined ? patch.statusNote : null,
-          patch.errorMessage !== undefined ? patch.errorMessage : null,
-          patch.remoteUrl !== undefined ? patch.remoteUrl : null,
-          patch.remoteContentId !== undefined ? patch.remoteContentId : null,
+          statusNote,
+          errorMessage,
+          remoteUrl,
+          remoteContentId,
           now,
           job.id
         );
@@ -540,7 +575,7 @@ export class CsdnChannelService {
         VALUES (?, ?, ?, ?, 'browser', ?, ?)`)
         .run(randomUUID(), job.id, job.status, nextStatus, patch.statusNote ?? "", now);
     })();
-    this.lifecycle.transition(job.id, toPublishLifecycleStatus(nextStatus), {
+    this.publishTasks.recordPlatformTransition(job.id, nextStatus, {
       statusNote: patch.statusNote,
       errorMessage: patch.errorMessage,
       remoteUrl: patch.remoteUrl,
@@ -560,13 +595,23 @@ export class CsdnChannelService {
     const row = this.db.prepare("SELECT * FROM csdn_publish_jobs WHERE id = ?").get(id) as Record<string, string | null> | undefined;
     if (!row) throw new CsdnChannelError("找不到对应的 CSDN 发布任务。");
     const job = mapJob(row);
-    const lifecycle = this.lifecycle.ensure({
+    const lifecycle = this.publishTasks.ensure({
       id: job.id, platform: "csdn", workspaceId: job.workspaceId, accountId: job.accountId,
       channelDraftId: job.channelDraftId, renderedPackageHash: job.renderedPackageHash,
       idempotencyKey: job.idempotencyKey, status: job.lifecycleStatus, remoteUrl: job.remoteUrl,
       remoteContentId: job.remoteContentId, statusNote: job.statusNote, errorMessage: job.errorMessage
     });
     return { ...job, lifecycleStatus: lifecycle.status };
+  }
+
+  private async reconcilePublishTask(jobId: string): Promise<PublishTaskAdapterResult> {
+    const job = this.requireJob(jobId);
+    return mapPlatformStatusToAdapterResult(
+      job.status,
+      CSDN_RECONCILE_STATUS_MAP,
+      { outcome: "confirmed", nextStatus: "waiting_user", statusNote: "等待用户完成 CSDN 浏览器辅助流程。" },
+      { statusNote: job.statusNote ?? undefined, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
+    );
   }
 }
 

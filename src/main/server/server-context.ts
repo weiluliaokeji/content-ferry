@@ -23,6 +23,7 @@ import type { SkillRegistry } from "../skills/skill-registry";
 import type { CoverGenerationService } from "../content/modelscope-cover-service";
 import type { CsdnChannelService } from "../csdn/csdn-channel-service";
 import type { CnblogsChannelService } from "../cnblogs/cnblogs-channel-service";
+import type { PublishTaskModule } from "../publishing/publish-task-module";
 import type { JuejinChannelService } from "../juejin/juejin-channel-service";
 import type { FiftyoneCtoChannelService } from "../fiftyone-cto/fiftyone-cto-channel-service";
 import type { CsdnBrowserConfirmResult } from "./schemas";
@@ -74,6 +75,7 @@ export interface ServerContext {
   aiContent: AiContentService;
   csdnChannels: CsdnChannelService;
   cnblogsChannels: CnblogsChannelService;
+  publishTasks: PublishTaskModule;
   juejinChannels: JuejinChannelService;
   fiftyoneCtoChannels: FiftyoneCtoChannelService;
   coverGenerator: CoverGenerationService;
