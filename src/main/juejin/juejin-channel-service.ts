@@ -319,7 +319,16 @@ export class JuejinChannelService {
     const sourceDigest = sourceSettings?.digest ?? "";
     const coverSource = sourceSettings?.cover_source ?? "";
     const draftTitle = generatedDraft.title.trim().slice(0, 80);
-    const fallbackTags = Object.entries(JUEJIN_KNOWN_TAGS).map(([name, id]) => ({ id, name }));
+    // 兜底标签改用掘金官方标签池（而非仅 3 个内置名）做相关性排序，存库的兜底值更可用；
+    // 取不到官方池时退化为内置 3 标签，保证总能拿到建议。
+    let fallbackTags: Array<{ id: string; name: string }> = Object.entries(JUEJIN_KNOWN_TAGS).map(([name, id]) => ({ id, name }));
+    try {
+      const { client } = this.buildClient(account);
+      const officialTags = await client.listTags("", 200);
+      if (officialTags.length > 0) fallbackTags = officialTags;
+    } catch {
+      /* 取不到官方标签池时退化为内置 3 标签，兜底仍可工作 */
+    }
     const fallbackRecommendation = {
       categoryId: inferJuejinCategory(draftTitle, markdown),
       tagIds: inferJuejinTags(draftTitle, markdown, fallbackTags)

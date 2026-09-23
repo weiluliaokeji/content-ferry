@@ -57,7 +57,28 @@ export function textContainsKeyword(text: string, keyword: string): boolean {
   return lower.includes(kw);
 }
 
-/** 根据标题+正文自动推断掘金分类 id：命中关键词最多的分类胜出，无命中时返回默认分类（代码人生）。 */
+/** 统计 keyword 在 text 中的出现次数：英文/数字按单词边界，其余按子串。 */
+function countKeywordMatches(text: string, keyword: string): number {
+  const kw = keyword.toLowerCase();
+  if (/^[a-z0-9][a-z0-9+#._-]*$/.test(kw)) {
+    const matches = text.match(new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"));
+    return matches ? matches.length : 0;
+  }
+  if (!kw) return 0;
+  let count = 0;
+  let index = text.indexOf(kw);
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf(kw, index + kw.length);
+  }
+  return count;
+}
+
+// 分类关键词里的泛词：命中即计分的权重调低，避免“人工智能”组仅凭 ai/token/prompt
+// 等高频泛词就压过真正更匹配的具体分类（如讲 Docker/K8s 的后端文章）。
+const CATEGORY_GENERIC_KEYWORDS: Record<string, number> = { ai: 0.3, token: 0.3, prompt: 0.3 };
+
+/** 根据标题+正文自动推断掘金分类 id：命中关键词加权得分最高的分类胜出，无命中时返回默认分类（代码人生）。 */
 export function inferJuejinCategory(title: string, markdown: string): string {
   const text = `${title}\n${markdown}`.toLowerCase();
   let bestId = "";
@@ -65,7 +86,9 @@ export function inferJuejinCategory(title: string, markdown: string): string {
   for (const group of JUEJIN_CATEGORY_KEYWORDS) {
     let score = 0;
     for (const keyword of group.keywords) {
-      if (textContainsKeyword(text, keyword)) score += 1;
+      if (textContainsKeyword(text, keyword)) {
+        score += keyword in CATEGORY_GENERIC_KEYWORDS ? CATEGORY_GENERIC_KEYWORDS[keyword] : 1;
+      }
     }
     if (score > bestScore) {
       bestScore = score;
@@ -77,25 +100,26 @@ export function inferJuejinCategory(title: string, markdown: string): string {
   return fallback?.id ?? JUEJIN_CATEGORIES[0]?.id ?? "";
 }
 
-/** 根据标题+正文从官方标签中推断最多 3 个掘金标签 id（id 必须真实存在于 availableTags，严禁造非法 tag_id）。 */
+/**
+ * 根据标题+正文从官方标签中推断最多 JUEJIN_MAX_TAGS 个标签 id。
+ * 与旧实现（按官方标签列表顺序取前 N 个命中的）不同，这里统计每个官方标签名在
+ * 正文中的出现次数（标题命中额外加权），按相关性排序取前 N，避免热度靠前的泛标签
+ * 占满名额；id 必须真实存在于 availableTags，严禁造非法 tag_id。
+ */
 export function inferJuejinTags(title: string, markdown: string, availableTags: Array<{ id: string; name: string }>): string[] {
-  const text = `${title}\n${markdown}`.toLowerCase();
-  const matched: string[] = [];
+  const body = `${title}\n${markdown}`.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const scored: Array<{ id: string; score: number }> = [];
   for (const tag of availableTags) {
-    if (matched.length >= JUEJIN_MAX_TAGS) break;
     const name = tag.name.trim();
     if (!name) continue;
-    if (textContainsKeyword(text, name)) {
-      matched.push(tag.id);
-      continue;
-    }
-    // 内置映射兜底：标题/正文出现内置标签名时，选中官方标签中同名者。
-    for (const knownName of Object.keys(JUEJIN_KNOWN_TAGS)) {
-      if (knownName.toLowerCase() === name.toLowerCase() && textContainsKeyword(text, knownName)) {
-        matched.push(tag.id);
-        break;
-      }
-    }
+    const occurrences = countKeywordMatches(body, name);
+    if (occurrences === 0) continue;
+    let score = occurrences;
+    // 标题命中加权：出现在标题里的标签比仅在正文零星出现更可能是文章主题。
+    if (countKeywordMatches(titleLower, name) > 0) score += 3;
+    scored.push({ id: tag.id, score });
   }
-  return matched;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, JUEJIN_MAX_TAGS).map((entry) => entry.id);
 }

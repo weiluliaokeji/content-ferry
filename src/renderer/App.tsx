@@ -519,6 +519,7 @@ export function App() {
     refreshCsdnPublishJob,
     refreshCnblogsPublishJob,
     refreshJuejinPublishJob,
+    refreshJuejinChannelDraft,
     loadFiftyoneCtoChannelDrafts,
     openFiftyoneCtoChannelDraft,
     openExistingFiftyoneCtoDraft,
@@ -1095,6 +1096,20 @@ export function App() {
     const timer = setInterval(() => void refreshJuejinPublishJob(), 3000);
     return () => clearInterval(timer);
   }, [juejinPublishJob?.id, juejinPublishJob?.status]);
+
+  // 编辑态（尚无发布任务）下轮询掘金稿的 AI 推荐结果：后台 AI 推荐约 20~98s 后落库，
+  // 落库后由 refreshJuejinChannelDraft 回填 suggested_*，编辑页自动采用，替代初始的
+  // 确定性兜底推断。AI 落库或达到轮询上限（约 120s）后停止。
+  useEffect(() => {
+    if (!juejinDraft || juejinPublishJob) return;
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts += 1;
+      const changed = await refreshJuejinChannelDraft();
+      if (changed || attempts >= 40) clearInterval(timer);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [juejinDraft?.id, juejinPublishJob]);
 
   // 51CTO 任务创建后先持久化为 queued，再由主进程异步完成单阶段发布。
   useEffect(() => {

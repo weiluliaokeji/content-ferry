@@ -201,6 +201,9 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
   const [juejinDrafts, setJuejinDrafts] = useState<JuejinChannelDraft[]>([]);
   const [juejinJobs, setJuejinJobs] = useState<JuejinPublishJob[]>([]);
   const [juejinDraft, setJuejinDraft] = useState<JuejinChannelDraft | undefined>(undefined);
+  // 镜像最新 juejinDraft，供轮询回调读取而不依赖闭包里的旧值。
+  const juejinDraftRef = useRef<JuejinChannelDraft | undefined>(undefined);
+  juejinDraftRef.current = juejinDraft;
   const [juejinPublishJob, setJuejinPublishJob] = useState<JuejinPublishJob | undefined>(undefined);
   const [juejinDraftSource, setJuejinDraftSource] = useState<{ relativePath: string; title: string | null } | undefined>(undefined);
   const [juejinDraftAccountId, setJuejinDraftAccountId] = useState("");
@@ -1379,6 +1382,28 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       /* 轮询失败不阻塞界面 */
     }
   };
+  // 编辑态（尚无发布任务）下，把后台 AI 推荐落库的 suggested_* 回填到当前掘金稿。
+  // 只合并分类/标签建议字段，保留用户在标题/正文/摘要/封面上的本地编辑；
+  // 返回是否发生了变更，供轮询方在 AI 落库后停止轮询。
+  const refreshJuejinChannelDraft = async (): Promise<boolean> => {
+    const current = juejinDraftRef.current;
+    if (!current || juejinPublishJob) return false;
+    const currentId = current.id;
+    try {
+      const drafts = await request<{ items: JuejinChannelDraft[] }>("/integrations/juejin/channel-drafts");
+      const server = drafts.items.find((item) => item.id === currentId);
+      if (!server) return false;
+      const sameCategory = server.suggestedCategoryId === current.suggestedCategoryId;
+      const sameTags = JSON.stringify(server.suggestedTagIds) === JSON.stringify(current.suggestedTagIds);
+      if (sameCategory && sameTags) return false;
+      setJuejinDraft((existing) => existing && existing.id === currentId
+        ? { ...existing, suggestedCategoryId: server.suggestedCategoryId, suggestedTagIds: server.suggestedTagIds }
+        : existing);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   return {
     wechatJobsRefreshing,
     setWechatJobsRefreshing,
@@ -1561,6 +1586,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     refreshCsdnPublishJob,
     refreshCnblogsPublishJob,
     refreshJuejinPublishJob,
+    refreshJuejinChannelDraft,
     loadFiftyoneCtoChannelDrafts,
     openFiftyoneCtoChannelDraft,
     openExistingFiftyoneCtoDraft,
