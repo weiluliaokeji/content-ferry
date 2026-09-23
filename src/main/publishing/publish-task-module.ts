@@ -9,6 +9,7 @@ import {
 import {
   PublishLifecycleService,
   type PublishLifecycleJob,
+  type PublishLifecycleEvent,
   type PublishLifecycleSource
 } from "./publish-lifecycle-service";
 
@@ -142,6 +143,10 @@ export class PublishTaskModule {
 
   list(workspaceId: string): PublishLifecycleJob[] {
     return this.lifecycle.list(workspaceId);
+  }
+
+  listEvents(id: string, limit?: number): PublishLifecycleEvent[] {
+    return this.lifecycle.listEvents(id, limit);
   }
 
   /** Schedule only adapters that explicitly opt into automatic preparation. */

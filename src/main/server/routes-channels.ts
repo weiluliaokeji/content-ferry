@@ -16,6 +16,13 @@ import { lifecycleStatusForOutcome, type PublishAdapterOutcome } from "../publis
 export function registerChannelsRoutes(ctx: ServerContext): void {
   const { server, accounts, csdnChannels, cnblogsChannels, juejinChannels, fiftyoneCtoChannels, csdnBrowserConfirm } = ctx;
 
+  server.get("/api/publish-lifecycle/jobs/:jobId/events", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const job = ctx.publishTasks.get(params.jobId);
+    if (!job) throw new Error("找不到对应的发布任务。");
+    return { jobId: job.id, status: job.status, events: ctx.publishTasks.listEvents(job.id) };
+  });
+
   server.get("/api/integrations/csdn/capabilities/:accountId", async (request) => {
     const params = z.object({ accountId: z.string().uuid() }).parse(request.params);
     const account = accounts.requireAccount(params.accountId);

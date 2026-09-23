@@ -19,6 +19,17 @@ export type RootState =
   | { status: "wizard"; settings: AppSettingsContract }
   | { status: "ready"; settings: AppSettingsContract };
 
+export type PublishLifecycleStatus = "queued" | "preparing" | "waiting_user" | "ready" | "submitting" | "published" | "needs_credentials" | "failed" | "needs_manual_reconciliation" | "cancelled";
+export type PublishLifecycleEvent = {
+  id: string;
+  jobId: string;
+  previousStatus: PublishLifecycleStatus | "";
+  newStatus: PublishLifecycleStatus;
+  source: "system" | "manual" | "legacy_sync";
+  reason: string;
+  createdAt: string;
+};
+
 export type AccountPlatform = "wechat_official" | "csdn" | "cnblogs" | "juejin" | "51cto";
 export type AccountProfile = { positioning: string; targetAudience: string; prohibitedTopics: string; writingStyle: string; regularColumns: string; articleSignature: string };
 export type MediaAccount = { id: string; platform: AccountPlatform; displayName: string; externalAccountId: string | null; credentialsConfigured: boolean; profile: AccountProfile; cnblogsCategories: string[]; cnblogsTags: string[]; fiftyoneCtoPidOptions: Array<{ value: string; label: string }>; fiftyoneCtoCateOptions: Array<{ value: string; label: string }>; fiftyoneCtoCateOptionsByPid: Record<string, Array<{ value: string; label: string }>> };

@@ -301,6 +301,12 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .publish-completed-list li { flex-wrap: nowrap; align-items: center; }
 .publish-completed-list li > span:first-child { flex: 1 1 auto; min-width: 0; }
 .publish-completed-list .status-badge { flex: 0 0 auto; margin-left: auto; }
+.publish-record-actions { display: inline-flex; align-items: center; gap: .65rem; margin-left: auto; }
+.publish-lifecycle-events { display: grid; gap: .6rem; padding: 0; margin: 1rem 0 0; list-style: none; }
+.publish-lifecycle-events li { padding: .75rem .85rem; border: 1px solid #dbe5f3; border-radius: 8px; background: #fbfcff; }
+.publish-lifecycle-events li > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem; }
+.publish-lifecycle-events small { color: #6f7c92; font-size: .78rem; }
+.publish-lifecycle-events p { margin: .35rem 0 .15rem; color: #364258; }
 .publish-completed-list .publish-record-meta, .publish-completed-list .publish-record-link { margin-left: .55rem; }
 .library-pagination { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; margin-top: .9rem; }
 .library-pagination-info { color: #516078; font-size: .875rem; }

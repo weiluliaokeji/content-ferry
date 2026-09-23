@@ -39,6 +39,16 @@ export interface PublishLifecycleJobInput {
   statusSource?: PublishLifecycleSource;
 }
 
+export interface PublishLifecycleEvent {
+  id: string;
+  jobId: string;
+  previousStatus: PublishLifecycleStatus | "";
+  newStatus: PublishLifecycleStatus;
+  source: PublishLifecycleSource;
+  reason: string;
+  createdAt: string;
+}
+
 export class PublishLifecycleService {
   constructor(private readonly db: Database.Database) {}
 
@@ -136,6 +146,14 @@ export class PublishLifecycleService {
       .all(...statuses) as Array<Record<string, string | null>>).map(mapLifecycleJob);
   }
 
+  listEvents(jobId: string, limit = 100): PublishLifecycleEvent[] {
+    this.require(jobId);
+    const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+    return (this.db.prepare(`SELECT id, job_id, previous_status, new_status, source, reason, created_at
+      FROM publish_lifecycle_events WHERE job_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(jobId, safeLimit) as Array<Record<string, string | null>>).map(mapLifecycleEvent);
+  }
+
   private getByIdempotencyKey(idempotencyKey: string): PublishLifecycleJob | null {
     const row = this.db.prepare("SELECT * FROM publish_lifecycle_jobs WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, string | null> | undefined;
     return row ? mapLifecycleJob(row) : null;
@@ -186,5 +204,17 @@ function mapLifecycleJob(row: Record<string, string | null>): PublishLifecycleJo
     statusSource: row.status_source === "manual" || row.status_source === "legacy_sync" ? row.status_source : "system",
     createdAt: row.created_at ?? "",
     updatedAt: row.updated_at ?? ""
+  };
+}
+
+function mapLifecycleEvent(row: Record<string, string | null>): PublishLifecycleEvent {
+  return {
+    id: row.id ?? "",
+    jobId: row.job_id ?? "",
+    previousStatus: row.previous_status ? toPublishLifecycleStatus(row.previous_status) : "",
+    newStatus: toPublishLifecycleStatus(row.new_status ?? "failed"),
+    source: row.source === "manual" || row.source === "legacy_sync" ? row.source : "system",
+    reason: row.reason ?? "",
+    createdAt: row.created_at ?? ""
   };
 }

@@ -1,12 +1,66 @@
 import { platformName } from "../api";
+import { request } from "../api";
 import { csdnJobLabel, cnblogsJobLabel, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, publishRecordBadge } from "../publish-labels";
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { Pagination } from "../components/Pagination";
+import { Modal } from "../components/Modal";
 import type { PublishEntry } from "../app-helpers";
 import type {
   CnblogsChannelDraft, CnblogsPublishJob, CsdnChannelDraft, CsdnPublishJob,
-  FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, JuejinChannelDraft, JuejinPublishJob, MediaAccount, WechatPublishJob,
+  FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, JuejinChannelDraft, JuejinPublishJob, MediaAccount, PublishLifecycleEvent, PublishLifecycleStatus, WechatPublishJob,
 } from "../types";
+
+const lifecycleStatusLabels: Record<PublishLifecycleStatus, string> = {
+  queued: "排队中",
+  preparing: "准备中",
+  waiting_user: "等待用户操作",
+  ready: "平台草稿已就绪",
+  submitting: "提交中",
+  published: "已发布",
+  needs_credentials: "待补凭据",
+  failed: "失败",
+  needs_manual_reconciliation: "待人工核对",
+  cancelled: "已取消"
+};
+
+function lifecycleStatusLabel(status: PublishLifecycleStatus | ""): string {
+  return status ? lifecycleStatusLabels[status] : "创建任务";
+}
+
+function PublishLifecycleHistory({ jobId, platform, title }: { jobId: string; platform: string; title: string }) {
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState<PublishLifecycleEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    void request<{ events: PublishLifecycleEvent[] }>(`/publish-lifecycle/jobs/${jobId}/events`)
+      .then((payload) => { if (active) setEvents(payload.events); })
+      .catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "无法读取发布状态轨迹。"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [jobId, open]);
+
+  return <>
+    <button type="button" className="text-button" onClick={() => setOpen(true)}>状态轨迹</button>
+    {open && <Modal title="发布状态轨迹" eyebrow={`${platform} · ${title}`} onClose={() => setOpen(false)} disabled={loading}>
+      {loading && <p className="hint">正在读取状态轨迹…</p>}
+      {error && <p className="error">{error}</p>}
+      {!loading && !error && events.length === 0 && <p className="hint">暂时没有可显示的状态事件。</p>}
+      {!loading && !error && events.length > 0 && <ol className="publish-lifecycle-events">
+        {events.map((event) => <li key={event.id}>
+          <div><strong>{lifecycleStatusLabel(event.newStatus)}</strong><small>{new Date(event.createdAt).toLocaleString()} · {event.source === "manual" ? "人工" : event.source === "legacy_sync" ? "兼容同步" : "系统"}</small></div>
+          <p>{event.previousStatus ? `${lifecycleStatusLabel(event.previousStatus)} → ${lifecycleStatusLabel(event.newStatus)}` : `创建任务 → ${lifecycleStatusLabel(event.newStatus)}`}</p>
+          <small>{event.reason}</small>
+        </li>)}
+      </ol>}
+    </Modal>}
+  </>;
+}
 
 export interface PublishViewProps {
   wechatJobs: WechatPublishJob[];
@@ -205,27 +259,27 @@ export function PublishView(props: PublishViewProps) {
             const account = accounts.find((item) => item.id === job.accountId);
             const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
             const badge = publishRecordBadge(job);
-            return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${badge.tone}`}>{badge.text}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className="publish-record-actions"><PublishLifecycleHistory jobId={job.id} platform="CSDN" title={draft?.title ?? "CSDN 渠道稿"} /><span className={`status-badge ${badge.tone}`}>{badge.text}</span></span></li>;
           }
           if (entry.kind === "cnblogs") {
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
             const draft = cnblogsDrafts.find((item) => item.id === job.channelDraftId);
             const badge = publishRecordBadge(job);
-            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${badge.tone}`}>{badge.text}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "博客园渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className="publish-record-actions"><PublishLifecycleHistory jobId={job.id} platform="博客园" title={draft?.title ?? "博客园渠道稿"} /><span className={`status-badge ${badge.tone}`}>{badge.text}</span></span></li>;
           }
           if (entry.kind === "juejin") {
             const job = entry.job;
             const account = accounts.find((item) => item.id === job.accountId);
             const draft = juejinDrafts.find((item) => item.id === job.channelDraftId);
             const badge = publishRecordBadge(job);
-            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${badge.tone}`}>{badge.text}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "掘金渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className="publish-record-actions"><PublishLifecycleHistory jobId={job.id} platform="掘金" title={draft?.title ?? "掘金渠道稿"} /><span className={`status-badge ${badge.tone}`}>{badge.text}</span></span></li>;
           }
           const job = entry.job;
           const account = accounts.find((item) => item.id === job.accountId);
             const draft = fiftyoneCtoDrafts.find((item) => item.id === job.channelDraftId);
             const badge = publishRecordBadge(job);
-            return <li key={job.id}><span><strong>{draft?.title ?? "51CTO 渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className={`status-badge ${badge.tone}`}>{badge.text}</span></li>;
+            return <li key={job.id}><span><strong>{draft?.title ?? "51CTO 渠道稿"}</strong><small className="publish-record-meta">{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{new Date(job.updatedAt).toLocaleString()}</small>{job.statusSource === "manual" && job.statusNote && <small className="manual-status-note">人工核实：{job.statusNote}</small>}{job.remoteUrl && <small className="publish-record-link"><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}</span><span className="publish-record-actions"><PublishLifecycleHistory jobId={job.id} platform="51CTO" title={draft?.title ?? "51CTO 渠道稿"} /><span className={`status-badge ${badge.tone}`}>{badge.text}</span></span></li>;
         })}</ul>
         <Pagination
           page={completedSafePage}
