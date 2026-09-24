@@ -123,7 +123,7 @@ scripts/        构建、打包和验证脚本
 |---|---|
 | `src/renderer/` | `npm run typecheck`，并人工验证受影响交互 |
 | `src/main/`、`src/shared/`、数据库或本地 API | `npm run typecheck` + `npm test` |
-| preload、IPC、Electron 生命周期或原生模块 | 上述检查 + `npm run dev` 完整启动验证 |
+| preload、IPC、Electron 生命周期、窗口创建或打包脚本 | 上述检查 + **生产构建启动验证**（见下），`npm run dev` 不足以覆盖 |
 | 依赖、构建配置或打包脚本 | `npm run build`；发布相关改动再运行对应打包/安装验证 |
 | 文件删除、迁移、发布状态或恢复逻辑 | 增加/更新针对性测试，并验证失败路径 |
 
@@ -136,9 +136,32 @@ npm run dev
 npm run build
 npm run dist:portable
 npm run verify:installer
+npm run verify:boot
 ```
 
 不要声称未实际执行的测试已经通过。因环境限制无法完成 GUI、外部平台或安装包验证时，明确列出需要用户执行的步骤。
+
+### SQLite schema 变更
+
+每次修改 SQLite 表、列、索引、约束或持久化数据语义时，都要把新建库与旧库升级作为同一项工作完成：
+
+- 为每个已发布的 schema 变化增加有序、不可改写的迁移；新建数据库也从初始 schema 按同一迁移链创建。数据库记录已应用的迁移版本，启动时只按顺序执行未应用项。已发布迁移不得重排、删除或修改；需要修正时追加新迁移。
+- 对可安全补充的简单列，可用结构协调逻辑兜底；重命名、数据转换、约束/主键变化和表重建必须写明确迁移。`CREATE TABLE IF NOT EXISTS` 或检查缺列不能代替完整迁移。
+- 在迁移事务中一并写入迁移完成记录；迁移失败时保留原 schema 版本并停止业务启动，给出可诊断错误。应用必须识别比自身支持版本更新的数据库并拒绝写入，提示恢复或升级程序。
+- 会改写用户数据库的应用升级必须先生成可恢复的一致性备份；使用 SQLite 支持 WAL 的备份方式。验证迁移后的关键 schema、数据不变量和 `foreign_key_check`，确认成功后才开放业务服务。明确升级回退使用旧库备份恢复，不能假定旧程序可直接打开新版数据库。
+- 测试从空库创建当前 schema，并从受支持的历史 schema fixture 逐版升级到当前版本；验证旧记录保留、默认值/转换正确、索引和约束符合预期、迁移可重复启动，以及中途失败后原库可恢复。每增加 schema 迁移，都必须增加对应旧结构和数据的针对性测试；只测试最新版空库不算完成。
+- schema、迁移 runner、备份/恢复或升级行为变化时，同步更新 `spec/02-development-design.md`；若影响 Windows portable/安装版升级或回退，再更新 `spec/04-windows-packaging-and-ai-setup.md` 与相关构建说明。
+
+### 生产构建启动验证（dev 验证不到打包版）
+
+`npm run dev` 由 `scripts/dev-desktop.mjs` 注入 `CONTENTFERRY_DEV_SERVER_URL`，主窗口走 `loadURL` 分支，**永远不会执行打包版的 `loadFile` 路径**。因此任何触碰主窗口创建、`preload` 接线、`loadFile` 入口或 `app.getAppPath()` 的改动，不能用「`npm run dev` 启动过」来判定为已验证。这类改动的最低验证：
+
+- `npm run build` 成功（编译产物落盘）；
+- `npm run dist:portable` 产出可运行包；
+- `npm run verify:installer` 通过（含 `startup entry files present`、`preload bundled`、`startup path safety` 三项门禁，其中 `startup path safety` 静态禁止启动资产再用 `__dirname` 往上跳目录）；
+- `npm run verify:boot` 通过（无头启动打包后的 exe，确认主窗口能加载、不会白屏即退）。本地若已有其他文渡实例占用端口 4317 会误报，应在无其他实例时运行，或依赖 CI。
+
+CI 的 `dist:win` 流水线已把 `verify:installer` 与 `verify:boot` 串成发布前门禁；`master`/PR 暂无 CI，打 tag 之前务必在本地完成上述生产构建启动验证。
 
 ## 新增依赖
 
