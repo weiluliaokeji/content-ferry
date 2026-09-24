@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { Usage, ThreadEvent } from "@openai/codex-sdk";
+import { detectCodexBinary } from "../config/first-run";
 import {
   ModelProviderUnavailableError,
   type GenerateStructuredRequest,
@@ -18,11 +19,32 @@ type CodexSdkModule = typeof import("@openai/codex-sdk");
 // copying any Codex/Hermes runtime code into ContentFerry.
 const importEsm = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<CodexSdkModule>;
 
+/** Model the bundled codex-cli passes to the ChatGPT-account backend. The CLI
+ *  inherits the user's global ~/.codex/config.toml (managed by the standalone
+ *  Codex app, which may pin a model newer than the bundled binary supports and
+ *  that the ChatGPT-account codex backend rejects). Passing an explicit model
+ *  keeps the app immune to that skew; gpt-6-luna is what the bundled binary
+ *  (0.156.x) and the account currently use. Keep in sync when the bundled
+ *  codex binary is upgraded. */
+const CODEX_DEFAULT_MODEL = "gpt-6-luna";
+
+function effectiveModel(modelId?: string): string {
+  return modelId?.trim() || CODEX_DEFAULT_MODEL;
+}
+
 export class OpenAICodexProvider implements ModelProvider {
   readonly id = "openai-codex";
 
+  private readonly codexPathOverride: string | undefined;
+
   constructor(private readonly sandboxDirectory: string) {
     fs.mkdirSync(sandboxDirectory, { recursive: true });
+    // The SDK resolves the bundled codex.exe through require.resolve, which
+    // returns an app.asar path for unpacked binaries. child_process.spawn
+    // cannot execute files at an asar path (Electron only redirects execFile),
+    // so pass the real app.asar.unpacked path explicitly.
+    const detected = detectCodexBinary();
+    this.codexPathOverride = detected.ok && detected.binaryPath ? detected.binaryPath : undefined;
   }
 
   async generateStructured<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
@@ -37,7 +59,7 @@ export class OpenAICodexProvider implements ModelProvider {
 
     try {
       const { Codex } = await importEsm("@openai/codex-sdk");
-      const codex = new Codex({ config: { mcp_servers: {} } });
+      const codex = new Codex({ codexPathOverride: this.codexPathOverride, config: { mcp_servers: {} } });
       const thread = codex.startThread({
         workingDirectory: this.sandboxDirectory,
         skipGitRepoCheck: true,
@@ -45,7 +67,7 @@ export class OpenAICodexProvider implements ModelProvider {
         approvalPolicy: "never",
         networkAccessEnabled: allowWebSearch,
         webSearchMode: allowWebSearch ? "live" : "disabled",
-        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
+        model: effectiveModel(request.modelId),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
 
@@ -62,7 +84,7 @@ export class OpenAICodexProvider implements ModelProvider {
         return {
           value: request.parse(value),
           provider: this.id,
-          model: request.modelId?.trim() || null,
+          model: effectiveModel(request.modelId),
           usage: mapUsage(usage)
         };
       }
@@ -101,7 +123,7 @@ export class OpenAICodexProvider implements ModelProvider {
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 120_000);
     try {
       const { Codex } = await importEsm("@openai/codex-sdk");
-      const codex = new Codex({ config: { mcp_servers: {} } });
+      const codex = new Codex({ codexPathOverride: this.codexPathOverride, config: { mcp_servers: {} } });
       const thread = codex.startThread({
         workingDirectory: this.sandboxDirectory,
         skipGitRepoCheck: true,
@@ -109,7 +131,7 @@ export class OpenAICodexProvider implements ModelProvider {
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
-        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
+        model: effectiveModel(request.modelId),
         modelReasoningEffort: "low"
       });
       const turn = await thread.run([
@@ -150,7 +172,7 @@ export class OpenAICodexProvider implements ModelProvider {
     try {
       request.onStatus?.("正在启动 Codex 会话…");
       const { Codex } = await importEsm("@openai/codex-sdk");
-      const codex = new Codex({ config: { mcp_servers: {} } });
+      const codex = new Codex({ codexPathOverride: this.codexPathOverride, config: { mcp_servers: {} } });
       const thread = codex.startThread({
         workingDirectory: this.sandboxDirectory,
         skipGitRepoCheck: true,
@@ -158,7 +180,7 @@ export class OpenAICodexProvider implements ModelProvider {
         approvalPolicy: "never",
         networkAccessEnabled: false,
         webSearchMode: "disabled",
-        ...(request.modelId?.trim() ? { model: request.modelId.trim() } : {}),
+        model: effectiveModel(request.modelId),
         modelReasoningEffort: request.task === "outline" ? "low" : "medium"
       });
       const streamed = await thread.runStreamed(`${request.prompt}\n\n直接逐步输出完整 Markdown，不要输出 JSON、解释或代码围栏。`, { signal: controller.signal });

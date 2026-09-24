@@ -38,7 +38,7 @@
     "@milkdown/crepe": "^7.21.3",
     "@milkdown/kit": "^7.21.3",
     "@milkdown/react": "^7.21.3",
-    "@openai/codex-sdk": "^0.144.6",
+    "@openai/codex-sdk": "^0.156.1",
     "@resvg/resvg-js": "2.6.2",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.6.0",
