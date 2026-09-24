@@ -1314,6 +1314,7 @@ export function App() {
       markdown={sourceArticle.markdown}
       assetContextId={sourceAssetContextId(sourceArticle.relativePath)}
       sourceArticlePath={sourceArticle.relativePath}
+      projectId={projects.find((project) => project.sourceRelativePath === sourceArticle.relativePath)?.id}
       accounts={accounts}
       initialRightPanel={articleWorkspacePanel}
       saving={saving}

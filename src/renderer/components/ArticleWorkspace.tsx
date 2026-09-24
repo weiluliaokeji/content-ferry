@@ -10,8 +10,9 @@ import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { ExecutionPanel } from "./ExecutionPanel";
+import { Modal } from "./Modal";
 import { isCurrentImageSearchRequest } from "./image-search-utils";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentPracticePlan, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
 
 type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
 
@@ -84,6 +85,10 @@ export function ArticleWorkspace({
   const [collectionHistory, setCollectionHistory] = useState<string[]>([]);
   const [collectionsSyncedAt, setCollectionsSyncedAt] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
+  const [practicePlanViewerOpen, setPracticePlanViewerOpen] = useState(false);
+  const [practicePlanViewer, setPracticePlanViewer] = useState<ContentPracticePlan | null>(null);
+  const [practicePlanViewerLoading, setPracticePlanViewerLoading] = useState(false);
+  const [practicePlanViewerError, setPracticePlanViewerError] = useState("");
   const [imageSearchQuery, setImageSearchQuery] = useState("");
   const [imageCandidates, setImageCandidates] = useState<ImageSearchResultItem[]>([]);
   const [imageSearchBusy, setImageSearchBusy] = useState(false);
@@ -1186,12 +1191,26 @@ export function ArticleWorkspace({
     setLeavePromptOpen(false);
     onBack();
   };
+  const openPracticePlanViewer = async () => {
+    setPracticePlanViewerOpen(true);
+    setPracticePlanViewer(null);
+    setPracticePlanViewerLoading(Boolean(projectId));
+    setPracticePlanViewerError("");
+    if (!projectId) return;
+    try {
+      setPracticePlanViewer(await request<ContentPracticePlan | null>(`/content-projects/${projectId}/practice-plan`));
+    } catch (error) {
+      setPracticePlanViewerError(error instanceof Error ? error.message : "无法读取实践计划。");
+    } finally {
+      setPracticePlanViewerLoading(false);
+    }
+  };
   const editorWorkspaceStyle = awenOpen ? { "--awen-bottom-height": `${awenBottomHeightPercent}vh` } as CSSProperties : undefined;
   return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`} style={editorWorkspaceStyle}>
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
-      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{channelHandoffPlatform && onEnterChannel
+      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{!generating && <button type="button" className="secondary-button" onClick={() => void openPracticePlanViewer()} disabled={practicePlanViewerLoading}>{practicePlanViewerLoading ? "正在读取计划…" : "查看实践计划"}</button>}{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{channelHandoffPlatform && onEnterChannel
   ? <button onClick={() => void enterChannelDraft()} disabled={busy || generating}>进入{platformName(channelHandoffPlatform)}渠道稿</button>
   : onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
@@ -1337,6 +1356,13 @@ export function ArticleWorkspace({
     {imagePreviewCandidate && <ImageCandidatePreviewModal candidate={imagePreviewCandidate} onClose={() => setImagePreviewCandidate(undefined)} />}
     {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
     {leavePromptOpen && <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-label="保存文章修改"><div className="section-heading"><div><p className="eyebrow">离开文章</p><h2>文章还有未保存修改</h2></div><button type="button" className="text-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button></div><p className="hint">{unsavedAwenSuggestionIds.size > 0 ? `其中有 ${unsavedAwenSuggestionIds.size} 条阿文建议已经应用到当前草稿，但还没有保存到文章文件。` : "当前文章还有未保存的修改。"}</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button><button type="button" className="secondary-button" onClick={discardAndLeave} disabled={leaving}>放弃本次修改</button><button type="button" onClick={() => void saveAndLeave()} disabled={leaving}>{leaving ? "正在保存…" : "保存并返回"}</button></div></section></div>}
+    {practicePlanViewerOpen && <Modal title="最小实践计划" eyebrow="正文起草前保存的计划" onClose={() => setPracticePlanViewerOpen(false)} disabled={practicePlanViewerLoading} closeOnBackdrop={false} wide>
+      {practicePlanViewerLoading ? <p className="hint">正在读取已保存的实践计划…</p> : practicePlanViewerError ? <p className="error" role="alert">{practicePlanViewerError}</p> : practicePlanViewer ? <>
+        <p className="hint">状态：{practicePlanViewer.status === "confirmed" ? "已确认" : practicePlanViewer.status === "skipped" ? "已选择不新增实践" : "暂存中"} · 更新于 {new Date(practicePlanViewer.updatedAt).toLocaleString()}</p>
+        <p className="hint compact-hint">计划记录的是建议步骤，不代表步骤已经执行。实际执行结果请在左侧“资料来源”中查看实验观察卡及其采纳状态。</p>
+        <pre className="practice-plan-viewer">{practicePlanViewer.markdown}</pre>
+      </> : <p className="hint">{!projectId ? "当前文章没有关联的文渡创作项目，因此没有可回看的实践计划。" : "这篇文章没有保存的实践计划。"}</p>}
+    </Modal>}
   </div>;
 }
 

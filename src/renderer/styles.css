@@ -440,6 +440,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .practice-plan-progress { display: flex; flex-direction: column; gap: .6rem; }
 .practice-plan-progress .generation-progress { margin: 0; }
 .practice-plan-stream-preview { max-height: 320px; overflow: auto; padding: .85rem 1rem; border: 1px solid #e2e8f5; border-radius: 10px; background: #fbfcfe; color: #26324a; font-size: .92rem; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.practice-plan-viewer { max-height: 60vh; margin: 0; padding: 1rem; overflow: auto; border: 1px solid #dbe5f3; border-radius: 9px; background: #f8faff; color: #26324a; font: .92rem/1.7 "Microsoft YaHei UI", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
 .practice-plan-stream-preview::after { content: "▍"; margin-left: 1px; color: #315bd8; animation: caret-blink 1s step-end infinite; }
 @keyframes caret-blink { 50% { opacity: 0; } }
 .execution-observation { display: grid; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
