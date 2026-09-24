@@ -50,6 +50,57 @@ function locateUnpackedDir(releaseDir, explicit) {
   return null;
 }
 
+// L1 guard: the production startup assets (main window loadFile + preload, and
+// the research stealth preload) MUST be resolved from app.getAppPath(), never
+// from a __dirname-relative path that silently breaks when a file is moved
+// between directories. The v0.2.2 white-flash regression came from exactly
+// this: windows.ts was moved during a refactor and a `../../renderer/index.html`
+// relative path no longer resolved, so loadFile threw ERR_FILE_NOT_FOUND and the
+// app exited cleanly (code 1) with no window. `npm run dev` never caught it
+// because dev injects CONTENTFERRY_DEV_SERVER_URL and takes the loadURL branch.
+//
+// This check scans the two source files that wire startup assets and fails if
+// any of them regresses to a __dirname-relative path that goes up a directory,
+// or drops the app.getAppPath() anchor. Same-directory __dirname usage (e.g.
+// svg-rasterizer.ts) is intentionally NOT in scope — only startup assets are.
+function checkStartupPathSafety() {
+  const sourceFiles = [
+    path.join(projectRoot, "src", "main", "automation", "windows.ts"),
+    path.join(projectRoot, "src", "main", "automation", "research-automation.ts")
+  ];
+  // The exact broken literal that caused the v0.2.2 white-flash crash.
+  const forbiddenLiteral = "../../renderer/index.html";
+  // A __dirname path that goes UP a directory is depth-sensitive and is the
+  // class of bug we guard against for startup assets.
+  const upDirPattern = /path\.join\(\s*__dirname\s*,\s*["'][^"']*\.\./;
+  for (const file of sourceFiles) {
+    if (!existsSync(file)) {
+      failCheck("startup path safety", `source file missing: ${path.relative(projectRoot, file)}`);
+      continue;
+    }
+    const text = readFileSync(file, "utf8");
+    const name = path.basename(file);
+    if (text.includes(forbiddenLiteral)) {
+      failCheck("startup path safety", `${name} still contains the broken literal ${forbiddenLiteral}`);
+      continue;
+    }
+    if (upDirPattern.test(text)) {
+      failCheck(
+        "startup path safety",
+        `${name} uses a __dirname-relative path that goes up a directory for a startup asset`
+      );
+      continue;
+    }
+    // Any file that wires a startup asset (loadFile / preload / stealth preload)
+    // must anchor it on app.getAppPath().
+    if (/loadFile\(|preload:|research-stealth-preload\.js/.test(text) && !text.includes("app.getAppPath()")) {
+      failCheck("startup path safety", `${name} wires a startup asset without app.getAppPath()`);
+      continue;
+    }
+    pass("startup path safety", `${name} resolves startup assets via app.getAppPath()`);
+  }
+}
+
 async function main() {
   const { default: asar } = await import("@electron/asar");
 
@@ -60,6 +111,11 @@ async function main() {
   }
 
   console.log(`\x1b[36mVerifying artifacts in: ${args.releaseDir}\x1b[0m\n`);
+
+  // Static guard against the startup-path regression class. Runs off the
+  // source tree, so it is deterministic and needs no GUI — it is part of the
+  // CI gate via `npm run dist:win` (which calls this script at step 7/7).
+  checkStartupPathSafety();
 
   // List top-level artifacts.
   const topEntries = readdirSync(args.releaseDir, { withFileTypes: true });
@@ -157,6 +213,17 @@ async function main() {
         pass("startup entry files present", `${mainEntry} + dist/renderer/index.html`);
       } catch (error) {
         failCheck("startup entry files present", String(error));
+      }
+
+      // 主窗口 preload 同样由 tsconfig.main.json 固定编译到
+      // dist/main/main/preload.js，且 windows.ts 已改用 app.getAppPath() 定位。
+      // 单独校验，避免 preload 路径回归（v0.2.2 之前与 loadFile 同源的 __dirname
+      // 深度坑：少写一层会让 preload 静默缺失，窗口创建失败）。
+      try {
+        asar.extractFile(asarPath, path.join("dist", "main", "main", "preload.js"));
+        pass("main window preload bundled", "dist/main/main/preload.js");
+      } catch (error) {
+        failCheck("main window preload bundled", String(error));
       }
 
       // Electron loads this file through file://. Root-relative Vite assets

@@ -10,6 +10,8 @@
 //   6. Production build (tsc + vite)
 //   7. Package (electron-builder, with extra files from the config in
 //      package.json#build)
+//   7.5 Headless boot smoke test — launches the packaged exe to exercise the
+//       production loadFile path that `npm run dev` never runs (v0.2.2 fix)
 //
 // Windows-specific background work (steps 0 and 6.5):
 //
@@ -688,6 +690,15 @@ async function main() {
   // 7) Post-verify.
   step("7/7  Verify installer contents");
   await nodeExec(path.join(projectRoot, "scripts", "verify-installer.mjs"), [
+    "--release-dir",
+    path.join(projectRoot, "release")
+  ]);
+
+  // 7.5) Headless boot smoke test. `npm run dev` never exercises the
+  //      production loadFile path, so this is the only automated gate that
+  //      catches a white-flash startup crash before the tag is published.
+  step("7.5/8  Headless boot smoke test");
+  await nodeExec(path.join(projectRoot, "scripts", "verify-boot.mjs"), [
     "--release-dir",
     path.join(projectRoot, "release")
   ]);

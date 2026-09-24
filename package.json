@@ -31,7 +31,8 @@
     "dist": "node scripts/build-installer.mjs",
     "dist:win": "node scripts/build-installer.mjs --win",
     "dist:portable": "node scripts/build-installer.mjs --win --portable",
-    "verify:installer": "node scripts/verify-installer.mjs"
+    "verify:installer": "node scripts/verify-installer.mjs",
+    "verify:boot": "node scripts/verify-boot.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
