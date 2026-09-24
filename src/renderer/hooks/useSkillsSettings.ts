@@ -153,7 +153,16 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
     setError("");
     setConnectionCreating(true);
   };
-  const closeConnectionModal = () => {
+  const closeConnectionModal = (force = false) => {
+    if (!force && editingConnection && (
+      editingConnection.displayName?.trim() ||
+      editingConnection.modelId?.trim() ||
+      editingConnection.baseUrl?.trim() ||
+      editingConnection.proxyUrl?.trim() ||
+      connectionCredential
+    )) {
+      if (!window.confirm("当前连接配置尚未保存，确定放弃已输入的内容吗？")) return;
+    }
     setEditingConnection(undefined);
     setConnectionCredential("");
     setConnectionCreating(false);
@@ -195,7 +204,7 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
     try {
       await request<void>(`/model-connections/${encodeURIComponent(provider)}`, { method: "DELETE" });
       setError("");
-      if (editingConnection?.provider === provider) closeConnectionModal();
+      if (editingConnection?.provider === provider) closeConnectionModal(true);
       await loadSkillsAndConnections();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "模型连接删除失败。");
