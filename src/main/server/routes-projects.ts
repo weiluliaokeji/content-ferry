@@ -446,6 +446,23 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return contentPracticePlans.save(params.projectId, markdown, "draft");
   });
 
+  server.post("/api/content-projects/:projectId/practice-plan/generate/stream", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    // Streams live progress for the practice-plan dialog (status + growing
+    // Markdown) so it never looks frozen. The finished markdown is persisted as
+    // a draft before `complete`, so the renderer gets the saved record directly
+    // instead of re-reading it with a second request.
+    return streamMarkdownGeneration(
+      request,
+      reply,
+      (onDelta, onStatus, signal) => aiContent.generatePracticePlanStream(params.projectId, onDelta, onStatus, signal),
+      params.projectId,
+      null,
+      async (markdown) => ({ ...contentPracticePlans.save(params.projectId, markdown, "draft") })
+    );
+  });
+
   server.put("/api/content-projects/:projectId/practice-plan", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const input = practicePlanInput.parse(request.body);

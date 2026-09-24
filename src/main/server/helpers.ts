@@ -83,7 +83,12 @@ export async function streamMarkdownGeneration(
   reply: FastifyReply,
   generate: (onDelta: (markdown: string) => void, onStatus: (message: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown }>,
   projectId: string,
-  sourceRelativePath?: string | null
+  sourceRelativePath?: string | null,
+  // Optional hook that persists the finished markdown before the stream closes
+  // (the practice plan is saved as a draft right away). Its return value is
+  // merged into the `complete` frame so the renderer does not need to re-read
+  // the record with a second request.
+  finalize?: (markdown: string) => Promise<Record<string, unknown>>
 ) {
   const controller = new AbortController();
   const abort = () => {
@@ -131,7 +136,8 @@ export async function streamMarkdownGeneration(
   }, 2_000);
   try {
     const generated = await generate((markdown) => send("delta", { markdown }), reportStatus, controller.signal);
-    send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage });
+    const finalized = finalize ? await finalize(generated.value.markdown) : undefined;
+    send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage, ...finalized });
   } catch (error) {
     send("error", { error: error instanceof Error ? error.message : "AI 生成失败。", cancelled: controller.signal.aborted });
   } finally {

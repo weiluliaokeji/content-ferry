@@ -92,9 +92,17 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [outlineTitleSuggesting, setOutlineTitleSuggesting] = useState(false);
   const [outlineRefining, setOutlineRefining] = useState(false);
   const [outlinePreviousMarkdown, setOutlinePreviousMarkdown] = useState<string>();
+  const [outlineRegenerated, setOutlineRegenerated] = useState(false);
+  const [titleEditProject, setTitleEditProject] = useState<ContentProject>();
+  const [titleEditText, setTitleEditText] = useState("");
+  const [titleEditSuggestions, setTitleEditSuggestions] = useState<string[]>([]);
+  const [titleEditSuggesting, setTitleEditSuggesting] = useState(false);
   const [practicePlanProject, setPracticePlanProject] = useState<ContentProject>();
   const [practicePlan, setPracticePlan] = useState<ContentPracticePlan>();
   const [practicePlanBusy, setPracticePlanBusy] = useState(false);
+  const [practicePlanGenerating, setPracticePlanGenerating] = useState(false);
+  const [practicePlanGenerationStatus, setPracticePlanGenerationStatus] = useState("");
+  const practicePlanAbortRef = useRef<AbortController | undefined>(undefined);
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
   const setOutlineAbortRef = (value: AbortController | undefined) => {
     outlineAbortRef.current = value;
@@ -628,8 +636,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     } catch (cause) { setResearchError(cause instanceof Error ? cause.message : "手工资料卡保存失败。"); }
     finally { setResearchFollowingUp(false); }
   };
-  const generateOutline = async (project: ContentProject) => {
-    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…"); setOutlineRefinementProposal(undefined); setOutlinePreviousMarkdown(undefined);
+  const generateOutline = async (project: ContentProject, previousMarkdown?: string) => {
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…"); setOutlineRefinementProposal(undefined); setOutlinePreviousMarkdown(previousMarkdown);
     try {
       const controller = new AbortController();
       outlineAbortRef.current = controller;
@@ -645,13 +653,61 @@ export function useWorkbench(params: UseWorkbenchParams) {
     finally { setOutlineGenerating(false); outlineAbortRef.current = undefined; }
   };
   const openOutline = async (project: ContentProject) => {
-    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0); setOutlineRefinementMode("structure"); setOutlineRefinementInstruction(""); setOutlineRefinementProposal(undefined); setOutlineTitleSuggestions([]); setOutlineTitleSuggesting(false); setOutlinePreviousMarkdown(undefined);
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0); setOutlineRefinementMode("structure"); setOutlineRefinementInstruction(""); setOutlineRefinementProposal(undefined); setOutlineTitleSuggestions([]); setOutlineTitleSuggesting(false); setOutlinePreviousMarkdown(undefined); setOutlineRegenerated(false);
     try {
       const draft = await request<ContentOutline | null>(`/content-projects/${project.id}/outline/draft`);
       if (draft?.markdown.trim()) { setOutline(draft); setOutlineHasDraft(true); return; }
       if (project.outlineReady) { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); return; }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); return; }
     await generateOutline(project);
+  };
+  const regenerateOutline = async (project: ContentProject) => {
+    if (outlineGenerating) return;
+    let previous: string | undefined;
+    try {
+      if (project.outlineReady) {
+        const existing = await request<ContentOutline>(`/content-projects/${project.id}/outline`);
+        previous = existing?.markdown?.trim() ? existing.markdown : undefined;
+      } else if (project.outlineDraftReady) {
+        const draft = await request<ContentOutline | null>(`/content-projects/${project.id}/outline/draft`);
+        previous = draft?.markdown?.trim() ? draft.markdown : undefined;
+      }
+    } catch {
+      previous = undefined;
+    }
+    setOutlineRegenerated(true);
+    await generateOutline(project, previous);
+  };
+  const openTitleEdit = (project: ContentProject) => {
+    setTitleEditProject(project); setTitleEditText(project.topic); setTitleEditSuggestions([]); setTitleEditSuggesting(false);
+  };
+  const closeTitleEdit = () => { setTitleEditProject(undefined); setTitleEditText(""); setTitleEditSuggestions([]); setTitleEditSuggesting(false); };
+  const suggestResearchTitle = async () => {
+    if (!titleEditProject || titleEditSuggesting) return;
+    setTitleEditSuggesting(true); setTitleEditSuggestions([]);
+    try {
+      const brief = await request<ContentBrief>(`/content-projects/${titleEditProject.id}/brief`);
+      const suggested = await request<TitleSuggestion>(`/content-projects/${titleEditProject.id}/title/suggest`, {
+        method: "POST",
+        body: JSON.stringify({ topic: brief.topic || titleEditProject.topic, objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes })
+      });
+      setTitleEditSuggestions(suggested.titles);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法推荐文章标题。");
+    } finally { setTitleEditSuggesting(false); }
+  };
+  const saveTitleEdit = async () => {
+    if (!titleEditProject || !titleEditText.trim()) return;
+    try {
+      const updated = await request<ContentProject>(`/content-projects/${titleEditProject.id}/title`, { method: "PUT", body: JSON.stringify({ title: titleEditText.trim() }) });
+      await Promise.all([loadProjects(), refreshSourcePreview()]);
+      // 改标题会同时改写文章 H1 并按新标题重命名文章目录，服务端返回的是改名后的项目快照。
+      // 资料工作台用的是打开时的项目副本，这里必须同步，否则界面仍显示旧标题、旧路径。
+      setResearchProject((current) => current && current.id === titleEditProject.id ? { ...current, ...updated } : current);
+      closeTitleEdit();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "文章标题保存失败。");
+    }
   };
   const switchOutlineToMarkdown = (offset: number) => {
     setOutlineModeScrollOffset(offset);
@@ -724,6 +780,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (!outline || outlinePreviousMarkdown === undefined) return;
     setOutline({ ...outline, markdown: outlinePreviousMarkdown });
     setOutlinePreviousMarkdown(undefined);
+    setOutlineRegenerated(false);
   };
   const openDraftAfterPracticePlan = async (project: ContentProject) => {
     setDraftProject(project); setDraft(undefined); setSaving(false); setDraftGenerationStatus("");
@@ -754,19 +811,40 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (project.draftReady) return openDraftAfterPracticePlan(project);
     setPracticePlanProject(project);
     setPracticePlan(undefined);
-    setPracticePlanBusy(true);
+    setPracticePlanGenerationStatus("正在准备实践计划生成任务…");
     try {
       const existing = await request<ContentPracticePlan | null>(`/content-projects/${project.id}/practice-plan`);
-      const plan = existing ?? await request<ContentPracticePlan>(`/content-projects/${project.id}/practice-plan/generate`, { method: "POST" });
-      if (plan.status === "confirmed" || plan.status === "skipped") {
+      if (existing && existing.status !== "draft") {
+        // Already confirmed or explicitly skipped — there is nothing left to ask.
         setPracticePlanProject(undefined);
         return openDraftAfterPracticePlan(project);
       }
+      setPracticePlan(existing ?? { projectId: project.id, markdown: "", status: "draft", updatedAt: "" });
+      // A stored draft is shown as-is; only a missing plan needs generation.
+      if (existing) return;
+      const controller = new AbortController();
+      practicePlanAbortRef.current = controller;
+      setPracticePlanGenerating(true);
+      const plan = await streamGeneration<ContentPracticePlan>(`/content-projects/${project.id}/practice-plan/generate/stream`, controller.signal, (event, data) => {
+        if (event === "delta") setPracticePlan((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+        if (event === "status") setPracticePlanGenerationStatus(String(data.message ?? "阿文正在拟定最小实践计划…"));
+      });
       setPracticePlan(plan);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法生成最小实践计划。");
-      setPracticePlanProject(undefined);
-    } finally { setPracticePlanBusy(false); }
+      // A user-initiated stop is not an error; cancelling already reset the state.
+      if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) {
+        setError(cause instanceof Error ? cause.message : "无法生成最小实践计划。");
+        setPracticePlanProject(undefined);
+      }
+    } finally { setPracticePlanGenerating(false); practicePlanAbortRef.current = undefined; }
+  };
+  const cancelPracticePlanGeneration = () => {
+    practicePlanAbortRef.current?.abort();
+    practicePlanAbortRef.current = undefined;
+    setPracticePlanGenerating(false);
+    setPracticePlanGenerationStatus("");
+    setPracticePlanProject(undefined);
+    setPracticePlan(undefined);
   };
   const savePracticePlan = async (status: ContentPracticePlan["status"], generateDraft = false) => {
     if (!practicePlanProject || !practicePlan?.markdown.trim()) return;
@@ -952,6 +1030,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
     practicePlan,
     setPracticePlan,
     practicePlanBusy,
+    practicePlanGenerating,
+    practicePlanGenerationStatus,
+    cancelPracticePlanGeneration,
     researchProject,
     setResearchProject,
     research,
@@ -1037,6 +1118,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     addManualResearchSource,
     generateOutline,
     openOutline,
+    regenerateOutline,
     switchOutlineToMarkdown,
     switchOutlineToVisual,
     saveOutline,
@@ -1047,6 +1129,16 @@ export function useWorkbench(params: UseWorkbenchParams) {
     applyOutlineRefinement,
     discardOutlineRefinement,
     undoOutlineRefinement,
+    outlineRegenerated,
+    openTitleEdit,
+    closeTitleEdit,
+    suggestResearchTitle,
+    saveTitleEdit,
+    titleEditProject,
+    titleEditText,
+    setTitleEditText,
+    titleEditSuggestions,
+    titleEditSuggesting,
     openDraft,
     savePracticePlan,
     saveDraft,

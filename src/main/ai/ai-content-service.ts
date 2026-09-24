@@ -75,6 +75,28 @@ export class AiContentService {
     return generated.value.markdown;
   }
 
+  /**
+   * Streaming variant used by the practice-plan dialog so the user sees live
+   * progress instead of a frozen "正在拟定…" placeholder. Providers without
+   * streaming support fall back to the one-shot call and emit a single delta.
+   */
+  async generatePracticePlanStream(projectId: string, onDelta: (markdown: string) => void, onStatus?: (message: string) => void, signal?: AbortSignal): Promise<GenerateStructuredResult<{ markdown: string }>> {
+    const context = this.getContext(projectId);
+    if (!this.provider.generateMarkdownStream) {
+      const markdown = await this.generatePracticePlan(projectId);
+      onDelta(markdown);
+      return { value: { markdown }, provider: this.provider.id, model: null, usage: null };
+    }
+    return this.provider.generateMarkdownStream({
+      task: "outline",
+      prompt: buildPracticePlanPrompt(context),
+      timeoutMs: 240_000,
+      onDelta,
+      onStatus: (message) => onStatus?.(translatePracticePlanStatus(message)),
+      signal
+    });
+  }
+
   async generateResearch(projectId: string, onStatus?: (message: string) => void, options?: Pick<WebResearchOptions, "depth">): Promise<GenerateStructuredResult<ResearchCard>> {
     const context = this.getContext(projectId);
     const researchContext: WebResearchContext = {
@@ -338,6 +360,21 @@ function translateResearchStatus(message: string): string {
   if (message.includes("分析完成")) return "资料分析完成，正在生成资料卡…";
   if (message.includes("整理内容") || message.includes("整理可追溯")) return "正在整理可追溯资料卡…";
   if (message.includes("本地会话")) return "已建立联网检索会话";
+  return message;
+}
+
+/** Provider lifecycle text is written for the outline/draft flows. Translate the
+ *  generic phases into practice-plan wording so this dialog never claims to be
+ *  "撰写提纲" while the model is drafting the practice plan. Intentionally
+ *  model-agnostic: synthesis may run on any configured text model, so we must
+ *  not hard-code "Codex" here. */
+function translatePracticePlanStatus(message: string): string {
+  if (message.includes("开始处理任务") || message.includes("已连接模型")) return "已连接模型，正在读取创作简报与已确认提纲…";
+  if (message.includes("读取创作要求")) return "已建立生成会话，正在读取创作要求…";
+  if (message.includes("分析账号定位") || message.includes("理解任务要求")) return "正在梳理已采纳资料与需要验证的关键点…";
+  if (message.includes("结构规划完成")) return "步骤已列出，正在完善实践计划…";
+  if (message.includes("规划文章结构") || message.includes("分析并规划")) return "正在拟定最少需要验证的步骤…";
+  if (message.includes("整理内容") || message.includes("整理 Markdown") || message.includes("整理可追溯")) return "正在整理实践计划内容…";
   return message;
 }
 

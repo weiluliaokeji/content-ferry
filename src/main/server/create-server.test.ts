@@ -7,7 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { buildServer } from "./create-server";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
-import type { GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, ReviewImageRequest, WebResearchOptions } from "../ai/model-provider";
+import type { GenerateMarkdownStreamRequest, GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, ReviewImageRequest, WebResearchOptions } from "../ai/model-provider";
 import type { ResearchCard, WebResearchContext } from "../ai/research-prompts";
 import type { WebSearchClient } from "../ai/web-search";
 import { extractWebResearchTargets } from "../ai/awen-conversation-service";
@@ -1431,6 +1431,40 @@ describe("local API scaffold", () => {
     const runs = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research/runs` });
     expect(runs.json().items.map((run: { kind: string }) => run.kind)).toEqual(["refresh", "generate"]);
     expect(runs.json().items[1].research.sources[0]).toMatchObject({ adoptionStatus: "recommended" });
+  });
+
+  it("streams practice-plan progress and persists the generated draft before completing", async () => {
+    const plan = "# 最小实践计划\n\n## 验证一个关键步骤\n- 已有结果可直接记录，不必重跑";
+    const fakeProvider: ModelProvider = {
+      id: "test-stream-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({ markdown: plan }), provider: "test-stream-ai", model: null, usage: null };
+      },
+      async generateMarkdownStream(request: GenerateMarkdownStreamRequest) {
+        // Mirrors the Codex lifecycle events so the dialog's wording translation
+        // for this step is covered by the assertion below.
+        request.onStatus?.("Codex 会话已建立，正在读取创作要求…");
+        request.onStatus?.("正在规划文章结构…");
+        request.onDelta("# 最小实践计划\n\n## 验证一个关键步骤");
+        return { value: { markdown: plan }, provider: "test-stream-ai", model: null, usage: null };
+      }
+    };
+    server = createTestServer(fakeProvider);
+    const account = await server.inject({ method: "POST", url: "/api/media-accounts", payload: { platform: "wechat_official", displayName: "流式实践计划账号" } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "流式实践计划", targetAccountId: account.json().id } });
+
+    const stream = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-plan/generate/stream` });
+    expect(stream.statusCode).toBe(200);
+    // The dialog needs live progress frames, not only a terminal payload.
+    expect(stream.body).toContain("event: status");
+    // Outline/draft provider wording is translated for the practice-plan step.
+    expect(stream.body).toContain("已建立生成会话，正在读取创作要求…");
+    expect(stream.body).toContain("正在拟定最少需要验证的步骤…");
+    expect(stream.body).toContain("event: delta");
+    expect(parseSseCompleteEvent(stream.body)).toMatchObject({ status: "draft", markdown: plan });
+    // The finished plan is written before `complete`, so it survives a reload.
+    const stored = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/practice-plan` });
+    expect(stored.json()).toMatchObject({ status: "draft", markdown: plan });
   });
 
   it("appends follow-up research and records it in the article's Awen conversation", async () => {
