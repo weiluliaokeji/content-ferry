@@ -46,6 +46,21 @@ export function SkillsView(props: SkillsViewProps) {
   const [agentWorkspaceDir, setAgentWorkspaceDir] = useState(settings?.agentWorkspaceDir ?? "");
   const [agentWorkspaceSaving, setAgentWorkspaceSaving] = useState(false);
   const [agentWorkspaceMessage, setAgentWorkspaceMessage] = useState("");
+  const [appVersion, setAppVersion] = useState("正在读取…");
+  useEffect(() => {
+    let active = true;
+    const getVersion = window.contentFerry?.app.getVersion;
+    if (!getVersion) {
+      setAppVersion("仅桌面版可查看");
+    } else {
+      void getVersion().then((version) => {
+        if (active) setAppVersion(version);
+      }).catch(() => {
+        if (active) setAppVersion("暂时无法读取");
+      });
+    }
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     setPendingImageReviewMode(imageReviewSettings.mode);
     setPendingImageReviewProvider(imageReviewSettings.provider ?? "");
@@ -179,6 +194,9 @@ export function SkillsView(props: SkillsViewProps) {
         }}>{agentWorkspaceSaving ? "正在保存…" : "保存工作区"}</button>
       </div>
       {agentWorkspaceMessage && <p className="hint compact-hint" role="status">{agentWorkspaceMessage}</p>}
+    </section>
+    <section className="card">
+      <div className="section-heading"><div><h2>关于文渡</h2><p className="hint compact-hint">应用版本</p></div><strong aria-label="文渡版本号">{appVersion}</strong></div>
     </section>
   </>;
 }

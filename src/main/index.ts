@@ -78,6 +78,7 @@ function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
 
 
 async function registerAppSettingsIpcHandlers(): Promise<void> {
+  ipcMain.handle("app:get-version", async () => app.getVersion());
   ipcMain.handle("app:get-settings", async () => loadAppSettings());
   ipcMain.handle("app:update-settings", async (_event, patch: unknown) => {
     if (typeof patch !== "object" || patch === null) {
@@ -396,6 +397,13 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
 
 app.whenReady().then(bootstrap).catch((error: unknown) => {
   console.error("ContentFerry failed to start", error);
+  // 打包环境没有控制台，启动失败过去只表现为「窗口白闪一下就没」，用户无从排查。
+  // 这里显式弹窗把原因交给用户再退出，避免同类问题再次变成"起来不来"的黑盒。
+  dialog.showErrorBox(
+    "文渡启动失败",
+    `文渡没能完成启动：${error instanceof Error ? error.message : String(error)}\n\n` +
+      "请把此提示截图反馈给开发者；日志位于内容数据目录（「设置 → 数据目录」所示路径）下的 logs 文件夹。"
+  );
   void shutdownAndExit(1);
 });
 

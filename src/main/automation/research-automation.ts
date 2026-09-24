@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import { BrowserWindow, session } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import { BrowserVerificationRequiredError, type SearchResultItem } from "../ai/web-search";
 import { loadAppSettings } from "../config/first-run";
 import { state, enqueueResearchSearch } from "./state";
@@ -42,7 +42,10 @@ async function getOrCreateResearchBrowserWindow(): Promise<BrowserWindow> {
  * old preload) and registers it as a CDP init script on the window's debugger.
  */
 async function installResearchStealth(window: BrowserWindow): Promise<void> {
-  const stealthSourcePath = path.join(__dirname, "research-stealth-preload.js");
+  // 编译产物落在 dist/main/main/research-stealth-preload.js（本文件在 automation/
+  // 子目录下），必须用 app.getAppPath() 定位；写成同目录会让 existsSync 恒为
+  // false，隐身脚本被静默跳过、检索窗口失去抗检测伪装。
+  const stealthSourcePath = path.join(app.getAppPath(), "dist", "main", "main", "research-stealth-preload.js");
   if (!fs.existsSync(stealthSourcePath)) return;
   let source: string;
   try {

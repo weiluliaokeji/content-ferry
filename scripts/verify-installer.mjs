@@ -141,6 +141,24 @@ async function main() {
         failCheck("app.asar readable", String(error));
       }
 
+      // 启动入口必须齐备，否则 Electron 只会「窗口白闪一下就没」，而构建与单测全绿：
+      //   - 主进程入口 package.json#main（由 build.extraMetadata 覆盖）
+      //   - 渲染入口 app.getAppPath()/dist/renderer/index.html（见 src/main/automation/windows.ts）
+      try {
+        const packagedPackage = JSON.parse(asar.extractFile(asarPath, "package.json").toString("utf8"));
+        const mainEntry = typeof packagedPackage.main === "string" ? packagedPackage.main : "";
+        if (!mainEntry) throw new Error("packaged package.json has no main field");
+        // @electron/asar expects paths in the host platform's format. On
+        // Windows, package.json still uses forward slashes, while asar paths
+        // are indexed with backslashes.
+        const mainEntryPath = path.join(...mainEntry.split(/[\\/]+/));
+        asar.extractFile(asarPath, mainEntryPath);
+        asar.extractFile(asarPath, path.join("dist", "renderer", "index.html"));
+        pass("startup entry files present", `${mainEntry} + dist/renderer/index.html`);
+      } catch (error) {
+        failCheck("startup entry files present", String(error));
+      }
+
       // Electron loads this file through file://. Root-relative Vite assets
       // such as /assets/app.js resolve against the drive root and produce a
       // completely blank window even though packaging itself succeeds.

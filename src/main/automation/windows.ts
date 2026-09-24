@@ -49,7 +49,9 @@ export async function createMainWindow(): Promise<void> {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, "../preload.js")
+      // 同 loadFile：preload 由 tsconfig.main.json 固定编译到 dist/main/main/，
+      // 用 app.getAppPath() 拼接就不再受本文件所在层级影响。
+      preload: path.join(app.getAppPath(), "dist", "main", "main", "preload.js")
     }
   });
   state.mainWindow = window;
@@ -94,6 +96,9 @@ export async function createMainWindow(): Promise<void> {
   if (devServerUrl) {
     await window.loadURL(devServerUrl);
   } else {
-    await window.loadFile(path.join(__dirname, "../../renderer/index.html"));
+    // 渲染入口一律从 app.getAppPath() 解析，不要用 __dirname 的相对层数：
+    // 本文件从 index.ts 拆出来后落点变成 dist/main/main/automation，深度与源码
+    // 不同，少写一层就会让打包版 loadFile 抛 ERR_FILE_NOT_FOUND，窗口白闪即退出。
+    await window.loadFile(path.join(app.getAppPath(), "dist", "renderer", "index.html"));
   }
 }

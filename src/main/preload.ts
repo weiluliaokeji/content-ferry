@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld("contentFerry", {
   runContentAnyDetection: (markdown: string): Promise<{ status: "completed" | "needs_user"; result?: string; reference?: { label: string; score: string | null; summary: string; detail: string }; message?: string }> =>
     ipcRenderer.invoke("contentferry:run-contentany", markdown) as Promise<{ status: "completed" | "needs_user"; result?: string; reference?: { label: string; score: string | null; summary: string; detail: string }; message?: string }>,
   app: {
+    getVersion: (): Promise<string> =>
+      ipcRenderer.invoke("app:get-version") as Promise<string>,
     getSettings: (): Promise<AppSettingsContract> =>
       ipcRenderer.invoke("app:get-settings") as Promise<AppSettingsContract>,
     chooseDataDir: (): Promise<string | undefined> =>

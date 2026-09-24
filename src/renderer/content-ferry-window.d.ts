@@ -67,6 +67,7 @@ declare global {
         message?: string;
       }>;
       app: {
+        getVersion: () => Promise<string>;
         getSettings: () => Promise<AppSettings>;
         chooseDataDir: () => Promise<string | undefined>;
         chooseAgentWorkspaceDir: () => Promise<string | undefined>;
