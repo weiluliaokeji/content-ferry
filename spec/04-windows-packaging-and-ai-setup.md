@@ -68,6 +68,8 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 6. 分别验证“从未登录”“已有 Codex 登录”“断网”“升级”“回退”；
 7. 对应用与安装程序进行 Windows 代码签名，再发布稳定版。
 
+本地构建命令按目标选择产物：`npm run dist:portable` 必须显式把 `portable` 目标传给 electron-builder，只生成 Portable EXE；`npm run dist:win` 不限定单一目标，按 Windows 构建配置生成 NSIS 安装包与 Portable EXE。历史版本产物保留在 `release/`，本次构建报告只列当前版本及目标对应的文件。
+
 ### 5.1 GitHub Actions 发布
 
 推送与 `package.json` 版本一致的 `v<版本号>` tag 时，GitHub Actions 在 `windows-latest` 上执行完整 `npm run dist:win` 流水线，并创建同名 GitHub Release。Release 附带 NSIS 安装包、Portable EXE、blockmap 与 SHA-256 校验文件。该流程不携带开发机凭据，也不默认签名；拿到证书后再以 GitHub Secrets 注入签名凭据。

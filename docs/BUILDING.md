@@ -14,7 +14,7 @@
 3. **原生模块重建** — `electron-rebuild -f -w better-sqlite3`，先让 SQLite 与 Electron 测试运行时的 ABI 一致。
 4. **单元测试** — `npm test` 会先执行原生模块重建，再运行 vitest + Electron；打包流水线已完成重建时直接调用内部的 `npm run test:electron`，避免重复编译。
 5. **生产构建** — `tsc -p tsconfig.main.json` + `vite build`。
-6. **打包** — `electron-builder`，按 `package.json#build` 配置产出 NSIS 安装包 + Portable EXE。
+6. **打包** — `electron-builder`；`dist:portable` 显式选择 `portable` 目标，`dist:win` 按配置产出 NSIS 安装包 + Portable EXE。
 7. **后置校验** — `scripts/verify-installer.mjs` 检查 `app.asar` 完整性、`better_sqlite3.node`、`codex.exe`、内置技能目录和独立用户手册是否正确进入安装资源。
 
 > `npm run typecheck`、`npm test`、`npm run rebuild:native` 三个命令在开发模式下也使用；流水线里复用它们，避免维护两份等价逻辑。
@@ -46,7 +46,7 @@ npm run pack
 npm run verify:installer
 ```
 
-默认产出会写入 `release/`：
+产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。目录中的旧版本会保留，构建报告只列出当前版本与本次目标对应的文件：
 
 | 文件                            | 含义                                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------------------ |

@@ -671,8 +671,13 @@ async function main() {
   step("6/7  Package with electron-builder");
   const builderArgs = [];
   if (wantDir) builderArgs.push("--dir");
-  if (wantPortable) builderArgs.push("--x64");
-  if (wantWin) builderArgs.push("--win");
+  if (wantWin) {
+    builderArgs.push("--win");
+    // `--portable` is an argument to this wrapper, not electron-builder.
+    // Pass the actual target after `--win`; otherwise electron-builder falls
+    // back to package.json#build.win.target and builds both NSIS and portable.
+    if (wantPortable) builderArgs.push("portable");
+  }
   // Always force x64 for the first public build per spec/04 §2.
   if (!builderArgs.includes("--x64")) builderArgs.push("--x64");
   // Don't auto-publish anywhere.
@@ -707,10 +712,16 @@ async function main() {
   const releaseDir = path.join(projectRoot, "release");
   if (existsSync(releaseDir)) {
     const { readdirSync } = await import("node:fs");
+    const packageMetadata = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+    const version = packageMetadata.version;
     const artifacts = readdirSync(releaseDir, { withFileTypes: true })
       .filter(
         (entry) =>
-          entry.isFile() && /\.(exe|dmg|AppImage|deb|rpm|zip|blockmap|yml)$/i.test(entry.name)
+          entry.isFile() &&
+          (entry.name === "builder-debug.yml" ||
+            (entry.name.includes(`-${version}.`) &&
+              /\.(exe|dmg|AppImage|deb|rpm|zip|blockmap|yml)$/i.test(entry.name) &&
+              (!wantPortable || !entry.name.startsWith("文渡-Setup-"))))
       )
       .map((entry) => entry.name);
     for (const name of artifacts) {
@@ -725,6 +736,7 @@ async function main() {
           .slice(0, 16)}…`
       );
     }
+    info("Report scope", `version ${version} artifacts for this target; older files remain in release/`);
   }
   info("Host platform", `${process.platform}/${process.arch}`);
   info(
