@@ -47,7 +47,11 @@ describe("GitSourceService", () => {
       const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-workspace-"));
       const service = new GitSourceService(new ExecutionService(), new ExecutionRepository(database.connection), workspace);
       const destination = service.createAwenStagingDestination("https://github.com/example/repo");
-      expect(destination.startsWith(path.join(workspace, "git-sources"))).toBe(true);
+      // getAwenWorkspaceRoot resolves symlinks via realpathSync.native (security: prevents
+      // symlink traversal); the configured workspace must be normalized the same way before
+      // comparing the path prefix, otherwise the assertion fails on CI where tmpdir is symlinked.
+      const expectedRoot = fs.realpathSync.native(workspace);
+      expect(destination.startsWith(path.join(expectedRoot, "git-sources"))).toBe(true);
       expect(() => service.assertAwenWorkspacePath(destination)).not.toThrow();
       expect(() => service.assertAwenWorkspacePath(path.join(workspace, "..", "outside"))).toThrow("专属工作区");
     } finally { database.close(); }
