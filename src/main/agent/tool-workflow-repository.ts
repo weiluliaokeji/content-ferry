@@ -56,6 +56,25 @@ export class ToolWorkflowRepository {
     return toStoredWorkflow(row);
   }
 
+  appendUserInstruction(id: string, instruction: string): StoredToolWorkflow {
+    const normalized = instruction.trim();
+    if (!normalized || normalized.length > 4000) throw new Error("新增实践要求必须在 1 到 4000 个字符之间。" );
+    const stored = this.require(id);
+    if (stored.snapshot.status !== "interrupted") throw new Error("只有中断后等待用户恢复的工作流可以暂存新增要求。" );
+    const at = new Date().toISOString();
+    const snapshot: ToolWorkflowSnapshot = {
+      ...stored.snapshot,
+      transcript: [...stored.snapshot.transcript, { role: "user", content: `新增实践目标：${normalized}` }],
+      events: [...stored.snapshot.events, {
+        id: randomUUID(),
+        type: "user_instruction_added",
+        at,
+        message: "新增实践目标已并入此工作流；需由作者选择恢复后才会继续。"
+      }]
+    };
+    return this.save(snapshot, { contextKey: stored.contextKey, projectId: stored.projectId, request: stored.input });
+  }
+
   list(contextKey?: string): StoredToolWorkflow[] {
     const rows = contextKey
       ? this.db.prepare(`SELECT id, project_id AS projectId, context_key AS contextKey, input_json AS inputJson, status, round, user_request AS userRequest,
@@ -123,6 +142,7 @@ function toStoredWorkflow(row: ToolWorkflowRow): StoredToolWorkflow {
       userRequest: row.userRequest,
       transcript: parseJson(row.transcriptJson, []),
       events: parseJson(row.eventsJson, []),
+      consecutiveNoProgressCalls: deriveConsecutiveNoProgressCalls(parseJson<ToolWorkflowEvent[]>(row.eventsJson, [])),
       toolResults: parseJson(row.toolResultsJson, []),
       pendingPermission: parseJson(row.pendingPermissionJson, null),
       finalText: row.finalText,
@@ -134,6 +154,15 @@ function toStoredWorkflow(row: ToolWorkflowRow): StoredToolWorkflow {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
   };
+}
+
+function deriveConsecutiveNoProgressCalls(events: ToolWorkflowEvent[]): number {
+  let count = 0;
+  for (const event of events) {
+    if (event.type !== "tool_completed" && event.type !== "tool_failed") continue;
+    count = event.data?.noProgress === true ? count + 1 : 0;
+  }
+  return count;
 }
 
 function parseJson<T>(value: string, fallback: T): T {

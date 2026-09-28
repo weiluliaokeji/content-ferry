@@ -25,8 +25,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
     "test": "npm run rebuild:native && npm run test:electron",
     "test:electron": "cross-env ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run --config vitest.config.ts",
-    "postinstall": "electron-rebuild -w better-sqlite3",
-    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-rebuild --only better-sqlite3",
+    "rebuild:native": "electron-rebuild -f --only better-sqlite3",
     "pack": "node scripts/build-installer.mjs --dir",
     "dist": "node scripts/build-installer.mjs",
     "dist:win": "node scripts/build-installer.mjs --win",
@@ -44,6 +44,7 @@
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.6.0",
     "mermaid": "^11.17.2",
+    "node-pty": "1.2.0-beta.15",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "undici": "^8.7.0",
@@ -86,6 +87,7 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
+      "**/node_modules/node-pty/**",
       "**/node_modules/@openai/codex-win32-x64/**",
       "**/node_modules/bindings/**",
       "**/node_modules/file-uri-to-path/**"
@@ -128,7 +130,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "artifactName": "${productName}-Setup-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -143,7 +145,7 @@
       "include": "build/installer.nsh"
     },
     "portable": {
-      "artifactName": "${productName}-Portable-${version}.${ext}",
+      "artifactName": "${productName}-Portable-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}",
       "requestExecutionLevel": "user"
     },
     "mac": {

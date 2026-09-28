@@ -32,6 +32,36 @@ export interface ExecutionAuthorizationRecord {
   }>;
 }
 
+export interface ExecutionRunHistorySummary {
+  id: string;
+  projectId: string;
+  runtime: string | null;
+  targetType: string | null;
+  workflowId: string | null;
+  practiceTaskId: string | null;
+  status: ExecutionRunRecord["status"];
+  exitCode: number | null;
+  hasError: boolean;
+  truncated: boolean;
+  artifactCount: number;
+  observation: { id: string; title: string; claim: string; status: "pending" | "accepted" | "rejected" } | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface ExecutionRunHistoryDetails {
+  id: string;
+  status: ExecutionRunRecord["status"];
+  exitCode: number | null;
+  errorMessage: string;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  artifacts: ExecutionArtifact[];
+  observation: { id: string; title: string; claim: string; status: "pending" | "accepted" | "rejected" } | null;
+}
+
 export class ExecutionRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -106,6 +136,49 @@ export class ExecutionRepository {
       : this.db.prepare("SELECT id FROM execution_runs ORDER BY created_at DESC LIMIT 100").all() as Array<{ id: string }>;
     return rows.map((row) => this.require(row.id));
   }
+
+  listHistorySummaries(projectId: string, limit = 12): ExecutionRunHistorySummary[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("历史记录条数必须在 1 到 50 之间。");
+    const rows = this.db.prepare(`SELECT r.id, r.project_id AS projectId, r.request_json AS requestJson,
+      r.status, r.exit_code AS exitCode, r.error_message AS errorMessage, r.truncated,
+      r.created_at AS createdAt, r.started_at AS startedAt, r.finished_at AS finishedAt,
+      (SELECT COUNT(*) FROM execution_artifacts AS a WHERE a.run_id = r.id) AS artifactCount,
+      o.id AS observationId, o.title AS observationTitle, o.claim AS observationClaim, o.status AS observationStatus
+      FROM execution_runs AS r LEFT JOIN experimental_observations AS o
+        ON o.execution_run_id = r.id AND o.project_id = r.project_id
+      WHERE r.project_id = ? ORDER BY r.created_at DESC LIMIT ?`)
+      .all(projectId, limit) as ExecutionRunHistorySummaryRow[];
+    return rows.map((row) => {
+      const request = parseJson<unknown>(row.requestJson, {});
+      const record = request && typeof request === "object" && !Array.isArray(request) ? request as Record<string, unknown> : {};
+      return {
+        id: row.id, projectId: row.projectId, status: row.status, exitCode: row.exitCode ?? null,
+        hasError: Boolean(row.errorMessage), truncated: Boolean(row.truncated), artifactCount: row.artifactCount,
+        observation: row.observationId && row.observationTitle && row.observationClaim && row.observationStatus
+          ? { id: row.observationId, title: row.observationTitle, claim: row.observationClaim, status: row.observationStatus }
+          : null,
+        createdAt: row.createdAt, startedAt: row.startedAt ?? null, finishedAt: row.finishedAt ?? null,
+        runtime: typeof record.runtime === "string" ? record.runtime : null,
+        targetType: typeof record.targetType === "string" ? record.targetType : null,
+        workflowId: typeof record.workflowId === "string" ? record.workflowId : null,
+        practiceTaskId: typeof record.practiceTaskId === "string" ? record.practiceTaskId : null
+      };
+    });
+  }
+
+  historyDetails(projectId: string, runId: string): ExecutionRunHistoryDetails {
+    const run = this.require(runId);
+    if (run.projectId !== projectId) throw new Error("这条旧执行记录不属于当前文章项目。");
+    const observationRow = this.db.prepare(`SELECT id, title, claim, status FROM experimental_observations
+      WHERE project_id = ? AND execution_run_id = ?`).get(projectId, runId) as {
+        id: string; title: string; claim: string; status: "pending" | "accepted" | "rejected"
+      } | undefined;
+    return {
+      id: run.id, status: run.status, exitCode: run.exitCode, errorMessage: run.errorMessage,
+      stdout: run.stdout, stderr: run.stderr, truncated: run.truncated, artifacts: run.artifacts,
+      observation: observationRow ?? null
+    };
+  }
 }
 
 interface ExecutionRunRow {
@@ -120,6 +193,24 @@ interface ExecutionRunRow {
   stderr: string;
   truncated: number;
   errorMessage: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+interface ExecutionRunHistorySummaryRow {
+  id: string;
+  projectId: string;
+  requestJson: string;
+  status: ExecutionRunRecord["status"];
+  exitCode: number | null;
+  errorMessage: string;
+  truncated: number;
+  artifactCount: number;
+  observationId: string | null;
+  observationTitle: string | null;
+  observationClaim: string | null;
+  observationStatus: "pending" | "accepted" | "rejected" | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;

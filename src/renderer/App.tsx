@@ -12,7 +12,6 @@ import { Modal, ProfileFields } from "./components/Modal";
 import { CoverCropModal } from "./components/CoverCropModal";
 import { QualityWorkspace } from "./components/QualityWorkspace";
 import { ArticleWorkspace } from "./components/ArticleWorkspace";
-import { ExecutionPanel } from "./components/ExecutionPanel";
 import { ZhuqueReportView } from "./components/ZhuqueReportViews";
 import { resolveArticleImageUrl } from "./markdown-preview";
 import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
@@ -219,14 +218,6 @@ export function App() {
     setOutlineModeScrollOffset,
     outlineMarkdownSourceRef,
     setOutlineMarkdownSourceRef,
-    practicePlanProject,
-    setPracticePlanProject,
-    practicePlan,
-    setPracticePlan,
-    practicePlanBusy,
-    practicePlanGenerating,
-    practicePlanGenerationStatus,
-    cancelPracticePlanGeneration,
     researchProject,
     setResearchProject,
     research,
@@ -272,6 +263,8 @@ export function App() {
     setDraftGenerationStatus,
     draftAbortRef,
     setDraftAbortRef,
+    stopDraftGeneration,
+    continueDraftAfterPractice,
     reviewProject,
     setReviewProject,
     review,
@@ -334,7 +327,6 @@ export function App() {
     titleEditSuggestions,
     titleEditSuggesting,
     openDraft,
-    savePracticePlan,
     saveDraft,
     openReview,
     openZhuque,
@@ -639,14 +631,6 @@ export function App() {
       setOutlineModeScrollOffset,
       outlineMarkdownSourceRef,
       setOutlineMarkdownSourceRef,
-      practicePlanProject,
-      setPracticePlanProject,
-      practicePlan,
-      setPracticePlan,
-      practicePlanBusy,
-      practicePlanGenerating,
-      practicePlanGenerationStatus,
-      cancelPracticePlanGeneration,
       researchProject,
       setResearchProject,
       research,
@@ -696,6 +680,8 @@ export function App() {
       setDraftGenerationStatus,
       draftAbortRef,
       setDraftAbortRef,
+      stopDraftGeneration,
+      continueDraftAfterPractice,
       reviewProject,
       setReviewProject,
       review,
@@ -754,7 +740,6 @@ export function App() {
       titleEditSuggestions,
       titleEditSuggesting,
       openDraft,
-      savePracticePlan,
       saveDraft,
       openReview,
       openZhuque,
@@ -1340,7 +1325,8 @@ export function App() {
       saving={saving}
       generating={draftGenerating}
       generationStatus={draftGenerationStatus}
-      onStopGeneration={() => draftAbortRef.current?.abort()}
+      onStopGeneration={() => void stopDraftGeneration()}
+      onContinueDraftAfterPractice={continueDraftAfterPractice}
       onChange={(markdown) => setDraft((current) => current ? { ...current, markdown } : current)}
       onBack={() => { draftAbortRef.current?.abort(); setDraftProject(undefined); setDraft(undefined); setDraftGenerationStatus(""); }}
       onSave={saveDraft}
@@ -1879,7 +1865,7 @@ export function App() {
       <p className="hint">删除发布记录不会删除微信公众号中的草稿或已经发布的文章。</p>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setOrphanedWechatJob(undefined)} disabled={saving}>保留记录</button><button type="button" className="danger-button" onClick={() => void deleteWechatJob()} disabled={saving}>{saving ? "正在删除…" : "删除记录"}</button></div>
     </Modal>}
-    {publishCropImage && <CoverCropModal image={publishCropImage} onCancel={() => setPublishCropImage(undefined)} onConfirm={(cropped) => void saveCroppedPublishCover(cropped)} />}
+    {publishCropImage && <CoverCropModal image={publishCropImage} onCancel={() => setPublishCropImage(undefined)} onConfirm={saveCroppedPublishCover} />}
 
     {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} closeOnBackdrop={false} title="配置文章库" eyebrow="只读导入预览" wide><label>内容源类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "vitepress" | "plain")}><option value="vitepress">VitePress 文章库</option><option value="plain">普通 Markdown 文章库</option></select></label><p className="hint">{sourceType === "vitepress" ? "选择 VitePress 仓库中的 `docs` 文件夹；只会识别 `posts/文章标题/index.md` 为文章。" : "选择包含多个 `<文章目录>/index.md` 的本地目录；不会套用 posts/ 或 public/ 约定。"}</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); openProjectCreator(); }}>下一步：新建文章</button></div></div>}</Modal>}
 
@@ -1924,14 +1910,6 @@ export function App() {
         {titleEditSuggestions.length > 0 && <ul className="title-candidate-list">{titleEditSuggestions.map((title) => <li key={title}><button type="button" className={title === titleEditText ? "title-candidate selected" : "title-candidate"} onClick={() => setTitleEditText(title)}><span>{title}</span><small>{title === titleEditText ? "已填入" : "填入"}</small></button></li>)}</ul>}
       </div>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeTitleEdit}>取消</button><button disabled={!titleEditText.trim()} onClick={() => void saveTitleEdit()}>{titleEditText.trim() && titleEditText.trim() !== titleEditProject.topic ? "保存标题" : "保存"}</button></div>
-    </Modal>}
-    {practicePlanProject && <Modal className="outline-modal" onClose={() => { if (!practicePlanBusy) cancelPracticePlanGeneration(); }} disabled={practicePlanBusy} closeOnBackdrop={false} title={`最小实践计划：${practicePlanProject.topic}`} eyebrow="正文起草前" wide>
-      {practicePlanGenerating ? <section className="practice-plan-progress">
-        <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{practicePlanGenerationStatus || "阿文正在根据提纲和已采纳资料拟定最少需要验证的步骤…"}</span></div>
-        <p className="hint">这一步只拟定「最需要验证的步骤」，不会在本机执行任何操作。生成期间可以随时停止；停止后已生成的部分不会保存。</p>
-        {practicePlan?.markdown.trim() ? <div className="practice-plan-stream-preview" role="log" aria-live="polite" aria-label="正在生成的实践计划">{practicePlan.markdown}</div> : <p className="hint">正在读取创作简报、已确认提纲与已采纳资料，稍后开始输出步骤…</p>}
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={cancelPracticePlanGeneration}>停止生成</button></div>
-      </section> : !practicePlan ? <p>正在读取实践计划…</p> : <section className="profile-form"><p className="hint">这是一份可调整的计划，不代表已经完成实践。若你的电脑已有工具、已有同类实验或不打算运行，请直接改写计划并选择对应的下一步；正文不会把计划中的预期写成实测结果。</p><label>实践计划<textarea value={practicePlan.markdown} onChange={(event) => setPracticePlan((current) => current ? { ...current, markdown: event.target.value } : current)} maxLength={20000} rows={14} /></label><details className="execution-observation"><summary>按计划执行或记录已有实践</summary><ExecutionPanel projectId={practicePlanProject.id} onError={setError} /></details><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => void savePracticePlan("draft")} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>暂存计划</button><button type="button" className="secondary-button" onClick={() => void savePracticePlan("skipped", true)} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>不新增实践，直接起草</button><button type="button" onClick={() => void savePracticePlan("confirmed", true)} disabled={practicePlanBusy || !practicePlan.markdown.trim()}>{practicePlanBusy ? "正在保存…" : "确认计划并起草正文"}</button></div></section>}
     </Modal>}
     {outlineProject && <Modal className="outline-modal" onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving || outlineRefining} closeOnBackdrop={false} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>
       {!outline ? <p>正在准备提纲…</p> : <>

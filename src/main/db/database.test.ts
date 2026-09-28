@@ -14,6 +14,34 @@ describe("article settings schema", () => {
   });
 });
 
+describe("independent practice while article suggestions await saving", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("upgrades the v4 active-task index without changing an existing pending edit", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    conn.exec("INSERT INTO workspaces (id, display_name, created_at) VALUES ('w1', 'w', '2026-01-01T00:00:00Z')");
+    conn.exec("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES ('p1', 'w1', 'article', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
+    conn.exec(`INSERT INTO article_practice_tasks (id, project_id, status, latest_goal, created_at, updated_at)
+      VALUES ('review-task', 'p1', 'waiting_edit_confirmation', 'Scoop suggestion', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`);
+    conn.exec("DROP INDEX idx_article_practice_one_active");
+    conn.exec(`CREATE UNIQUE INDEX idx_article_practice_one_active ON article_practice_tasks(project_id)
+      WHERE status NOT IN ('completed', 'completed_with_gaps', 'stopped', 'failed')`);
+    conn.exec("DELETE FROM schema_migrations WHERE version = 5");
+
+    initialiseDatabase(conn);
+
+    conn.exec(`INSERT INTO article_practice_tasks (id, project_id, status, latest_goal, created_at, updated_at)
+      VALUES ('nvm-task', 'p1', 'queued', 'Node.js versions', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z')`);
+    expect((conn.prepare("SELECT status FROM article_practice_tasks WHERE id = 'review-task'").get() as { status: string }).status)
+      .toBe("waiting_edit_confirmation");
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = 5").get()).toBeTruthy();
+  });
+});
+
 describe("content_research_sources migration", () => {
   let database: AppDatabase | undefined;
 

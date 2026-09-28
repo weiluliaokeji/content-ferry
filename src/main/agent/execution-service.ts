@@ -5,6 +5,7 @@ import path from "node:path";
 import { isIP } from "node:net";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
+import * as pty from "node-pty";
 
 const execFile = promisify(execFileCallback);
 
@@ -27,6 +28,9 @@ export interface ExecutionDependencyPlan {
 
 export interface ExecutionRequest {
   projectId?: string;
+  /** Correlates an execution attempt with the structured Awen tool workflow that requested it. */
+  workflowId?: string;
+  practiceTaskId?: string;
   targetType: ExecutionTargetType;
   runtime: ExecutionRuntime;
   executable?: string;
@@ -39,6 +43,8 @@ export interface ExecutionRequest {
   timeoutMs?: number;
   outputLimitBytes?: number;
   outputDirectory?: string;
+  /** Runs the program attached to a real pseudoterminal (Windows ConPTY). */
+  terminal?: boolean;
   targetOptions?: {
     wslDistribution?: string;
     dockerImage?: string;
@@ -189,9 +195,68 @@ export class ExecutionService {
     const startedAt = Date.now();
     const result = request.targetType === "windows_sandbox"
       ? await this.runWindowsSandbox(request, preflight, timeoutMs, outputLimit, signal)
+      : request.terminal && process.platform === "win32" && request.targetType === "host_trusted"
+        ? await this.runWithConPty(request, preflight, timeoutMs, outputLimit, signal)
       : await this.spawnWithLimits(...buildInvocation(request, preflight), timeoutMs, outputLimit, signal);
     const artifacts = request.outputDirectory ? await collectArtifacts(request.outputDirectory, outputLimit) : [];
     return { id, ...result, durationMs: Date.now() - startedAt, artifacts, preflight };
+  }
+
+  private runWithConPty(request: ExecutionRequest, preflight: ExecutionPreflight, timeoutMs: number, outputLimit: number, signal?: AbortSignal): Promise<Omit<ExecutionResult, "id" | "durationMs" | "artifacts" | "preflight">> {
+    return new Promise((resolve, reject) => {
+      let terminal: pty.IPty;
+      try {
+        terminal = pty.spawn(preflight.executable, request.args, {
+          name: "xterm-256color",
+          cols: 120,
+          rows: 40,
+          cwd: preflight.resolvedCwd,
+          env: process.env
+        });
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      let stdout = "";
+      let totalBytes = 0;
+      let status: ExecutionStatus = "completed";
+      let settled = false;
+      const finish = (value: Omit<ExecutionResult, "id" | "durationMs" | "artifacts" | "preflight">) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const terminate = (nextStatus: ExecutionStatus) => {
+        if (settled) return;
+        status = nextStatus;
+        try { terminal.kill(); } catch { /* It may have exited between the event and kill. */ }
+      };
+      const dataSubscription = terminal.onData((data) => {
+        const remaining = outputLimit - totalBytes;
+        const bytes = Buffer.from(data, "utf8");
+        if (remaining <= 0) {
+          terminate("output_limit");
+          return;
+        }
+        const accepted = bytes.subarray(0, remaining);
+        stdout += accepted.toString("utf8");
+        totalBytes += accepted.length;
+        if (accepted.length < bytes.length) terminate("output_limit");
+      });
+      const timer = setTimeout(() => terminate("timed_out"), timeoutMs);
+      const abort = () => terminate("cancelled");
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      terminal.onExit(({ exitCode, signal: exitSignal }) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        dataSubscription.dispose();
+        // node-pty reports a numeric OS signal, while ExecutionResult uses the
+        // Node child-process signal names. Do not fabricate a mismatched value.
+        void exitSignal;
+        finish({ status, exitCode, signal: null, stdout: cleanTerminalOutput(stdout), stderr: "", truncated: status === "output_limit" });
+      });
+    });
   }
 
   private async runWindowsSandbox(request: ExecutionRequest, preflight: ExecutionPreflight, timeoutMs: number, outputLimit: number, signal?: AbortSignal): Promise<Omit<ExecutionResult, "id" | "durationMs" | "artifacts" | "preflight">> {
@@ -281,6 +346,15 @@ export class ExecutionService {
       });
     });
   }
+}
+
+function cleanTerminalOutput(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/[\u001b\u0000-\u0008\u000b\u000c\u000e-\u001f]/gu, "")
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n");
 }
 
 function resolveExecutable(request: ExecutionRequest): string {

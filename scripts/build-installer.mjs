@@ -666,6 +666,12 @@ async function main() {
 
   // 5) Production build.
   await npmExec("build");
+  const version = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
+  const builtAt = new Date().toISOString();
+  const buildStamp = builtAt.replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const buildId = `${version}-${buildStamp}`;
+  process.env.CONTENTFERRY_BUILD_STAMP = buildStamp;
+  writeFileSync(path.join(projectRoot, "dist", "build-info.json"), JSON.stringify({ version, buildId, builtAt }, null, 2) + "\n");
 
   // 6) Package.
   step("6/7  Package with electron-builder");
@@ -712,14 +718,12 @@ async function main() {
   const releaseDir = path.join(projectRoot, "release");
   if (existsSync(releaseDir)) {
     const { readdirSync } = await import("node:fs");
-    const packageMetadata = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
-    const version = packageMetadata.version;
     const artifacts = readdirSync(releaseDir, { withFileTypes: true })
       .filter(
         (entry) =>
           entry.isFile() &&
           (entry.name === "builder-debug.yml" ||
-            (entry.name.includes(`-${version}.`) &&
+            (entry.name.includes(`-${buildId}.`) &&
               /\.(exe|dmg|AppImage|deb|rpm|zip|blockmap|yml)$/i.test(entry.name) &&
               (!wantPortable || !entry.name.startsWith("文渡-Setup-"))))
       )
@@ -736,7 +740,7 @@ async function main() {
           .slice(0, 16)}…`
       );
     }
-    info("Report scope", `version ${version} artifacts for this target; older files remain in release/`);
+    info("Report scope", `build ${buildId} artifacts for this target; older files remain in release/`);
   }
   info("Host platform", `${process.platform}/${process.arch}`);
   info(

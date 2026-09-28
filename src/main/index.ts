@@ -1,10 +1,11 @@
 import path from "node:path";
 import fs from "node:fs";
 import { execFile } from "node:child_process";
-import { app, dialog, ipcMain, Menu, safeStorage, shell, type OpenDialogOptions } from "electron";
+import { app, dialog, ipcMain, Menu, Notification, safeStorage, shell, type OpenDialogOptions } from "electron";
 import { openDatabase } from "./db/database";
 import { AccountRepository } from "./accounts/account-repository";
 import { getDataDirectory } from "./config/paths";
+import { readBuildInfo } from "./config/build-info";
 import { createServer } from "./server/create-server";
 import { ElectronCredentialVault } from "./security/credential-vault";
 import { OpenAICodexProvider } from "./ai/openai-codex-provider";
@@ -78,7 +79,31 @@ function launchCodexOAuthWindow(binaryPath: string): Promise<number> {
 
 
 async function registerAppSettingsIpcHandlers(): Promise<void> {
-  ipcMain.handle("app:get-version", async () => app.getVersion());
+  ipcMain.handle("app:get-version", async () => app.isPackaged ? readBuildInfo(app.getAppPath(), app.getVersion()).buildId : app.getVersion());
+  ipcMain.handle("app:notify-attention", async (event, input: unknown) => {
+    if (!state.mainWindow || state.mainWindow.isDestroyed() || event.sender !== state.mainWindow.webContents) return false;
+    if (typeof input !== "object" || input === null) return false;
+    const { title, body } = input as { title?: unknown; body?: unknown };
+    if (typeof title !== "string" || typeof body !== "string" || !title.trim() || !body.trim()) return false;
+    const safeTitle = title.trim().slice(0, 80);
+    const safeBody = body.trim().slice(0, 240);
+    try { shell.beep(); } catch { /* Keep the Windows notification even if the system beep is unavailable. */ }
+    if (Notification.isSupported()) {
+      try {
+        const notification = new Notification({ title: safeTitle, body: safeBody, silent: true, icon: path.join(app.getAppPath(), "assets", "wendu-icon.png") });
+        notification.on("click", () => {
+          if (!state.mainWindow || state.mainWindow.isDestroyed()) return;
+          if (state.mainWindow.isMinimized()) state.mainWindow.restore();
+          state.mainWindow.show();
+          state.mainWindow.focus();
+        });
+        notification.show();
+      } catch (error) {
+        state.runtimeInfoLogger?.({ error: error instanceof Error ? error.message : String(error) }, "显示阿文待处理系统通知失败");
+      }
+    }
+    return true;
+  });
   ipcMain.handle("app:get-settings", async () => loadAppSettings());
   ipcMain.handle("app:update-settings", async (_event, patch: unknown) => {
     if (typeof patch !== "object" || patch === null) {
@@ -213,6 +238,7 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
   const modelProvider = new OpenAICodexProvider(path.join(dataDirectory, "ai-sandbox"));
   const assetStore = new LocalAssetStore(path.join(dataDirectory, "content-assets"));
   const vault = new ElectronCredentialVault(safeStorage);
+  const buildId = app.isPackaged ? readBuildInfo(app.getAppPath(), app.getVersion()).buildId : `${app.getVersion()}-development`;
   const server = await createServer(
     new Date().toISOString(),
     database,
@@ -222,8 +248,11 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     logFilePath,
     path.join(dataDirectory, "skills"),
     searchWithVisibleResearchBrowser,
-    confirmCsdnBrowserPublish
+    confirmCsdnBrowserPublish,
+    undefined,
+    buildId
   );
+  server.log.info({ buildId }, "文渡运行版本");
   state.runtimeInfoLogger = (details, message) => server.log.info(details, message);
   const accountRepository = new AccountRepository(database.connection);
   let runtimeClosed = false;
@@ -395,7 +424,21 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
 
 }
 
-app.whenReady().then(bootstrap).catch((error: unknown) => {
+app.whenReady().then(async () => {
+  if (process.platform === "win32") app.setAppUserModelId("com.contentferry.app");
+  await bootstrap();
+  // The packaged boot verifier opts in to this marker so it can distinguish a
+  // healthy startup from an error dialog that leaves the Electron process alive.
+  const bootProbeFile = process.env.CONTENTFERRY_BOOT_PROBE_FILE;
+  if (bootProbeFile) {
+    const markerPath = path.resolve(bootProbeFile);
+    const userDataPath = path.resolve(app.getPath("userData"));
+    const relativeMarkerPath = path.relative(userDataPath, markerPath);
+    if (relativeMarkerPath && !relativeMarkerPath.startsWith(`..${path.sep}`) && relativeMarkerPath !== ".." && !path.isAbsolute(relativeMarkerPath)) {
+      fs.writeFileSync(markerPath, "ready", { flag: "wx" });
+    }
+  }
+}).catch((error: unknown) => {
   console.error("ContentFerry failed to start", error);
   // 打包环境没有控制台，启动失败过去只表现为「窗口白闪一下就没」，用户无从排查。
   // 这里显式弹窗把原因交给用户再退出，避免同类问题再次变成"起来不来"的黑盒。

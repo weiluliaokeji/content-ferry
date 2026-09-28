@@ -154,6 +154,14 @@ async function main() {
     const asarUnpackedDir = path.join(resourcesDir, "app.asar.unpacked");
     const skillManifestPath = path.join(resourcesDir, "assets", "skills", "manifest.json");
     const userGuidePath = path.join(resourcesDir, "docs", "USER-GUIDE.md");
+    const ptyPrebuildDir = path.join(resourcesDir, "app.asar.unpacked", "node_modules", "node-pty", "prebuilds", "win32-x64");
+    const ptyRuntimeFiles = ["conpty.node", path.join("conpty", "conpty.dll"), path.join("conpty", "OpenConsole.exe")];
+    const missingPtyRuntimeFiles = ptyRuntimeFiles.filter((file) => !existsSync(path.join(ptyPrebuildDir, file)));
+    if (missingPtyRuntimeFiles.length === 0) {
+      pass("Windows ConPTY runtime bundled", `${ptyRuntimeFiles.length} node-pty runtime files`);
+    } else {
+      failCheck("Windows ConPTY runtime bundled", `missing: ${missingPtyRuntimeFiles.join(", ")}`);
+    }
 
     if (existsSync(skillManifestPath)) {
       try {
@@ -195,6 +203,17 @@ async function main() {
         }
       } catch (error) {
         failCheck("app.asar readable", String(error));
+      }
+
+      try {
+        const buildInfo = JSON.parse(asar.extractFile(asarPath, path.join("dist", "build-info.json")).toString("utf8"));
+        const expectedVersion = JSON.parse(asar.extractFile(asarPath, "package.json").toString("utf8")).version;
+        if (buildInfo.version !== expectedVersion || !new RegExp(`^${expectedVersion.replace(/\./g, "\\.")}-\\d{8}T\\d{6}Z$`).test(buildInfo.buildId)) {
+          throw new Error("build ID does not match the packaged version");
+        }
+        pass("packaged build ID", buildInfo.buildId);
+      } catch (error) {
+        failCheck("packaged build ID", String(error));
       }
 
       // 启动入口必须齐备，否则 Electron 只会「窗口白闪一下就没」，而构建与单测全绿：

@@ -10,30 +10,10 @@ import {
   persistSelectionEditConversation
 } from "./helpers";
 import type { ServerContext } from "./server-context";
-import { AwenConversationService } from "../ai/awen-conversation-service";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 
 export function registerChatRoutes(ctx: ServerContext): void {
-  const { server, database, accounts, skills, effectiveModelProvider, coverGenerator, webSearch, imageSearchHistory, imageCandidateReview } = ctx;
-  const awen = new AwenConversationService(
-    database.connection,
-    effectiveModelProvider,
-    skills,
-    webSearch,
-    (error) => server.log.error({ err: error }, "Agent memory maintenance failed"),
-    imageSearchHistory,
-    imageCandidateReview,
-    {
-      provider: effectiveModelProvider,
-      webSearch,
-      systemTools: ctx.systemTools,
-      contentSources: ctx.contentSources,
-      contentProjects: ctx.contentProjects,
-      permissionGrants: ctx.permissionGrants,
-      workflowRepository: ctx.toolWorkflows,
-      gitSources: ctx.gitSources
-    }
-  );
+  const { server, database, accounts, skills, effectiveModelProvider, coverGenerator, articleChat: awen } = ctx;
   const agentMemory = new AgentMemoryRepository(database.connection);
 
   server.get("/api/article-chat", async (request) => {
@@ -64,6 +44,29 @@ export function registerChatRoutes(ctx: ServerContext): void {
     return awen.getWorkflow(workflowId);
   });
 
+  server.get("/api/article-chat/workflows/:workflowId/events", async (request, reply) => {
+    const { workflowId } = z.object({ workflowId: z.string().uuid() }).parse(request.params);
+    const { after: queryCursor } = z.object({ after: z.coerce.number().int().min(0).default(0) }).parse(request.query);
+    const headerCursor = Number(request.headers["last-event-id"]);
+    const after = Number.isSafeInteger(headerCursor) && headerCursor > queryCursor ? headerCursor : queryCursor;
+    reply.hijack();
+    const response = reply.raw;
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+    response.write(": connected\n\n");
+    const unsubscribe = awen.subscribeWorkflowEvents(workflowId, (event) => {
+      response.write(`id: ${event.sequence ?? 0}\nevent: workflow\ndata: ${JSON.stringify(event)}\n\n`);
+    }, after);
+    const heartbeat = setInterval(() => response.write(": keep-alive\n\n"), 15_000);
+    await new Promise<void>((resolve) => response.once("close", resolve));
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+
   server.get("/api/article-chat/workflows", async (request) => {
     const contextKey = z.object({ contextKey: z.string().trim().min(1).max(400) }).parse(request.query).contextKey;
     return { items: awen.listWorkflows(contextKey) };
@@ -76,11 +79,15 @@ export function registerChatRoutes(ctx: ServerContext): void {
 
   server.post("/api/article-chat/workflows/:workflowId/permission", async (request) => {
     const workflowId = z.object({ workflowId: z.string().uuid() }).parse(request.params).workflowId;
-    const response = z.object({ decision: z.enum(["allow", "deny"]), scope: z.enum(["run", "task", "project"]).optional() }).strict().superRefine((value, issue) => {
+    const response = z.object({ decision: z.enum(["allow", "deny"]), scope: z.enum(["run", "task", "project"]).optional(), input: z.unknown().optional() }).strict().superRefine((value, issue) => {
       if (value.decision === "allow" && !value.scope) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "允许执行时必须指定授权范围。" });
       if (value.decision === "deny" && value.scope) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "拒绝执行时不能携带授权范围。" });
+      if (value.decision === "deny" && value.input !== undefined) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["input"], message: "拒绝执行时不能携带修改后的参数。" });
+      if (value.input !== undefined && JSON.stringify(value.input).length > 300_000) issue.addIssue({ code: z.ZodIssueCode.custom, path: ["input"], message: "修改后的参数过大。" });
     }).parse(request.body);
-    return awen.respondToWorkflow(workflowId, response.decision === "allow" ? { decision: "allow", scope: response.scope! } : { decision: "deny" });
+    return awen.respondToWorkflow(workflowId, response.decision === "allow"
+      ? { decision: "allow", scope: response.scope!, ...(response.input !== undefined ? { input: response.input } : {}) }
+      : { decision: "deny" });
   });
 
   server.post("/api/article-chat/workflows/:workflowId/cancel", async (request) => {

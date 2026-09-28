@@ -17,6 +17,7 @@ import { RemoteImageImportService } from "../content/remote-image-import-service
 import type { ImageReviewImageSource } from "../ai/image-candidate-review-service";
 import { ImageCandidateReviewService } from "../ai/image-candidate-review-service";
 import { AiContentService } from "../ai/ai-content-service";
+import { AwenConversationService } from "../ai/awen-conversation-service";
 import { createWebSearchClient, type VisibleBrowserSearch, type WebSearchClient } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
@@ -66,8 +67,15 @@ import { registerWechatRoutes } from "./routes-wechat";
 import { registerExecutionRoutes } from "./routes-execution";
 import { ExecutionPolicyError, ExecutionService } from "../agent/execution-service";
 import { ExecutionRepository } from "../agent/execution-repository";
+import { AwenPracticeCodeRunner } from "../agent/awen-practice-code-runner";
+import { AwenPracticeCommandRunner } from "../agent/awen-practice-command-runner";
+import { AwenPracticeProjectEditor } from "../agent/awen-practice-project-editor";
+import { AwenPracticeWebCapture } from "../agent/awen-practice-web-capture";
+import { AwenPracticeDemoCapture } from "../agent/awen-practice-demo-capture";
+import { getDataDirectory } from "../config/paths";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { ResearchTaskRepository } from "../content/research-task-repository";
+import { ArticlePracticeTaskRepository } from "../content/article-practice-task-repository";
 import { ResearchTaskRunner } from "../content/research-task-runner";
 import { ResearchRunRepository } from "../content/research-run-repository";
 import { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
@@ -112,12 +120,15 @@ export function buildServer(
   assetStore?: LocalAssetStore,
   options?: {
     logFilePath?: string;
+    buildId?: string;
     skillsDirectory?: string;
     visibleBrowserSearch?: VisibleBrowserSearch;
     /** 可选注入：文章对话使用的应用侧网页检索客户端（测试和桌面装配共用）。 */
     webSearch?: WebSearchClient;
     /** 可选注入：图片初审下载源（测试替换远程图片下载，桌面使用默认服务）。 */
     imageReviewImageSource?: ImageReviewImageSource;
+    /** 可选注入：阿文代码实践临时工作区（测试隔离；桌面使用默认临时目录）。 */
+    practiceWorkspaceRoot?: string;
     csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>;
     /** 可选注入：外部提供博客园渠道稿服务实例（默认由 buildServer 内部构造）。 */
     cnblogsChannel?: CnblogsChannelService;
@@ -130,7 +141,7 @@ export function buildServer(
   const server = Fastify({
     bodyLimit: 22 * 1024 * 1024,
     logger: options?.logFilePath
-      ? { level: "info", stream: createDailyLogStream(path.dirname(options.logFilePath)) }
+      ? { level: "info", base: { pid: process.pid, buildId: options.buildId ?? "development" }, stream: createDailyLogStream(path.dirname(options.logFilePath)) }
       : true
   });
   const accounts = new AccountRepository(database.connection);
@@ -142,6 +153,9 @@ export function buildServer(
   const contentDrafts = new ContentDraftRepository(database.connection);
   const contentResearch = new ContentResearchRepository(database.connection);
   const researchTasks = new ResearchTaskRepository(database.connection);
+  const articlePracticeTasks = new ArticlePracticeTaskRepository(database.connection);
+  const interruptedPracticeTasks = articlePracticeTasks.recoverInterrupted();
+  if (interruptedPracticeTasks.length > 0) server.log.info({ count: interruptedPracticeTasks.length }, "Article practice tasks await an explicit resume choice");
   const researchRuns = new ResearchRunRepository(database.connection);
   const contentReviews = new ContentReviewRepository(database.connection);
   const remoteImages = new RemoteImageImportService(assetStore, contentSources);
@@ -174,7 +188,7 @@ export function buildServer(
     )
     : modelProvider;
   const imageCandidateReview = new ImageCandidateReviewService(options?.imageReviewImageSource ?? remoteImages, effectiveModelProvider, modelConnections, skills);
-  const aiContent = new AiContentService(database.connection, effectiveModelProvider);
+  const aiContent = new AiContentService(database.connection, effectiveModelProvider, contentSources);
   const publishTasks = new PublishTaskModule(database.connection);
   const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore, publishTasks);
   const cnblogsChannels = options?.cnblogsChannel
@@ -191,11 +205,47 @@ export function buildServer(
   server.addHook("onClose", async () => researchTaskRunner.stop());
   server.addHook("onClose", async () => publishTasks.stop());
   const systemTools = new SystemToolRegistry();
+  const awenPracticeCodeRunner = new AwenPracticeCodeRunner(
+    execution,
+    executionRuns,
+    systemTools,
+    options?.practiceWorkspaceRoot?.trim() || undefined
+  );
+  const awenPracticeCommandRunner = new AwenPracticeCommandRunner(execution, executionRuns, systemTools, awenPracticeCodeRunner);
+  const practiceDataDirectory = loadAppSettings().dataDir?.trim() || getDataDirectory();
+  const awenPracticeProjectEditor = new AwenPracticeProjectEditor(contentProjects, articlePracticeTasks, practiceDataDirectory);
+  const awenPracticeWebCapture = new AwenPracticeWebCapture(contentSources, contentProjects);
+  const awenPracticeDemoCapture = new AwenPracticeDemoCapture(contentSources, contentProjects, awenPracticeCodeRunner, executionRuns);
   const permissionGrants = new PermissionGrantRepository(database.connection);
   const toolWorkflows = new ToolWorkflowRepository(database.connection);
   const interruptedToolWorkflows = toolWorkflows.recoverInterrupted();
   if (interruptedToolWorkflows > 0) server.log.warn({ interruptedToolWorkflows }, "Agent tool workflows marked interrupted after restart");
   const gitSources = new GitSourceService(execution, executionRuns, () => loadAppSettings().agentWorkspaceDir);
+  const articleChat = new AwenConversationService(
+    database.connection,
+    effectiveModelProvider,
+    skills,
+    webSearch,
+    (error) => server.log.error({ err: error }, "Agent memory maintenance failed"),
+    imageSearchHistory,
+    imageCandidateReview,
+    {
+      provider: effectiveModelProvider,
+      webSearch,
+      systemTools,
+      contentSources,
+      contentProjects,
+      permissionGrants,
+      workflowRepository: toolWorkflows,
+      gitSources,
+      practiceCodeRunner: awenPracticeCodeRunner,
+      practiceCommandRunner: awenPracticeCommandRunner,
+      practiceProjectEditor: awenPracticeProjectEditor,
+      practiceWebCapture: awenPracticeWebCapture,
+      practiceDemoCapture: awenPracticeDemoCapture,
+      articlePracticeTasks
+    }
+  );
 
   server.addContentTypeParser(["text/xml", "application/xml"], { parseAs: "string" }, (_request, body, done) => {
     done(null, body);
@@ -387,6 +437,7 @@ export function buildServer(
     aiAuditLog,
     effectiveModelProvider,
     aiContent,
+    articleChat,
     csdnChannels,
     cnblogsChannels,
     publishTasks,
@@ -395,7 +446,11 @@ export function buildServer(
     coverGenerator,
     execution,
     executionRuns,
+    awenPracticeCodeRunner,
+    awenPracticeProjectEditor,
+    awenPracticeWebCapture,
     researchTasks,
+    articlePracticeTasks,
     researchRuns,
     researchTaskRunner,
     systemTools,
@@ -460,9 +515,10 @@ export async function createServer(
   skillsDirectory?: string,
   visibleBrowserSearch?: VisibleBrowserSearch,
   csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>,
-  juejinChannel?: JuejinChannelService
+  juejinChannel?: JuejinChannelService,
+  buildId?: string
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel, runMigrations: true });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, buildId, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel, runMigrations: true });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

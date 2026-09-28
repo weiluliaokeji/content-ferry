@@ -37,7 +37,9 @@ export const contentSourceArchiveInput = z.object({ path: z.string().trim().min(
 export const contentSourceAssetInput = z.object({
   path: z.string().trim().min(1).max(1000),
   mimeType: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
-  base64: z.string().min(1).max(21_000_000)
+  base64: z.string().min(1).max(21_000_000),
+  parentAssetPath: z.string().trim().min(1).max(2000).optional(),
+  purpose: z.enum(["article_cover", "article_body"]).optional()
 });
 const specifiedSourceUrlInput = z.string().trim().min(1).max(4000).superRefine((value, ctx) => {
   try {
@@ -375,6 +377,9 @@ export const articleChatInput = z.object({
   contextKey: z.string().trim().min(1).max(1200),
   clientMessageId: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
+  practiceTaskId: z.string().uuid().optional(),
+  continuePracticeAfterFeedback: z.boolean().optional(),
+  practiceIntentMode: z.enum(["draft", "chat"]).optional(),
   accountId: z.string().uuid().optional(),
   workflowMode: z.enum(["legacy", "tool"]).default("legacy"),
   title: z.string().trim().max(500).default(""),
@@ -387,7 +392,8 @@ export const articleChatSuggestion = z.object({
   reason: z.string().trim().min(1).max(500),
   kind: z.enum(["content", "feedback"]).default("content"),
   operation: z.enum(["replace", "insert_before", "insert_after"]).default("replace"),
-  status: z.enum(["pending", "accepted", "rejected", "unavailable"]).default("pending")
+  status: z.enum(["pending", "accepted", "rejected", "unavailable"]).default("pending"),
+  practiceTaskId: z.string().uuid().optional()
 });
 export const articleChatImageSearchRequest = z.object({
   query: z.string().trim().min(2).max(500),

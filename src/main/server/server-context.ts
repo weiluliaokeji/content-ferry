@@ -29,16 +29,21 @@ import type { FiftyoneCtoChannelService } from "../fiftyone-cto/fiftyone-cto-cha
 import type { CsdnBrowserConfirmResult } from "./schemas";
 import type { ExecutionService } from "../agent/execution-service";
 import type { ExecutionRepository } from "../agent/execution-repository";
+import type { AwenPracticeCodeRunner } from "../agent/awen-practice-code-runner";
+import type { AwenPracticeProjectEditor } from "../agent/awen-practice-project-editor";
+import type { AwenPracticeWebCapture } from "../agent/awen-practice-web-capture";
 import type { SystemToolRegistry } from "../agent/system-tool-registry";
 import type { PermissionGrantRepository } from "../agent/permission-grant-repository";
 import type { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
 import type { GitSourceService } from "../agent/git-source-service";
 import type { ResearchTaskRepository } from "../content/research-task-repository";
+import type { ArticlePracticeTaskRepository } from "../content/article-practice-task-repository";
 import type { ResearchTaskRunner } from "../content/research-task-runner";
 import type { ResearchRunRepository } from "../content/research-run-repository";
 import type { WebSearchClient } from "../ai/web-search";
 import type { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 import type { ImageCandidateReviewService } from "../ai/image-candidate-review-service";
+import type { AwenConversationService } from "../ai/awen-conversation-service";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
 export interface ServerContext {
@@ -73,6 +78,7 @@ export interface ServerContext {
   aiAuditLog?: AiAuditLog;
   effectiveModelProvider: ModelProvider;
   aiContent: AiContentService;
+  articleChat: AwenConversationService;
   csdnChannels: CsdnChannelService;
   cnblogsChannels: CnblogsChannelService;
   publishTasks: PublishTaskModule;
@@ -81,7 +87,11 @@ export interface ServerContext {
   coverGenerator: CoverGenerationService;
   execution: ExecutionService;
   executionRuns: ExecutionRepository;
+  awenPracticeCodeRunner: AwenPracticeCodeRunner;
+  awenPracticeProjectEditor: AwenPracticeProjectEditor;
+  awenPracticeWebCapture: AwenPracticeWebCapture;
   researchTasks: ResearchTaskRepository;
+  articlePracticeTasks: ArticlePracticeTaskRepository;
   researchRuns: ResearchRunRepository;
   researchTaskRunner?: ResearchTaskRunner;
   systemTools: SystemToolRegistry;

@@ -11,10 +11,13 @@
 - Electron 运行时与 ContentFerry 已编译的桌面界面、本地服务；
 - 运行所需的 JavaScript 依赖；
 - `better-sqlite3` 对应 Electron/Windows x64 的原生模块；
+- Windows CLI 终端所需的 `node-pty` N-API 预构建 ConPTY 模块与其 `conpty.dll`、`OpenConsole.exe` 运行文件，解包到 `app.asar.unpacked`；
 - OpenAI 官方 Codex SDK 及 SDK 自带的 Windows x64 内部运行组件；
 - 数据库迁移、默认配置和应用资源。
 
 这里的“内部运行组件”不是要求用户另行安装 Codex 软件，也不会出现一个需要用户维护的 Codex 应用。它和 SQLite 原生模块一样由安装包随 ContentFerry 一起部署、由 ContentFerry 在后台调用。`npm install`、原生模块重建和安装包构建只发生在开发/发布机器或 CI 中，不发生在最终用户电脑上。编辑器等前端依赖会被编译进应用资源，不以单独 SDK 的形式要求用户配置。
+
+`node-pty` 使用上游提供的 N-API Windows 预构建文件并以未压缩资源随包分发；安装/构建阶段不编译 ConPTY C++ 工程，避免要求开发机配置 Visual Studio Spectre 库。Windows 安装包门禁检查三个必需文件都存在；Electron 37 启动验证和 Portable 中的真实控制台程序验收负责确认运行兼容性。`postinstall` 和 `rebuild:native` 仍为 `better-sqlite3` 执行 Electron ABI 重建。
 
 Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自行实现 ChatGPT OAuth、保存和刷新令牌，并直接请求 ChatGPT Codex 后端，因此不需要 Codex CLI 或 SDK 运行组件。该实现更轻，但它依赖的 ChatGPT 后端地址不是面向第三方应用承诺稳定的公开 API。ContentFerry 不应在没有兼容层、回退方案和持续维护承诺的情况下把这条路径作为唯一生产依赖。
 
@@ -33,6 +36,8 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 - 程序文件安装在 Windows 应用目录；升级不得覆盖文章、数据库、检测结果或账号配置。
 - AppSecret、token、Cookie 和 OpenAI 登录凭据不得打入安装包、不得复制到 Git 备份，也不得由开发者预置。
 - 只提供稳定版，用户手动触发升级；升级前自动备份数据库和必要文件。
+- 自主实践任务表的首个有序迁移在旧数据库首次启动前使用 SQLite `VACUUM INTO` 生成一致性备份，放在所选数据目录的 `backups/` 中；新库与旧库都按同一迁移建立任务表。迁移与版本记录在同一事务内，外键检查失败则停止启动；数据库版本比程序支持的版本新时拒绝写入。回退旧程序须恢复升级前数据库备份，不能直接打开新版库。此项仅覆盖这次任务表升级，不代表完整的升级/一键回退流程已实现。
+- 后续数据库迁移会先按同样方式备份，再将可可靠归属文章的旧版手动执行记录链接到待核查历史任务；原运行输出、产物、实验观察和授权记录留在旧表，不会转成新结论或重新执行。
 - 一键回退保留上一个可用程序版本，并在数据库迁移允许回退时恢复；不可逆迁移必须先完成兼容性预检。
 - 首个安装包只支持 Windows x64。Windows ARM64 需要单独构建并验证 Codex 与 SQLite 原生模块。
 
@@ -68,7 +73,7 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 6. 分别验证“从未登录”“已有 Codex 登录”“断网”“升级”“回退”；
 7. 对应用与安装程序进行 Windows 代码签名，再发布稳定版。
 
-本地构建命令按目标选择产物：`npm run dist:portable` 必须显式把 `portable` 目标传给 electron-builder，只生成 Portable EXE；`npm run dist:win` 不限定单一目标，按 Windows 构建配置生成 NSIS 安装包与 Portable EXE。历史版本产物保留在 `release/`，本次构建报告只列当前版本及目标对应的文件。
+本地构建命令按目标选择产物：`npm run dist:portable` 必须显式把 `portable` 目标传给 electron-builder，只生成 Portable EXE；`npm run dist:win` 不限定单一目标，按 Windows 构建配置生成 NSIS 安装包与 Portable EXE。打包时生成一次 UTC 构建时间，产物文件名在语义版本号后附 `YYYYMMDDTHHMMSSZ`；同一构建标识写入包内 `dist/build-info.json`，显示在“关于文渡”，并作为运行日志字段。历史版本产物保留在 `release/`，本次构建报告只列当前构建及目标对应的文件。
 
 ### 5.1 GitHub Actions 发布
 

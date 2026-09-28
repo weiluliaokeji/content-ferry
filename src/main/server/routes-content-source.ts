@@ -64,6 +64,12 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
     return { tags: contentSources.getArticleTags(workspace.id, query.path) };
   });
 
+  server.get("/api/content-source/article-practice-sources", async (request) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const query = contentSourceArticleQuery.parse(request.query);
+    return { sources: contentSources.listArticlePracticeSources(workspace.id, query.path) };
+  });
+
   server.put("/api/content-source/article", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentSourceArticleInput.parse(request.body);
@@ -79,7 +85,7 @@ export function registerContentSourceRoutes(ctx: ServerContext): void {
   server.post("/api/content-source/article-asset", async (request, reply) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const input = contentSourceAssetInput.parse(request.body);
-    return reply.code(201).send(contentSources.saveArticleAsset(workspace.id, input.path, input.mimeType, input.base64));
+    return reply.code(201).send(contentSources.saveArticleAsset(workspace.id, input.path, input.mimeType, input.base64, input.parentAssetPath, input.purpose));
   });
 
   server.post("/api/content-source/article-asset/import-remote", async (request, reply) => {

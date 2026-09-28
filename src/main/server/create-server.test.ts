@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "./create-server";
+import { buildServer as buildServerImpl } from "./create-server";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
 import type { CredentialVault } from "../security/credential-vault";
 import type { GenerateMarkdownStreamRequest, GenerateStructuredRequest, GenerateStructuredResult, ModelProvider, ReviewImageRequest, WebResearchOptions } from "../ai/model-provider";
@@ -14,6 +14,9 @@ import { extractWebResearchTargets } from "../ai/awen-conversation-service";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { stageDirectoryDeletion } from "../content/content-source-service";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
+import { ArticlePracticeTaskRepository } from "../content/article-practice-task-repository";
+import { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
+import type { ToolWorkflowSnapshot } from "../agent/tool-workflow-runner";
 
 // Under `ELECTRON_RUN_AS_NODE=1` the real electron `app` is not initialised,
 // so `app.getPath("userData")` is undefined and any code path that reads app
@@ -42,6 +45,38 @@ const testVault: CredentialVault = {
   encrypt: (value) => Buffer.from(`encrypted:${value}`),
   decrypt: (value) => value.toString().replace("encrypted:", "")
 };
+
+type BuildServerArgs = Parameters<typeof buildServerImpl>;
+
+function buildServer(...args: BuildServerArgs) {
+  const provider = args[3];
+  if (provider) {
+    args[3] = new Proxy(provider, {
+      get(target, property, receiver) {
+        if (property !== "generateStructured") return Reflect.get(target, property, receiver) as unknown;
+        return async <T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> => {
+          if (request.prompt.includes("你是与执行阿文分开的完成条件验证器")) {
+            const requestText = request.prompt.match(/<author-request>\s*([\s\S]*?)\s*<\/author-request>/u)?.[1]?.trim() ?? "测试请求";
+            const rawToolText = request.prompt.match(/\[原始工具观察\]\n([\s\S]*?)\n<candidate-final/u)?.[1] ?? "";
+            const toolQuote = rawToolText.match(/\[[^\]]+\]\s*(.+)/u)?.[1]?.trim();
+            const evidence = [
+              { source: "request", quote: requestText.slice(0, 80) },
+              ...(toolQuote ? [{ source: "tool", quote: toolQuote.slice(0, 80) }] : [])
+            ];
+            return {
+              value: request.parse({ decision: "verified", reason: "测试验证器确认当前模拟观察满足测试条件。", nextStep: null, evidence }),
+              provider: "test-verifier",
+              model: "test-verifier",
+              usage: null
+            };
+          }
+          return target.generateStructured(request);
+        };
+      }
+    });
+  }
+  return buildServerImpl(...args);
+}
 
 // The research generation endpoints stream Server-Sent Events. Extract the
 // final `complete` event payload so assertions can read the structured result.
@@ -385,9 +420,11 @@ describe("local API scaffold", () => {
     database = openInMemoryDatabase();
     const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-skills-"));
     temporaryDirectories.push(skillsDirectory);
+    let modelCalls = 0;
     const fakeProvider: ModelProvider = {
       id: "test-awen-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        modelCalls += 1;
         return {
           value: request.parse({ reply: "已收到。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [] }),
           provider: "test-awen-ai",
@@ -409,6 +446,10 @@ describe("local API scaffold", () => {
     const userMessageCount = database.connection.prepare("SELECT COUNT(*) AS count FROM article_chat_messages WHERE id = ?")
       .get(payload.clientMessageId) as { count: number };
     expect(userMessageCount.count).toBe(1);
+    const assistantMessages = database.connection.prepare("SELECT id, content FROM article_chat_messages WHERE context_key = ? AND role = 'assistant'")
+      .all(payload.contextKey) as Array<{ id: string; content: string }>;
+    expect(assistantMessages).toHaveLength(1);
+    expect(modelCalls).toBe(1);
   });
 
   it("repairs a malformed final reply after a tool completed", async () => {
@@ -420,7 +461,7 @@ describe("local API scaffold", () => {
       id: "test-awen-workflow-final-ai",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         const value = round++ === 0
-          ? { kind: "tool_calls", text: null, calls: [{ toolId: "list_system_tools", action: "read", target: null, input: {} }] }
+          ? { kind: "tool_calls", text: null, calls: [{ toolId: "list_system_tools", action: "read", target: null, input: { query: "scoop" } }] }
           : round === 2
             ? { kind: "final", text: "工具已经完成，但这不是结构化 JSON", calls: null }
             : { kind: "final", text: JSON.stringify({ reply: "系统工具读取完成。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }), calls: null };
@@ -446,6 +487,747 @@ describe("local API scaffold", () => {
     expect(response.json().workflow.status).toBe("completed");
     expect(response.json().workflow.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining(["tool_completed", "workflow_completed"]));
     expect(response.json().message.content).toContain("系统工具读取完成");
+  });
+
+  it("keeps draft assessment out of practice until Awen actually requests a practice tool", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-no-practice-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-no-practice-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        return { value: request.parse({
+          kind: "final", text: JSON.stringify({ reply: "这篇基础语法文章无需实测，可直接按提纲起草。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }), calls: null
+        }), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-no-practice-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "Markdown 标题的基本写法" } });
+    const projectId = project.json().id as string;
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: { objective: "讲清 Markdown 标题语法", audience: "Markdown 入门者", angle: "说明常见标题层级", sourceNotes: "" } });
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: "# Markdown 标题的基本写法\n\n## 标题层级" } });
+
+    const started = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/start`, payload: { goal: "按提纲准备正文；自行判断是否值得实践。" } });
+
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("completed");
+    expect(started.json().task.status).toBe("drafting");
+    const events = new ArticlePracticeTaskRepository(database.connection).listEvents(started.json().task.id as string);
+    expect(events.map((event) => event.kind)).toContain("assessment_started");
+    expect(events.map((event) => event.kind)).not.toContain("practice_started");
+    expect(events.map((event) => event.kind)).not.toContain("practice_result");
+    expect(events.map((event) => event.kind)).toContain("draft_started");
+  });
+
+  it("runs an authorized Node example, carries its observation into the first draft, and links it after save", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-practice-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const practiceWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-practice-workspace-"));
+    temporaryDirectories.push(practiceWorkspaceRoot);
+    let draftPrompt = "";
+    let workflowModelTurn = 0;
+    const claim = "Node.js 本机运行输出 Sample printed 42.";
+    const generatedMarkdown = `# Node 示例验证\n\n${claim}\n`;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-practice-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        if (request.task === "revision") {
+          return { value: request.parse({ associations: [{ observationIndex: 0, paragraphText: claim, support: "direct" }] }), provider: this.id, model: "test-model", usage: null };
+        }
+        const turn = workflowModelTurn++ === 0
+          ? { kind: "tool_calls", text: null, calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('Sample printed 42.')" } }] }
+          : { kind: "final", text: JSON.stringify({ reply: claim, memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }), calls: null };
+        return { value: request.parse(turn), provider: "test-awen-practice-ai", model: "test-model", usage: null };
+      },
+      async generateMarkdownStream(request: GenerateMarkdownStreamRequest) {
+        draftPrompt = request.prompt;
+        request.onDelta(generatedMarkdown);
+        return { value: { markdown: generatedMarkdown }, provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory, practiceWorkspaceRoot });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "Node 示例验证" } });
+    const projectId = project.json().id as string;
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: {
+      objective: "说明可验证的代码行为", audience: "开发者", angle: "通过短示例验证", sourceNotes: ""
+    } });
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: "# Node 示例验证\n\n## 观察结果" } });
+
+    const started = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/start`, payload: { goal: "判断是否需要运行 Node 示例" } });
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("waiting_user");
+    expect(started.json().task).toMatchObject({ status: "waiting_permission", latestGoal: "判断是否需要运行 Node 示例" });
+    expect(started.json().task.checkpoint.workflowId).toBe(started.json().workflow.workflowId);
+    expect(new ArticlePracticeTaskRepository(database.connection).listEvents(started.json().task.id).map((event) => event.kind)).toContain("practice_started");
+    const workflowId = started.json().workflow.workflowId as string;
+    const completedPractice = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${workflowId}/permission`, payload: { decision: "allow", scope: "run" } });
+    expect(completedPractice.statusCode, JSON.stringify(completedPractice.json())).toBe(200);
+    expect(completedPractice.json().workflow.status, JSON.stringify(completedPractice.json().workflow.events)).toBe("completed");
+    const thread = await server.inject({ method: "GET", url: "/api/article-chat?contextKey=project:" + projectId });
+    expect(thread.json().messages[0].content).toContain("文渡发起的正文起草任务");
+    const practiceTaskId = started.json().task.id as string;
+    const practiceTask = new ArticlePracticeTaskRepository(database.connection).require(practiceTaskId);
+    const practiceResult = new ArticlePracticeTaskRepository(database.connection).listEvents(practiceTaskId).find((event) => event.kind === "practice_result");
+    expect(practiceTask.status).toBe("drafting");
+    expect(practiceResult?.payload.summary).toContain(claim);
+    expect(JSON.stringify(practiceResult?.payload.results)).toContain('"stdout":"Sample printed 42.\\n"');
+    const draft = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/draft/generate/stream`, payload: {} });
+    expect(draft.statusCode).toBe(200);
+    const draftComplete = parseSseCompleteEvent(draft.body);
+    expect(draftComplete).toMatchObject({ markdown: generatedMarkdown });
+    expect(draftPrompt).toContain(claim);
+    expect(draftPrompt).toMatch(/Node\.js；版本 .+；状态 completed；退出码 0/u);
+    expect(draftPrompt).not.toContain("C:\\Users\\adams");
+    const savedDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: draftComplete.markdown } });
+    expect(savedDraft.statusCode).toBe(200);
+    const portableSources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(String(draftComplete.sourceRelativePath))}` });
+    expect(portableSources.json().sources).toContainEqual(expect.objectContaining({ type: "practice_paragraph_link", status: "linked", claim }));
+    expect(database.connection.prepare("SELECT status FROM article_practice_tasks WHERE id = ?").get(practiceTaskId)).toEqual({ status: "completed" });
+  });
+
+  it("stops an authorization-waiting practice and waits for the author's draft decision", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-stop-permission-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let modelCalls = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-stop-permission-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        modelCalls += 1;
+        return { value: request.parse({
+          kind: "tool_calls", text: null,
+          calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('not-yet-run')" } }]
+        }), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-stop-permission-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "授权等待时停止实践" } });
+    const projectId = project.json().id as string;
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "d0b8de74-bd3f-40eb-8f27-25d6a64bb19e", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "授权等待时停止实践", markdown: "# 授权等待时停止实践", message: "请验证这个示例。"
+    } });
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    const workflowId = started.json().workflow.workflowId as string;
+    expect(started.json().workflow.status).toBe("waiting_user");
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` })).json().task.status)
+      .toBe("waiting_permission");
+
+    const stoppedWorkflow = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${workflowId}/cancel` });
+    expect(stoppedWorkflow.statusCode, JSON.stringify(stoppedWorkflow.json())).toBe(200);
+    expect(stoppedWorkflow.json().status).toBe("cancelled");
+    const waitingForChoice = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
+    expect(waitingForChoice.json().task).toMatchObject({ status: "waiting_stop_choice", feedbackDeadline: null });
+    expect(modelCalls).toBe(1);
+
+    const decided = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${waitingForChoice.json().task.id}/decision`, payload: { decision: "stop_draft" } });
+    expect(decided.statusCode, JSON.stringify(decided.json())).toBe(200);
+    expect(decided.json().task.status).toBe("stopped");
+    expect(modelCalls).toBe(1);
+  });
+
+  it("asks before resuming after restart and restores a pending permission without replaying the call", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-resume-permission-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let modelCalls = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-resume-permission-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        modelCalls += 1;
+        return { value: request.parse({
+          kind: "tool_calls", text: null,
+          calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('must-not-run')" } }]
+        }), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-resume-permission-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "重启后恢复待授权实践" } });
+    const projectId = project.json().id as string;
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "97ba66e5-f690-4587-82f9-09ea34beb423", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "重启后恢复待授权实践", markdown: "# 重启后恢复待授权实践", message: "请验证这个示例。"
+    } });
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    const workflowId = started.json().workflow.workflowId as string;
+    expect(started.json().workflow.status).toBe("waiting_user");
+    expect(modelCalls).toBe(1);
+
+    await server.close();
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const interrupted = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
+    expect(interrupted.json().task).toMatchObject({ status: "waiting_resume_choice", resumeStatus: "waiting_permission" });
+    expect(modelCalls).toBe(1);
+
+    const taskId = interrupted.json().task.id as string;
+    const resumedTask = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${taskId}/decision`, payload: { decision: "resume" } });
+    expect(resumedTask.json()).toMatchObject({ task: { status: "waiting_permission" }, needsReconciliation: false });
+    const resumedWorkflow = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${workflowId}/resume` });
+    expect(resumedWorkflow.statusCode, JSON.stringify(resumedWorkflow.json())).toBe(200);
+    expect(resumedWorkflow.json().workflow).toMatchObject({ status: "waiting_user", pendingPermission: { callId: expect.any(String) } });
+    expect(resumedWorkflow.json().workflow.events.map((event: { type: string }) => event.type)).toContain("permission_requested");
+    expect(modelCalls).toBe(1);
+  });
+
+  it("does not require a legacy practice plan to draft, but preserves active practice decisions", async () => {
+    const fakeProvider: ModelProvider = {
+      id: "test-draft-without-plan",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const value = request.task === "revision" ? { associations: [] } : { markdown: "# 直接起草\n\n正文内容。" };
+        return { value: request.parse(value), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = createTestServer(fakeProvider);
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-draft-no-plan-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const createReadyProject = async (topic: string): Promise<string> => {
+      const response = await server!.inject({ method: "POST", url: "/api/content-projects", payload: { topic } });
+      const projectId = response.json().id as string;
+      await server!.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: {
+        objective: "写清实际观察", audience: "读者", angle: "以事实为依据", sourceNotes: ""
+      } });
+      await server!.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: `# ${topic}\n\n## 观察` } });
+      return projectId;
+    };
+
+    const withoutPlanProject = await createReadyProject("无需旧计划");
+    const plan = await server.inject({ method: "GET", url: `/api/content-projects/${withoutPlanProject}/practice-plan` });
+    expect(plan.json()).toBeNull();
+    const draft = await server.inject({ method: "POST", url: `/api/content-projects/${withoutPlanProject}/draft/generate`, payload: {} });
+    expect(draft.statusCode, JSON.stringify(draft.json())).toBe(200);
+
+    const waitingProject = await createReadyProject("等待作者选择");
+    const taskRepository = new ArticlePracticeTaskRepository(database!.connection);
+    const task = taskRepository.create(waitingProject, "需要作者决定的验证");
+    taskRepository.beginAssessment(task.id);
+    taskRepository.beginPractice(task.id);
+    taskRepository.waitForFeedback(task.id, "等待作者提供新的实践指示");
+    const blocked = await server.inject({ method: "POST", url: `/api/content-projects/${waitingProject}/draft/generate`, payload: {} });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().error).toContain("待处理选择");
+  });
+
+  it("links only unique, directly supported first-draft paragraphs to practice observations", async () => {
+    database = openInMemoryDatabase();
+    const draftMarkdown = "# 逐段匹配\n\n本次示例运行输出 verified: 42。\n\n这是一段重复观察正文。\n\n这是一段重复观察正文。\n";
+    const providerTasks: string[] = [];
+    const fakeProvider: ModelProvider = {
+      id: "test-practice-source-map",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        providerTasks.push(request.task);
+        const value = request.task === "revision"
+          ? { associations: [
+            { observationIndex: 0, paragraphText: "本次示例运行输出 verified: 42。", support: "direct" },
+            { observationIndex: 0, paragraphText: "这是一段重复观察正文。", support: "direct" }
+          ] }
+          : { markdown: draftMarkdown };
+        return { value: request.parse(value), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider);
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-source-map-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "逐段匹配" } });
+    const projectId = projectResponse.json().id as string;
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: {
+      objective: "验证正文主张", audience: "读者", angle: "短示例实测", sourceNotes: ""
+    } });
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: "# 逐段匹配\n\n## 实测" } });
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    const task = tasks.create(projectId, "运行 Node 示例并记录输出");
+    tasks.beginAssessment(task.id);
+    tasks.beginPractice(task.id);
+    tasks.recordPracticeResult(task.id, { summary: JSON.stringify({ reply: "本次运行输出 verified: 42。" }), results: [] });
+    tasks.beginDraft(task.id);
+
+    const generated = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/draft/generate` });
+    expect(generated.statusCode, JSON.stringify(generated.json())).toBe(200);
+    expect(providerTasks).toContain("revision");
+    expect(generated.json().markdown).toBe(draftMarkdown.trimEnd());
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: draftMarkdown } });
+    const sources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(generated.json().sourceRelativePath)}` });
+    expect(sources.json().sources).toContainEqual(expect.objectContaining({ type: "practice_paragraph_link", status: "linked", claim: "本次运行输出 verified: 42。" }));
+    expect(sources.json().sources).toContainEqual(expect.objectContaining({ type: "practice_observation", status: "pending_review" }));
+    expect(sources.json().sources.filter((source: { type: string }) => source.type === "practice_paragraph_link")).toHaveLength(1);
+
+    const changed = await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: draftMarkdown.replace("本次示例运行输出 verified: 42。", "本次示例运行输出 verified: 99。") } });
+    expect(changed.statusCode).toBe(200);
+    const revisedSources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(generated.json().sourceRelativePath)}` });
+    expect(revisedSources.json().sources).toContainEqual(expect.objectContaining({ type: "practice_paragraph_link", status: "pending_review" }));
+  });
+
+  it("reconnects an edited paragraph when the practice claim remains directly supported", async () => {
+    database = openInMemoryDatabase();
+    const originalParagraph = "实测后确认，示例可以正常生成结果。";
+    const editedParagraph = "在本次 Windows 环境运行后，示例成功生成预期结果。";
+    const conflictingParagraph = "本次运行未能生成预期结果。";
+    const fakeProvider: ModelProvider = {
+      id: "test-practice-source-reconnect",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const value = request.task === "revision"
+          ? { associations: [{ observationIndex: 0, paragraphText: request.prompt.includes(conflictingParagraph) ? conflictingParagraph : editedParagraph, support: request.prompt.includes(conflictingParagraph) ? "partial" : "direct" }] }
+          : { markdown: "# 编辑段落来源重连" };
+        return { value: request.parse(value), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider);
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-source-reconnect-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "编辑段落来源重连" } });
+    const projectId = projectResponse.json().id as string;
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/brief`, payload: {
+      objective: "保留实践来源", audience: "读者", angle: "依据与结论一致", sourceNotes: ""
+    } });
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/outline`, payload: { markdown: "# 编辑段落来源重连\n\n## 实测" } });
+    const initialDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: `# 编辑段落来源重连\n\n${originalParagraph}` } });
+    const task = new ArticlePracticeTaskRepository(database.connection).create(projectId, "验证示例输出");
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    tasks.beginAssessment(task.id);
+    tasks.beginPractice(task.id);
+    tasks.recordPracticeResult(task.id, { summary: JSON.stringify({ reply: "示例运行成功并输出预期结果。" }), results: [] });
+    const linked = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${task.id}/source-link`, payload: { paragraphText: originalParagraph } });
+    expect(linked.statusCode, JSON.stringify(linked.json())).toBe(200);
+
+    const editedDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: `# 编辑段落来源重连\n\n${editedParagraph}` } });
+    expect(editedDraft.statusCode, JSON.stringify(editedDraft.json())).toBe(200);
+    const sources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(initialDraft.json().sourceRelativePath)}` });
+    expect(sources.json().sources).toContainEqual(expect.objectContaining({
+      type: "practice_paragraph_link", status: "linked", claim: "示例运行成功并输出预期结果。"
+    }));
+    expect(sources.json().sources.filter((source: { type: string }) => source.type === "practice_paragraph_link")).toHaveLength(1);
+
+    const conflictingDraft = await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/draft`, payload: { markdown: `# 编辑段落来源重连\n\n${conflictingParagraph}` } });
+    expect(conflictingDraft.statusCode).toBe(200);
+    const conflictingSources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(initialDraft.json().sourceRelativePath)}` });
+    expect(conflictingSources.json().sources).toContainEqual(expect.objectContaining({
+      type: "practice_paragraph_link", status: "pending_review", claim: "示例运行成功并输出预期结果。"
+    }));
+  });
+
+  it("routes the author's failure guidance back into the active practice task", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-feedback-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-practice-feedback-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const turn = {
+          kind: "final",
+          text: JSON.stringify({ reply: "已按你的补充要求改用 Node 验证，无需进一步操作。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }),
+          calls: null
+        };
+        return { value: request.parse(turn), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-feedback-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "失败反馈续做" } });
+    const projectId = projectResponse.json().id as string;
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    const task = tasks.create(projectId, "验证示例行为");
+    tasks.beginAssessment(task.id);
+    tasks.beginPractice(task.id);
+    tasks.waitForFeedback(task.id, "首次运行失败");
+
+    const response = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "8a6e5f2a-b05d-4df7-a522-d2ccf6da9dc3", projectId,
+      practiceTaskId: task.id, continuePracticeAfterFeedback: true, workflowMode: "tool", title: "失败反馈续做",
+      markdown: "# 失败反馈续做\n\n## 验证", message: "请改用已经安装的 Node 重试。"
+    } });
+
+    expect(response.statusCode, JSON.stringify(response.json())).toBe(200);
+    expect(response.json().workflow.status).toBe("completed");
+    expect(tasks.require(task.id)).toMatchObject({ status: "drafting", latestGoal: "请改用已经安装的 Node 重试。", goalRevision: 2 });
+    expect(tasks.listEvents(task.id).map((event) => event.kind)).toContain("feedback_received");
+  });
+
+  it("gives Awen the failed and completed step identities for an explicit retry without replaying the old workflow", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-step-retry-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let retryPrompt = "";
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-step-retry-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        retryPrompt = request.prompt;
+        const turn = {
+          kind: "final",
+          text: JSON.stringify({ reply: "我会只重新检查失败步骤。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }),
+          calls: null
+        };
+        return { value: request.parse(turn), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-step-retry-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "失败步骤重试" } });
+    const projectId = projectResponse.json().id as string;
+    const contextKey = `project:${projectId}`;
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    let task = tasks.create(projectId, "验证示例行为");
+    tasks.beginAssessment(task.id);
+    tasks.beginPractice(task.id);
+    const workflowId = "a84f6cc8-cf01-4d62-89d8-145c10d4f100";
+    task = tasks.saveCheckpoint(task.id, { workflowId, stepId: "awen-tool-workflow" });
+    tasks.waitForFeedback(task.id, "上一次运行失败");
+    const failedWorkflow: ToolWorkflowSnapshot = {
+      workflowId, status: "failed", round: 2, userRequest: "验证示例行为",
+      transcript: [
+        { role: "user", content: "验证示例行为" },
+        { role: "tool", content: "practice_run_code：执行失败：模拟错误 /private/path" }
+      ],
+      events: [
+        { id: "event-1", type: "tool_completed", at: "2026-09-25T00:00:01.000Z", message: "工具完成", data: { callId: "call-1", toolId: "list_system_tools" } },
+        { id: "event-2", type: "tool_failed", at: "2026-09-25T00:00:02.000Z", message: "模拟错误 /private/path", data: { callId: "call-2", toolId: "practice_run_code" } },
+        { id: "event-3", type: "workflow_failed", at: "2026-09-25T00:00:03.000Z", message: "已结束" }
+      ],
+      toolResults: [{ callId: "call-1", toolId: "list_system_tools", output: { python: "3.13" } }],
+      pendingPermission: null, finalText: null, warningCount: 1
+    };
+    new ToolWorkflowRepository(database.connection).save(failedWorkflow, {
+      contextKey, projectId, request: { contextKey, projectId, practiceTaskId: task.id }
+    });
+
+    const response = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey, clientMessageId: "deba616f-eaf3-4f0f-ae65-40eaade8b17a", projectId,
+      practiceTaskId: task.id, continuePracticeAfterFeedback: true, workflowMode: "tool", title: "失败步骤重试",
+      markdown: "# 失败步骤重试\n\n验证目标。", message: "请只重试上一次实践中失败的步骤。"
+    } });
+
+    expect(response.statusCode, JSON.stringify(response.json())).toBe(200);
+    expect(retryPrompt).toContain("上一次失败的工具步骤：practice_run_code");
+    expect(retryPrompt).toContain("此前已完成的工具步骤：list_system_tools");
+    expect(retryPrompt).toContain("这些步骤及其结果已保留，不要重复执行");
+    expect(retryPrompt).not.toContain("/private/path");
+    expect(response.json().workflow.status).toBe("completed");
+    expect(tasks.require(task.id).status).toBe("drafting");
+  });
+
+  it("creates a practice task from an editor chat only when Awen requests code and waits for the article suggestion decision", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-editor-practice-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let modelTurn = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-editor-practice-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const turns: unknown[] = [
+          { kind: "tool_calls", text: null, calls: [{ toolId: "list_system_tools", action: "read", target: null, input: { query: "scoop" } }] },
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('verified: 42')" } }] },
+          { kind: "final", text: JSON.stringify({
+            reply: "Node 实测输出 verified: 42；我把运行条件整理成一条正文建议，请确认是否应用。",
+            memorySuggestion: "", writingMemorySuggestion: "",
+            suggestions: [{ original: "当前正文包含一个待验证行为。", replacement: "当前正文包含一个待验证行为。Node.js 本机运行示例输出 verified: 42；该结果仅适用于这段示例和本次运行环境。", reason: "补入本次可复现的验证结果与适用条件。", kind: "content", operation: "insert_after" }],
+            imageSearchRequest: null
+          }), calls: null }
+        ];
+        const turn = turns[modelTurn++];
+        return { value: request.parse(turn), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-editor-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "正文验证建议" } });
+    const projectId = projectResponse.json().id as string;
+    const markdown = "# 正文验证建议\n\n当前正文包含一个待验证行为。";
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "f98ce1a7-9340-41c4-804d-96fb8e1744c0", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "正文验证建议", markdown, message: "请用 Node 实测这段行为。"
+    } });
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("waiting_user");
+    const waiting = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
+    const taskId = waiting.json().task.id as string;
+    expect(waiting.json().task).toMatchObject({ status: "waiting_permission", latestGoal: "请用 Node 实测这段行为。", checkpoint: { workflowId: started.json().workflow.workflowId } });
+
+    const completed = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${started.json().workflow.workflowId}/permission`, payload: { decision: "allow", scope: "run" } });
+    expect(completed.statusCode, JSON.stringify(completed.json())).toBe(200);
+    expect(completed.json().workflow.status).toBe("completed");
+    const task = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
+    expect(task.json().task).toMatchObject({ id: taskId, status: "waiting_edit_confirmation" });
+    const thread = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(`project:${projectId}`)}` });
+    expect(thread.json().messages.at(-1).suggestions[0]).toMatchObject({ operation: "insert_after", original: "当前正文包含一个待验证行为。", practiceTaskId: taskId });
+
+    const acceptedParagraph = "当前正文包含一个待验证行为。Node.js 本机运行示例输出 verified: 42；该结果仅适用于这段示例和本次运行环境。";
+    const project = projectResponse.json() as { sourceRelativePath: string };
+    await server.inject({ method: "PUT", url: "/api/content-source/article", payload: { path: project.sourceRelativePath, markdown: `# 正文验证建议\n\n当前正文包含一个待验证行为。\n\n${acceptedParagraph}` } });
+    const sourceLink = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${taskId}/source-link`, payload: { paragraphText: acceptedParagraph } });
+    expect(sourceLink.statusCode, JSON.stringify(sourceLink.json())).toBe(200);
+    expect(sourceLink.json().source).toMatchObject({ type: "practice_paragraph_link", status: "linked", paragraphSha256: expect.any(String) });
+    expect(JSON.stringify(sourceLink.json())).not.toContain(acceptedParagraph);
+    const portableSources = await server.inject({ method: "GET", url: `/api/content-source/article-practice-sources?path=${encodeURIComponent(project.sourceRelativePath)}` });
+    expect(portableSources.json().sources).toContainEqual(expect.objectContaining({ type: "practice_paragraph_link", status: "linked", paragraphSha256: expect.any(String) }));
+    expect(JSON.stringify(portableSources.json())).not.toContain(acceptedParagraph);
+
+    const confirmed = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${taskId}/decision`, payload: { decision: "edit_confirmed" } });
+    expect(confirmed.json().task.status).toBe("completed");
+    const history = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task/history` });
+    expect(history.statusCode).toBe(200);
+    expect(history.json().tasks[0]).toMatchObject({ id: taskId, status: "completed", latestGoal: "请用 Node 实测这段行为。" });
+    expect(history.json().tasks[0].events.at(-1)).toMatchObject({ kind: "edit_suggestion_accepted" });
+
+    const legacyRunId = "a1111111-1111-4111-8111-111111111111";
+    database.connection.prepare(`INSERT INTO execution_runs
+      (id, project_id, request_json, preflight_json, status, exit_code, stdout, stderr, created_at, finished_at)
+      VALUES (?, ?, ?, ?, 'completed', 0, 'old output', '', ?, ?)`)
+      .run(legacyRunId, projectId, JSON.stringify({ runtime: "node", targetType: "host_trusted", cwd: "C:\\private\\project", args: ["private code"] }),
+        JSON.stringify({ available: true, targetType: "host_trusted", executable: "node", resolvedCwd: "C:\\private\\project", warnings: [] }),
+        "2026-09-20T10:00:00.000Z", "2026-09-20T10:00:01.000Z");
+    database.connection.prepare(`INSERT INTO experimental_observations
+      (id, project_id, execution_run_id, title, claim, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
+      .run("b1111111-1111-4111-8111-111111111111", projectId, legacyRunId, "旧实验观察", "旧记录中的观察结论", "2026-09-20T10:00:01.000Z", "2026-09-20T10:00:01.000Z");
+    const legacyHistory = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task/legacy-executions` });
+    expect(legacyHistory.statusCode).toBe(200);
+    const legacyRunSummary = legacyHistory.json().items.find((item: { id: string }) => item.id === legacyRunId);
+    expect(legacyRunSummary).toMatchObject({ id: legacyRunId, runtime: "node", targetType: "host_trusted", status: "completed", observation: { id: "b1111111-1111-4111-8111-111111111111", claim: "旧记录中的观察结论", status: "pending" } });
+    expect(JSON.stringify(legacyHistory.json())).not.toContain("private");
+    expect(legacyRunSummary).not.toHaveProperty("stdout");
+    const legacyDetails = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task/legacy-executions/${legacyRunId}` });
+    expect(legacyDetails.statusCode).toBe(200);
+    expect(legacyDetails.json()).toMatchObject({ id: legacyRunId, stdout: "old output", artifacts: [] });
+  });
+
+  it("starts an independent practice while an earlier editor suggestion awaits article save", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-independent-editor-practice-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let turn = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-independent-editor-practice-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const outputs: unknown[] = [
+          { kind: "tool_calls", text: null, calls: [{
+            toolId: "practice_run_code", action: "write", target: null,
+            input: { runtime: "node", code: "console.log('independent-practice')" }
+          }] },
+          { kind: "final", text: JSON.stringify({ reply: "已开始独立实践。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }) }
+        ];
+        const value = request.parse(outputs[turn++]);
+        return { value, provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-independent-editor-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "独立实践任务" } });
+    const projectId = projectResponse.json().id as string;
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    let earlier = tasks.create(projectId, "把已有实践建议保存到文章");
+    earlier = tasks.beginAssessment(earlier.id);
+    earlier = tasks.beginPractice(earlier.id);
+    earlier = tasks.beginDraft(earlier.id);
+    earlier = tasks.waitForEditConfirmation(earlier.id, "already-applied-suggestion");
+
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "7ad19002-e7d4-4a40-9d7d-f2a6fcaed2ee", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "独立实践任务",
+      markdown: "# 独立实践任务\n\n当前正文保留此前的实践建议。", message: "请在本机验证另一个无关目标。"
+    } });
+
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("waiting_user");
+    expect(started.json().workflow.events.map((event: { type: string }) => event.type)).not.toContain("tool_deferred");
+    const active = tasks.findActive(projectId);
+    expect(active).toMatchObject({ status: "waiting_permission", latestGoal: "请在本机验证另一个无关目标。" });
+    expect(active?.id).not.toBe(earlier.id);
+    expect(tasks.require(earlier.id)).toMatchObject({ status: "waiting_edit_confirmation", latestGoal: "把已有实践建议保存到文章", goalRevision: 1 });
+  });
+
+  it("appends a new editor practice request to the existing task while it is in the drafting stage", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-editor-followup-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let modelTurn = 0;
+    const prompts: string[] = [];
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-editor-followup-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        prompts.push(request.prompt);
+        const turns: unknown[] = [
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('edge: verified')" } }] },
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('second-check')" } }] },
+          { kind: "final", text: JSON.stringify({
+            reply: "新目标已记录；请先处理当前授权，之后继续验证。",
+            memorySuggestion: "", writingMemorySuggestion: "",
+            suggestions: [],
+            imageSearchRequest: null
+          }), calls: null },
+          { kind: "final", text: JSON.stringify({
+            reply: "已完成补充验证，下面是建议插入正文的内容。",
+            memorySuggestion: "", writingMemorySuggestion: "",
+            suggestions: [{ original: "文章结论仍待补充边界条件。", replacement: "文章结论仍待补充边界条件。补测结果为 edge: verified。", reason: "补充这轮验证结果。", kind: "content", operation: "insert_after" }],
+            imageSearchRequest: null
+          }), calls: null }
+        ];
+        return { value: request.parse(turns[modelTurn++]), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-editor-followup-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "编辑阶段追加实践" } });
+    const projectId = projectResponse.json().id as string;
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    const original = tasks.create(projectId, "起草前验证主要结论");
+    tasks.beginAssessment(original.id);
+    tasks.beginPractice(original.id);
+    tasks.beginDraft(original.id);
+
+    const markdown = "# 编辑阶段追加实践\n\n文章结论仍待补充边界条件。";
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "24e8a792-0b65-46c4-a986-6d0aeb3d47fb", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "编辑阶段追加实践", markdown, message: "再测一下边界输入，并把结果建议加到合适段落。"
+    } });
+
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("waiting_user");
+    const active = tasks.findActive(projectId);
+    expect(active).toMatchObject({ id: original.id, status: "waiting_permission", latestGoal: "再测一下边界输入，并把结果建议加到合适段落。", goalRevision: 2 });
+    const activity = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
+    expect(activity.json().task.events.map((event: { kind: string }) => event.kind)).toContain("goal_added");
+
+    const queuedGoal = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "b580c571-447f-4831-900b-9f171f444e2a", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "编辑阶段追加实践", markdown,
+      message: "当前授权处理完后，再检查另一个兼容性边界。"
+    } });
+    expect(queuedGoal.statusCode, JSON.stringify(queuedGoal.json())).toBe(200);
+    expect(queuedGoal.json().workflow.status).toBe("completed");
+    expect(queuedGoal.json().workflow.events.map((event: { type: string }) => event.type)).toContain("tool_deferred");
+    expect(tasks.require(original.id)).toMatchObject({ status: "waiting_permission", latestGoal: "当前授权处理完后，再检查另一个兼容性边界。", goalRevision: 3 });
+    expect(tasks.require(original.id).checkpoint.workflowId).toBe(started.json().workflow.workflowId);
+
+    const completed = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${started.json().workflow.workflowId}/permission`, payload: { decision: "allow", scope: "run" } });
+    expect(completed.statusCode, JSON.stringify(completed.json())).toBe(200);
+    expect(completed.json().workflow.status).toBe("completed");
+    expect(tasks.require(original.id).status).toBe("waiting_edit_confirmation");
+    expect(prompts.at(-1)).toContain("新增实践目标：当前授权处理完后，再检查另一个兼容性边界。");
+    const thread = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(`project:${projectId}`)}` });
+    expect(thread.json().messages.at(-1).suggestions[0]).toMatchObject({ operation: "insert_after", practiceTaskId: original.id });
+    expect(tasks.listEvents(original.id).map((event) => event.kind)).toContain("additional_practice_started");
+  });
+
+  it("treats a new chat validation request as the user's choice to continue after stopping practice", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-stop-new-goal-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let turn = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-stop-new-goal-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const outputs: unknown[] = [
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_run_code", action: "write", target: null, input: { runtime: "node", code: "console.log('new-goal-ran')" } }] },
+          { kind: "final", text: JSON.stringify({
+            reply: "已按你的新要求验证，并整理了正文建议。", memorySuggestion: "", writingMemorySuggestion: "",
+            suggestions: [{ original: "这个行为仍待验证。", replacement: "这个行为经新一轮实践确认。", reason: "回应停止后的新验证要求。", kind: "content", operation: "replace" }],
+            imageSearchRequest: null
+          }), calls: null }
+        ];
+        return { value: request.parse(outputs[turn++]), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-stop-new-goal-articles-"));
+    temporaryDirectories.push(sourceDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "停止后的新验证" } });
+    const projectId = project.json().id as string;
+    const tasks = new ArticlePracticeTaskRepository(database.connection);
+    let task = tasks.create(projectId, "第一轮目标");
+    task = tasks.beginAssessment(task.id);
+    task = tasks.beginPractice(task.id);
+    task = tasks.requestStop(task.id);
+
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "def97d9a-42ed-47a7-bdab-9bbf6000130f", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "停止后的新验证", markdown: "# 停止后的新验证\n\n这个行为仍待验证。",
+      message: "请按新目标继续验证另一个边界。"
+    } });
+
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(tasks.require(task.id)).toMatchObject({ status: "waiting_permission", latestGoal: "请按新目标继续验证另一个边界。", goalRevision: 2 });
+    expect(tasks.listEvents(task.id).find((event) => event.kind === "stop_choice")).toMatchObject({ payload: { choice: "new_goal" } });
+    const completed = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${started.json().workflow.workflowId}/permission`, payload: { decision: "allow", scope: "run" } });
+    expect(completed.statusCode, JSON.stringify(completed.json())).toBe(200);
+    expect(tasks.require(task.id).status).toBe("waiting_edit_confirmation");
+  });
+
+  it("authorizes task-scoped edits to an associated existing project file and can restore them", async () => {
+    database = openInMemoryDatabase();
+    const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-project-edit-skills-"));
+    temporaryDirectories.push(skillsDirectory);
+    let turn = 0;
+    const fakeProvider: ModelProvider = {
+      id: "test-awen-project-edit-ai",
+      async generateStructured<T>(request: GenerateStructuredRequest<T>) {
+        const expectedSha256 = createHash("sha256").update("console.log('before');\\n").digest("hex");
+        const outputs: unknown[] = [
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_read_project_file", action: "read", target: "ignored", input: { relativePath: "src/example.js" } }] },
+          { kind: "tool_calls", text: null, calls: [{ toolId: "practice_edit_project_file", action: "write", target: "ignored", input: { relativePath: "src/example.js", content: "console.log('updated');\\n", expectedSha256 } }] },
+          { kind: "final", text: JSON.stringify({ reply: "已修改示例文件并保留恢复记录。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }) }
+        ];
+        return { value: request.parse(outputs[turn++]), provider: this.id, model: "test-model", usage: null };
+      }
+    };
+    server = buildServer("2026-07-19T00:00:00.000Z", database, testVault, fakeProvider, undefined, { skillsDirectory });
+    const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-project-edit-articles-"));
+    const codeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-project-edit-code-"));
+    temporaryDirectories.push(sourceDirectory, codeDirectory);
+    await server.inject({ method: "PUT", url: "/api/content-source", payload: { rootPath: sourceDirectory } });
+    fs.mkdirSync(path.join(codeDirectory, "src"));
+    const targetFile = path.join(codeDirectory, "src", "example.js");
+    fs.writeFileSync(targetFile, "console.log('before');\\n", "utf8");
+    const projectResponse = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "关联代码文件修改" } });
+    const projectId = projectResponse.json().id as string;
+    await server.inject({ method: "PUT", url: `/api/content-projects/${projectId}/practice-directory`, payload: { directory: codeDirectory } });
+
+    const started = await server.inject({ method: "POST", url: "/api/article-chat/messages", payload: {
+      contextKey: `project:${projectId}`, clientMessageId: "b05d8cb7-6947-4210-a44d-68571731094b", projectId,
+      practiceIntentMode: "chat", workflowMode: "tool", title: "关联代码文件修改", markdown: "# 关联代码文件修改", message: "请修改 src/example.js"
+    } });
+    expect(started.statusCode, JSON.stringify(started.json())).toBe(200);
+    expect(started.json().workflow.status).toBe("waiting_user");
+    expect(started.json().workflow.pendingPermission.request.toolId).toBe("practice_edit_project_file");
+    expect(fs.readFileSync(targetFile, "utf8")).toBe("console.log('before');\\n");
+
+    const completed = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${started.json().workflow.workflowId}/permission`, payload: { decision: "allow", scope: "task" } });
+    expect(completed.statusCode, JSON.stringify(completed.json())).toBe(200);
+    expect(completed.json().workflow.status, JSON.stringify(completed.json().workflow)).toBe("completed");
+    expect(fs.readFileSync(targetFile, "utf8")).toBe("console.log('updated');\\n");
+    const change = completed.json().workflow.toolResults.find((item: { toolId: string }) => item.toolId === "practice_edit_project_file").output;
+    expect(change).toMatchObject({ relativePath: "src/example.js", diff: { before: "console.log('before');\\n", after: "console.log('updated');\\n" } });
+    expect(JSON.stringify(change)).not.toContain("backupPath");
+
+    const taskId = (database!.connection.prepare("SELECT id FROM article_practice_tasks WHERE project_id = ? ORDER BY created_at DESC LIMIT 1").get(projectId) as { id: string }).id;
+    const restored = await server.inject({ method: "POST", url: `/api/content-projects/${projectId}/practice-task/${taskId}/project-file-changes/${change.id}/restore` });
+    expect(restored.statusCode, JSON.stringify(restored.json())).toBe(200);
+    expect(fs.readFileSync(targetFile, "utf8")).toBe("console.log('before');\\n");
   });
 
   it("preloads requested web pages into the Awen prompt", async () => {
@@ -1119,6 +1901,34 @@ describe("local API scaffold", () => {
     expect(relativePath).toContain("零成本基建系列——长期免费的 AI 模型 API");
   });
 
+  it("stores an optional canonical code-project directory on the article project", async () => {
+    server = createTestServer();
+    const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "带代码目录的文章" } });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().id as string;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-practice-project-"));
+    temporaryDirectories.push(directory);
+
+    const saved = await server.inject({
+      method: "PUT", url: `/api/content-projects/${projectId}/practice-directory`, payload: { directory }
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().project.practiceProjectDirectory).toBe(fs.realpathSync.native(directory));
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-directory` })).json())
+      .toEqual({ directory: fs.realpathSync.native(directory) });
+
+    const missing = await server.inject({
+      method: "PUT", url: `/api/content-projects/${projectId}/practice-directory`, payload: { directory: path.join(directory, "missing") }
+    });
+    expect(missing.statusCode).toBe(400);
+    expect((await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-directory` })).json())
+      .toEqual({ directory: fs.realpathSync.native(directory) });
+    const cleared = await server.inject({
+      method: "PUT", url: `/api/content-projects/${projectId}/practice-directory`, payload: { directory: null }
+    });
+    expect(cleared.json().project.practiceProjectDirectory).toBeNull();
+  });
+
   it("keeps the original creation topic when a title is supplied", async () => {
     server = createTestServer();
     const created = await server.inject({ method: "POST", url: "/api/content-projects", payload: {
@@ -1403,8 +2213,9 @@ describe("local API scaffold", () => {
     expect(projectsBeforeSave.json().items[0].outlineReady).toBe(false);
 
     await server.inject({ method: "PUT", url: `/api/content-projects/${project.json().id}/outline`, payload: { markdown: outline.json().markdown } });
-    const blockedDraft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
-    expect(blockedDraft.statusCode).toBe(409);
+    const draftWithoutPlan = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
+    expect(draftWithoutPlan.statusCode).toBe(200);
+    expect(draftWithoutPlan.json().markdown).toContain("由测试模型生成");
     const practicePlan = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-plan/generate`, payload: {} });
     expect(practicePlan.statusCode).toBe(200);
     expect(practicePlan.json()).toMatchObject({ status: "draft", markdown: "# 最小实践计划\n\n## 验证一个关键步骤\n- 已有结果可直接记录，不必重跑" });
@@ -1412,18 +2223,29 @@ describe("local API scaffold", () => {
       markdown: "# 最小实践计划\n\n## 使用已有本机结果\n- 不必重跑", status: "confirmed"
     } });
     expect(confirmedPlan.statusCode).toBe(200);
+    const practiceTaskStart = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-task`, payload: { goal: "验证示例能否运行" } });
+    expect(practiceTaskStart.statusCode).toBe(201);
+    expect(practiceTaskStart.json().task).toMatchObject({ status: "assessing", latestGoal: "验证示例能否运行", goalRevision: 1 });
+    const practiceTaskId = practiceTaskStart.json().task.id as string;
+    const practiceTaskAppend = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-task`, payload: { goal: "再记录适用版本" } });
+    expect(practiceTaskAppend.statusCode).toBe(200);
+    expect(practiceTaskAppend.json()).toMatchObject({ appendedToExistingTask: true, task: { id: practiceTaskId, goalRevision: 2 } });
+    const stoppedPractice = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-task/${practiceTaskId}/stop` });
+    expect(stoppedPractice.json().task.status).toBe("waiting_stop_choice");
+    const stopChoice = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/practice-task/${practiceTaskId}/decision`, payload: { decision: "continue_draft" } });
+    expect(stopChoice.json().task).toMatchObject({ status: "drafting", hasGaps: true });
     const adopted = await server.inject({ method: "PATCH", url: `/api/content-projects/${project.json().id}/research/sources/${researchSourceId}`, payload: { adoptionStatus: "adopted" } });
     expect(adopted.json().sources[0]).toMatchObject({ adoptionStatus: "adopted", selected: true });
     const draft = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/draft/generate`, payload: {} });
     expect(draft.json()).toMatchObject({ provider: "test-ai", generatedFromOutline: true, markdown: "# AI Agent 如何改变开发流程\n\n这是一份由测试模型生成的正文。" });
     expect(prompts[0]).toContain("账号定位：帮助技术从业者理解 AI 工具");
     expect(prompts[0]).toContain("不是研究计划、写作任务书、待办清单或作者工作说明");
-    const draftPrompt = prompts.find((prompt) => prompt.includes("微信公众号资深作者")) ?? "";
+    const draftPrompt = prompts.filter((prompt) => prompt.includes("微信公众号资深作者")).pop() ?? "";
     expect(draftPrompt).toContain("已确认提纲");
     expect(prompts[0]).not.toContain("示例官方文档");
     expect(prompts[0]).not.toContain(temporarySource.title);
     expect(draftPrompt).toContain("示例官方文档");
-    expect(draftPrompt).toContain("使用已有本机结果");
+    expect(draftPrompt).not.toContain("使用已有本机结果");
     const refresh = await server.inject({ method: "POST", url: `/api/content-projects/${project.json().id}/research/refresh`, payload: { depth: "quick" } });
     expect(refresh.statusCode).toBe(200);
     const current = await server.inject({ method: "GET", url: `/api/content-projects/${project.json().id}/research` });

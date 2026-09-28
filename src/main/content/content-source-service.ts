@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { rasterizeSvgToPng } from "../../shared/svg-rasterize";
 import { rasterizeSvgOffMainThread } from "./svg-rasterizer";
@@ -47,11 +47,96 @@ export interface ContentSourceArticle {
   frontMatter: string;
 }
 
+export interface RelatedContentArticle {
+  title: string;
+  relativePath: string;
+  excerpt: string;
+}
+
 export interface ArticleResourceMetadata {
   resourcePath: string;
   mimeType: string;
   size: number;
   modifiedAtMs: number;
+}
+
+export interface PortableArticlePracticeSource {
+  type: "web_capture";
+  title: string;
+  sourceUrl: string;
+  capturedAt: string;
+  conditions: string;
+  imagePath: string;
+  imageSha256: string;
+}
+
+export interface PortableArticlePracticeDemoCapture {
+  type: "demo_capture";
+  captureKind?: "command_output";
+  title: string;
+  capturedAt: string;
+  conditions: string;
+  imagePath: string;
+  imageSha256: string;
+}
+
+export interface PortableArticlePracticeParagraphLink {
+  type: "practice_paragraph_link";
+  title: string;
+  claim: string;
+  capturedAt: string;
+  conditions: string;
+  paragraphSha256: string;
+  sourceUrl?: string;
+  screenshotSha256?: string;
+  status: "linked" | "pending_review";
+}
+
+export interface PortableArticlePracticeObservation {
+  type: "practice_observation";
+  title: string;
+  claim: string;
+  capturedAt: string;
+  conditions: string;
+  sourceUrl?: string;
+  screenshotSha256?: string;
+  status: "pending_review";
+}
+
+export interface PortableArticlePracticeImageDerivative {
+  type: "image_derivative";
+  purpose: "article_cover" | "article_body";
+  parentImagePath: string;
+  parentImageSha256: string;
+  imagePath: string;
+  imageSha256: string;
+  createdAt: string;
+}
+
+export interface ArticlePracticeImageDerivativeView extends PortableArticlePracticeImageDerivative {
+  parentStatus: "matched" | "missing" | "changed";
+  imageStatus: "matched" | "missing" | "changed";
+  bodyStatus?: ArticlePracticeCaptureBodyStatus;
+  bodyImagePath?: string;
+}
+
+export type ArticlePracticeCaptureBodyStatus = "linked" | "moved" | "not_in_body" | "missing" | "modified";
+
+export interface PracticeCaptureBodyStatus {
+  bodyStatus: ArticlePracticeCaptureBodyStatus;
+  bodyImagePath?: string;
+}
+
+export type ArticlePracticeSourceView =
+  | (PortableArticlePracticeSource & { bodyStatus: ArticlePracticeCaptureBodyStatus; bodyImagePath?: string })
+  | (PortableArticlePracticeDemoCapture & { bodyStatus: ArticlePracticeCaptureBodyStatus; bodyImagePath?: string })
+  | PortableArticlePracticeParagraphLink
+  | PortableArticlePracticeObservation
+  | ArticlePracticeImageDerivativeView;
+
+interface PortableArticlePracticeSourceManifest {
+  version: 4;
+  sources: Array<PortableArticlePracticeSource | PortableArticlePracticeDemoCapture | PortableArticlePracticeParagraphLink | PortableArticlePracticeObservation | PortableArticlePracticeImageDerivative>;
 }
 
 type RasterizedSvgCacheEntry = { signature: string; png: Buffer };
@@ -159,6 +244,53 @@ export class ContentSourceService {
       markdown: parts.body,
       frontMatter: parts.frontMatter
     };
+  }
+
+  searchRelatedArticles(workspaceId: string, query: string, excludeRelativePath?: string | null, limit = 3): RelatedContentArticle[] {
+    const config = this.getSourceConfig(workspaceId);
+    if (!config || !query.trim() || limit <= 0) return [];
+    const { rootPath, pattern } = config;
+    this.requireReadableDirectory(rootPath);
+    const terms = extractArticleSearchTerms(query);
+    if (terms.size === 0) return [];
+
+    const filePaths: string[] = [];
+    const walk = (directory: string) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!ignoredDirectories.has(entry.name) && !pattern.extraIgnoreDirs.includes(entry.name)) walk(path.join(directory, entry.name));
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) filePaths.push(path.join(directory, entry.name));
+      }
+    };
+    walk(rootPath);
+
+    const ranked: Array<RelatedContentArticle & { score: number }> = [];
+    for (const filePath of filePaths) {
+      const relativePath = toPortablePath(path.relative(rootPath, filePath));
+      if (!isArticlePath(path.relative(rootPath, filePath), pattern) || relativePath === excludeRelativePath) continue;
+      try {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const frontMatter = parseFrontMatter(raw, config.sourceType);
+        if (frontMatter.archived || frontMatter.status === "draft") continue;
+        const { body } = splitFrontMatter(raw);
+        const title = frontMatter.title?.trim() || extractLeadingArticleTitle(body) || path.basename(path.dirname(filePath));
+        const titleTerms = extractArticleSearchTerms(title);
+        const headingText = body.split(/\r?\n/u).filter((line) => /^#{1,6}\s/u.test(line)).join(" ");
+        const headingTerms = extractArticleSearchTerms(headingText);
+        const bodyTerms = extractArticleSearchTerms(body);
+        let score = 0;
+        for (const term of terms) {
+          if (titleTerms.has(term)) score += 5;
+          if (headingTerms.has(term)) score += 2;
+          if (bodyTerms.has(term)) score += 1;
+        }
+        if (score < 2) continue;
+        ranked.push({ title, relativePath, excerpt: selectRelatedArticleExcerpt(body, terms), score });
+      } catch { /* One unreadable historical article must not block drafting. */ }
+    }
+    return ranked.sort((left, right) => right.score - left.score || left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+      .slice(0, Math.min(limit, 5))
+      .map(({ title, relativePath, excerpt }) => ({ title, relativePath, excerpt }));
   }
 
   getArticleTags(workspaceId: string, relativePath: string): string[] {
@@ -329,17 +461,280 @@ export class ContentSourceService {
     return stageDirectoryDeletion(articleDirectory, stagedPath, trashRoot);
   }
 
-  saveArticleAsset(workspaceId: string, relativePath: string, mimeType: string, base64: string): { assetUrl: string } {
+  saveArticleAsset(workspaceId: string, relativePath: string, mimeType: string, base64: string, parentAssetPath?: string, purpose: "article_cover" | "article_body" = "article_cover"): { assetUrl: string } {
     const filePath = this.resolveArticlePath(workspaceId, relativePath);
     const extension = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp" }[mimeType];
     if (!extension) throw new ContentSourceError("仅支持 JPG、PNG、GIF 和 WebP 图片。");
     const bytes = Buffer.from(base64, "base64");
     if (bytes.length === 0 || bytes.length > 15 * 1024 * 1024) throw new ContentSourceError("图片必须小于 15 MB。");
-    const assetsDirectory = path.join(path.dirname(filePath), this.getSourceConfig(workspaceId)!.pattern.assetDir);
+    const config = this.getSourceConfig(workspaceId)!;
+    const assetsDirectory = path.join(path.dirname(filePath), config.pattern.assetDir);
     fs.mkdirSync(assetsDirectory, { recursive: true });
     const fileName = `${randomUUID()}${extension}`;
-    fs.writeFileSync(path.join(assetsDirectory, fileName), bytes);
-    return { assetUrl: `./${patternAssetDirectory(this.getSourceConfig(workspaceId)!.pattern)}/${fileName}` };
+    const imagePath = path.join(assetsDirectory, fileName);
+    const assetUrl = `./${patternAssetDirectory(config.pattern)}/${fileName}`;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    let derivative: PortableArticlePracticeImageDerivative | undefined;
+    let manifestPath: string | undefined;
+    let temporaryManifestPath: string | undefined;
+    let imageWritten = false;
+    try {
+      if (parentAssetPath) {
+        const articleDirectory = path.dirname(filePath);
+        const parentPath = resolveLocalArticleImagePath(articleDirectory, parentAssetPath);
+        if (!parentPath || !isPathInside(articleDirectory, parentPath)) throw new ContentSourceError("裁剪来源必须位于当前文章目录内。");
+        if (isPathInside(assetsDirectory, parentPath)) {
+          const realAssets = fs.realpathSync(assetsDirectory);
+          const realParent = fs.realpathSync(parentPath);
+          if (!isPathInside(realAssets, realParent) || !fs.statSync(realParent).isFile()) throw new ContentSourceError("裁剪来源不在本篇文章素材目录中。");
+          const parentSha256 = createHash("sha256").update(fs.readFileSync(realParent)).digest("hex");
+          manifestPath = path.join(assetsDirectory, ".wendu-practice-sources.json");
+          const manifest = readPortablePracticeManifest(manifestPath);
+          const matchedSource = manifest.sources.find((source) => (source.type === "web_capture" || source.type === "demo_capture") && source.imageSha256 === parentSha256);
+          if (matchedSource?.type === "web_capture" || matchedSource?.type === "demo_capture") {
+            derivative = {
+              type: "image_derivative", purpose, parentImagePath: `./${path.relative(articleDirectory, realParent).replaceAll("\\", "/")}`,
+              parentImageSha256: parentSha256, imagePath: assetUrl, imageSha256: sha256, createdAt: new Date().toISOString()
+            };
+            temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+            const next: PortableArticlePracticeSourceManifest = { version: 4, sources: [...manifest.sources, derivative] };
+            const serialized = `${JSON.stringify(next, null, 2)}\n`;
+            if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024 || next.sources.length > 500) throw new ContentSourceError("文章实践来源清单已达到大小上限，未保存裁剪版本。");
+            fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+          }
+        }
+      }
+      fs.writeFileSync(imagePath, bytes, { encoding: undefined, flag: "wx", mode: 0o600 });
+      imageWritten = true;
+      if (temporaryManifestPath && manifestPath) fs.renameSync(temporaryManifestPath, manifestPath);
+      return { assetUrl };
+    } catch (error) {
+      if (temporaryManifestPath && fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      if (imageWritten && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+      throw error;
+    }
+  }
+
+  saveArticlePracticeCapture(workspaceId: string, relativePath: string, base64: string, source: Omit<PortableArticlePracticeSource, "type" | "imagePath" | "imageSha256">): { assetUrl: string; sha256: string } {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("文章库设置已变化，无法保存实践截图。");
+    const url = new URL(source.sourceUrl);
+    if (url.protocol !== "https:" || url.username || url.password || !Number.isFinite(Date.parse(source.capturedAt))) throw new ContentSourceError("实践来源清单只接受公开 HTTPS 地址和有效采集时间。");
+    const bytes = Buffer.from(base64, "base64");
+    if (bytes.length === 0 || bytes.length > 15 * 1024 * 1024) throw new ContentSourceError("截图必须小于 15 MB。");
+    const assetsDirectory = path.join(path.dirname(articlePath), config.pattern.assetDir);
+    fs.mkdirSync(assetsDirectory, { recursive: true });
+    const fileName = `${randomUUID()}.png`;
+    const imagePath = path.join(assetsDirectory, fileName);
+    const assetUrl = `./${patternAssetDirectory(config.pattern)}/${fileName}`;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const shareableSourceUrl = new URL(url.origin + url.pathname).toString();
+    const manifestPath = path.join(assetsDirectory, ".wendu-practice-sources.json");
+    const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+    let imageWritten = false;
+    try {
+      fs.writeFileSync(imagePath, bytes, { encoding: undefined, flag: "wx", mode: 0o600 });
+      imageWritten = true;
+      const manifest = readPortablePracticeManifest(manifestPath);
+      const entry: PortableArticlePracticeSource = {
+        type: "web_capture",
+        title: source.title.slice(0, 300),
+        sourceUrl: shareableSourceUrl,
+        capturedAt: source.capturedAt,
+        conditions: source.conditions.slice(0, 500),
+        imagePath: assetUrl,
+        imageSha256: sha256
+      };
+      const next: PortableArticlePracticeSourceManifest = { version: 4, sources: [...manifest.sources, entry] };
+      const serialized = `${JSON.stringify(next, null, 2)}\n`;
+      if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024 || next.sources.length > 500) throw new ContentSourceError("文章实践来源清单已达到大小上限，未保存截图。");
+      fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      fs.renameSync(temporaryManifestPath, manifestPath);
+      return { assetUrl, sha256 };
+    } catch (error) {
+      if (fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      if (imageWritten && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+      throw error;
+    }
+  }
+
+  saveArticlePracticeDemoCapture(workspaceId: string, relativePath: string, base64: string, source: Omit<PortableArticlePracticeDemoCapture, "type" | "imagePath" | "imageSha256">): { assetUrl: string; sha256: string } {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("文章库设置已变化，无法保存 Demo 截图。");
+    if (!source.title.trim() || source.title.length > 300 || !Number.isFinite(Date.parse(source.capturedAt)) || !source.conditions.trim() || source.conditions.length > 500) {
+      throw new ContentSourceError("本地 Demo 截图来源信息不完整。");
+    }
+    const bytes = Buffer.from(base64, "base64");
+    if (bytes.length === 0 || bytes.length > 15 * 1024 * 1024) throw new ContentSourceError("本地 Demo 截图必须小于 15 MB。");
+    const assetsDirectory = path.join(path.dirname(articlePath), config.pattern.assetDir);
+    fs.mkdirSync(assetsDirectory, { recursive: true });
+    const fileName = `${randomUUID()}.png`;
+    const imagePath = path.join(assetsDirectory, fileName);
+    const assetUrl = `./${patternAssetDirectory(config.pattern)}/${fileName}`;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const manifestPath = path.join(assetsDirectory, ".wendu-practice-sources.json");
+    const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+    let imageWritten = false;
+    try {
+      fs.writeFileSync(imagePath, bytes, { encoding: undefined, flag: "wx", mode: 0o600 });
+      imageWritten = true;
+      const manifest = readPortablePracticeManifest(manifestPath);
+      const entry: PortableArticlePracticeDemoCapture = {
+        type: "demo_capture",
+        ...(source.captureKind ? { captureKind: source.captureKind } : {}),
+        title: source.title.trim(),
+        capturedAt: source.capturedAt,
+        conditions: source.conditions.trim(),
+        imagePath: assetUrl,
+        imageSha256: sha256
+      };
+      const next: PortableArticlePracticeSourceManifest = { version: 4, sources: [...manifest.sources, entry] };
+      const serialized = `${JSON.stringify(next, null, 2)}\n`;
+      if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024 || next.sources.length > 500) throw new ContentSourceError("文章实践来源清单已达到大小上限，未保存 Demo 截图。");
+      fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      fs.renameSync(temporaryManifestPath, manifestPath);
+      return { assetUrl, sha256 };
+    } catch (error) {
+      if (fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      if (imageWritten && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+      throw error;
+    }
+  }
+
+  linkArticlePracticeParagraph(workspaceId: string, relativePath: string, input: {
+    title: string; claim: string; capturedAt: string; paragraphText: string; conditions?: string; sourceUrl?: string; screenshotSha256?: string;
+  }): PortableArticlePracticeParagraphLink {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("文章库设置已变化，无法保存实践来源。");
+    if (!input.title.trim() || !input.claim.trim() || !Number.isFinite(Date.parse(input.capturedAt)) || input.paragraphText.trim().length < 8 || input.paragraphText.length > 5000) {
+      throw new ContentSourceError("实践结论或正文段落信息不完整，无法建立来源关联。");
+    }
+    const markdown = fs.readFileSync(articlePath, "utf8");
+    const paragraphSha256 = createHash("sha256").update(normalizeProvenanceText(input.paragraphText), "utf8").digest("hex");
+    const occurrences = countParagraphHashOccurrences(markdown, paragraphSha256);
+    const entry: PortableArticlePracticeParagraphLink = {
+      type: "practice_paragraph_link",
+      title: input.title.trim().slice(0, 300),
+      claim: input.claim.trim().slice(0, 500),
+      capturedAt: input.capturedAt,
+      conditions: portablePracticeConditions(input.conditions),
+      paragraphSha256,
+      ...(shareableHttpsUrl(input.sourceUrl) ? { sourceUrl: shareableHttpsUrl(input.sourceUrl) } : {}),
+      ...(input.screenshotSha256 && /^[a-f0-9]{64}$/iu.test(input.screenshotSha256) ? { screenshotSha256: input.screenshotSha256 } : {}),
+      status: occurrences === 1 ? "linked" : "pending_review"
+    };
+    const assetsDirectory = path.join(path.dirname(articlePath), config.pattern.assetDir);
+    fs.mkdirSync(assetsDirectory, { recursive: true });
+    const manifestPath = path.join(assetsDirectory, ".wendu-practice-sources.json");
+    const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+    try {
+      const manifest = readPortablePracticeManifest(manifestPath);
+      const existing = manifest.sources.find((source) => source.type === "practice_paragraph_link" &&
+        source.paragraphSha256 === entry.paragraphSha256 && source.claim === entry.claim && source.capturedAt === entry.capturedAt);
+      if (existing?.type === "practice_paragraph_link") return existing;
+      const next: PortableArticlePracticeSourceManifest = { version: 4, sources: [...manifest.sources, entry] };
+      const serialized = `${JSON.stringify(next, null, 2)}\n`;
+      if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024 || next.sources.length > 500) throw new ContentSourceError("文章实践来源清单已达到大小上限。");
+      fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      fs.renameSync(temporaryManifestPath, manifestPath);
+      return entry;
+    } catch (error) {
+      if (fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      throw error;
+    }
+  }
+
+  reanchorArticlePracticeParagraph(workspaceId: string, relativePath: string, input: {
+    claim: string; capturedAt: string; expectedParagraphSha256: string; paragraphText: string;
+  }): boolean {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config || !/^[a-f0-9]{64}$/iu.test(input.expectedParagraphSha256) || input.paragraphText.trim().length < 8 || input.paragraphText.length > 5000) return false;
+    const markdown = fs.readFileSync(articlePath, "utf8");
+    const nextParagraphSha256 = createHash("sha256").update(normalizeProvenanceText(input.paragraphText), "utf8").digest("hex");
+    if (countParagraphHashOccurrences(markdown, nextParagraphSha256) !== 1) return false;
+    const manifestPath = path.join(path.dirname(articlePath), config.pattern.assetDir, ".wendu-practice-sources.json");
+    const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+    try {
+      const manifest = readPortablePracticeManifest(manifestPath);
+      const index = manifest.sources.findIndex((source) => source.type === "practice_paragraph_link" &&
+        source.paragraphSha256 === input.expectedParagraphSha256 && source.claim === input.claim && source.capturedAt === input.capturedAt);
+      if (index < 0) return false;
+      const existing = manifest.sources[index];
+      if (existing.type !== "practice_paragraph_link") return false;
+      manifest.sources[index] = { ...existing, paragraphSha256: nextParagraphSha256, status: "linked" };
+      const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
+      fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      fs.renameSync(temporaryManifestPath, manifestPath);
+      return true;
+    } catch (error) {
+      if (fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      throw error;
+    }
+  }
+
+  recordArticlePracticeObservation(workspaceId: string, relativePath: string, input: {
+    title: string; claim: string; capturedAt: string; conditions: string; sourceUrl?: string; screenshotSha256?: string;
+  }): PortableArticlePracticeObservation {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("文章库设置已变化，无法保存实践来源。");
+    const title = input.title.trim().slice(0, 300);
+    const claim = input.claim.trim().slice(0, 500);
+    const conditions = input.conditions.trim().slice(0, 500);
+    const sourceUrl = shareableHttpsUrl(input.sourceUrl);
+    const screenshotSha256 = input.screenshotSha256 && /^[a-f0-9]{64}$/iu.test(input.screenshotSha256) ? input.screenshotSha256 : undefined;
+    if (!title || !claim || !conditions || !Number.isFinite(Date.parse(input.capturedAt)) || input.claim.length > 500 || input.conditions.length > 500 ||
+      (input.sourceUrl !== undefined && !sourceUrl) || (input.screenshotSha256 !== undefined && !screenshotSha256)) {
+      throw new ContentSourceError("实践观察摘要或来源信息不完整，无法加入文章来源清单。");
+    }
+    const entry: PortableArticlePracticeObservation = {
+      type: "practice_observation", title, claim, capturedAt: input.capturedAt, conditions,
+      ...(sourceUrl ? { sourceUrl } : {}), ...(screenshotSha256 ? { screenshotSha256 } : {}), status: "pending_review"
+    };
+    const assetsDirectory = path.join(path.dirname(articlePath), config.pattern.assetDir);
+    fs.mkdirSync(assetsDirectory, { recursive: true });
+    const manifestPath = path.join(assetsDirectory, ".wendu-practice-sources.json");
+    const temporaryManifestPath = `${manifestPath}.${randomUUID()}.tmp`;
+    try {
+      const manifest = readPortablePracticeManifest(manifestPath);
+      const existing = manifest.sources.find((source) => source.type === "practice_observation" &&
+        source.title === entry.title && source.claim === entry.claim && source.capturedAt === entry.capturedAt);
+      if (existing?.type === "practice_observation") return existing;
+      const next: PortableArticlePracticeSourceManifest = { version: 4, sources: [...manifest.sources, entry] };
+      const serialized = `${JSON.stringify(next, null, 2)}\n`;
+      if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024 || next.sources.length > 500) throw new ContentSourceError("文章实践来源清单已达到大小上限。");
+      fs.writeFileSync(temporaryManifestPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      fs.renameSync(temporaryManifestPath, manifestPath);
+      return entry;
+    } catch (error) {
+      if (fs.existsSync(temporaryManifestPath)) fs.unlinkSync(temporaryManifestPath);
+      throw error;
+    }
+  }
+
+  listArticlePracticeSources(workspaceId: string, relativePath: string): ArticlePracticeSourceView[] {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) return [];
+    const manifestPath = path.join(path.dirname(articlePath), config.pattern.assetDir, ".wendu-practice-sources.json");
+    const manifest = readPortablePracticeManifest(manifestPath);
+    const markdown = fs.readFileSync(articlePath, "utf8");
+    const assetsDirectory = path.join(path.dirname(articlePath), config.pattern.assetDir);
+    return manifest.sources.map((source): ArticlePracticeSourceView => {
+      if (source.type === "web_capture" || source.type === "demo_capture") return { ...source, ...resolvePracticeCaptureBodyStatus(markdown, articlePath, assetsDirectory, source) };
+      if (source.type === "image_derivative") return { ...source,
+        parentStatus: resolvePracticeImageFileStatus(articlePath, assetsDirectory, source.parentImagePath, source.parentImageSha256),
+        imageStatus: resolvePracticeImageFileStatus(articlePath, assetsDirectory, source.imagePath, source.imageSha256),
+        ...(source.purpose === "article_body" ? resolvePracticeCaptureBodyStatus(markdown, articlePath, assetsDirectory, source) : {})
+      };
+      if (source.type === "practice_observation") return source;
+      const uniquelyPresent = countParagraphHashOccurrences(markdown, source.paragraphSha256) === 1;
+      return { ...source, status: uniquelyPresent ? "linked" : "pending_review" };
+    });
   }
 
   readArticleAsset(workspaceId: string, relativePath: string, fileName: string): { stream: fs.ReadStream; mimeType: string } {
@@ -457,6 +852,134 @@ export class ContentSourceService {
     try { return fs.statSync(directory); }
     catch { throw new ContentSourceError("找不到文章库路径，或当前用户没有读取权限。"); }
   }
+}
+
+function isSafePracticeAssetPath(value: string, extensions: readonly string[]): boolean {
+  if (!value.startsWith("./") || value.includes("\\") || /[?#:\u0000-\u001f]/u.test(value)) return false;
+  const segments = value.slice(2).split("/");
+  if (segments.length < 2 || segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
+  const fileName = segments.at(-1) ?? "";
+  const allowedExtensions = extensions.map((extension) => extension.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
+  return new RegExp(`^[a-f0-9-]{36}\\.(?:${allowedExtensions})$`, "iu").test(fileName);
+}
+
+function readPortablePracticeManifest(manifestPath: string): PortableArticlePracticeSourceManifest {
+  if (!fs.existsSync(manifestPath)) return { version: 4, sources: [] };
+  const contents = fs.readFileSync(manifestPath, "utf8");
+  if (Buffer.byteLength(contents, "utf8") > 2 * 1024 * 1024) throw new ContentSourceError("文章实践来源清单超过大小上限，未保存截图。");
+  let parsed: unknown;
+  try { parsed = JSON.parse(contents); } catch { throw new ContentSourceError("文章实践来源清单格式损坏，未保存截图以免覆盖原文件。"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new ContentSourceError("文章实践来源清单格式不正确。");
+  const record = parsed as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== "sources,version" || (record.version !== 1 && record.version !== 2 && record.version !== 3 && record.version !== 4) || !Array.isArray(record.sources) || record.sources.length > 500) throw new ContentSourceError("文章实践来源清单版本不支持、包含不可分享字段或记录过多。");
+  const sources = record.sources.map((value): PortableArticlePracticeSource | PortableArticlePracticeDemoCapture | PortableArticlePracticeParagraphLink | PortableArticlePracticeObservation | PortableArticlePracticeImageDerivative => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new ContentSourceError("文章实践来源清单包含无效记录。");
+    const item = value as Record<string, unknown>;
+    const keys = Object.keys(item).sort().join(",");
+    if (item.type === "web_capture") {
+      if (keys !== "capturedAt,conditions,imagePath,imageSha256,sourceUrl,title,type" ||
+        typeof item.title !== "string" || typeof item.sourceUrl !== "string" || typeof item.capturedAt !== "string" || typeof item.conditions !== "string" ||
+        typeof item.imagePath !== "string" || typeof item.imageSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.imageSha256) ||
+        !isSafePracticeAssetPath(item.imagePath, ["png"]) || !Number.isFinite(Date.parse(item.capturedAt)) ||
+        item.title.length > 300 || item.conditions.length > 500) throw new ContentSourceError("文章实践来源清单包含无效或不可分享字段。");
+      let sourceUrl: URL;
+      try { sourceUrl = new URL(item.sourceUrl); } catch { throw new ContentSourceError("文章实践来源清单中的网址不合法。"); }
+      if (sourceUrl.protocol !== "https:" || sourceUrl.username || sourceUrl.password) throw new ContentSourceError("文章实践来源清单中的来源必须为公开 HTTPS 地址。");
+      return { type: "web_capture", title: item.title, sourceUrl: sourceUrl.toString(), capturedAt: item.capturedAt, conditions: item.conditions, imagePath: item.imagePath, imageSha256: item.imageSha256 };
+    }
+    if (item.type === "demo_capture") {
+      const validDemoCaptureKeys = keys === "capturedAt,conditions,imagePath,imageSha256,title,type" ||
+        keys === "captureKind,capturedAt,conditions,imagePath,imageSha256,title,type";
+      if (!validDemoCaptureKeys || (item.captureKind !== undefined && item.captureKind !== "command_output") ||
+        typeof item.title !== "string" || typeof item.capturedAt !== "string" || typeof item.conditions !== "string" ||
+        typeof item.imagePath !== "string" || typeof item.imageSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.imageSha256) ||
+        !isSafePracticeAssetPath(item.imagePath, ["png"]) || !Number.isFinite(Date.parse(item.capturedAt)) ||
+        item.title.length < 1 || item.title.length > 300 || item.conditions.length < 1 || item.conditions.length > 500) {
+        throw new ContentSourceError("文章实践来源清单包含无效的本地 Demo 截图记录。");
+      }
+      return { type: "demo_capture", ...(item.captureKind === "command_output" ? { captureKind: "command_output" as const } : {}), title: item.title, capturedAt: item.capturedAt, conditions: item.conditions, imagePath: item.imagePath, imageSha256: item.imageSha256 };
+    }
+    if (item.type === "practice_observation") {
+      const observationKeys = ["capturedAt,claim,conditions,status,title,type", "capturedAt,claim,conditions,screenshotSha256,status,title,type", "capturedAt,claim,conditions,sourceUrl,status,title,type", "capturedAt,claim,conditions,screenshotSha256,sourceUrl,status,title,type"];
+      if (!observationKeys.includes(keys) || typeof item.title !== "string" || typeof item.claim !== "string" || typeof item.capturedAt !== "string" ||
+        typeof item.conditions !== "string" || item.status !== "pending_review" || !Number.isFinite(Date.parse(item.capturedAt)) ||
+        item.title.length < 1 || item.title.length > 300 || item.claim.length < 1 || item.claim.length > 500 || item.conditions.length < 1 || item.conditions.length > 500 ||
+        (item.sourceUrl !== undefined && (typeof item.sourceUrl !== "string" || !shareableHttpsUrl(item.sourceUrl) || shareableHttpsUrl(item.sourceUrl) !== item.sourceUrl)) ||
+        (item.screenshotSha256 !== undefined && (typeof item.screenshotSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.screenshotSha256)))) {
+        throw new ContentSourceError("文章实践来源清单包含无效观察摘要或不可分享字段。");
+      }
+      return { type: "practice_observation", title: item.title, claim: item.claim, capturedAt: item.capturedAt, conditions: item.conditions,
+        ...(typeof item.sourceUrl === "string" ? { sourceUrl: item.sourceUrl } : {}),
+        ...(typeof item.screenshotSha256 === "string" ? { screenshotSha256: item.screenshotSha256 } : {}), status: "pending_review" };
+    }
+    if (item.type === "image_derivative") {
+      if (keys !== "createdAt,imagePath,imageSha256,parentImagePath,parentImageSha256,purpose,type" || !["article_cover", "article_body"].includes(String(item.purpose)) ||
+        typeof item.parentImagePath !== "string" || !isSafePracticeAssetPath(item.parentImagePath, ["png", "jpg", "jpeg", "gif", "webp"]) ||
+        typeof item.parentImageSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.parentImageSha256) ||
+        typeof item.imagePath !== "string" || !isSafePracticeAssetPath(item.imagePath, ["png", "jpg", "jpeg", "gif", "webp"]) ||
+        typeof item.imageSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.imageSha256) ||
+        typeof item.createdAt !== "string" || !Number.isFinite(Date.parse(item.createdAt))) throw new ContentSourceError("文章实践来源清单包含无效的图片衍生版本记录。");
+      return { type: "image_derivative", purpose: item.purpose as "article_cover" | "article_body", parentImagePath: item.parentImagePath, parentImageSha256: item.parentImageSha256,
+        imagePath: item.imagePath, imageSha256: item.imageSha256, createdAt: item.createdAt };
+    }
+    const baseParagraphKeys = "capturedAt,claim,conditions,paragraphSha256,status,title,type";
+    const optionalParagraphKeys = [baseParagraphKeys, "capturedAt,claim,conditions,paragraphSha256,screenshotSha256,status,title,type", "capturedAt,claim,conditions,paragraphSha256,sourceUrl,status,title,type", "capturedAt,claim,conditions,paragraphSha256,screenshotSha256,sourceUrl,status,title,type",
+      "capturedAt,claim,conditions,paragraphSha256,paragraphText,status,title,type", "capturedAt,claim,conditions,paragraphSha256,paragraphText,screenshotSha256,status,title,type", "capturedAt,claim,conditions,paragraphSha256,paragraphText,sourceUrl,status,title,type", "capturedAt,claim,conditions,paragraphSha256,paragraphText,screenshotSha256,sourceUrl,status,title,type"];
+    if (item.type !== "practice_paragraph_link" || !optionalParagraphKeys.includes(keys) ||
+      typeof item.title !== "string" || typeof item.claim !== "string" || typeof item.capturedAt !== "string" || typeof item.conditions !== "string" ||
+      typeof item.paragraphSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.paragraphSha256) ||
+      !["linked", "pending_review"].includes(String(item.status)) || !Number.isFinite(Date.parse(item.capturedAt)) ||
+      item.title.length > 300 || item.claim.length > 500 || item.conditions.length > 500 ||
+      (item.paragraphText !== undefined && (typeof item.paragraphText !== "string" || item.paragraphText.length < 8 || item.paragraphText.length > 5000)) ||
+      (item.sourceUrl !== undefined && (typeof item.sourceUrl !== "string" || !shareableHttpsUrl(item.sourceUrl) || shareableHttpsUrl(item.sourceUrl) !== item.sourceUrl)) ||
+      (item.screenshotSha256 !== undefined && (typeof item.screenshotSha256 !== "string" || !/^[a-f0-9]{64}$/iu.test(item.screenshotSha256)))) {
+      throw new ContentSourceError("文章实践来源清单包含无效或不可分享字段。");
+    }
+    return { type: "practice_paragraph_link", title: item.title, claim: item.claim, capturedAt: item.capturedAt, conditions: item.conditions,
+      paragraphSha256: item.paragraphSha256,
+      ...(typeof item.sourceUrl === "string" ? { sourceUrl: item.sourceUrl } : {}),
+      ...(typeof item.screenshotSha256 === "string" ? { screenshotSha256: item.screenshotSha256 } : {}),
+      status: item.status as "linked" | "pending_review" };
+  });
+  for (const source of sources) {
+      if (source.type === "image_derivative" && !sources.some((candidate) => (candidate.type === "web_capture" || candidate.type === "demo_capture") && candidate.imageSha256 === source.parentImageSha256)) {
+      throw new ContentSourceError("文章实践来源清单中的图片衍生版本找不到对应原始截图。");
+    }
+  }
+  return { version: 4, sources };
+}
+
+function normalizeProvenanceText(value: string): string { return value.replace(/\s+/g, " ").trim(); }
+
+function portablePracticeConditions(value?: string): string {
+  const conditions = (value ?? "").trim().replace(/https?:\/\/[^\s)\]}>,]+/giu, "").replace(/\s+/gu, " ");
+  if (!conditions || conditions.length > 500 || /(?:[a-z]:[\\/]|\\\\[^\\]+\\|\/(?:users|home|private|tmp|var|mnt|workspaces?)\/|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|cookie|authorization)\s*[:=]|\bbearer\s+[a-z0-9._~+/-]+=*|\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b)/iu.test(conditions)) {
+    return "运行条件未单独记录。";
+  }
+  return conditions;
+}
+
+function shareableHttpsUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    return `${url.origin}${url.pathname}`;
+  } catch { return undefined; }
+}
+
+function countParagraphHashOccurrences(markdown: string, expectedHash: string): number {
+  const blocks = markdown.split(/(?:\r?\n){2,}/u).map(normalizeProvenanceText).filter(Boolean);
+  let count = 0;
+  for (let start = 0; start < blocks.length; start++) {
+    let candidate = "";
+    for (let end = start; end < blocks.length; end++) {
+      candidate = candidate ? `${candidate}\n\n${blocks[end]}` : blocks[end];
+      if (createHash("sha256").update(normalizeProvenanceText(candidate), "utf8").digest("hex") === expectedHash) count++;
+      if (count > 1) return count;
+    }
+  }
+  return count;
 }
 
 /**
@@ -683,6 +1206,33 @@ function isArticlePath(relativePath: string, pattern: ArticlePathPattern): boole
   return hasBase && segments.length >= minimumSegments && segments.at(-1)?.toLowerCase() === pattern.entryFile.toLowerCase();
 }
 
+function extractArticleSearchTerms(value: string): Set<string> {
+  const terms = new Set<string>();
+  const normalized = value.toLocaleLowerCase("zh-CN");
+  for (const match of normalized.matchAll(/[\p{Script=Han}]+/gu)) {
+    const text = match[0];
+    if (text.length === 1) terms.add(text);
+    for (let index = 0; index < text.length - 1; index++) terms.add(text.slice(index, index + 2));
+  }
+  for (const match of normalized.matchAll(/[a-z\d][a-z\d._+-]{1,}/gu)) terms.add(match[0]);
+  return terms;
+}
+
+function selectRelatedArticleExcerpt(markdown: string, terms: Set<string>): string {
+  const paragraphs = markdown.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gmu, "")
+    .split(/\r?\n\s*\r?\n/u)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph && !/^#{1,6}\s/u.test(paragraph) && !/^!\[/u.test(paragraph));
+  const ranked = paragraphs.map((paragraph, index) => {
+    const paragraphTerms = extractArticleSearchTerms(paragraph);
+    let score = 0;
+    for (const term of terms) if (paragraphTerms.has(term)) score++;
+    return { paragraph, index, score };
+  }).filter((item) => item.score > 0).sort((left, right) => right.score - left.score || left.index - right.index);
+  const excerpt = ranked.slice(0, 2).sort((left, right) => left.index - right.index).map(({ paragraph }) => paragraph).join("\n\n");
+  return (excerpt || paragraphs.slice(0, 2).join("\n\n")).slice(0, 1800);
+}
+
 function normalizePattern(sourceType: ContentSourceType, pattern?: Partial<ArticlePathPattern>): ArticlePathPattern {
   const defaults = defaultPattern[sourceType];
   return {
@@ -705,6 +1255,83 @@ function readPattern(serialized: string | undefined, sourceType: ContentSourceTy
 
 function patternAssetDirectory(pattern: ArticlePathPattern): string {
   return pattern.assetDir.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "") || "assets";
+}
+
+export function resolvePracticeCaptureBodyStatus(
+  markdown: string,
+  articlePath: string,
+  assetsDirectory: string,
+  source: { imagePath: string; imageSha256: string }
+): PracticeCaptureBodyStatus {
+  const articleDirectory = path.dirname(articlePath);
+  const originalImagePath = resolveLocalArticleImagePath(articleDirectory, source.imagePath);
+  const referencedImages = extractMarkdownImagePaths(markdown);
+  let originalExists = false;
+  let originalHash: string | undefined;
+  if (originalImagePath && isPathInside(assetsDirectory, originalImagePath) && fs.existsSync(originalImagePath)) {
+    try {
+      const realAssets = fs.realpathSync(assetsDirectory);
+      const realImage = fs.realpathSync(originalImagePath);
+      if (isPathInside(realAssets, realImage) && fs.statSync(realImage).isFile()) {
+        originalExists = true;
+        originalHash = createHash("sha256").update(fs.readFileSync(realImage)).digest("hex");
+      }
+    } catch { /* Treat inaccessible or broken assets as unavailable evidence files. */ }
+  }
+
+  let referencesOriginal = false;
+  for (const reference of referencedImages) {
+    const imagePath = resolveLocalArticleImagePath(articleDirectory, reference);
+    if (!imagePath || !isPathInside(assetsDirectory, imagePath)) continue;
+    if (originalImagePath && path.resolve(imagePath).toLowerCase() === path.resolve(originalImagePath).toLowerCase()) referencesOriginal = true;
+    try {
+      const realAssets = fs.realpathSync(assetsDirectory);
+      const realImage = fs.realpathSync(imagePath);
+      if (!isPathInside(realAssets, realImage) || !fs.statSync(realImage).isFile()) continue;
+      const hash = createHash("sha256").update(fs.readFileSync(realImage)).digest("hex");
+      if (hash === source.imageSha256) {
+        const bodyImagePath = `./${path.relative(articleDirectory, imagePath).replaceAll("\\", "/")}`;
+        return { bodyStatus: bodyImagePath === source.imagePath ? "linked" : "moved", bodyImagePath };
+      }
+    } catch { /* Ignore missing, inaccessible, or broken image references. */ }
+  }
+
+  if (!originalExists) return { bodyStatus: "missing" };
+  if (referencesOriginal && originalHash !== source.imageSha256) return { bodyStatus: "modified", bodyImagePath: source.imagePath };
+  return { bodyStatus: "not_in_body" };
+}
+
+function resolvePracticeImageFileStatus(articlePath: string, assetsDirectory: string, imagePath: string, expectedSha256: string): "matched" | "missing" | "changed" {
+  const image = resolveLocalArticleImagePath(path.dirname(articlePath), imagePath);
+  if (!image || !isPathInside(assetsDirectory, image) || !fs.existsSync(image)) return "missing";
+  try {
+    const realAssets = fs.realpathSync(assetsDirectory);
+    const realImage = fs.realpathSync(image);
+    if (!isPathInside(realAssets, realImage) || !fs.statSync(realImage).isFile()) return "missing";
+    const actualSha256 = createHash("sha256").update(fs.readFileSync(realImage)).digest("hex");
+    return actualSha256 === expectedSha256 ? "matched" : "changed";
+  } catch { return "missing"; }
+}
+
+function extractMarkdownImagePaths(markdown: string): string[] {
+  const values = new Set<string>();
+  for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))/gu)) {
+    const value = match[1] ?? match[2];
+    if (value) values.add(value);
+  }
+  for (const match of markdown.matchAll(/<img\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/giu)) {
+    if (match[2]) values.add(match[2]);
+  }
+  return [...values];
+}
+
+function resolveLocalArticleImagePath(articleDirectory: string, value: string): string | undefined {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(value)) return undefined;
+  let decoded = value.trim();
+  try { decoded = decodeURIComponent(decoded); } catch { return undefined; }
+  decoded = decoded.split(/[?#]/u, 1)[0].replaceAll("\\", "/");
+  if (!decoded) return undefined;
+  return path.resolve(articleDirectory, decoded);
 }
 
 function safePatternSegment(value: string, fallback: string): string {

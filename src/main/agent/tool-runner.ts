@@ -4,6 +4,8 @@ import type { ExecutionAuthorizationRecord } from "./execution-repository";
 
 export interface ToolExecutionContext {
   signal?: AbortSignal;
+  workflowId?: string;
+  practiceTaskId?: string;
   projectId?: string;
   workspaceId?: string;
   target?: string;

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
-import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentPracticePlan, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
+import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
   accounts: MediaAccount[];
@@ -97,12 +97,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [titleEditText, setTitleEditText] = useState("");
   const [titleEditSuggestions, setTitleEditSuggestions] = useState<string[]>([]);
   const [titleEditSuggesting, setTitleEditSuggesting] = useState(false);
-  const [practicePlanProject, setPracticePlanProject] = useState<ContentProject>();
-  const [practicePlan, setPracticePlan] = useState<ContentPracticePlan>();
-  const [practicePlanBusy, setPracticePlanBusy] = useState(false);
-  const [practicePlanGenerating, setPracticePlanGenerating] = useState(false);
-  const [practicePlanGenerationStatus, setPracticePlanGenerationStatus] = useState("");
-  const practicePlanAbortRef = useRef<AbortController | undefined>(undefined);
   const outlineAbortRef = useRef<AbortController | undefined>(undefined);
   const setOutlineAbortRef = (value: AbortController | undefined) => {
     outlineAbortRef.current = value;
@@ -165,6 +159,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [draftGenerating, setDraftGenerating] = useState(false);
   const [draftGenerationStatus, setDraftGenerationStatus] = useState("");
   const draftAbortRef = useRef<AbortController | undefined>(undefined);
+  const activePracticeTaskIdRef = useRef<string | undefined>(undefined);
   const setDraftAbortRef = (value: AbortController | undefined) => {
     draftAbortRef.current = value;
   };
@@ -800,6 +795,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
         });
       }
       setDraft(opened);
+      activePracticeTaskIdRef.current = undefined;
       if (opened.sourceRelativePath && opened.sourceRelativePath !== project.sourceRelativePath) {
         setDraftProject({ ...project, sourceRelativePath: opened.sourceRelativePath });
       }
@@ -807,60 +803,85 @@ export function useWorkbench(params: UseWorkbenchParams) {
     catch (cause) { if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) setError(cause instanceof Error ? cause.message : "无法起草正文。"); setDraftProject(undefined); }
     finally { setDraftGenerating(false); draftAbortRef.current = undefined; }
   };
+  const openDraftWithPractice = async (project: ContentProject) => {
+    setDraftProject(project); setDraft(undefined); setSaving(false); setArticleWorkspacePanel("assistant");
+    const controller = new AbortController();
+    draftAbortRef.current = controller;
+    setDraftGenerating(true);
+    setDraftGenerationStatus("阿文正在判断是否需要实践…");
+    setDraft({ projectId: project.id, markdown: "", generatedFromOutline: true, sourceRelativePath: project.sourceRelativePath });
+    let taskStatus: string | undefined;
+    try {
+      const started = await request<{ task: { id: string; status: string }; workflow: unknown }>(`/content-projects/${project.id}/practice-task/start`, {
+        method: "POST",
+        body: JSON.stringify({ goal: `为“${project.topic}”按已确认提纲准备正文；自行判断是否值得实践。` })
+      });
+      activePracticeTaskIdRef.current = started.task.id;
+      taskStatus = started.task.status;
+      while (!controller.signal.aborted) {
+        const current = await request<{ task: { id: string; status: string; waitingReason: string | null } | null }>(`/content-projects/${project.id}/practice-task`);
+        if (!current.task) throw new Error("文章实践任务已结束，无法继续起草。");
+        taskStatus = current.task.status;
+        if (taskStatus === "stopped") {
+          setDraftProject(undefined);
+          setDraft(undefined);
+          return;
+        }
+        if (taskStatus === "drafting") break;
+        if (taskStatus === "waiting_permission") setDraftGenerationStatus("阿文需要一项授权，请在右侧“执行活动”查看并处理。等待期间不会自动继续。");
+        else if (taskStatus === "waiting_feedback") setDraftGenerationStatus(`阿文遇到一个无法继续的步骤，正在等待你的指示：${current.task.waitingReason ?? "请查看执行活动"}`);
+        else if (taskStatus === "waiting_stop_choice") setDraftGenerationStatus("实践已停止，等待你选择是否继续起草。");
+        else if (taskStatus === "waiting_resume_choice") setDraftGenerationStatus("发现上次中断的实践，请在右侧“执行活动”选择如何处理。");
+        else if (taskStatus === "assessing") setDraftGenerationStatus("阿文正在判断是否需要实践…");
+        else setDraftGenerationStatus("阿文正在准备实践；完成后会继续起草正文…");
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+      }
+      if (controller.signal.aborted) throw new Error("已停止本次 AI 生成");
+      const opened = await streamGeneration<ContentDraft>(`/content-projects/${project.id}/draft/generate/stream`, controller.signal, (event, data) => {
+        if (event === "delta") setDraft((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+        if (event === "status") setDraftGenerationStatus(String(data.message ?? "AI 正在起草正文…"));
+      });
+      setDraft(opened);
+      if (opened.sourceRelativePath && opened.sourceRelativePath !== project.sourceRelativePath) setDraftProject({ ...project, sourceRelativePath: opened.sourceRelativePath });
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        try {
+          const current = await request<{ task: { id: string; checkpoint: { workflowId?: string } } | null }>(`/content-projects/${project.id}/practice-task`);
+          if (current.task?.checkpoint.workflowId) await request(`/article-chat/workflows/${current.task.checkpoint.workflowId}/cancel`, { method: "POST" });
+          else if (current.task) await request(`/content-projects/${project.id}/practice-task/${current.task.id}/stop`, { method: "POST" });
+        } catch { /* The task remains durable and will be reconciled when the article is reopened. */ }
+        setDraftGenerationStatus("已请求停止；请在右侧“执行活动”选择后续处理。");
+      } else {
+        setError(cause instanceof Error ? cause.message : "无法完成自主实践与正文起草。");
+        setDraftProject(undefined);
+      }
+    } finally {
+      setDraftGenerating(false);
+      draftAbortRef.current = undefined;
+      if (taskStatus === "completed" || taskStatus === "completed_with_gaps" || taskStatus === "stopped") activePracticeTaskIdRef.current = undefined;
+    }
+  };
+  const stopDraftGeneration = async () => {
+    const taskId = activePracticeTaskIdRef.current;
+    if (taskId && draftProject) {
+      try {
+        const current = await request<{ task: { status: string; checkpoint: { workflowId?: string } } | null }>(`/content-projects/${draftProject.id}/practice-task`);
+        if (current.task && current.task.status !== "drafting") {
+          if (current.task.checkpoint.workflowId) await request(`/article-chat/workflows/${current.task.checkpoint.workflowId}/cancel`, { method: "POST" });
+          else await request(`/content-projects/${draftProject.id}/practice-task/${taskId}/stop`, { method: "POST" });
+          return;
+        }
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "无法停止当前步骤。"); }
+    }
+    draftAbortRef.current?.abort();
+  };
   const openDraft = async (project: ContentProject) => {
     if (project.draftReady) return openDraftAfterPracticePlan(project);
-    setPracticePlanProject(project);
-    setPracticePlan(undefined);
-    setPracticePlanGenerationStatus("正在准备实践计划生成任务…");
-    try {
-      const existing = await request<ContentPracticePlan | null>(`/content-projects/${project.id}/practice-plan`);
-      if (existing && existing.status !== "draft") {
-        // Already confirmed or explicitly skipped — there is nothing left to ask.
-        setPracticePlanProject(undefined);
-        return openDraftAfterPracticePlan(project);
-      }
-      setPracticePlan(existing ?? { projectId: project.id, markdown: "", status: "draft", updatedAt: "" });
-      // A stored draft is shown as-is; only a missing plan needs generation.
-      if (existing) return;
-      const controller = new AbortController();
-      practicePlanAbortRef.current = controller;
-      setPracticePlanGenerating(true);
-      const plan = await streamGeneration<ContentPracticePlan>(`/content-projects/${project.id}/practice-plan/generate/stream`, controller.signal, (event, data) => {
-        if (event === "delta") setPracticePlan((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
-        if (event === "status") setPracticePlanGenerationStatus(String(data.message ?? "阿文正在拟定最小实践计划…"));
-      });
-      setPracticePlan(plan);
-    } catch (cause) {
-      // A user-initiated stop is not an error; cancelling already reset the state.
-      if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) {
-        setError(cause instanceof Error ? cause.message : "无法生成最小实践计划。");
-        setPracticePlanProject(undefined);
-      }
-    } finally { setPracticePlanGenerating(false); practicePlanAbortRef.current = undefined; }
+    return openDraftWithPractice(project);
   };
-  const cancelPracticePlanGeneration = () => {
-    practicePlanAbortRef.current?.abort();
-    practicePlanAbortRef.current = undefined;
-    setPracticePlanGenerating(false);
-    setPracticePlanGenerationStatus("");
-    setPracticePlanProject(undefined);
-    setPracticePlan(undefined);
-  };
-  const savePracticePlan = async (status: ContentPracticePlan["status"], generateDraft = false) => {
-    if (!practicePlanProject || !practicePlan?.markdown.trim()) return;
-    setPracticePlanBusy(true);
-    try {
-      const saved = await request<ContentPracticePlan>(`/content-projects/${practicePlanProject.id}/practice-plan`, {
-        method: "PUT", body: JSON.stringify({ markdown: practicePlan.markdown, status })
-      });
-      setPracticePlan(saved);
-      if (generateDraft) {
-        const project = practicePlanProject;
-        setPracticePlanProject(undefined);
-        await openDraftAfterPracticePlan(project);
-      }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "实践计划保存失败。"); }
-    finally { setPracticePlanBusy(false); }
+  const continueDraftAfterPractice = async () => {
+    if (!draftProject || draftGenerating) return;
+    await openDraftAfterPracticePlan(draftProject);
   };
   const saveDraft = async (): Promise<{ success: boolean; markdown?: string; error?: string }> => {
     if (!draftProject || !draft) return { success: false, error: "没有可保存的草稿。" };
@@ -1025,14 +1046,6 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutlineModeScrollOffset,
     outlineMarkdownSourceRef,
     setOutlineMarkdownSourceRef,
-    practicePlanProject,
-    setPracticePlanProject,
-    practicePlan,
-    setPracticePlan,
-    practicePlanBusy,
-    practicePlanGenerating,
-    practicePlanGenerationStatus,
-    cancelPracticePlanGeneration,
     researchProject,
     setResearchProject,
     research,
@@ -1140,7 +1153,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     titleEditSuggestions,
     titleEditSuggesting,
     openDraft,
-    savePracticePlan,
+    stopDraftGeneration,
+    continueDraftAfterPractice,
     saveDraft,
     openReview,
     openZhuque,

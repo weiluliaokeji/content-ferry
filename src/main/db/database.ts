@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
+import { migrateArticlePracticeTasks } from "../content/article-practice-task-migration";
+import { ARTICLE_PRACTICE_PROJECT_DIRECTORY_MIGRATION_VERSION, migrateArticlePracticeProjectDirectory } from "../content/article-practice-project-directory-migration";
+import { ARTICLE_PRACTICE_LEGACY_EXECUTION_MIGRATION_VERSION, migrateArticlePracticeLegacyExecutions } from "../content/article-practice-legacy-execution-migration";
+import { migrateArticlePracticeGapFlag } from "../content/article-practice-gap-flag-migration";
+import { ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION, migrateArticlePracticeIndependentEdits } from "../content/article-practice-independent-edit-migration";
+
+const LATEST_SCHEMA_MIGRATION_VERSION = ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION;
 
 export interface AppDatabase {
   connection: Database.Database;
@@ -9,14 +17,25 @@ export interface AppDatabase {
 
 export function openDatabase(dataDirectory: string): AppDatabase {
   fs.mkdirSync(dataDirectory, { recursive: true });
-  const db = new Database(path.join(dataDirectory, "contentferry.db"));
-
-  initialiseDatabase(db);
-
-  return {
-    connection: db,
-    close: () => db.close()
-  };
+  const databasePath = path.join(dataDirectory, "contentferry.db");
+  const existingDatabase = fs.existsSync(databasePath) && fs.statSync(databasePath).size > 0;
+  const db = new Database(databasePath);
+  try {
+    assertSupportedSchemaVersion(db);
+    if (existingDatabase && !hasAppliedMigration(db, LATEST_SCHEMA_MIGRATION_VERSION)) {
+      // VACUUM INTO creates a consistent SQLite snapshot, including committed
+      // WAL pages. Keep it outside the schema transaction for recovery.
+      const backupDirectory = path.join(dataDirectory, "backups");
+      fs.mkdirSync(backupDirectory, { recursive: true });
+      const backupPath = path.join(backupDirectory, `contentferry-before-schema-v${LATEST_SCHEMA_MIGRATION_VERSION}-${Date.now()}-${randomUUID()}.db`);
+      db.prepare("VACUUM INTO ?").run(backupPath);
+    }
+    initialiseDatabase(db);
+    return { connection: db, close: () => db.close() };
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 export function openInMemoryDatabase(): AppDatabase {
@@ -30,7 +49,7 @@ export function openInMemoryDatabase(): AppDatabase {
 }
 
 export function initialiseDatabase(db: Database.Database): void {
-
+  assertSupportedSchemaVersion(db);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
@@ -1161,4 +1180,24 @@ export function initialiseDatabase(db: Database.Database): void {
     })();
   }
 
+  migrateArticlePracticeTasks(db);
+  migrateArticlePracticeProjectDirectory(db);
+  migrateArticlePracticeLegacyExecutions(db);
+  migrateArticlePracticeGapFlag(db);
+  migrateArticlePracticeIndependentEdits(db);
+}
+
+function assertSupportedSchemaVersion(db: Database.Database): void {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+  if (!table) return;
+  const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null };
+  if (row.version !== null && row.version > LATEST_SCHEMA_MIGRATION_VERSION) {
+    throw new Error(`数据库版本 ${row.version} 比当前程序支持的版本更新。请使用新版文渡，或从升级前备份恢复；当前程序不会写入该数据库。`);
+  }
+}
+
+function hasAppliedMigration(db: Database.Database, version: number): boolean {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+  if (!table) return false;
+  return Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version));
 }

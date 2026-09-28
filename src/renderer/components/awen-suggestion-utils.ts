@@ -52,9 +52,10 @@ export function isCurrentAwenSuggestionSync(
   syncId: number,
   currentSyncId: number,
   targetContextKey: string,
-  currentContextKey: string
+  currentContextKey: string,
+  savedContextKey = targetContextKey
 ): boolean {
-  return syncId === currentSyncId && targetContextKey === currentContextKey;
+  return syncId === currentSyncId && (targetContextKey === currentContextKey || savedContextKey === currentContextKey);
 }
 
 export function suggestionOperation(suggestion: SuggestionLike): ArticleChatSuggestionOperation {

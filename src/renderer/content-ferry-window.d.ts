@@ -67,6 +67,7 @@ declare global {
         message?: string;
       }>;
       app: {
+        notifyAttention: (title: string, body: string) => Promise<boolean>;
         getVersion: () => Promise<string>;
         getSettings: () => Promise<AppSettings>;
         chooseDataDir: () => Promise<string | undefined>;

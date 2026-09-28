@@ -66,6 +66,25 @@ export function extractMarkdownImages(markdown: string): Array<{ alt: string; sr
     .map((match) => ({ alt: match[1], src: match[2] }));
 }
 
+export function isLocalArticleImageSource(source: string): boolean {
+  if (!source || /^(?:[a-z][a-z\d+.-]*:|\/\/|\/|#)/iu.test(source)) return false;
+  let decoded = source;
+  try { decoded = decodeURIComponent(source); } catch { return false; }
+  return !decoded.replaceAll("\\", "/").split(/[?#]/u, 1)[0].split("/").includes("..");
+}
+
+export function replaceMarkdownImageReference(markdown: string, sourcePath: string, occurrence: number, replacementPath: string): string | undefined {
+  let seen = 0;
+  let replaced = false;
+  const updated = markdown.replace(/!\[([^\]]*)\]\(([^)\s]+)((?:\s+["'][^"']*["'])?)\)/gu, (whole, alt: string, source: string, title: string) => {
+    if (source !== sourcePath) return whole;
+    if (seen++ !== occurrence || replaced) return whole;
+    replaced = true;
+    return `![${alt}](${replacementPath}${title})`;
+  });
+  return replaced ? updated : undefined;
+}
+
 export function resolveArticleImageUrl(source: string, assetContextId: string, sourceArticlePath?: string): string {
   if (/^(?:https?:|data:|blob:)/i.test(source)) return source;
   // contentferry-asset:// references take precedence over article-relative
@@ -172,4 +191,3 @@ export function renderPreviewInline(value: string): ReactNode[] {
     return <span key={index}>{cleanPreviewText(part)}</span>;
   });
 }
-

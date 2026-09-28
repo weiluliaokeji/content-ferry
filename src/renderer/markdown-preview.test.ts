@@ -1,7 +1,7 @@
 import { createElement, Fragment, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { renderPreviewInline, resolveArticleImageUrl } from "./markdown-preview";
+import { isLocalArticleImageSource, renderPreviewInline, replaceMarkdownImageReference, resolveArticleImageUrl } from "./markdown-preview";
 
 function renderInlineToHtml(markdown: string): string {
   const nodes: ReactNode[] = renderPreviewInline(markdown);
@@ -41,6 +41,30 @@ describe("resolveArticleImageUrl", () => {
   it("treats query-string suffixes on the SVG URL as still being an SVG", () => {
     const url = resolveArticleImageUrl("./assets/diagram.svg?v=1", "ctx", "posts/article/index.md");
     expect(url).toContain("rasterize=1");
+  });
+});
+
+describe("replaceMarkdownImageReference", () => {
+  it("replaces only the requested occurrence and preserves its alt text and title", () => {
+    const markdown = '![图](./assets/a.png "示意图")\n\n![再用一次](./assets/a.png)';
+    expect(replaceMarkdownImageReference(markdown, "./assets/a.png", 1, "./assets/crop.jpg"))
+      .toBe('![图](./assets/a.png "示意图")\n\n![再用一次](./assets/crop.jpg)');
+  });
+
+  it("does not change the article when the selected image occurrence no longer exists", () => {
+    expect(replaceMarkdownImageReference("![图](./assets/other.png)", "./assets/a.png", 0, "./assets/crop.jpg"))
+      .toBeUndefined();
+  });
+});
+
+describe("isLocalArticleImageSource", () => {
+  it("allows safe relative article paths while excluding network, absolute, and traversal paths", () => {
+    expect(isLocalArticleImageSource("./assets/capture.png")).toBe(true);
+    expect(isLocalArticleImageSource("images/figure.png")).toBe(true);
+    expect(isLocalArticleImageSource("https://example.com/image.png")).toBe(false);
+    expect(isLocalArticleImageSource("/assets/image.png")).toBe(false);
+    expect(isLocalArticleImageSource("../outside.png")).toBe(false);
+    expect(isLocalArticleImageSource("%2e%2e/outside.png")).toBe(false);
   });
 });
 

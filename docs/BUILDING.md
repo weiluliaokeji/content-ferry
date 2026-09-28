@@ -46,12 +46,12 @@ npm run pack
 npm run verify:installer
 ```
 
-产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。目录中的旧版本会保留，构建报告只列出当前版本与本次目标对应的文件：
+产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。文件名在版本号后附本次打包的 UTC 时间（`YYYYMMDDTHHMMSSZ`）；包内 `dist/build-info.json`、应用“关于文渡”和每条运行日志使用同一个构建标识，便于核对正在运行的包。目录中的旧版本会保留，构建报告只列出本次构建与目标对应的文件：
 
 | 文件                            | 含义                                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `文渡-Setup-<version>.exe`        | NSIS 安装包（推荐给普通用户）                                                          |
-| `文渡-Portable-<version>.exe`     | 单文件便携版，无需安装                                                                 |
+| `文渡-Setup-<version>-<UTC时间>.exe`        | NSIS 安装包（推荐给普通用户）                                                          |
+| `文渡-Portable-<version>-<UTC时间>.exe`     | 单文件便携版，无需安装                                                                 |
 | `win-unpacked/`               | 未压缩的可执行目录，便于开发自测或调查问题                                                 |
 | `latest.yml` / `*.blockmap` | `electron-builder` 默认生成的分块元数据，未配 `publish` 时只用于差分计算，不会被推上去 |
 
@@ -59,7 +59,7 @@ npm run verify:installer
 
 流水线跑通后，请在 **未安装 Node.js、未安装 Codex CLI** 的 Windows x64 虚拟机或实体机上做以下验证（与 `spec/04 §5.5/§5.6` 对应）：
 
-1. 双击 `文渡-Setup-<version>.exe` 完成安装，确认：
+1. 双击 `文渡-Setup-<version>-<UTC时间>.exe` 完成安装，确认：
    - 桌面和开始菜单出现"文渡 ContentFerry"快捷方式。
    - 卸载时**不**自动删除 `%APPDATA%\contentferry\app-settings.json` 和 `…\data`。
 2. 首次启动看到四步向导，按提示选数据目录、检测 Codex。允许跳过 AI 步骤，确认仍能进入主界面。
@@ -78,6 +78,7 @@ npm run verify:installer
 
 - 安装包升级**不**覆盖 `%APPDATA%\contentferry\app-settings.json` 与 `…\data`。
 - 升级前会由 NSIS 把旧 `app.asar` 备份到 `%APPDATA%\contentferry\backups\`（自动备份逻辑在 `spec/02 §12.4` 后续阶段补；本流水线不强制，但建议保留目录结构）。
+- 旧数据库首次应用自主实践任务表迁移时，程序会先在所选数据目录的 `backups/` 下生成 `contentferry-before-schema-v1-*.db` 一致性副本。迁移失败时停止服务启动；回退旧程序前应关闭文渡，用该副本恢复 `contentferry.db`，不要让旧程序直接写新版库。应用的一键数据库恢复界面尚未实现。
 - `package.json` 的 `productName` 是 `文渡`，NSIS 会以它作为安装目录与快捷方式名。
 
 如需自动更新，再加 `electron-updater` 并设置 `publish: { provider: "generic", url: "https://your-cdn/contentferry" }`，届时 `latest.yml` 才会有用。

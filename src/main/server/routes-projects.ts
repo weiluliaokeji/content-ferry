@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { z } from "zod";
 import { ContentSourceError } from "../content/content-source-service";
 import {
@@ -11,10 +12,11 @@ import {
 } from "./helpers";
 import type { ServerContext } from "./server-context";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
+import { buildShareablePracticeConditions } from "../../shared/practice-provenance";
 import { buildResearchPlan } from "../content/research-plan";
 
 export function registerProjectsRoutes(ctx: ServerContext): void {
-  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentPracticePlans, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks, researchRuns } = ctx;
+  const { server, database, assetStore, accounts, contentSources, contentProjects, contentBriefs, contentOutlines, contentPracticePlans, contentDrafts, contentResearch, contentReviews, aiContent, csdnChannels, cnblogsChannels, juejinChannels, researchTasks, researchRuns, articlePracticeTasks, executionRuns, awenPracticeProjectEditor } = ctx;
   const agentMemory = new AgentMemoryRepository(database.connection);
   const pendingSpecifiedSourceIds = (projectId: string): string[] => contentResearch.get(projectId).specifiedSources
     .filter((source) => source.status === "pending_manual_verification")
@@ -28,9 +30,57 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     const reason = `本轮调研未完成，尚未生成资料卡：${error instanceof Error ? error.message.slice(0, 240) : "请重试"}`;
     contentResearch.markSpecifiedSourceExtractionFailure(projectId, sourceIds, reason);
   };
-  const practicePlanReady = (projectId: string): boolean => {
-    const status = contentPracticePlans.get(projectId)?.status;
-    return status === "confirmed" || status === "skipped";
+  const draftBlockedByPractice = (projectId: string): boolean => {
+    const activePractice = articlePracticeTasks.findActive(projectId);
+    return Boolean(activePractice && activePractice.status !== "drafting");
+  };
+  const syncPracticeObservationsToArticle = (projectId: string, workspaceId: string, relativePath: string): void => {
+    for (const task of articlePracticeTasks.listRecent(projectId, 50)) {
+      for (const event of articlePracticeTasks.listEvents(task.id).filter((item) => item.kind === "practice_result")) {
+        const claim = typeof event.payload.summary === "string" ? shareablePracticeConclusion(event.payload.summary) : "";
+        if (!claim) continue;
+        const results = Array.isArray(event.payload.results) ? event.payload.results : [];
+        const capture = results
+          .map((item) => item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>).result : undefined)
+          .find((item) => item && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).screenshotSha256 === "string") as Record<string, unknown> | undefined;
+        contentSources.recordArticlePracticeObservation(workspaceId, relativePath, {
+          title: "阿文实践观察", claim, capturedAt: event.createdAt,
+          conditions: buildShareablePracticeConditions(event.payload.results),
+          ...(typeof capture?.url === "string" && shareablePracticeUrl(capture.url) ? { sourceUrl: shareablePracticeUrl(capture.url) } : {}),
+          ...(typeof capture?.screenshotSha256 === "string" && /^[a-f0-9]{64}$/iu.test(capture.screenshotSha256) ? { screenshotSha256: capture.screenshotSha256 } : {})
+        });
+      }
+    }
+  };
+  const mapDraftPracticeSources = async (projectId: string, workspaceId: string, relativePath: string, markdown: string): Promise<void> => {
+    const associations = await aiContent.mapPracticeEvidenceToDraft(projectId, markdown);
+    for (const association of associations) {
+      contentSources.linkArticlePracticeParagraph(workspaceId, relativePath, {
+        title: "阿文实践观察", claim: association.claim, capturedAt: association.capturedAt,
+        paragraphText: association.paragraphText,
+        ...(association.conditions ? { conditions: association.conditions } : {}),
+        ...(association.sourceUrl ? { sourceUrl: association.sourceUrl } : {}),
+        ...(association.screenshotSha256 ? { screenshotSha256: association.screenshotSha256 } : {})
+      });
+    }
+  };
+  const reconnectEditedPracticeSources = async (workspaceId: string, relativePath: string, markdown: string): Promise<void> => {
+    const pendingSources = contentSources.listArticlePracticeSources(workspaceId, relativePath)
+      .flatMap((source) => source.type === "practice_paragraph_link" && source.status === "pending_review" ? [source] : []);
+    if (pendingSources.length === 0) return;
+    const associations = await aiContent.mapPracticeClaimsToDraft(pendingSources.map(({ claim, capturedAt, conditions, sourceUrl, screenshotSha256 }) => ({
+      claim, capturedAt, ...(conditions ? { conditions } : {}), ...(sourceUrl ? { sourceUrl } : {}), ...(screenshotSha256 ? { screenshotSha256 } : {})
+    })), markdown);
+    for (const association of associations) {
+      const source = pendingSources[association.observationIndex];
+      if (!source) continue;
+      contentSources.reanchorArticlePracticeParagraph(workspaceId, relativePath, {
+        claim: source.claim,
+        capturedAt: source.capturedAt,
+        expectedParagraphSha256: source.paragraphSha256,
+        paragraphText: association.paragraphText
+      });
+    }
   };
 
   server.get("/api/content-projects", async () => {
@@ -470,6 +520,196 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return contentPracticePlans.save(params.projectId, input.markdown, input.status);
   });
 
+  server.get("/api/content-projects/:projectId/practice-directory", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const project = contentProjects.require(params.projectId);
+    return { directory: project.practiceProjectDirectory };
+  });
+
+  server.put("/api/content-projects/:projectId/practice-directory", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ directory: z.string().trim().max(2000).nullable() }).strict().parse(request.body);
+    contentProjects.require(params.projectId);
+    const requested = input.directory?.trim() || null;
+    if (!requested) return { project: contentProjects.setPracticeProjectDirectory(params.projectId, null) };
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync.native(requested);
+      if (!fs.statSync(resolved).isDirectory()) throw new Error("路径不是文件夹。");
+    } catch (error) {
+      return reply.code(400).send({ error: `无法使用此项目目录：${error instanceof Error ? error.message : "请确认文件夹仍存在。"}` });
+    }
+    return { project: contentProjects.setPracticeProjectDirectory(params.projectId, resolved) };
+  });
+
+  server.get("/api/content-projects/:projectId/practice-task", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    let task = articlePracticeTasks.findCurrent(params.projectId);
+    if (task?.status === "waiting_feedback") task = articlePracticeTasks.expireFeedback(task.id);
+    const events = task ? articlePracticeTasks.listEvents(task.id) : [];
+    return task ? { task: { ...task, events }, events } : { task: null, events };
+  });
+
+  server.get("/api/content-projects/:projectId/practice-task/history", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    const activeTaskId = articlePracticeTasks.findCurrent(params.projectId)?.id;
+    const tasks = articlePracticeTasks.listRecent(params.projectId, activeTaskId ? 13 : 12)
+      .filter((task) => task.id !== activeTaskId)
+      .map((task) => ({ ...task, events: articlePracticeTasks.listEvents(task.id) }));
+    return { tasks };
+  });
+
+  server.get("/api/content-projects/:projectId/practice-task/legacy-executions", async (request) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    return { items: executionRuns.listHistorySummaries(params.projectId) };
+  });
+
+  server.get("/api/content-projects/:projectId/practice-task/legacy-executions/:runId", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid(), runId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    try { return executionRuns.historyDetails(params.projectId, params.runId); }
+    catch { return reply.code(404).send({ error: "找不到这篇文章对应的旧执行记录。" }); }
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task/:taskId/source-link", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ paragraphText: z.string().trim().min(8).max(5000) }).strict().parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    if (!project.sourceRelativePath) return reply.code(409).send({ error: "文章尚未保存到文章库，无法附加实践来源。" });
+    const task = articlePracticeTasks.require(params.taskId);
+    if (task.projectId !== project.id) return reply.code(404).send({ error: "找不到这篇文章对应的实践记录。" });
+    const evidence = articlePracticeTasks.listEvents(task.id).filter((event) => event.kind === "practice_result").at(-1);
+    const summary = evidence && typeof evidence.payload.summary === "string" ? shareablePracticeConclusion(evidence.payload.summary) : "";
+    if (!evidence || !summary) return reply.code(409).send({ error: "这条实践没有可关联的结论记录。" });
+    const results = Array.isArray(evidence.payload.results) ? evidence.payload.results : [];
+    const capture = results.map((item) => item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>).result : undefined)
+      .find((item) => item && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).screenshotSha256 === "string") as Record<string, unknown> | undefined;
+    const source = contentSources.linkArticlePracticeParagraph(project.workspaceId, project.sourceRelativePath, {
+      title: "阿文实践观察",
+      claim: summary.slice(0, 500),
+      capturedAt: evidence.createdAt,
+      paragraphText: input.paragraphText,
+      conditions: buildShareablePracticeConditions(evidence.payload.results),
+      ...(typeof capture?.url === "string" ? { sourceUrl: capture.url } : {}),
+      ...(typeof capture?.screenshotSha256 === "string" ? { screenshotSha256: capture.screenshotSha256 } : {})
+    });
+    return { source };
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ goal: z.string().trim().min(1).max(4000) }).strict().parse(request.body);
+    contentProjects.require(params.projectId);
+    const active = articlePracticeTasks.findActive(params.projectId);
+    const task = active
+      ? articlePracticeTasks.appendGoal(active.id, input.goal, "draft")
+      : articlePracticeTasks.beginAssessment(articlePracticeTasks.create(params.projectId, input.goal).id);
+    reply.code(active ? 200 : 201);
+    return { task, events: articlePracticeTasks.listEvents(task.id), appendedToExistingTask: Boolean(active) };
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task/start", async (request, reply) => {
+    const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
+    const input = z.object({ goal: z.string().trim().min(1).max(4000) }).strict().parse(request.body);
+    const project = contentProjects.require(params.projectId);
+    const outline = contentOutlines.get(params.projectId);
+    const editingExistingDraft = project.draftReady;
+    const practiceMarkdown = editingExistingDraft && project.sourceRelativePath
+      ? contentSources.getArticle(project.workspaceId, project.sourceRelativePath).markdown
+      : outline.markdown;
+    let task = articlePracticeTasks.findActive(params.projectId);
+    if (task?.checkpoint.workflowId) {
+      reply.code(200);
+      return { task, workflow: ctx.articleChat.getWorkflow(task.checkpoint.workflowId), reusedExisting: true };
+    }
+    if (!task) task = articlePracticeTasks.beginAssessment(articlePracticeTasks.create(params.projectId, input.goal).id);
+    else if (task.latestGoal !== input.goal) task = articlePracticeTasks.appendGoal(task.id, input.goal, "draft");
+    if (task.status !== "assessing" && task.status !== "practicing") return reply.code(409).send({ error: "这篇文章已有需要作者处理的实践状态，请先完成右侧执行活动中的选择。", task });
+    let conversation;
+    try {
+      conversation = await ctx.articleChat.send({
+        contextKey: `project:${project.id}`,
+        clientMessageId: crypto.randomUUID(),
+        projectId: project.id,
+        practiceTaskId: task.id,
+        practiceIntentMode: editingExistingDraft ? "chat" : "draft",
+        workflowMode: "tool",
+        title: project.topic,
+        markdown: practiceMarkdown,
+        message: editingExistingDraft
+          ? `【正文编辑阶段的实践任务】请按作者新增的目标进行验证；确有结果时，在当前正文中找到唯一合适的位置，形成一条普通段落修改建议并注明条件与限制，不要直接改写正文。若当前等待状态刚刚解除，继续此前已记录的目标。目标：${task.latestGoal}`
+          : `【文渡发起的正文起草任务】请先根据文章目标判断是否值得实测。只有确有帮助时才在当前授权范围内进行代码或工具实践；不需要实践时直接说明原因并完成本轮。实际结果要标明运行条件和限制，不能推测或夸大。目标：${task.latestGoal}`
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 1000) : "阿文实践未能启动。";
+      const waiting = articlePracticeTasks.waitForFeedback(task.id, task.status === "assessing"
+        ? `阿文未能完成是否需要实践的判断：${reason}`
+        : `阿文实践步骤未能完成：${reason}`);
+      reply.code(202);
+      return { task: waiting, events: articlePracticeTasks.listEvents(task.id), workflow: null, reusedExisting: false };
+    }
+    if (!("workflow" in conversation)) throw new Error("自主实践没有启动结构化工具工作流。");
+    const updated = articlePracticeTasks.require(task.id);
+    reply.code(200);
+    return { task: updated, events: articlePracticeTasks.listEvents(task.id), workflow: conversation.workflow, reusedExisting: false };
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task/:taskId/stop", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    const task = articlePracticeTasks.require(params.taskId);
+    if (task.projectId !== params.projectId) throw new Error("实践任务与文章不匹配。");
+    const updated = articlePracticeTasks.requestStop(task.id);
+    return { task: updated, events: articlePracticeTasks.listEvents(task.id) };
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task/:taskId/project-file-changes/:changeId/restore", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid(), changeId: z.string().uuid() }).parse(request.params);
+    contentProjects.require(params.projectId);
+    const task = articlePracticeTasks.require(params.taskId);
+    if (task.projectId !== params.projectId) throw new Error("实践任务与文章不匹配。");
+    return awenPracticeProjectEditor.restore(params.taskId, params.projectId, params.changeId);
+  });
+
+  server.post("/api/content-projects/:projectId/practice-task/:taskId/decision", async (request) => {
+    const params = z.object({ projectId: z.string().uuid(), taskId: z.string().uuid() }).parse(request.params);
+    const input = z.discriminatedUnion("decision", [
+      z.object({ decision: z.literal("continue_draft") }).strict(),
+      z.object({ decision: z.literal("stop_draft") }).strict(),
+      z.object({ decision: z.literal("new_goal"), goal: z.string().trim().min(1).max(4000) }).strict(),
+      z.object({ decision: z.literal("resume") }).strict(),
+      z.object({ decision: z.literal("reconciled"), outcome: z.string().trim().min(1).max(1000) }).strict(),
+      z.object({ decision: z.literal("edit_confirmed") }).strict(),
+      z.object({ decision: z.literal("edit_rejected") }).strict(),
+      z.object({ decision: z.literal("edit_unavailable") }).strict()
+    ]).parse(request.body);
+    contentProjects.require(params.projectId);
+    const task = articlePracticeTasks.require(params.taskId);
+    if (task.projectId !== params.projectId) throw new Error("实践任务与文章不匹配。");
+    let updated = task;
+    let needsReconciliation = false;
+    if (input.decision === "continue_draft") updated = task.status === "waiting_resume_choice"
+      ? articlePracticeTasks.declineResume(task.id, "draft_with_gaps")
+      : articlePracticeTasks.resolveStop(task.id, "draft_with_gaps");
+    else if (input.decision === "stop_draft") updated = task.status === "waiting_resume_choice"
+      ? articlePracticeTasks.declineResume(task.id, "stop")
+      : articlePracticeTasks.resolveStop(task.id, "stop");
+    else if (input.decision === "new_goal") updated = articlePracticeTasks.resolveStopWithGoal(task.id, input.goal);
+    else if (input.decision === "reconciled") updated = articlePracticeTasks.markReconciled(task.id, input.outcome);
+    else if (input.decision === "edit_confirmed") updated = articlePracticeTasks.resolveEditConfirmation(task.id, "accepted");
+    else if (input.decision === "edit_rejected") updated = articlePracticeTasks.resolveEditConfirmation(task.id, "rejected");
+    else if (input.decision === "edit_unavailable") updated = articlePracticeTasks.resolveEditConfirmation(task.id, "unavailable");
+    else {
+      const resumed = articlePracticeTasks.resume(task.id);
+      updated = resumed.task;
+      needsReconciliation = resumed.needsReconciliation;
+    }
+    return { task: updated, events: articlePracticeTasks.listEvents(task.id), needsReconciliation };
+  });
+
   server.get("/api/content-projects/:projectId/draft", async (request) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const project = ensureProjectArticle(params.projectId);
@@ -483,9 +723,10 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
 
   server.post("/api/content-projects/:projectId/draft/generate", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    if (!practicePlanReady(params.projectId)) return reply.code(409).send({ error: "请先确认最小实践计划，或明确选择不新增实践后再起草正文。" });
+    if (draftBlockedByPractice(params.projectId)) return reply.code(409).send({ error: "请先处理右侧执行活动中的待处理选择，再继续起草正文。" });
     const project = ensureProjectArticle(params.projectId);
     const generated = await aiContent.generateDraft(params.projectId);
+    await mapDraftPracticeSources(params.projectId, project.workspaceId, project.sourceRelativePath!, generated.value.markdown);
     return {
       projectId: params.projectId,
       markdown: generated.value.markdown,
@@ -498,9 +739,21 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
 
   server.post("/api/content-projects/:projectId/draft/generate/stream", async (request, reply) => {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
-    if (!practicePlanReady(params.projectId)) return reply.code(409).send({ error: "请先确认最小实践计划，或明确选择不新增实践后再起草正文。" });
+    if (draftBlockedByPractice(params.projectId)) return reply.code(409).send({ error: "请先处理右侧执行活动中的待处理选择，再继续起草正文。" });
     const project = ensureProjectArticle(params.projectId);
-    return streamMarkdownGeneration(request, reply, (onDelta, onStatus, signal) => aiContent.generateDraftStream(params.projectId, onDelta, onStatus, signal), params.projectId, project.sourceRelativePath);
+    return streamMarkdownGeneration(
+      request,
+      reply,
+      (onDelta, onStatus, signal) => aiContent.generateDraftStream(params.projectId, onDelta, onStatus, signal),
+      params.projectId,
+      project.sourceRelativePath,
+      async (markdown) => {
+        await mapDraftPracticeSources(params.projectId, project.workspaceId, project.sourceRelativePath!, markdown);
+        const task = articlePracticeTasks.findActive(params.projectId);
+        if (task?.status === "drafting") return { practiceTask: articlePracticeTasks.finish(task.id) };
+        return {};
+      }
+    );
   });
 
   server.put("/api/content-projects/:projectId/draft", async (request) => {
@@ -509,6 +762,8 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     const project = ensureProjectArticle(params.projectId);
     const saved = contentDrafts.save(params.projectId, markdown);
     const article = contentSources.saveArticle(project.workspaceId, project.sourceRelativePath!, markdown);
+    syncPracticeObservationsToArticle(params.projectId, project.workspaceId, project.sourceRelativePath!);
+    await reconnectEditedPracticeSources(project.workspaceId, project.sourceRelativePath!, markdown);
     // VitePress uses the front-matter title / leading H1 as the article's source
     // of truth. Keep the workflow card in sync after a user or AI changes it.
     if (article.title && article.title !== project.topic) contentProjects.updateTopic(project.id, article.title);
@@ -552,4 +807,31 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     return project;
   }
 
+}
+
+function shareablePracticeConclusion(rawSummary: string): string {
+  const raw = rawSummary.trim();
+  if (!raw) return "";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const reply = (parsed as Record<string, unknown>).reply;
+      if (typeof reply === "string") return sanitizePortablePracticeClaim(reply);
+    }
+  } catch { /* Older workflow records may store plain text rather than JSON. */ }
+  return sanitizePortablePracticeClaim(raw);
+}
+
+function sanitizePortablePracticeClaim(value: string): string {
+  const claim = value.trim().replace(/https?:\/\/[^\s)\]}>,]+/giu, "").trim();
+  if (!claim || /(?:[a-z]:[\\/]|\\\\[^\\]+\\|\/(?:users|home|private|tmp|var|mnt|workspaces?)\/|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|cookie|authorization)\s*[:=]|\bbearer\s+[a-z0-9._~+/-]+=*|\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b|\b\d{16}\b)/iu.test(claim)) return "";
+  return claim.slice(0, 500);
+}
+
+function shareablePracticeUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    return `${url.origin}${url.pathname}`;
+  } catch { return undefined; }
 }

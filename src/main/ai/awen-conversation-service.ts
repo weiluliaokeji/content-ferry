@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type Database from "better-sqlite3";
-import type { ModelProvider } from "./model-provider";
+import type { AiUsage, ModelProvider } from "./model-provider";
 import type { SkillRegistry } from "../skills/skill-registry";
 import {
   articleChatInput,
@@ -15,7 +15,7 @@ import type { ImageSearchHistoryRepository } from "../content/image-search-histo
 import type { ImageCandidateReviewService } from "./image-candidate-review-service";
 import { createAwenToolWorkflowSession, parseWorkflowFinalText, type AwenToolWorkflowServices, type AwenToolWorkflowSession } from "./awen-tool-workflow";
 import type { PermissionResponse } from "../agent/tool-workflow-runner";
-import type { ToolWorkflowSnapshot } from "../agent/tool-workflow-runner";
+import type { ToolWorkflowEvent, ToolWorkflowSnapshot } from "../agent/tool-workflow-runner";
 import type { StoredToolWorkflow } from "../agent/tool-workflow-repository";
 
 export type ArticleChatInput = z.infer<typeof articleChatInput>;
@@ -61,6 +61,17 @@ export interface ArticleChatWorkflowResult {
   writingMemory: string;
   provider: string | null;
   model: string | null;
+  message?: ArticleChatMessage;
+}
+
+export interface ArticleChatSendResult {
+  workflow?: ToolWorkflowSnapshot;
+  memory: string;
+  writingMemory: string;
+  provider: string | null;
+  model: string | null;
+  message?: ArticleChatMessage;
+  usage?: AiUsage | null;
 }
 
 const MAX_ACTIVE_TOOL_WORKFLOWS = 100;
@@ -94,6 +105,8 @@ export class AwenConversationService {
   private maintenanceRunning = false;
   private maintenancePending = false;
   private readonly workflowEntries = new Map<string, AwenWorkflowEntry>();
+  private readonly workflowEventListeners = new Map<string, Set<(event: ToolWorkflowEvent) => void>>();
+  private readonly inFlightSends = new Map<string, Promise<ArticleChatSendResult>>();
 
   constructor(
     private readonly db: Database.Database,
@@ -152,10 +165,71 @@ export class AwenConversationService {
     })();
   }
 
-  async send(input: ArticleChatInput) {
+  async send(input: ArticleChatInput): Promise<ArticleChatSendResult> {
+    if (!input.clientMessageId) return this.sendOnce(input);
+    const key = `${input.contextKey}\u0000${input.clientMessageId}`;
+    const active = this.inFlightSends.get(key);
+    if (active) return active;
+    const operation = this.sendOnce(input);
+    this.inFlightSends.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.inFlightSends.get(key) === operation) this.inFlightSends.delete(key);
+    }
+  }
+
+  private async sendOnce(input: ArticleChatInput): Promise<ArticleChatSendResult> {
     if (!this.skills) throw new Error("技能目录尚未启用。");
     const skill = this.skills.get("awen-assistant");
     if (!skill.enabled) throw new Error("“阿文 · 文章顾问”技能已停用。");
+    if (input.clientMessageId) {
+      const active = [...this.workflowEntries.entries()].find(([, entry]) =>
+        entry.input.contextKey === input.contextKey && entry.input.clientMessageId === input.clientMessageId);
+      if (active) {
+        const [workflowId, entry] = active;
+        return {
+          workflow: entry.session.runner.getSnapshot(workflowId),
+          memory: entry.thread.memory,
+          writingMemory: entry.writingMemory,
+          provider: entry.provider,
+          model: entry.model
+        };
+      }
+      const assistantId = createAssistantMessageId(input.clientMessageId);
+      const completedMessage = this.getThread(input.contextKey).messages.find((message) => message.id === assistantId);
+      if (completedMessage) {
+        return { message: completedMessage, memory: this.getThread(input.contextKey).memory, writingMemory: "", provider: null, model: null };
+      }
+      const interrupted = this.toolWorkflowServices?.workflowRepository?.list(input.contextKey).find((workflow) =>
+        workflow.input?.clientMessageId === input.clientMessageId && workflow.snapshot.status === "interrupted");
+      if (interrupted) {
+        return { workflow: interrupted.snapshot, memory: this.getThread(input.contextKey).memory, writingMemory: "", provider: null, model: null };
+      }
+    }
+    let practiceRetryContext = "";
+    let practiceStepRetry: { failedToolId: string | null; completedToolIds: string[] } | undefined;
+    if (input.practiceTaskId) {
+      if (!input.projectId) throw new Error("自主实践工作流必须关联文章项目。");
+      const task = this.toolWorkflowServices?.articlePracticeTasks?.require(input.practiceTaskId);
+      if (!task || task.projectId !== input.projectId) throw new Error("自主实践任务与当前文章不匹配。");
+      if (input.continuePracticeAfterFeedback) {
+        if (task.status !== "waiting_feedback") throw new Error("当前实践任务没有等待失败反馈。");
+        if (isPracticeStepRetryRequest(input.message)) {
+          const retryContext = buildPracticeStepRetryContext(
+            this.toolWorkflowServices?.workflowRepository,
+            task.id,
+            task.projectId,
+            task.checkpoint.workflowId
+          );
+          practiceRetryContext = retryContext.prompt;
+          practiceStepRetry = retryContext.retry;
+        }
+        const tasks = this.toolWorkflowServices?.articlePracticeTasks;
+        tasks?.appendGoal(task.id, input.message, "chat");
+        tasks?.resumeAfterFeedback(task.id);
+      }
+    }
     const now = new Date().toISOString();
     this.ensureThread(input.contextKey, now);
     const userMessage: ArticleChatMessage = {
@@ -215,19 +289,161 @@ export class AwenConversationService {
       article,
       webResearch
     );
+    if (practiceRetryContext) prompt += `\n\n<practice-step-retry-context>\n${practiceRetryContext}\n</practice-step-retry-context>`;
     if (workflowEnabled && this.toolWorkflowServices) {
       let provider: string | null = null;
       let model: string | null = null;
+      let workflowEntry: AwenWorkflowEntry | undefined;
+      const workflowInput: ArticleChatInput = { ...input };
       const session = createAwenToolWorkflowSession(this.toolWorkflowServices, {
         projectId: input.projectId,
+        practiceTaskId: input.practiceTaskId,
+        practiceIntentMode: input.practiceIntentMode,
+        directUserMessage: input.message,
+        ...(practiceStepRetry ? { practiceStepRetry } : {}),
+        ...(input.practiceIntentMode === "draft" && input.practiceTaskId && this.toolWorkflowServices.articlePracticeTasks
+          ? { onPracticeTaskRequested: async () => {
+            const tasks = this.toolWorkflowServices!.articlePracticeTasks!;
+            const task = tasks.require(input.practiceTaskId!);
+            if (task.status === "assessing") tasks.beginPractice(task.id);
+            return task.id;
+          } }
+          : {}),
+        ...(input.practiceIntentMode === "chat" && input.projectId && !input.practiceTaskId && this.toolWorkflowServices.articlePracticeTasks
+          ? { onPracticeTaskRequested: async (workflowId: string) => {
+            const tasks = this.toolWorkflowServices!.articlePracticeTasks!;
+            let task = tasks.findActive(input.projectId!);
+            let deferMessage: string | undefined;
+            if (task) {
+              // A task stays in `waiting_permission` until the whole workflow
+              // settles. If that same workflow already received this call's
+              // approval, allow its next planned step to proceed instead of
+              // treating the in-flight workflow as a different blocked task.
+              if (task.checkpoint.workflowId === workflowId
+                && ["assessing", "practicing", "waiting_permission"].includes(task.status)) {
+                if (task.status === "waiting_permission") task = tasks.permissionResolved(task.id);
+                task = tasks.saveCheckpoint(task.id, { ...task.checkpoint, workflowGoalRevision: task.goalRevision, stepId: "awen-tool-workflow" });
+                workflowInput.practiceTaskId = task.id;
+                return task.id;
+              }
+              if (task.status === "queued") {
+                tasks.appendGoal(task.id, input.message, "chat");
+                task = tasks.beginAssessment(task.id);
+                task = tasks.beginPractice(task.id);
+              } else if (task.status === "waiting_feedback") {
+                tasks.appendGoal(task.id, input.message, "chat");
+                task = tasks.resumeAfterFeedback(task.id);
+              } else if (task.status === "drafting") {
+                task = tasks.beginAdditionalPracticeFromDraft(task.id, input.message);
+              } else if (["assessing", "practicing"].includes(task.status)) {
+                if (task.checkpoint.workflowId) {
+                  const active = [...this.workflowEntries.entries()].find(([candidateId, entry]) =>
+                    entry.input.practiceTaskId === task!.id && !["completed", "completed_with_warnings", "incomplete", "failed", "cancelled", "interrupted"].includes(entry.session.runner.getSnapshot(candidateId).status));
+                  task = tasks.appendGoal(task.id, input.message, "chat");
+                  if (active) {
+                    const [activeWorkflowId, entry] = active;
+                    const snapshot = entry.session.runner.appendUserInstruction(activeWorkflowId, input.message);
+                    this.toolWorkflowServices!.workflowRepository?.save(snapshot, {
+                      contextKey: entry.input.contextKey,
+                      projectId: entry.input.projectId,
+                      request: entry.input as unknown as Record<string, unknown>
+                    });
+                    task = tasks.saveCheckpoint(task.id, { ...task.checkpoint, workflowId: activeWorkflowId, workflowGoalRevision: task.goalRevision, stepId: "awen-tool-workflow" });
+                    deferMessage = "新验证目标已并入正在进行的实践。阿文会先完成当前步骤，再按新目标继续规划。";
+                  } else {
+                    deferMessage = "新验证目标已记录到当前实践任务。请先处理右侧执行活动中的恢复或授权状态。";
+                  }
+                } else {
+                  if (task.latestGoal !== input.message) task = tasks.appendGoal(task.id, input.message, "chat");
+                  if (task.status === "assessing") task = tasks.beginPractice(task.id);
+                }
+              } else if (task.status === "waiting_stop_choice") {
+                task = tasks.resolveStopWithGoal(task.id, input.message);
+                task = tasks.beginPractice(task.id);
+              } else if (task.status === "waiting_permission") {
+                const active = [...this.workflowEntries.entries()].find(([candidateId, entry]) =>
+                  entry.input.practiceTaskId === task!.id && entry.session.runner.getSnapshot(candidateId).status === "waiting_user");
+                if (!active) {
+                  // Repair task state left behind by older builds: a completed
+                  // workflow may have a real tool result but also a deferred
+                  // follow-up call. In that case permission was not actually
+                  // left pending, and the author can safely start a new attempt.
+                  const completedWithEvidence = this.toolWorkflowServices!.workflowRepository
+                    ?.list(input.contextKey)
+                    .find((stored) => stored.input?.practiceTaskId === task!.id
+                      && ["completed", "completed_with_warnings", "incomplete"].includes(stored.snapshot.status)
+                      && stored.snapshot.toolResults.length > 0);
+                  if (completedWithEvidence) {
+                    this.syncPracticeTask(task.id, completedWithEvidence.snapshot);
+                    task = tasks.require(task.id);
+                    if (task.status === "drafting") task = tasks.beginAdditionalPracticeFromDraft(task.id, input.message);
+                  }
+                }
+                if (task.status === "waiting_permission" && task.latestGoal !== input.message) task = tasks.appendGoal(task.id, input.message, "chat");
+                const waitingWorkflow = [...this.workflowEntries.entries()].find(([candidateId, entry]) =>
+                  entry.input.practiceTaskId === task!.id && entry.session.runner.getSnapshot(candidateId).status === "waiting_user");
+                if (waitingWorkflow) {
+                  const [activeWorkflowId, entry] = waitingWorkflow;
+                  const snapshot = entry.session.runner.appendUserInstruction(activeWorkflowId, input.message);
+                  this.toolWorkflowServices!.workflowRepository?.save(snapshot, {
+                    contextKey: entry.input.contextKey,
+                    projectId: entry.input.projectId,
+                    request: entry.input as unknown as Record<string, unknown>
+                  });
+                  task = tasks.saveCheckpoint(task.id, { ...task.checkpoint, workflowId: activeWorkflowId, workflowGoalRevision: task.goalRevision, stepId: "awen-tool-workflow" });
+                  deferMessage = "新验证目标已并入当前任务。请先处理已有授权；当前授权完成后，阿文会继续验证新目标。";
+                } else {
+                  if (task.status === "waiting_permission") {
+                    deferMessage = "新验证目标已记录，但旧授权流程没有可恢复的待授权操作。请在右侧执行活动中重新启动该任务，或停止旧任务后再试；系统不会重复运行已完成的命令。";
+                  }
+                }
+              } else if (task.status === "waiting_resume_choice") {
+                task = tasks.appendGoal(task.id, input.message, "chat");
+                if (task.checkpoint.workflowId) {
+                  try { this.toolWorkflowServices!.workflowRepository?.appendUserInstruction(task.checkpoint.workflowId, input.message); }
+                  catch {
+                    const checkpoint = { ...task.checkpoint };
+                    delete checkpoint.workflowId;
+                    delete checkpoint.workflowGoalRevision;
+                    task = tasks.saveCheckpoint(task.id, checkpoint);
+                  }
+                }
+                deferMessage = "新验证目标已并入中断任务。请先选择是否续做；阿文不会替你作出恢复决定。";
+              } else if (task.status === "waiting_edit_confirmation") {
+                // Editorial review is not an execution dependency. Keep that
+                // task intact and give this independent request its own task.
+                task = tasks.beginAssessment(tasks.create(input.projectId!, input.message).id);
+              } else {
+                throw new Error("这篇文章已有需要作者处理的实践或起草状态，请先在右侧执行活动完成当前选择。");
+              }
+            } else {
+              task = tasks.create(input.projectId!, input.message);
+              task = tasks.beginAssessment(task.id);
+              task = tasks.beginPractice(task.id);
+            }
+            workflowInput.practiceTaskId = task.id;
+            if (deferMessage) return { practiceTaskId: task.id, deferMessage };
+            tasks.saveCheckpoint(task.id, { ...task.checkpoint, workflowId, workflowGoalRevision: task.goalRevision, stepId: "awen-tool-workflow" });
+            return task.id;
+          } }
+          : {}),
         prompt,
         validateFinal: (text) => { articleChatOutput.parse(parseWorkflowFinalText(text)); },
-        onModelResult: (nextProvider, nextModel) => { provider = nextProvider; model = nextModel; }
+        onSnapshot: (snapshot) => {
+          this.persistAndPublishWorkflowSnapshot(snapshot, workflowInput);
+          if (workflowEntry && !["completed", "completed_with_warnings", "incomplete", "failed", "cancelled"].includes(snapshot.status)) {
+            this.rememberWorkflowEntry(snapshot.workflowId, workflowEntry);
+          }
+        },
+        onModelResult: (nextProvider, nextModel) => {
+          provider = nextProvider;
+          model = nextModel;
+          if (workflowEntry) { workflowEntry.provider = provider; workflowEntry.model = model; }
+        }
       });
-      const workflow = await session.start();
-      const entry: AwenWorkflowEntry = {
+      workflowEntry = {
         session,
-        input,
+        input: workflowInput,
         userEventId,
         thread,
         writingMemory,
@@ -239,9 +455,29 @@ export class AwenConversationService {
         provider,
         model
       };
-      this.toolWorkflowServices.workflowRepository?.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
+      let workflow: ToolWorkflowSnapshot;
+      try {
+        workflow = await session.start();
+      } catch (error) {
+        if (workflowInput.practiceTaskId) {
+          const tasks = this.toolWorkflowServices.articlePracticeTasks;
+          const task = tasks?.require(workflowInput.practiceTaskId);
+          if (task?.status === "practicing") {
+            const reason = error instanceof Error ? error.message.slice(0, 1000) : "阿文无法启动下一步实践。";
+            tasks?.waitForFeedback(task.id, reason);
+          }
+        }
+        throw error;
+      }
+      if (workflowInput.practiceTaskId) this.syncPracticeTask(workflowInput.practiceTaskId, workflow);
+      const entry = workflowEntry;
+      if (!entry) throw new Error("阿文工作流状态未能初始化。");
+      this.toolWorkflowServices.workflowRepository?.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: workflowInput as unknown as Record<string, unknown> });
       if (workflow.status === "failed") {
-        return { workflow, memory: thread.memory, writingMemory, provider, model } satisfies ArticleChatWorkflowResult;
+        this.workflowEntries.delete(workflow.workflowId);
+        const failure = getWorkflowBlockerMessage(workflow);
+        const message = articleChatOutput.parse({ reply: `本轮实践未能完成：${failure}`, memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null });
+        return { ...await this.persistAssistantResponse(entry, message), workflow };
       }
       this.rememberWorkflowEntry(workflow.workflowId, entry);
       if (workflow.finalText) {
@@ -300,7 +536,7 @@ export class AwenConversationService {
     const suggestions = filterActionableArticleSuggestions(input.markdown, normalized.suggestions);
     const imageSearch = await this.runImageSearchTool(input, normalized.imageSearchRequest);
     const assistantMessage: ArticleChatMessage = {
-      id: randomUUID(),
+      id: input.clientMessageId ? createAssistantMessageId(input.clientMessageId) : randomUUID(),
       role: "assistant",
       content: appendImageSearchStatus(normalized.reply, imageSearch),
       memorySuggestion: normalized.memorySuggestion,
@@ -442,7 +678,13 @@ export class AwenConversationService {
       workflowResponse = { ...response, ...(grant?.expiresAt ? { expiresAt: grant.expiresAt } : {}) };
     }
     const workflow = await entry.session.respond(workflowResponse);
+    if (entry.input.practiceTaskId) this.syncPracticeTask(entry.input.practiceTaskId, workflow);
     this.toolWorkflowServices?.workflowRepository?.save(workflow, { contextKey: entry.input.contextKey, projectId: entry.input.projectId, request: entry.input as unknown as Record<string, unknown> });
+    if (workflow.status === "failed") {
+      this.workflowEntries.delete(workflowId);
+      const message = await this.persistWorkflowFailureReply(entry, workflow);
+      return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider: entry.provider, model: entry.model, message };
+    }
     if (!workflow.finalText) return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider: entry.provider, model: entry.model };
     this.workflowEntries.delete(workflowId);
     const parsed = articleChatOutput.parse(parseWorkflowFinalText(workflow.finalText));
@@ -459,6 +701,46 @@ export class AwenConversationService {
     return entry.session.runner.getSnapshot(workflowId);
   }
 
+  subscribeWorkflowEvents(workflowId: string, listener: (event: ToolWorkflowEvent) => void, afterSequence = 0): () => void {
+    const snapshot = this.getWorkflow(workflowId);
+    let cursor = afterSequence;
+    snapshot.events.forEach((event, index) => {
+      const sequence = event.sequence ?? index + 1;
+      if (sequence > cursor) {
+        cursor = sequence;
+        listener({ ...event, sequence });
+      }
+    });
+    const forward = (event: ToolWorkflowEvent) => {
+      const sequence = event.sequence ?? cursor + 1;
+      if (sequence <= cursor) return;
+      cursor = sequence;
+      listener({ ...event, sequence });
+    };
+    const listeners = this.workflowEventListeners.get(workflowId) ?? new Set<(event: ToolWorkflowEvent) => void>();
+    listeners.add(forward);
+    this.workflowEventListeners.set(workflowId, listeners);
+    return () => {
+      listeners.delete(forward);
+      if (listeners.size === 0) this.workflowEventListeners.delete(workflowId);
+    };
+  }
+
+  private persistAndPublishWorkflowSnapshot(snapshot: ToolWorkflowSnapshot, input: ArticleChatInput): void {
+    this.toolWorkflowServices?.workflowRepository?.save(snapshot, {
+      contextKey: input.contextKey,
+      projectId: input.projectId,
+      request: input as unknown as Record<string, unknown>
+    });
+    const event = snapshot.events.at(-1);
+    if (!event) return;
+    for (const listener of this.workflowEventListeners.get(snapshot.workflowId) ?? []) listener({
+      ...event,
+      sequence: event.sequence ?? snapshot.events.length,
+      data: event.data ? { ...event.data } : undefined
+    });
+  }
+
   listWorkflows(contextKey: string): StoredToolWorkflow[] {
     return this.toolWorkflowServices?.workflowRepository?.list(contextKey) ?? [];
   }
@@ -473,20 +755,33 @@ export class AwenConversationService {
     let model: string | null = null;
     const session = createAwenToolWorkflowSession(this.toolWorkflowServices!, {
       projectId: input.projectId,
+      practiceTaskId: input.practiceTaskId,
+      directUserMessage: input.message,
       prompt: stored.snapshot.userRequest,
+      onSnapshot: (snapshot) => this.persistAndPublishWorkflowSnapshot(snapshot, input),
       validateFinal: (text) => { articleChatOutput.parse(parseWorkflowFinalText(text)); },
       onModelResult: (nextProvider, nextModel) => { provider = nextProvider; model = nextModel; }
     });
     const entry = this.createResumedWorkflowEntry(input, session, input.clientMessageId ?? null, provider, model);
     if (stored.snapshot.pendingPermission) {
-      const workflow = session.restoreWaiting(stored.snapshot);
+      const workflow = await session.restoreWaiting(stored.snapshot);
+      if (input.practiceTaskId) this.syncPracticeTask(input.practiceTaskId, workflow);
       repository.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
+      if (workflow.finalText) {
+        this.workflowEntries.delete(workflow.workflowId);
+        const parsed = articleChatOutput.parse(parseWorkflowFinalText(workflow.finalText));
+        return { ...await this.persistAssistantResponse(entry, parsed), workflow };
+      }
       this.rememberWorkflowEntry(workflow.workflowId, entry);
       return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
     }
     const workflow = await session.resumeInterrupted(stored.snapshot);
+    if (input.practiceTaskId) this.syncPracticeTask(input.practiceTaskId, workflow);
     repository.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: input as unknown as Record<string, unknown> });
-    if (workflow.status === "failed") return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
+    if (workflow.status === "failed") {
+      const message = await this.persistWorkflowFailureReply(entry, workflow);
+      return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model, message };
+    }
     this.rememberWorkflowEntry(workflow.workflowId, entry);
     if (!workflow.finalText) return { workflow, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider, model };
     this.workflowEntries.delete(workflow.workflowId);
@@ -501,9 +796,61 @@ export class AwenConversationService {
     const snapshot = requested.status === "cancel_requested"
       ? await entry.session.runner.waitForSettled(workflowId)
       : requested;
+    if (entry.input.practiceTaskId) {
+      const task = this.toolWorkflowServices?.articlePracticeTasks?.require(entry.input.practiceTaskId);
+      if (task && ["assessing", "practicing", "waiting_permission", "waiting_feedback"].includes(task.status)) {
+        this.toolWorkflowServices?.articlePracticeTasks?.requestStop(task.id);
+      }
+    }
     this.toolWorkflowServices?.workflowRepository?.save(snapshot, { contextKey: entry.input.contextKey, projectId: entry.input.projectId, request: entry.input as unknown as Record<string, unknown> });
     this.workflowEntries.delete(workflowId);
     return snapshot;
+  }
+
+  private syncPracticeTask(taskId: string, workflow: ToolWorkflowSnapshot): void {
+    const tasks = this.toolWorkflowServices?.articlePracticeTasks;
+    if (!tasks) return;
+    if (workflow.events.some((event) => event.type === "tool_deferred") && workflow.toolResults.length === 0) return;
+    let task = tasks.require(taskId);
+    if (["completed", "completed_with_gaps", "stopped", "failed"].includes(task.status)) return;
+    tasks.saveCheckpoint(taskId, { ...task.checkpoint, workflowId: workflow.workflowId, stepId: "awen-tool-workflow" });
+    task = tasks.require(taskId);
+    if (workflow.status === "waiting_user") {
+      if (task.status === "practicing") tasks.waitForPermission(taskId, workflow.pendingPermission?.permission.reason ?? "等待你处理阿文的授权请求。");
+      return;
+    }
+    if (workflow.status === "incomplete") {
+      const practiceResults = selectPracticeEvidenceResults(workflow.toolResults);
+      if (practiceResults.length > 0) tasks.recordPracticeResult(taskId, {
+        workflowId: workflow.workflowId,
+        summary: workflow.finalText,
+        results: practiceResults.map((result) => ({ toolId: result.toolId, result: result.output }))
+      });
+      if (task.status === "waiting_permission") tasks.permissionResolved(taskId);
+      tasks.waitForFeedback(taskId, `${getWorkflowBlockerMessage(workflow)} 已保留本轮已取得的实践结果。五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
+      return;
+    }
+    if (workflow.status === "completed" || workflow.status === "completed_with_warnings") {
+      const practiceResults = selectPracticeEvidenceResults(workflow.toolResults);
+      if (practiceResults.length > 0) tasks.recordPracticeResult(taskId, {
+        workflowId: workflow.workflowId,
+        summary: workflow.finalText,
+        results: practiceResults.map((result) => ({ toolId: result.toolId, result: result.output }))
+      });
+      if (task.status === "waiting_permission") tasks.permissionResolved(taskId);
+      task = tasks.require(taskId);
+      if (["assessing", "practicing"].includes(task.status)) tasks.beginDraft(taskId, task.hasGaps || workflow.status === "completed_with_warnings");
+      return;
+    }
+    if (workflow.status === "failed" && ["assessing", "practicing", "waiting_permission"].includes(task.status)) {
+      const practiceResults = selectPracticeEvidenceResults(workflow.toolResults);
+      if (practiceResults.length > 0) tasks.recordPracticeResult(taskId, {
+        workflowId: workflow.workflowId,
+        summary: getWorkflowBlockerMessage(workflow),
+        results: practiceResults.map((result) => ({ toolId: result.toolId, result: result.output }))
+      });
+      tasks.waitForFeedback(taskId, `${getWorkflowBlockerMessage(workflow)}${practiceResults.length ? " 已保留本轮已取得的实践结果。" : ""}请告诉阿文如何继续；五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
+    }
   }
 
   private createResumedWorkflowEntry(input: ArticleChatInput, session: AwenToolWorkflowSession, userEventId: string | null, provider: string | null, model: string | null): AwenWorkflowEntry {
@@ -545,10 +892,10 @@ export class AwenConversationService {
 
   private async persistAssistantResponse(entry: AwenWorkflowEntry, value: z.infer<typeof articleChatOutput>) {
     const normalized = normalizeArticleChatOutput(value);
-    const suggestions = filterActionableArticleSuggestions(entry.input.markdown, normalized.suggestions);
+    let suggestions = filterActionableArticleSuggestions(entry.input.markdown, normalized.suggestions);
     const imageSearch = await this.runImageSearchTool(entry.input, normalized.imageSearchRequest);
     const assistantMessage: ArticleChatMessage = {
-      id: randomUUID(),
+      id: entry.input.clientMessageId ? createAssistantMessageId(entry.input.clientMessageId) : randomUUID(),
       role: "assistant",
       content: appendImageSearchStatus(normalized.reply, imageSearch),
       memorySuggestion: normalized.memorySuggestion,
@@ -556,6 +903,16 @@ export class AwenConversationService {
       imageSearch,
       createdAt: new Date().toISOString()
     };
+    if (entry.input.practiceIntentMode === "chat" && entry.input.practiceTaskId) {
+      suggestions = suggestions.map((suggestion) => ({ ...suggestion, practiceTaskId: entry.input.practiceTaskId }));
+      assistantMessage.suggestions = suggestions;
+      const tasks = this.toolWorkflowServices?.articlePracticeTasks;
+      const task = tasks?.require(entry.input.practiceTaskId);
+      if (tasks && task?.status === "drafting") {
+        tasks.waitForEditConfirmation(task.id, assistantMessage.id);
+        if (suggestions.length === 0) tasks.resolveEditConfirmation(task.id, "unavailable");
+      }
+    }
     this.db.prepare(`INSERT INTO article_chat_messages (id, context_key, role, content, memory_suggestion, suggestions_json, image_search_json, created_at)
       VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)`)
       .run(assistantMessage.id, entry.input.contextKey, assistantMessage.content, assistantMessage.memorySuggestion, JSON.stringify(suggestions), JSON.stringify(imageSearch ?? null), assistantMessage.createdAt);
@@ -574,6 +931,14 @@ export class AwenConversationService {
     this.formalMemory.recordUse([...entry.articleMemoryContext.ids, ...entry.writingMemoryContext.ids], `article-chat:${entry.input.contextKey}`);
     this.scheduleMemoryMaintenance();
     return { message: assistantMessage, memory: entry.thread.memory, writingMemory: entry.writingMemory, provider: entry.provider, model: entry.model };
+  }
+
+  private async persistWorkflowFailureReply(entry: AwenWorkflowEntry, workflow: ToolWorkflowSnapshot): Promise<ArticleChatMessage> {
+    const output = articleChatOutput.parse({
+      reply: `本轮实践未能完成：${getWorkflowBlockerMessage(workflow)} 已保留本轮执行记录；可在右侧“执行活动”中查看具体操作和输出。`,
+      memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null
+    });
+    return (await this.persistAssistantResponse(entry, output)).message;
   }
 
   mergeArticleMemory(contextKey: string, candidate: string): string {
@@ -607,6 +972,23 @@ export class AwenConversationService {
       }
     }, 0);
   }
+}
+
+/** Results from article-practice tools that become traceable evidence for draft generation. */
+export function selectPracticeEvidenceResults<T extends { toolId: string }>(results: T[]): T[] {
+  return results.filter((result) => result.toolId.startsWith("practice_") || result.toolId === "registered_cli_task");
+}
+
+export function getWorkflowBlockerMessage(workflow: ToolWorkflowSnapshot): string {
+  const events = workflow.events;
+  const last = (types: ToolWorkflowEvent["type"][]) => [...events].reverse().find((event) => types.includes(event.type) && event.message.trim())?.message.trim();
+  const incomplete = last(["workflow_incomplete"]);
+  const toolFailure = last(["tool_failed"]);
+  if (toolFailure) return `${toolFailure}${incomplete ? ` 目标状态：${incomplete}` : ""}`.slice(0, 1200);
+  if (incomplete) return incomplete;
+  const failure = last(["tool_failed", "workflow_failed"]);
+  if (failure && !/模型回合超过上限/u.test(failure)) return failure;
+  return last(["goal_verification_incomplete", "goal_verification_continued"]) ?? failure ?? "工作流无法继续；已保留已完成观察，请告诉阿文如何处理剩余步骤。";
 }
 
 export function parseChatSuggestions(value: string): ArticleChatSuggestion[] {
@@ -731,6 +1113,14 @@ function deriveSeriesScope(title: string): string | undefined {
   return match ? `series:${match[1].trim()}` : undefined;
 }
 
+function createAssistantMessageId(clientMessageId: string): string {
+  const hex = createHash("sha256").update(`contentferry-awen:${clientMessageId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "5";
+  hex[16] = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  const value = hex.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
 function buildPrompt(input: ArticleChatInput, writingMemory: string, articleMemory: string, history: string, article: string, webResearch: string): string {
   return `你正在和作者讨论一篇文章。只基于文章、会话与记忆给出专业、具体、可执行的建议；不虚构事实。
 
@@ -760,6 +1150,49 @@ ${webResearch || "本轮未触发联网核验。若作者要求核实网页但�
 找图工具规则：若用户明确要求找图、找截图、找配图或图片素材，返回 imageSearchRequest，query 使用适合联网图片检索的简洁关键词，limit 在 1 到 12 之间；否则返回 null。imageSearchRequest 只是请求文渡调用受控的 find_images 工具，不代表已经找到图片。涉及找图时不要声称已经搜索成功、已经看过图片或已经插入正文，reply 只说明将按该关键词检索候选。图片候选会由应用在工具执行后返回给作者，作者确认后才会下载和修改正文。
 
 请回答用户最后的问题。输出本文记忆摘要：只记录本篇可复用且已明确的事实、决定或未解决事项。输出写作能力记忆摘要：只记录跨文章稳定有效的风格偏好、读者反馈、修改取舍或表达策略；临时想法、未经核实的信息与闲聊必须留空。若用户明确要求修改、改写、优化或给出可执行文字建议，再返回最多 5 条建议。建议对象只用于“可以直接写入正文”的内容，kind 必须为 content；分析、评价、修改理由和“建议作者如何改”的反馈只能写在 reply 或 reason 中，不能放进 replacement，也不能创建 kind=feedback 的可应用建议。replacement 必须是可以直接粘贴到文章中的完整文字：replace 返回替换后的完整段落或句子，insert_after/insert_before 返回可直接作为独立段落插入的正文内容，不得包含“建议增加”“可以补充”“应当说明”“这里需要”等元话语。每条建议的 original 必须是正文中一段完全相同且唯一出现的原文；同一段落的多个备选方案必须使用完全相同的 original，并分别返回不同的正文版本，供作者择一采用。reason 只说明为什么这段内容更合适。operation 必须明确选择 replace、insert_before 或 insert_after：只有用户明确要替换原文时使用 replace；用户要求保留原文并补充内容时使用 insert_after 或 insert_before。insert_after/insert_before 会把 replacement 作为独立段落放在原文所在段落之后/之前，不能把原文改掉；否则 suggestions 为空。`;
+}
+
+const PRACTICE_TOOL_IDS = new Set([
+  "web_search", "list_system_tools", "read_source_article", "git_clone_source", "git_analyze_source",
+  "practice_run_code", "practice_run_command", "practice_edit_project_file", "practice_capture_webpage", "practice_capture_demo",
+  "practice_capture_command_output", "registered_cli_task"
+]);
+
+function isPracticeStepRetryRequest(message: string): boolean {
+  return /重试.{0,12}(?:步骤|这一步|上一步|失败)|(?:失败|上一步|这一步).{0,12}重试/u.test(message);
+}
+
+function buildPracticeStepRetryContext(repository: AwenToolWorkflowServices["workflowRepository"], taskId: string,
+  projectId: string, workflowId: string | undefined): { prompt: string; retry: { failedToolId: string | null; completedToolIds: string[] } } {
+  const unavailable = "没有找到可核对的失败步骤记录。不要声称已准确重试；先向作者说明记录不足并请其指出要处理的步骤。";
+  if (!repository || !workflowId) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+  let stored: StoredToolWorkflow;
+  try { stored = repository.require(workflowId); } catch { return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } }; }
+  if (stored.projectId !== projectId || stored.input?.practiceTaskId !== taskId || stored.snapshot.status !== "failed") return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+
+  let failureIndex = -1;
+  for (let index = stored.snapshot.events.length - 1; index >= 0; index -= 1) {
+    if (stored.snapshot.events[index]?.type === "tool_failed") { failureIndex = index; break; }
+  }
+  if (failureIndex < 0) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+  const failedEvent = stored.snapshot.events[failureIndex]!;
+  const failedToolId = failedEvent.data?.toolId;
+  if (typeof failedToolId !== "string" || !PRACTICE_TOOL_IDS.has(failedToolId)) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+
+  const completedBeforeFailure = [...new Set(stored.snapshot.events.slice(0, failureIndex)
+    .filter((event) => event.type === "tool_completed")
+    .map((event) => event.data?.toolId)
+    .filter((toolId): toolId is string => typeof toolId === "string" && PRACTICE_TOOL_IDS.has(toolId)))];
+  if (completedBeforeFailure.includes(failedToolId)) {
+    return { prompt: "同一种工具在上一次工作流里既有成功调用也有失败调用，当前记录无法唯一指认失败的那一次。不要自动重试；请向作者说明情况并请其具体指出要重试的步骤。", retry: { failedToolId: null, completedToolIds: completedBeforeFailure } };
+  }
+  return { prompt: [
+    `上一次失败的工具步骤：${failedToolId}。`,
+    completedBeforeFailure.length
+      ? `此前已完成的工具步骤：${completedBeforeFailure.join("、")}。这些步骤及其结果已保留，不要重复执行。`
+      : "此前没有记录到已完成的工具步骤。",
+    "作者明确要求重试失败步骤。重新规划时只可提出与该失败工具相同的一项调用；仍须遵守当前任务授权和工具策略。需要不同参数或新增权限时，按正常流程请求作者决定。不得把失败说成成功。"
+  ].join("\n"), retry: { failedToolId, completedToolIds: completedBeforeFailure } };
 }
 
 const WEB_RESEARCH_INTENT = /联网|网页|官网|官方|来源|核实|验证|查证|最新|当前版本|访问|连接|打不开|无法打开|网络|herdr\.dev/i;

@@ -49,6 +49,14 @@ export type TemporaryResearchResult = { scope: TemporaryResearchScope; context: 
 export type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
 export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
 export type ContentPracticePlan = { projectId: string; markdown: string; status: "draft" | "confirmed" | "skipped"; updatedAt: string };
+export type ArticlePracticeStatus = "queued" | "assessing" | "practicing" | "waiting_permission" | "waiting_feedback" | "waiting_stop_choice" | "drafting" | "waiting_edit_confirmation" | "waiting_resume_choice" | "completed" | "completed_with_gaps" | "stopped" | "failed";
+export type ArticlePracticeTask = {
+  id: string; projectId: string; sourceType: "awen" | "legacy_manual"; legacyExecutionRunId: string | null;
+  status: ArticlePracticeStatus; goalRevision: number; latestGoal: string;
+  waitingReason: string | null; feedbackDeadline: string | null; createdAt: string; updatedAt: string;
+  checkpoint: { workflowId?: string; uncertainSideEffect?: boolean; stepId?: string }; hasGaps: boolean;
+  events?: Array<{ sequence: number; kind: string; payload: Record<string, unknown>; createdAt: string }>;
+};
 export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };
 export type ContentReview = { projectId: string; status: "pending" | "needs_revision" | "approved"; factChecked: boolean; accountFitChecked: boolean; aiCheckResult: string; notes: string };
 export type WechatPublishJob = {
@@ -217,7 +225,7 @@ export type ArticleChatImageSearch = {
   error?: string;
   items: ImageSearchResultItem[];
 };
-export type ArticleChatSuggestion = { original: string; replacement: string; reason: string; kind?: "content" | "feedback"; operation?: ArticleChatSuggestionOperation; status?: "pending" | "accepted" | "rejected" | "unavailable" };
+export type ArticleChatSuggestion = { original: string; replacement: string; reason: string; kind?: "content" | "feedback"; operation?: ArticleChatSuggestionOperation; status?: "pending" | "accepted" | "rejected" | "unavailable"; practiceTaskId?: string };
 export type ArticleChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -226,16 +234,16 @@ export type ArticleChatMessage = {
   suggestions: ArticleChatSuggestion[];
   imageSearch?: ArticleChatImageSearch;
   createdAt: string;
-  deliveryState?: "sending" | "waiting_permission" | "failed";
+  deliveryState?: "sending" | "waiting_permission" | "authorized" | "failed";
 };
-export type ToolWorkflowStatus = "queued" | "planning" | "running" | "waiting_user" | "replanning" | "completed" | "completed_with_warnings" | "failed" | "cancel_requested" | "cancelled" | "interrupted";
+export type ToolWorkflowStatus = "queued" | "planning" | "running" | "waiting_user" | "replanning" | "completed" | "completed_with_warnings" | "incomplete" | "failed" | "cancel_requested" | "cancelled" | "interrupted";
 export type ToolWorkflowSnapshot = {
   workflowId: string;
   status: ToolWorkflowStatus;
   round: number;
   userRequest: string;
   transcript: Array<{ role: "user" | "assistant" | "tool"; content: string }>;
-  events: Array<{ id: string; type: string; at: string; callId?: string; toolId?: string; message: string; data?: Record<string, string | number | boolean | null> }>;
+  events: Array<{ id: string; sequence?: number; type: string; at: string; callId?: string; toolId?: string; message: string; data?: Record<string, string | number | boolean | null> }>;
   toolResults: Array<{ callId: string; toolId: string; output: unknown }>;
   pendingPermission: { callId: string; request: { toolId: string; action: string; target?: string; input: unknown }; permission: { decision: "allow" | "ask" | "deny"; reason: string; matchedScope: string | null } } | null;
   finalText: string | null;

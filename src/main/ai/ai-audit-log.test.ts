@@ -34,13 +34,19 @@ function makeTempDir(): string {
   return tempDir;
 }
 
+function todayAuditFilename(now = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const localDate = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `ai-audit-${localDate}.log`;
+}
+
 describe("AiAuditLog", () => {
   it("writes a JSON line containing the full prompt and response when enabled", () => {
     const dir = makeTempDir();
     const log = new AiAuditLog(dir, () => true);
     log.record(sampleCall);
 
-    const file = path.join(auditLogDirectory(dir), `ai-audit-${new Date().toISOString().slice(0, 10)}.log`);
+    const file = path.join(auditLogDirectory(dir), todayAuditFilename());
     expect(fs.existsSync(file)).toBe(true);
     const lines = fs.readFileSync(file, "utf8").trim().split("\n");
     expect(lines).toHaveLength(1);
@@ -66,7 +72,7 @@ describe("AiAuditLog", () => {
     const dir = makeTempDir();
     const log = new AiAuditLog(dir, () => true);
     log.record({ ...sampleCall, ok: false, response: null, error: "模型超时" });
-    const file = path.join(auditLogDirectory(dir), `ai-audit-${new Date().toISOString().slice(0, 10)}.log`);
+    const file = path.join(auditLogDirectory(dir), todayAuditFilename());
     const entry = JSON.parse(fs.readFileSync(file, "utf8").trim()) as Record<string, unknown>;
     expect(entry.ok).toBe(false);
     expect(entry.error).toBe("模型超时");
@@ -94,7 +100,7 @@ describe("AiAuditLog", () => {
     // Trigger pruning via a fresh record.
     log.record(sampleCall);
     expect(fs.existsSync(stale)).toBe(false);
-    const today = `ai-audit-${new Date().toISOString().slice(0, 10)}.log`;
+    const today = todayAuditFilename();
     expect(fs.existsSync(path.join(auditDir, today))).toBe(true);
   });
 });

@@ -1,18 +1,21 @@
 import { lazy, startTransition, Suspense, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { apiBase, platformName, request } from "../api";
-import { extractMarkdownImages, renderPhonePreview, resolveArticleImageUrl } from "../markdown-preview";
+import { extractMarkdownImages, isLocalArticleImageSource, renderPhonePreview, replaceMarkdownImageReference, resolveArticleImageUrl } from "../markdown-preview";
 import { locateMarkdownSelection } from "../markdown-selection";
 import { markdownOffsetAtTextareaTop, readImageUrl, scrollEditorToHeading, scrollTextareaToMarkdownOffset } from "../utils";
-import { AwenBottomPanel, AwenMemoryManager, AwenToolWorkflowActivity, AwenToolWorkflowActivityModal, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
+import { AwenBottomPanel, AwenMemoryManager, ArticlePracticeHistory, ArticlePracticeSources, AwenPracticeProjectDirectoryCard, AwenToolWorkflowActivity, AwenToolWorkflowActivityModal, ArticlePracticeTaskCard, completeAwenAssistantResponse, markUnansweredAwenMessages, removeUnavailableAwenSuggestions } from "./AwenPanels";
 import { applyAwenSuggestionToMarkdown, canFinalizeAwenSuggestionSync, canSendAwenMessage, findUniqueSuggestionRange, getArticleChatContextKey, getAwenAlternativeSuggestionIds, getPendingAwenSuggestionIds, isCurrentAwenLoad, isCurrentAwenSuggestionSync, shouldPersistAcceptedAwenSuggestion, shouldReloadAwenConversation } from "./awen-suggestion-utils";
 import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
-import { ExecutionPanel } from "./ExecutionPanel";
 import { Modal } from "./Modal";
 import { isCurrentImageSearchRequest } from "./image-search-utils";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentPracticePlan, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
+import { reconcileMarkdownAfterSave } from "./article-save-state";
+import { resolveLoadedCoverPrompt } from "./article-settings-state";
+import { resolveAwenAttentionNotice } from "./awen-attention";
+import { reconcileAwenSuggestionSaveState } from "./awen-suggestion-save-state";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ArticlePracticeTask, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
 
 type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
 
@@ -37,6 +40,7 @@ export function ArticleWorkspace({
   generating = false,
   generationStatus = "",
   onStopGeneration,
+  onContinueDraftAfterPractice,
   onChange,
   onBack,
   onSave,
@@ -55,6 +59,7 @@ export function ArticleWorkspace({
   generating?: boolean;
   generationStatus?: string;
   onStopGeneration?: () => void;
+  onContinueDraftAfterPractice?: () => Promise<void>;
   onChange: (markdown: string) => void;
   onBack: () => void;
   onSave: () => Promise<ArticleSaveResult>;
@@ -63,11 +68,35 @@ export function ArticleWorkspace({
   onEnterChannel?: (platform: AccountPlatform) => void;
 }) {
   const [rightPanel, setRightPanel] = useState<"assistant" | "activity" | "preview" | "settings">(initialRightPanel);
+  const [workflowActivityFocusRequest, setWorkflowActivityFocusRequest] = useState(0);
+  const openExecutionActivity = () => {
+    setRightPanel("activity");
+    setWorkflowActivityFocusRequest((request) => request + 1);
+    setAwenActivityExpanded(true);
+    setAwenActivityLoadError(undefined);
+    const workflowId = articlePracticeTask?.checkpoint.workflowId;
+    if (workflowId && awenWorkflow?.workflowId === workflowId) return;
+    if (!workflowId && !articlePracticeTask && awenWorkflow) return;
+    setAwenWorkflow(undefined);
+    setAwenActivityLoading(true);
+    void (async () => {
+      try {
+        const snapshot = workflowId
+          ? await request<ToolWorkflowSnapshot>(`/article-chat/workflows/${encodeURIComponent(workflowId)}`)
+          : (await request<{ items: Array<{ snapshot: ToolWorkflowSnapshot }> }>(`/article-chat/workflows?contextKey=${encodeURIComponent(awenContextKeyRef.current)}`)).items[0]?.snapshot;
+        if (!snapshot) throw new Error("这次执行的记录尚未找到。请稍后重试。");
+        setAwenWorkflow(snapshot);
+      } catch (cause) {
+        setAwenActivityLoadError(cause instanceof Error ? cause.message : "执行记录读取失败，请重试。");
+      } finally {
+        setAwenActivityLoading(false);
+      }
+    })();
+  };
   const [editorMode, setEditorMode] = useState<"visual" | "markdown">("visual");
   const [modeScrollOffset, setModeScrollOffset] = useState(0);
   const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
-  const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images" | "execution">("body");
-  const [executionOpen, setExecutionOpen] = useState(false);
+  const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images">("body");
   const [articleSettings, setArticleSettings] = useState<ArticleSettings>({
     author: "",
     digest: "",
@@ -85,10 +114,6 @@ export function ArticleWorkspace({
   const [collectionHistory, setCollectionHistory] = useState<string[]>([]);
   const [collectionsSyncedAt, setCollectionsSyncedAt] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
-  const [practicePlanViewerOpen, setPracticePlanViewerOpen] = useState(false);
-  const [practicePlanViewer, setPracticePlanViewer] = useState<ContentPracticePlan | null>(null);
-  const [practicePlanViewerLoading, setPracticePlanViewerLoading] = useState(false);
-  const [practicePlanViewerError, setPracticePlanViewerError] = useState("");
   const [imageSearchQuery, setImageSearchQuery] = useState("");
   const [imageCandidates, setImageCandidates] = useState<ImageSearchResultItem[]>([]);
   const [imageSearchBusy, setImageSearchBusy] = useState(false);
@@ -101,10 +126,14 @@ export function ArticleWorkspace({
   const imageSearchAbortRef = useRef<AbortController | undefined>(undefined);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [coverCropImage, setCoverCropImage] = useState<SelectedImage>();
+  const [coverCropParentAssetPath, setCoverCropParentAssetPath] = useState<string>();
+  const [coverCropPurpose, setCoverCropPurpose] = useState<"cover" | "body">("cover");
+  const [bodyCropTarget, setBodyCropTarget] = useState<{ sourcePath: string; occurrence: number }>();
+  const [practiceSourceRefresh, setPracticeSourceRefresh] = useState(0);
   const [settingsMaterials, setSettingsMaterials] = useState<WechatMaterial[]>([]);
   const [settingsCoverProvider, setSettingsCoverProvider] = useState<"modelscope" | "agnes">("modelscope");
-  const [settingsCoverPrompt, setSettingsCoverPrompt] = useState("");
   const [settingsCoverBusy, setSettingsCoverBusy] = useState(false);
+  const coverPromptEditedContextKeyRef = useRef<string | undefined>(undefined);
   const [settingsCoverError, setSettingsCoverError] = useState("");
   const [settingsCoverPromptBusy, setSettingsCoverPromptBusy] = useState(false);
   const [settingsSummaryBusy, setSettingsSummaryBusy] = useState(false);
@@ -140,12 +169,44 @@ export function ArticleWorkspace({
   const [awenBottomHeightPercent, setAwenBottomHeightPercent] = useState(34);
   const [awenTranscriptUserPercent, setAwenTranscriptUserPercent] = useState(33);
   const [awenMessages, setAwenMessages] = useState<ArticleChatMessage[]>([]);
+  const awenSuggestionContextKeysRef = useRef(new Map<string, string>());
   const [awenMemory, setAwenMemory] = useState("");
   const [awenInput, setAwenInput] = useState("");
   const [awenLoading, setAwenLoading] = useState(false);
   const [awenWorkflow, setAwenWorkflow] = useState<ToolWorkflowSnapshot>();
+  const [articlePracticeTask, setArticlePracticeTask] = useState<ArticlePracticeTask>();
+  const attentionNoticeTimerRef = useRef<number | undefined>(undefined);
+  const scheduledAttentionKeyRef = useRef<string | undefined>(undefined);
+  const notifiedAttentionKeyRef = useRef<string | undefined>(undefined);
+  const [practiceTaskBusy, setPracticeTaskBusy] = useState(false);
   const [awenActivityExpanded, setAwenActivityExpanded] = useState(false);
+  const [awenActivityLoading, setAwenActivityLoading] = useState(false);
+  const [awenActivityLoadError, setAwenActivityLoadError] = useState<string>();
   const awenWorkflowActive = Boolean(awenWorkflow && ["queued", "planning", "running", "waiting_user", "replanning", "cancel_requested"].includes(awenWorkflow.status));
+  const awenPracticeTaskActive = Boolean(articlePracticeTask?.sourceType === "awen" && !["completed", "completed_with_gaps", "stopped", "failed"].includes(articlePracticeTask.status));
+  useEffect(() => {
+    const notice = resolveAwenAttentionNotice(articlePracticeTask, awenWorkflow, title);
+    if (!notice) {
+      if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
+      attentionNoticeTimerRef.current = undefined;
+      scheduledAttentionKeyRef.current = undefined;
+      notifiedAttentionKeyRef.current = undefined;
+      return;
+    }
+    if (notice.key === notifiedAttentionKeyRef.current || notice.key === scheduledAttentionKeyRef.current) return;
+    if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
+    scheduledAttentionKeyRef.current = notice.key;
+    attentionNoticeTimerRef.current = window.setTimeout(() => {
+      attentionNoticeTimerRef.current = undefined;
+      scheduledAttentionKeyRef.current = undefined;
+      notifiedAttentionKeyRef.current = notice.key;
+      const bridge = window.contentFerry;
+      if (bridge) void bridge.app.notifyAttention(notice.title, notice.body).catch(() => undefined);
+    }, 1400);
+  }, [articlePracticeTask, awenWorkflow, title]);
+  useEffect(() => () => {
+    if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
+  }, []);
   const [awenLoaded, setAwenLoaded] = useState(false);
   const [awenLoadedContextKey, setAwenLoadedContextKey] = useState<string>();
   const awenLoadRequestIdRef = useRef(0);
@@ -162,9 +223,12 @@ export function ArticleWorkspace({
   const [awenSuggestionOffsets, setAwenSuggestionOffsets] = useState<Record<string, { x: number; y: number }>>({});
   const [awenLocateSuggestionRequest, setAwenLocateSuggestionRequest] = useState<{ id: string; original: string; replacement: string; sequence: number }>();
   const [unsavedAwenSuggestionIds, setUnsavedAwenSuggestionIds] = useState<Set<string>>(new Set());
+  const [savedAwenSuggestionSyncPendingIds, setSavedAwenSuggestionSyncPendingIds] = useState<Set<string>>(new Set());
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [savedMarkdown, setSavedMarkdown] = useState(markdown);
+  const markdownRef = useRef(markdown);
+  markdownRef.current = markdown;
   const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
     author: "",
     digest: "",
@@ -203,6 +267,35 @@ export function ArticleWorkspace({
       .catch(() => undefined);
     return () => { active = false; };
   }, [contextKey, leftTool]);
+  useEffect(() => {
+    if (!projectId) {
+      setArticlePracticeTask(undefined);
+      return;
+    }
+    let active = true;
+    void request<{ task: ArticlePracticeTask | null }>(`/content-projects/${projectId}/practice-task`)
+      .then(async ({ task }) => {
+        if (!active) return;
+        setArticlePracticeTask(task ?? undefined);
+        if (!task) return;
+        if (["waiting_resume_choice", "waiting_stop_choice", "waiting_edit_confirmation", "waiting_feedback"].includes(task.status)) {
+          setRightPanel("activity");
+        }
+        const workflowId = task.checkpoint.workflowId;
+        if (workflowId) {
+          try {
+            const workflow = await request<ToolWorkflowSnapshot>(`/article-chat/workflows/${workflowId}`);
+            if (active) setAwenWorkflow(workflow);
+          } catch {
+            // A task may outlive its workflow snapshot; the task card remains actionable.
+          }
+        }
+      })
+      .catch(() => {
+        if (active) setArticlePracticeTask(undefined);
+      });
+    return () => { active = false; };
+  }, [projectId]);
   const switchToMarkdown = (offset: number) => {
     setModeScrollOffset(offset);
     setEditorMode("markdown");
@@ -234,6 +327,10 @@ export function ArticleWorkspace({
       const normalized = removeUnavailableAwenSuggestions(markUnansweredAwenMessages(chat.messages), markdown);
       setAwenMemory(chat.memory);
       setAwenMessages(normalized.messages);
+      for (const message of normalized.messages) {
+        if (message.role !== "assistant") continue;
+        message.suggestions.forEach((_suggestion, index) => awenSuggestionContextKeysRef.current.set(`${message.id}:${index}`, requestedContextKey));
+      }
       setAwenLoaded(true);
       setAwenLoadedContextKey(requestedContextKey);
       try {
@@ -265,7 +362,94 @@ export function ArticleWorkspace({
     if (!shouldReloadAwenConversation(awenOpen, awenLoaded, awenLoadedContextKey, contextKey, awenLoadingContextKeyRef.current)) return;
     void openAwen();
   }, [awenOpen, awenLoaded, awenLoadedContextKey, contextKey]);
-  const sendAwenMessage = async (retryMessage?: ArticleChatMessage, options?: { skipPendingReview?: boolean; message?: string }) => {
+  const decidePracticeTask = async (decision: "continue_draft" | "stop_draft" | "new_goal" | "resume", value?: string) => {
+    if (!projectId || !articlePracticeTask) return;
+    setPracticeTaskBusy(true);
+    try {
+      if (decision === "new_goal") {
+        await request(`/content-projects/${projectId}/practice-task/${articlePracticeTask.id}/decision`, { method: "POST", body: JSON.stringify({ decision, goal: value }) });
+        const started = await request<{ task: ArticlePracticeTask; workflow?: ToolWorkflowSnapshot }>(`/content-projects/${projectId}/practice-task/start`, { method: "POST", body: JSON.stringify({ goal: value }) });
+        setArticlePracticeTask(started.task);
+        if (started.workflow) setAwenWorkflow(started.workflow);
+      } else if (decision === "resume") {
+        if (value && articlePracticeTask.checkpoint.uncertainSideEffect) {
+          await request(`/content-projects/${projectId}/practice-task/${articlePracticeTask.id}/decision`, { method: "POST", body: JSON.stringify({ decision: "reconciled", outcome: value }) });
+        }
+        const resumed = await request<{ task: ArticlePracticeTask; needsReconciliation: boolean }>(`/content-projects/${projectId}/practice-task/${articlePracticeTask.id}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+        setArticlePracticeTask(resumed.task);
+        if (resumed.needsReconciliation) return;
+        if (resumed.task.status === "drafting" && !generating) await onContinueDraftAfterPractice?.();
+        const workflowId = resumed.task.checkpoint.workflowId;
+        if (workflowId && resumed.task.status !== "drafting") {
+          const workflow = await request<{ workflow: ToolWorkflowSnapshot }>(`/article-chat/workflows/${workflowId}/resume`, { method: "POST" });
+          setAwenWorkflow(workflow.workflow);
+        } else if (!workflowId && resumed.task.status === "practicing") {
+          // A crash can happen after saving the task state but before a
+          // workflow id is attached. Re-enter through the same start route;
+          // the runner will create the missing workflow from the task goal.
+          const restarted = await request<{ task: ArticlePracticeTask; workflow?: ToolWorkflowSnapshot }>(`/content-projects/${projectId}/practice-task/start`, {
+            method: "POST",
+            body: JSON.stringify({ goal: resumed.task.latestGoal })
+          });
+          setArticlePracticeTask(restarted.task);
+          if (restarted.workflow) setAwenWorkflow(restarted.workflow);
+        }
+      } else {
+        const resolved = await request<{ task: ArticlePracticeTask }>(`/content-projects/${projectId}/practice-task/${articlePracticeTask.id}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+        setArticlePracticeTask(resolved.task);
+        if (decision === "continue_draft" && resolved.task.status === "drafting" && !generating) await onContinueDraftAfterPractice?.();
+        if (decision === "stop_draft") {
+          setAwenOpen(false);
+        }
+      }
+      const latest = await request<{ task: ArticlePracticeTask | null }>(`/content-projects/${projectId}/practice-task`);
+      if (latest.task) setArticlePracticeTask(latest.task);
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "无法处理实践任务选择。");
+    } finally { setPracticeTaskBusy(false); }
+  };
+  useEffect(() => {
+    if (!projectId || (!generating && !awenLoading && !awenWorkflowActive)) return;
+    let disposed = false;
+    let timer: number | undefined;
+    let eventSource: EventSource | undefined;
+    let subscribedWorkflowId = "";
+    const poll = async () => {
+      try {
+        const result = await request<{ task: ArticlePracticeTask | null }>(`/content-projects/${projectId}/practice-task`);
+        if (disposed) return;
+        setArticlePracticeTask(result.task ?? undefined);
+        const workflowId = result.task?.checkpoint.workflowId;
+        if (workflowId) {
+          const currentWorkflow = await request<ToolWorkflowSnapshot>(`/article-chat/workflows/${workflowId}`);
+          if (disposed) return;
+          setAwenWorkflow(currentWorkflow);
+          if (subscribedWorkflowId !== workflowId) {
+            eventSource?.close();
+            subscribedWorkflowId = workflowId;
+            const cursor = currentWorkflow.events.at(-1)?.sequence ?? currentWorkflow.events.length;
+            eventSource = new EventSource(`${apiBase}/article-chat/workflows/${encodeURIComponent(workflowId)}/events?after=${cursor}`);
+            eventSource.addEventListener("workflow", () => {
+              void request<ToolWorkflowSnapshot>(`/article-chat/workflows/${encodeURIComponent(workflowId)}`)
+                .then((updated) => { if (!disposed) setAwenWorkflow(updated); })
+                .catch(() => undefined);
+            });
+          }
+          if (currentWorkflow.status === "waiting_user" || currentWorkflow.status === "interrupted" || result.task?.status === "waiting_stop_choice" || result.task?.status === "waiting_resume_choice" || result.task?.status === "waiting_feedback") {
+            setAwenOpen(true);
+            setRightPanel("activity");
+          }
+        }
+      } catch {
+        // The draft task keeps running; the next poll can recover the activity snapshot.
+      } finally {
+        if (!disposed) timer = window.setTimeout(() => void poll(), 1200);
+      }
+    };
+    void poll();
+    return () => { disposed = true; if (timer !== undefined) window.clearTimeout(timer); eventSource?.close(); };
+  }, [generating, projectId, awenLoading, awenWorkflowActive, articlePracticeTask?.status]);
+  const sendAwenMessage = async (retryMessage?: ArticleChatMessage, options?: { skipPendingReview?: boolean; message?: string; practiceTaskId?: string }) => {
     const message = retryMessage?.content ?? options?.message ?? awenInput.trim();
     if (!message || awenLoading || awenWorkflowActive) return;
     if (!canSendAwenMessage(awenLoaded, awenLoadedContextKey, contextKey, Boolean(retryMessage))) {
@@ -273,7 +457,8 @@ export function ArticleWorkspace({
       return;
     }
     if (!retryMessage && !options?.skipPendingReview) {
-      const suggestionIds = getPendingAwenSuggestionIds(awenMessages, markdown, unsavedAwenSuggestionIds);
+      const blockedSuggestionIds = new Set([...unsavedAwenSuggestionIds, ...savedAwenSuggestionSyncPendingIds]);
+      const suggestionIds = getPendingAwenSuggestionIds(awenMessages, markdown, blockedSuggestionIds);
       if (suggestionIds.length > 0) {
         setPendingAwenSend({ message, suggestionIds });
         return;
@@ -296,7 +481,13 @@ export function ArticleWorkspace({
     setRightPanel("activity");
     setAwenLoading(true);
     try {
-      const result = await request<ArticleChatWorkflowResult>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey: requestContextKey, clientMessageId: optimistic.id, projectId: projectId || undefined, accountId: articleSettings.accountId || undefined, workflowMode: "tool", title, markdown, message }) });
+      const continuePracticeAfterFeedback = !options?.practiceTaskId && Boolean(projectId && articlePracticeTask?.projectId === projectId && articlePracticeTask.status === "waiting_feedback");
+      const practiceTaskId = options?.practiceTaskId ?? (continuePracticeAfterFeedback ? articlePracticeTask?.id : undefined);
+      const result = await request<ArticleChatWorkflowResult>("/article-chat/messages", { method: "POST", body: JSON.stringify({ contextKey: requestContextKey, clientMessageId: optimistic.id, projectId: projectId || undefined, accountId: articleSettings.accountId || undefined, workflowMode: "tool", ...(projectId ? { practiceIntentMode: "chat" as const } : {}), ...(practiceTaskId ? { practiceTaskId, continuePracticeAfterFeedback: true } : {}), title, markdown, message }) });
+      if (projectId) {
+        const updatedTask = await request<{ task: ArticlePracticeTask | null }>(`/content-projects/${projectId}/practice-task`);
+        if (updatedTask.task) setArticlePracticeTask(updatedTask.task);
+      }
       if (requestContextKey !== awenContextKeyRef.current) return;
       if (result.workflow?.status === "waiting_user") {
         setAwenWorkflow(result.workflow);
@@ -307,14 +498,20 @@ export function ArticleWorkspace({
       if (result.workflow?.status === "failed") {
         setAwenWorkflow(result.workflow);
         setRightPanel("activity");
-        setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "failed" as const } : item));
-        const failure = [...result.workflow.events].reverse().find((event) => event.type === "workflow_failed")?.message;
-        setWorkspaceError(failure ?? "阿文工具工作流失败；执行活动中保留了审计记录，可重试或人工接管。 ");
+        if (result.message) {
+          setAwenMessages((current) => completeAwenAssistantResponse(current, result.message!, optimistic.id));
+          setAwenMemory(result.memory);
+          setAwenLoaded(true);
+        } else {
+          const failure = [...result.workflow.events].reverse().find((event) => event.type === "workflow_failed")?.message ?? "工作流未能完成；已保留执行记录。";
+          const explanation: ArticleChatMessage = { id: crypto.randomUUID(), role: "assistant", content: `本轮实践未能完成：${failure}`, memorySuggestion: "", suggestions: [], createdAt: new Date().toISOString() };
+          setAwenMessages((current) => [...current, explanation]);
+        }
         return;
       }
       if (!result.message) throw new Error("阿文没有返回最终消息。");
       setAwenWorkflow(result.workflow);
-      setAwenMessages((current) => [...current.filter((item) => item.id !== optimistic.id), { ...optimistic, id: result.message!.id, deliveryState: undefined }, result.message!]);
+      setAwenMessages((current) => completeAwenAssistantResponse(current, result.message!, optimistic.id));
       setAwenMemory(result.memory);
       setAwenLoaded(true);
       const imageSearch = result.message.imageSearch;
@@ -334,28 +531,72 @@ export function ArticleWorkspace({
       // disappearing author input is worse than a visible failure state.
       setAwenMessages((current) => current.map((item) => item.id === optimistic.id ? { ...item, deliveryState: "failed" } : item));
       setWorkspaceError(cause instanceof Error ? cause.message : "阿文暂时无法回答。你的消息已保留，请稍后重新提问。");
+      if (projectId) {
+        void request<{ task: ArticlePracticeTask | null }>(`/content-projects/${projectId}/practice-task`)
+          .then((latest) => { if (requestContextKey === awenContextKeyRef.current && latest.task) setArticlePracticeTask(latest.task); })
+          .catch(() => undefined);
+      }
     } finally { setAwenLoading(false); }
   };
-  const respondAwenWorkflowPermission = async (decision: "allow" | "deny", scope?: "run" | "task" | "project") => {
+  const respondAwenWorkflowPermission = async (decision: "allow" | "deny", scope?: "run" | "task" | "project", input?: unknown) => {
     const workflow = awenWorkflow;
     if (!workflow || (decision === "allow" && !scope)) return;
+    const pendingUserMessageId = awenMessages.find((item) => item.role === "user" && item.deliveryState === "waiting_permission")?.id;
+    setAwenMessages((current) => current.map((item) => item.deliveryState === "waiting_permission"
+      ? { ...item, deliveryState: decision === "allow" ? "authorized" : "sending" }
+      : item));
     setAwenLoading(true);
+    const requestContextKey = awenContextKeyRef.current;
+    let permissionSettled = false;
+    let latestWorkflow = workflow;
+    const refreshWorkflowWhileRunning = (async () => {
+      while (!permissionSettled) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 750));
+        if (permissionSettled) break;
+        try {
+          const snapshot = await request<ToolWorkflowSnapshot>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}`);
+          if (!permissionSettled && requestContextKey === awenContextKeyRef.current) {
+            latestWorkflow = snapshot;
+            setAwenWorkflow(snapshot);
+            if (snapshot.status === "failed") {
+              setAwenMessages((current) => current.map((item) => item.deliveryState === "authorized" || item.deliveryState === "sending"
+                ? { ...item, deliveryState: "failed" as const }
+                : item));
+            }
+          }
+        } catch {
+          // Keep the authorization request alive; its final response remains authoritative.
+        }
+      }
+    })();
     try {
       const result = await request<ArticleChatWorkflowResult>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}/permission`, {
         method: "POST",
-        body: JSON.stringify(decision === "allow" ? { decision, scope } : { decision })
+        body: JSON.stringify(decision === "allow" ? { decision, scope, ...(input !== undefined ? { input } : {}) } : { decision })
       });
+      permissionSettled = true;
+      await refreshWorkflowWhileRunning;
       if (result.workflow?.status === "waiting_user") {
         setAwenWorkflow(result.workflow);
+        setAwenMessages((current) => current.map((item) => item.deliveryState === "authorized" || item.deliveryState === "sending"
+          ? { ...item, deliveryState: "waiting_permission" }
+          : item));
         return;
       }
       if (result.message) {
-        setAwenMessages((current) => [...current.filter((item) => item.deliveryState !== "waiting_permission"), result.message!]);
+        setAwenMessages((current) => completeAwenAssistantResponse(current, result.message!, pendingUserMessageId));
       }
       setAwenWorkflow(result.workflow);
     } catch (cause) {
+      permissionSettled = true;
+      await refreshWorkflowWhileRunning;
+      setAwenMessages((current) => current.map((item) => item.deliveryState === "authorized" || item.deliveryState === "sending"
+        ? { ...item, deliveryState: latestWorkflow.status === "failed" ? "failed" as const : latestWorkflow.status === "waiting_user" ? "waiting_permission" as const : "authorized" as const }
+        : item));
       setWorkspaceError(cause instanceof Error ? cause.message : "阿文工具授权处理失败。");
     } finally {
+      permissionSettled = true;
+      await refreshWorkflowWhileRunning;
       setAwenLoading(false);
     }
   };
@@ -376,11 +617,12 @@ export function ArticleWorkspace({
   const resumeAwenWorkflow = async () => {
     const workflow = awenWorkflow;
     if (!workflow || workflow.status !== "interrupted") return;
+    const pendingUserMessageId = [...awenMessages].reverse().find((item) => item.role === "user" && ["failed", "authorized", "waiting_permission"].includes(item.deliveryState ?? ""))?.id;
     setAwenLoading(true);
     try {
       const result = await request<ArticleChatWorkflowResult>(`/article-chat/workflows/${encodeURIComponent(workflow.workflowId)}/resume`, { method: "POST" });
       setAwenWorkflow(result.workflow);
-      if (result.message) setAwenMessages((current) => [...current, result.message!]);
+      if (result.message) setAwenMessages((current) => completeAwenAssistantResponse(current, result.message!, pendingUserMessageId));
     } catch (cause) {
       setWorkspaceError(cause instanceof Error ? cause.message : "恢复阿文工具工作流失败。");
     } finally {
@@ -470,20 +712,27 @@ export function ArticleWorkspace({
     finally { setMemoryManagerBusy(false); }
   };
   useEffect(() => {
+    let cancelled = false;
     void Promise.all([
       request<ArticleSettings>(`/article-settings?contextKey=${encodeURIComponent(contextKey)}`),
       request<{ items: string[] }>("/article-settings/authors")
     ]).then(([settings, authors]) => {
+      if (cancelled) return;
       // 微信文章发布设置默认选好作者：未保存过作者时填最近使用过的作者，
       // 让“申请原创声明 / 开启赞赏”之外，作者也默认就位。
       const defaultAuthor = settings.author || authors.items[0] || "";
       const defaultWechatAccountId = accounts.find((account) => account.platform === "wechat_official")?.id ?? "";
       const accountId = settings.accountId || defaultWechatAccountId;
-      setArticleSettings((prev) => ({ ...settings, author: defaultAuthor, accountId }));
-      setSettingsCoverPrompt(settings.coverPrompt);
+      setArticleSettings((prev) => ({
+        ...settings,
+        author: defaultAuthor,
+        accountId,
+        coverPrompt: resolveLoadedCoverPrompt(prev.coverPrompt, settings.coverPrompt, contextKey, coverPromptEditedContextKeyRef.current)
+      }));
       setSavedSettings((prev) => ({ ...settings, author: defaultAuthor, accountId }));
       setAuthorHistory(authors.items);
-    }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"));
+    }).catch((cause) => { if (!cancelled) setWorkspaceError(cause instanceof Error ? cause.message : "无法读取文章设置。"); });
+    return () => { cancelled = true; };
   }, [contextKey, accounts]);
   useEffect(() => {
     const accountQuery = articleSettings.accountId ? `?accountId=${encodeURIComponent(articleSettings.accountId)}` : "";
@@ -500,6 +749,7 @@ export function ArticleWorkspace({
 
   const hasArticleChanges = markdown !== savedMarkdown || JSON.stringify(articleSettings) !== JSON.stringify(savedSettings);
   const hasUnsavedChanges = hasArticleChanges || unsavedAwenSuggestionIds.size > 0;
+  const hasSavedSuggestionSyncPending = savedAwenSuggestionSyncPendingIds.size > 0;
   useEffect(() => {
     const warnBeforeWindowClose = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedChanges) return;
@@ -526,15 +776,19 @@ export function ArticleWorkspace({
       setSettingsSaving(false);
     }
   };
-  const persistAcceptedAwenSuggestions = async (ids: string[], targetContextKey = contextKey): Promise<string[]> => {
+  const persistAcceptedAwenSuggestions = async (ids: string[], targetContextKey = contextKey, savedContextKey = targetContextKey): Promise<{ failedSyncIds: string[]; followUpFailed: boolean }> => {
     const syncRequestId = ++awenSuggestionSyncRequestIdRef.current;
     const canUpdateCurrentArticle = () => isCurrentAwenSuggestionSync(
       syncRequestId,
       awenSuggestionSyncRequestIdRef.current,
       targetContextKey,
-      awenContextKeyRef.current
+      awenContextKeyRef.current,
+      savedContextKey
     );
     const failed: string[] = [];
+    let followUpFailed = false;
+    const resolvedPracticeTaskIds = new Set<string>();
+    const queuedPracticeTasks = new Map<string, ArticlePracticeTask>();
     let messages = awenMessages;
     let conversationReadSucceeded = true;
     if (ids.some((id) => {
@@ -566,6 +820,7 @@ export function ArticleWorkspace({
         continue;
       }
       const suggestion = messages.find((message) => message.id === messageId)?.suggestions[index];
+      const suggestionContextKey = awenSuggestionContextKeysRef.current.get(id) ?? targetContextKey;
       if (!canFinalizeAwenSuggestionSync(conversationReadSucceeded, suggestion)) {
         failed.push(id);
         continue;
@@ -574,38 +829,75 @@ export function ArticleWorkspace({
         // The accepted text may have been removed or replaced completely
         // before saving. Do not claim that this suggestion was saved.
         try {
-          await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: targetContextKey, status: "unavailable" }) });
+          await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: suggestionContextKey, status: "unavailable" }) });
           if (canUpdateCurrentArticle()) setAwenSuggestionStatusInView(messageId, index, "unavailable");
         } catch {
           failed.push(id);
         }
         continue;
       }
+      let acceptedSuggestions: ArticleChatSuggestion[];
       try {
-        const result = await request<{ suggestions: ArticleChatSuggestion[] }>(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: targetContextKey, status: "accepted" }) });
-        if (canUpdateCurrentArticle()) setAwenSuggestionsInView(messageId, result.suggestions);
+        const result = await request<{ suggestions: ArticleChatSuggestion[] }>(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey: suggestionContextKey, status: "accepted" }) });
+        acceptedSuggestions = result.suggestions;
       } catch {
         failed.push(id);
+        continue;
+      }
+      if (canUpdateCurrentArticle()) setAwenSuggestionsInView(messageId, acceptedSuggestions);
+      if (suggestion.practiceTaskId && projectId && !resolvedPracticeTaskIds.has(suggestion.practiceTaskId)) {
+        try {
+          if (sourceArticlePath && suggestion.replacement.trim().length >= 8) {
+            await request(`/content-projects/${projectId}/practice-task/${suggestion.practiceTaskId}/source-link`, {
+              method: "POST", body: JSON.stringify({ paragraphText: suggestion.replacement })
+            });
+          }
+          const resolved = await request<{ task: ArticlePracticeTask }>(`/content-projects/${projectId}/practice-task/${suggestion.practiceTaskId}/decision`, { method: "POST", body: JSON.stringify({ decision: "edit_confirmed" }) });
+          resolvedPracticeTaskIds.add(suggestion.practiceTaskId);
+          if (resolved.task.status === "practicing") queuedPracticeTasks.set(suggestion.practiceTaskId, resolved.task);
+          if (canUpdateCurrentArticle()) setArticlePracticeTask(resolved.task);
+        } catch {
+          followUpFailed = true;
+        }
       }
     }
-    if (canUpdateCurrentArticle()) setUnsavedAwenSuggestionIds(new Set(failed));
-    return failed;
+    for (const task of queuedPracticeTasks.values()) {
+      try {
+        await continueQueuedEditPractice(task);
+      } catch {
+        followUpFailed = true;
+      }
+    }
+    return { failedSyncIds: failed, followUpFailed };
+  };
+  const continueQueuedEditPractice = async (task: ArticlePracticeTask): Promise<void> => {
+    if (!projectId || task.projectId !== projectId || task.status !== "practicing") return;
+    await sendAwenMessage(undefined, { message: `继续验证已记录的新目标：${task.latestGoal}`, skipPendingReview: true, practiceTaskId: task.id });
   };
   const saveArticleAndSettings = async (): Promise<boolean> => {
     if (articleSaveInFlightRef.current) return false;
+    const submittedMarkdown = markdown;
+    const submittedSettings = articleSettings;
+    const suggestionContextKey = awenLoadedContextKey ?? contextKey;
     articleSaveInFlightRef.current = true;
     setArticleSaveInFlight(true);
     try {
       if (!await persistArticleSettings()) return false;
-      const pendingSuggestionIds = [...unsavedAwenSuggestionIds];
+      const pendingSuggestionIds = [...new Set([...unsavedAwenSuggestionIds, ...savedAwenSuggestionSyncPendingIds])];
       const result = await onSave();
       if (result.success) {
-        setSavedMarkdown(result.markdown ?? markdown);
-        setSavedSettings(articleSettings);
+        const saved = reconcileMarkdownAfterSave(markdownRef.current, submittedMarkdown, result.markdown);
+        setSavedMarkdown(saved.savedMarkdown);
+        if (saved.currentMarkdown !== markdownRef.current) onChange(saved.currentMarkdown);
+        setSavedSettings(submittedSettings);
         const savedContextKey = getArticleChatContextKey(result.sourceArticlePath, contextKey);
-        const failedSuggestionSync = await persistAcceptedAwenSuggestions(pendingSuggestionIds, savedContextKey);
-        setWorkspaceError(failedSuggestionSync.length > 0 ? "文章已保存，但阿文建议状态尚未同步完成。请再次点击“保存文章”重试。" : "");
-        return failedSuggestionSync.length === 0;
+        const suggestionSync = await persistAcceptedAwenSuggestions(pendingSuggestionIds, suggestionContextKey, savedContextKey);
+        setUnsavedAwenSuggestionIds((current) => reconcileAwenSuggestionSaveState(current, new Set(), pendingSuggestionIds, []).unsavedIds);
+        setSavedAwenSuggestionSyncPendingIds((current) => reconcileAwenSuggestionSaveState(new Set(), current, pendingSuggestionIds, suggestionSync.failedSyncIds).syncPendingIds);
+        setWorkspaceError(suggestionSync.failedSyncIds.length > 0
+          ? "文章已保存，但阿文建议状态尚未同步完成。请再次点击“保存文章”重试。"
+          : suggestionSync.followUpFailed ? "文章和建议已保存，但后续实践任务没有继续；请查看执行活动。" : "");
+        return suggestionSync.failedSyncIds.length === 0;
       }
       setWorkspaceError(result.error ?? "文章保存失败，请查看运行日志。 ");
       return false;
@@ -624,28 +916,57 @@ export function ArticleWorkspace({
     }
     const selected = await window.contentFerry.selectImage();
     if (!selected) return;
+    setCoverCropPurpose("cover");
+    setBodyCropTarget(undefined);
+    setCoverCropParentAssetPath(undefined);
     setCoverCropImage(selected);
   };
   const saveCroppedArticleCover = async (selected: SelectedImage) => {
     try {
       const endpoint = sourceArticlePath ? "/content-source/article-asset" : "/content-assets";
       const payload = sourceArticlePath
-        ? { path: sourceArticlePath, mimeType: selected.mimeType, base64: selected.base64 }
+        ? { path: sourceArticlePath, mimeType: selected.mimeType, base64: selected.base64, ...(coverCropParentAssetPath ? { parentAssetPath: coverCropParentAssetPath } : {}), purpose: coverCropPurpose === "body" ? "article_body" : "article_cover" }
         : { contextId: assetContextId, mimeType: selected.mimeType, base64: selected.base64 };
       const saved = await request<{ assetUrl: string }>(endpoint, { method: "POST", body: JSON.stringify(payload) });
-      setArticleSettings((current) => ({ ...current, coverSource: saved.assetUrl }));
+      if (coverCropPurpose === "body" && bodyCropTarget) {
+        const updatedMarkdown = replaceMarkdownImageReference(markdown, bodyCropTarget.sourcePath, bodyCropTarget.occurrence, saved.assetUrl);
+        if (updatedMarkdown === undefined) throw new Error("正文图片已变化，裁剪版本已保存但未替换正文引用；请重新选择图片后重试。");
+        onChange(updatedMarkdown);
+      } else {
+        setArticleSettings((current) => ({ ...current, coverSource: saved.assetUrl }));
+      }
+      if (coverCropParentAssetPath) setPracticeSourceRefresh((current) => current + 1);
       setWorkspaceError("");
     } catch (cause) {
-      setWorkspaceError(cause instanceof Error ? cause.message : "封面保存失败。");
+      setWorkspaceError(cause instanceof Error ? cause.message : coverCropPurpose === "body" ? "正文图片裁剪失败。" : "封面保存失败。");
     } finally {
       setCoverCropImage(undefined);
+      setCoverCropParentAssetPath(undefined);
+      setBodyCropTarget(undefined);
+      setCoverCropPurpose("cover");
     }
   };
-  const cropExistingCover = async (url: string, fileName: string) => {
+  const cropExistingCover = async (url: string, fileName: string, parentAssetPath?: string) => {
     try {
+      setCoverCropPurpose("cover");
+      setBodyCropTarget(undefined);
       setCoverCropImage(await readImageUrl(url, fileName));
+      setCoverCropParentAssetPath(parentAssetPath);
     } catch (cause) {
       setWorkspaceError(cause instanceof Error ? cause.message : "无法读取所选图片。");
+    }
+  };
+  const cropExistingBodyImage = async (image: { src: string; alt: string }, occurrence: number) => {
+    if (!sourceArticlePath || !isLocalArticleImageSource(image.src)) return;
+    try {
+      setCoverCropPurpose("body");
+      setBodyCropTarget({ sourcePath: image.src, occurrence });
+      setCoverCropParentAssetPath(image.src);
+      setCoverCropImage(await readImageUrl(resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath), image.alt || "正文图片.png"));
+    } catch (cause) {
+      setWorkspaceError(cause instanceof Error ? cause.message : "无法读取所选正文图片。");
+      setBodyCropTarget(undefined);
+      setCoverCropParentAssetPath(undefined);
     }
   };
   const loadSettingsMaterials = async () => {
@@ -670,7 +991,8 @@ export function ArticleWorkspace({
   };
   const generateSettingsCover = async () => {
     if (!sourceArticlePath && !projectId) return;
-    if (!settingsCoverPrompt.trim()) {
+    const coverPrompt = articleSettings.coverPrompt;
+    if (!coverPrompt.trim()) {
       setSettingsCoverError("请先让 AI 根据正文生成封面提示词，或自行填写提示词。");
       return;
     }
@@ -682,10 +1004,10 @@ export function ArticleWorkspace({
         body: JSON.stringify({
           ...(sourceArticlePath ? { relativePath: sourceArticlePath } : { projectId }),
           provider: settingsCoverProvider,
-          ...(settingsCoverPrompt.trim() ? { prompt: settingsCoverPrompt.trim() } : {})
+          ...(coverPrompt.trim() ? { prompt: coverPrompt.trim() } : {})
         })
       });
-      setArticleSettings((current) => ({ ...current, coverSource: generated.assetUrl, coverPrompt: settingsCoverPrompt }));
+      setArticleSettings((current) => ({ ...current, coverSource: generated.assetUrl, coverPrompt }));
       setSettingsCoverError("");
     } catch (cause) {
       setSettingsCoverError(cause instanceof Error ? cause.message : "AI 封面生成失败。");
@@ -701,7 +1023,7 @@ export function ArticleWorkspace({
         method: "POST",
         body: JSON.stringify({ title, markdown })
       });
-      setSettingsCoverPrompt(generated.prompt);
+      coverPromptEditedContextKeyRef.current = contextKey;
       setArticleSettings((current) => ({ ...current, coverPrompt: generated.prompt }));
       setSettingsCoverError("");
     } catch (cause) {
@@ -727,7 +1049,9 @@ export function ArticleWorkspace({
       setWorkspaceError(result.error ?? "文章保存失败，未能进入渠道稿。请修正后重试。");
       return;
     }
-    setSavedMarkdown(result.markdown ?? markdown);
+    const saved = reconcileMarkdownAfterSave(markdownRef.current, markdown, result.markdown);
+    setSavedMarkdown(saved.savedMarkdown);
+    if (saved.currentMarkdown !== markdownRef.current) onChange(saved.currentMarkdown);
     setSavedSettings(articleSettings);
     setWorkspaceError("");
     onEnterChannel(channelHandoffPlatform);
@@ -1080,12 +1404,13 @@ export function ArticleWorkspace({
       setSelectionDetectionBusy(false);
     }
   };
+  const blockedSuggestionIds = new Set([...unsavedAwenSuggestionIds, ...savedAwenSuggestionSyncPendingIds]);
   const awenSuggestions = awenMessages.flatMap((message) => message.role === "assistant"
-    ? message.suggestions.flatMap((suggestion, index) => (!suggestion.status || suggestion.status === "pending") && !unsavedAwenSuggestionIds.has(`${message.id}:${index}`)
+    ? message.suggestions.flatMap((suggestion, index) => (!suggestion.status || suggestion.status === "pending") && !blockedSuggestionIds.has(`${message.id}:${index}`)
       ? [{ ...suggestion, id: `${message.id}:${index}` }]
       : [])
     : []);
-  const pendingAwenSuggestionIds = getPendingAwenSuggestionIds(awenMessages, markdown, unsavedAwenSuggestionIds);
+  const pendingAwenSuggestionIds = getPendingAwenSuggestionIds(awenMessages, markdown, blockedSuggestionIds);
   const pendingAwenSuggestionCount = pendingAwenSend?.suggestionIds.length ?? pendingAwenSuggestionIds.length;
   const locateAwenSuggestion = (id: string) => {
     const [messageId, rawIndex] = id.split(":");
@@ -1116,9 +1441,15 @@ export function ArticleWorkspace({
     const [messageId, rawIndex] = id.split(":");
     const index = Number(rawIndex);
     if (!messageId || !Number.isInteger(index)) return false;
+    const targetSuggestion = awenMessages.find((message) => message.id === messageId)?.suggestions[index];
     try {
       await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey, status: "rejected" }) });
       setAwenSuggestionStatusInView(messageId, index, "rejected");
+      if (!options?.suppressError && targetSuggestion?.practiceTaskId && projectId) {
+        const resolved = await request<{ task: ArticlePracticeTask }>(`/content-projects/${projectId}/practice-task/${targetSuggestion.practiceTaskId}/decision`, { method: "POST", body: JSON.stringify({ decision: "edit_rejected" }) });
+        setArticlePracticeTask(resolved.task);
+        if (resolved.task.status === "practicing") await continueQueuedEditPractice(resolved.task);
+      }
       return true;
     } catch (cause) {
       if (!options?.suppressError) setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。");
@@ -1137,12 +1468,18 @@ export function ArticleWorkspace({
       try {
         await request(`/article-chat/messages/${encodeURIComponent(messageId)}/suggestions/${index}`, { method: "PATCH", body: JSON.stringify({ contextKey, status: "unavailable" }) });
         setAwenSuggestionStatusInView(messageId, index, "unavailable");
+        if (suggestion.practiceTaskId && projectId) {
+          const resolved = await request<{ task: ArticlePracticeTask }>(`/content-projects/${projectId}/practice-task/${suggestion.practiceTaskId}/decision`, { method: "POST", body: JSON.stringify({ decision: "edit_unavailable" }) });
+          setArticlePracticeTask(resolved.task);
+          if (resolved.task.status === "practicing") await continueQueuedEditPractice(resolved.task);
+        }
       } catch (cause) { setWorkspaceError(cause instanceof Error ? cause.message : "无法保存阿文建议的处理状态。"); }
       return;
     }
     onChange(updatedMarkdown);
     setUnsavedAwenSuggestionIds((current) => new Set(current).add(id));
-    const alternativeIds = getAwenAlternativeSuggestionIds(awenMessages, id).filter((alternativeId) => !unsavedAwenSuggestionIds.has(alternativeId));
+    const blockedSuggestionIds = new Set([...unsavedAwenSuggestionIds, ...savedAwenSuggestionSyncPendingIds]);
+    const alternativeIds = getAwenAlternativeSuggestionIds(awenMessages, id).filter((alternativeId) => !blockedSuggestionIds.has(alternativeId));
     const alternativeResults = await Promise.all(alternativeIds.map((alternativeId) => dismissAwenSuggestion(alternativeId, { suppressError: true })));
     setWorkspaceError(alternativeResults.every(Boolean) ? "" : "建议已应用，但部分同段落备选方案未能自动拒绝，请手动处理剩余建议。 ");
   };
@@ -1163,12 +1500,12 @@ export function ArticleWorkspace({
     const saveWithShortcut = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
-      if (!hasUnsavedChanges || editorBusy || generating) return;
+      if ((!hasUnsavedChanges && !hasSavedSuggestionSyncPending) || editorBusy || generating) return;
       void saveArticleAndSettings();
     };
     window.addEventListener("keydown", saveWithShortcut);
     return () => window.removeEventListener("keydown", saveWithShortcut);
-  }, [hasUnsavedChanges, editorBusy, generating, markdown, articleSettings]);
+  }, [hasUnsavedChanges, hasSavedSuggestionSyncPending, editorBusy, generating, markdown, articleSettings]);
   const leaveWorkspace = () => {
     if (!hasUnsavedChanges) {
       onBack();
@@ -1191,26 +1528,12 @@ export function ArticleWorkspace({
     setLeavePromptOpen(false);
     onBack();
   };
-  const openPracticePlanViewer = async () => {
-    setPracticePlanViewerOpen(true);
-    setPracticePlanViewer(null);
-    setPracticePlanViewerLoading(Boolean(projectId));
-    setPracticePlanViewerError("");
-    if (!projectId) return;
-    try {
-      setPracticePlanViewer(await request<ContentPracticePlan | null>(`/content-projects/${projectId}/practice-plan`));
-    } catch (error) {
-      setPracticePlanViewerError(error instanceof Error ? error.message : "无法读取实践计划。");
-    } finally {
-      setPracticePlanViewerLoading(false);
-    }
-  };
   const editorWorkspaceStyle = awenOpen ? { "--awen-bottom-height": `${awenBottomHeightPercent}vh` } as CSSProperties : undefined;
   return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`} style={editorWorkspaceStyle}>
     <header className="editor-topbar">
       <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
-      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : "已保存"}</span>{!generating && <button type="button" className="secondary-button" onClick={() => void openPracticePlanViewer()} disabled={practicePlanViewerLoading}>{practicePlanViewerLoading ? "正在读取计划…" : "查看实践计划"}</button>}{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || !hasUnsavedChanges}>保存文章</button>{channelHandoffPlatform && onEnterChannel
+      <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : hasSavedSuggestionSyncPending ? "正文已保存，建议状态待同步" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || (!hasUnsavedChanges && !hasSavedSuggestionSyncPending)}>保存文章</button>{channelHandoffPlatform && onEnterChannel
   ? <button onClick={() => void enterChannelDraft()} disabled={busy || generating}>进入{platformName(channelHandoffPlatform)}渠道稿</button>
   : onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
@@ -1221,11 +1544,10 @@ export function ArticleWorkspace({
         <button className={`workspace-tool${leftTool === "structure" ? " active" : ""}`} onClick={() => setLeftTool("structure")}>文章结构</button>
         <button className={`workspace-tool${leftTool === "sources" ? " active" : ""}`} onClick={() => setLeftTool("sources")}>资料来源</button>
         <button className={`workspace-tool${leftTool === "images" ? " active" : ""}`} onClick={() => setLeftTool("images")}>图片素材</button>
-        <button className={`workspace-tool${leftTool === "execution" ? " active" : ""}`} onClick={() => { setLeftTool("execution"); setExecutionOpen(true); }} aria-expanded={executionOpen}>代码与工具</button>
         {leftTool === "body" && <div className="editor-stats"><span>{wordCount} 字</span><span>{images.length} 张图片</span><span>约 {Math.max(1, Math.ceil(wordCount / 500))} 分钟阅读</span></div>}
         {leftTool === "structure" && <div className="tool-detail"><strong>文章结构</strong>{headings.length ? headings.map((heading, index) => <button className="structure-link" key={index} style={{ paddingLeft: `${(heading[1].length - 1) * 10}px` }} onClick={() => scrollEditorToHeading(heading[2], index, markdown, editorMode)}>{heading[2]}</button>) : <small>正文中还没有标题。</small>}</div>}
         {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? <div className="article-source-links">{sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>)}</div> : <small>暂未识别到正文链接来源。</small>}{projectId && <>{savedResearchSources.length > 0 && <div className="temporary-research-results"><p><strong>已保存证据</strong><small>来自资料工作台；只有已采纳的卡会进入提纲和正文上下文。</small></p>{savedResearchSources.map((source) => <article className="temporary-research-card" key={source.id}><strong>{source.title}</strong><small>{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : "待核验"}</small><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p></article>)}</div>}<div className="temporary-research-box"><label>临时调研范围<select value={temporaryResearchScope} onChange={(event) => setTemporaryResearchScope(event.target.value as TemporaryResearchScope)} disabled={temporaryResearchBusy}><option value="selection">选中文本</option><option value="paragraph">当前段落</option><option value="article">整篇文章</option></select></label><small>结果只在本次编辑会话保留，不会自动改写正文或进入正式资料。</small><button type="button" className="secondary-button" onClick={() => void runTemporaryResearch()} disabled={temporaryResearchBusy}>{temporaryResearchBusy ? "正在临时调研…" : "开始临时调研"}</button>{temporaryResearch && <div className="temporary-research-results"><p><strong>临时结果</strong><small>{temporaryResearchScope === "selection" ? "选中文本" : temporaryResearchScope === "paragraph" ? "当前段落" : "整篇文章"} · 本次范围已记录</small></p>{temporaryResearch.sources.length ? temporaryResearch.sources.map((source) => <article className="temporary-research-card" key={`${source.url}-${source.title}`}><strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p>{source.keyClaims?.length ? <ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul> : null}{source.recommendation && <p><strong>为什么值得看：</strong>{source.recommendation}</p>}{source.freshness?.startsWith("易变：") && <p><strong>发布前复核：</strong>{source.freshness.slice(3)}</p>}{source.evidence?.snapshots?.[0]?.capturedAt && <small>抓取时间：{new Date(source.evidence.snapshots[0].capturedAt).toLocaleString()}</small>}<div className="temporary-research-actions"><button type="button" className="text-button" onClick={() => insertTemporaryText(source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为摘录</button><button type="button" className="text-button" onClick={() => insertTemporaryText(source.claim ?? source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为改写建议</button><button type="button" className="text-button" onClick={() => void saveTemporaryResearchSource(source)} disabled={temporaryResearchBusy}>保存为待核验证据</button></div>{!canInsertTemporaryText && <small>请选择当前正文中的一段文字后再插入。</small>}</article>) : <small>本次没有获得可核验资料卡。</small>}</div>}</div></>}</div>}
-        {leftTool === "images" && <div className="tool-detail image-materials-panel"><div className="image-panel-heading"><div><strong>图片素材</strong><small>{images.length ? `正文已有 ${images.length} 张图片` : "正文中还没有图片"}</small></div><span>{imageCandidates.length ? `${imageCandidates.length} 个候选` : ""}</span></div><button type="button" className="secondary-button image-search-launcher" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>打开联网找图</button>{imageHistory.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(true); setImageSearchOpen(true); }}>查看搜图历史（{imageHistory.length}）</button>}<small>找图和候选初审会在宽版面板中进行，历史记录会按当前文章保存。</small>{imageCandidates.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>查看最近候选</button>}{images.length ? <div className="article-image-list">{images.map((image, index) => <img key={`${image.src}-${index}`} src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />)}</div> : <small>确认插入的图片会显示在这里。</small>}</div>}
+        {leftTool === "images" && <div className="tool-detail image-materials-panel"><div className="image-panel-heading"><div><strong>图片素材</strong><small>{images.length ? `正文已有 ${images.length} 张图片` : "正文中还没有图片"}</small></div><span>{imageCandidates.length ? `${imageCandidates.length} 个候选` : ""}</span></div><button type="button" className="secondary-button image-search-launcher" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>打开联网找图</button>{imageHistory.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(true); setImageSearchOpen(true); }}>查看搜图历史（{imageHistory.length}）</button>}<small>找图和候选初审会在宽版面板中进行，历史记录会按当前文章保存。</small>{imageCandidates.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>查看最近候选</button>}{images.length ? <div className="article-image-list">{images.map((image, index) => <div className="article-image-item" key={`${image.src}-${index}`}><img src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />{sourceArticlePath && isLocalArticleImageSource(image.src) && <button type="button" className="text-button" onClick={() => void cropExistingBodyImage(image, images.slice(0, index).filter((candidate) => candidate.src === image.src).length)}>裁剪并替换此图</button>}</div>)}</div> : <small>确认插入的图片会显示在这里。</small>}</div>}
       </aside>
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
@@ -1240,7 +1562,7 @@ export function ArticleWorkspace({
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
-        {rightPanel === "activity" && <AwenToolWorkflowActivity workflow={awenWorkflow} projectId={projectId} loading={awenLoading} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onExpand={() => setAwenActivityExpanded(true)} />}
+        {rightPanel === "activity" && <>{projectId && <AwenPracticeProjectDirectoryCard projectId={projectId} />}{articlePracticeTask && <ArticlePracticeTaskCard task={articlePracticeTask} busy={practiceTaskBusy} onDecision={decidePracticeTask} onOpenAwen={(prefill) => { if (prefill !== undefined) setAwenInput(prefill); setAwenOpen(true); setRightPanel("activity"); }} onOpenExecutionActivity={openExecutionActivity} />}{projectId && <ArticlePracticeHistory projectId={projectId} articlePath={sourceArticlePath} refreshKey={articlePracticeTask?.updatedAt} />}<ArticlePracticeSources articlePath={sourceArticlePath} refreshKey={`${articlePracticeTask?.updatedAt ?? ""}:${saving ? "saving" : "saved"}:${practiceSourceRefresh}`} />{!articlePracticeTask && !awenWorkflow && !awenLoading && <section className="awen-practice-empty"><strong>想验证文章里的代码或操作？</strong><p>告诉阿文验证目标；阿文会判断是否需要实践，并在这里显示过程和结果。</p><button type="button" onClick={() => void openAwen()}>告诉阿文验证目标</button></section>}<AwenToolWorkflowActivity workflow={awenWorkflow} displayGoal={articlePracticeTask?.latestGoal} projectId={projectId} articlePath={sourceArticlePath} loading={awenLoading} practiceTask={awenPracticeTaskActive} focusPermissionRequest={workflowActivityFocusRequest} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onOpenAwen={(prefill) => { if (prefill !== undefined) setAwenInput(prefill); setAwenOpen(true); setRightPanel("activity"); }} onExpand={() => setAwenActivityExpanded(true)} /></>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><label className="selection-instruction"><span>补充要求（可选）</span><textarea value={selectionAiInstruction} onChange={(event) => setSelectionAiInstruction(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void runSelectionAi(); } }} disabled={!selectionRange || selectionAiBusy} maxLength={1000} placeholder="例如：保留技术术语，语气更直接；不要使用营销化表达" /></label><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>{selectionRange ? "针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。" : "未选中段落时会检测当前文章全文；朱雀或 ContentAny 任一结果都可作为优化参考。"}</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!markdown.trim() || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : selectionRange ? "检测选中内容" : "检测全文内容"}</button></div>{!selectionRange && <small>你也可以先选中一段文字，只检测这一段。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}
         {rightPanel === "preview" && <div className="phone-frame"><div className="phone-screen"><h2>{title}</h2><small className="phone-byline">{articleSettings.author || selectedSettingsAccount?.displayName || "未填写作者"}</small>{renderPhonePreview(markdown, assetContextId, sourceArticlePath, title)}</div></div>}
@@ -1329,15 +1651,15 @@ export function ArticleWorkspace({
                   <option value="agnes">Agnes AI</option>
                 </select>
               </label>
-              <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : settingsCoverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>
-              <textarea value={settingsCoverPrompt} maxLength={2000} onChange={(event) => { setSettingsCoverPrompt(event.target.value); setArticleSettings((current) => ({ ...current, coverPrompt: event.target.value })); setSettingsCoverError(""); }} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" />
-              <small>{settingsCoverPrompt.length}/2000 字 · 图片模型只会收到这里最终确认的提示词</small>
-              <button type="button" className="secondary-button" onClick={() => void generateSettingsCover()} disabled={settingsCoverBusy || settingsCoverPromptBusy || !settingsCoverPrompt.trim()}>{settingsCoverBusy ? "正在生成封面…" : "使用此提示词生成并设为封面"}</button>
+              <div className="cover-prompt-heading"><strong>封面提示词</strong><button type="button" className="secondary-button compact-action" onClick={() => void generateSettingsCoverPrompt()} disabled={settingsCoverPromptBusy || settingsCoverBusy}>{settingsCoverPromptBusy ? "AI 正在分析正文…" : articleSettings.coverPrompt.trim() ? "重新生成提示词" : "AI 根据正文生成提示词"}</button></div>
+              <textarea value={articleSettings.coverPrompt} maxLength={2000} onChange={(event) => { const coverPrompt = event.currentTarget.value; coverPromptEditedContextKeyRef.current = contextKey; setArticleSettings((current) => ({ ...current, coverPrompt })); setSettingsCoverError(""); }} placeholder="可以自己填写，也可以让 AI 根据标题和正文生成；生成后仍可修改构图、风格和是否包含文字" />
+              <small>{articleSettings.coverPrompt.length}/2000 字 · 图片模型只会收到这里最终确认的提示词</small>
+              <button type="button" className="secondary-button" onClick={() => void generateSettingsCover()} disabled={settingsCoverBusy || settingsCoverPromptBusy || !articleSettings.coverPrompt.trim()}>{settingsCoverBusy ? "正在生成封面…" : "使用此提示词生成并设为封面"}</button>
               {settingsCoverBusy && <small className="hint compact-hint">封面正在后台生成，可继续编辑正文和文章设置。</small>}
               {settingsCoverError && <div className="cover-action-error" role="alert"><strong>封面生成未完成</strong><span>{settingsCoverError}</span>{/凭证|credential|API\s*Key/i.test(settingsCoverError) && <small>请保存文章后，到“技能与模型”配置对应图片模型的访问凭证，再回来重试。</small>}<button type="button" className="text-button" onClick={() => setSettingsCoverError("")}>关闭提示</button></div>}
             </details>
             <button type="button" className="secondary-button" onClick={() => void chooseArticleCover()}>选择本地图片并裁剪</button>
-            {coverCandidates.length > 0 && <details><summary>从正文图片选择</summary><div className="article-cover-choices">{coverCandidates.map((image, index) => <button type="button" key={`${image.src}-${index}`} onClick={() => void cropExistingCover(resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath), image.alt || `正文图片-${index + 1}.png`)}><img src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "正文图片"} /><small>选择并裁剪</small></button>)}</div></details>}
+            {coverCandidates.length > 0 && <details><summary>从正文图片选择</summary><div className="article-cover-choices">{coverCandidates.map((image, index) => <button type="button" key={`${image.src}-${index}`} onClick={() => void cropExistingCover(resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath), image.alt || `正文图片-${index + 1}.png`, image.src.startsWith("./") ? image.src : undefined)}><img src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "正文图片"} /><small>选择并裁剪</small></button>)}</div></details>}
             {articleSettings.accountId && accounts.find((account) => account.id === articleSettings.accountId)?.platform === "wechat_official" && <details><summary>从微信素材库选择</summary><button type="button" className="secondary-button" onClick={() => void loadSettingsMaterials()} disabled={settingsCoverBusy}>加载最近图片</button>{settingsMaterials.length > 0 && <div className="article-cover-choices">{settingsMaterials.map((material) => <button type="button" key={material.mediaId} onClick={() => void chooseSettingsMaterial(material)}><img src={`${apiBase}/integrations/wechat/accounts/${articleSettings.accountId}/materials/images/${encodeURIComponent(material.mediaId)}`} alt={material.name || "微信素材"} /><small>{material.name || "未命名图片"}</small></button>)}</div>}</details>}
           </div>
           <button type="button" onClick={() => void persistArticleSettings()} disabled={busy}>保存发布设置</button>
@@ -1347,22 +1669,14 @@ export function ArticleWorkspace({
         </div>}
       </aside>
     </div>
-    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} workflow={awenWorkflowActive ? awenWorkflow : undefined} unsavedSuggestionIds={unsavedAwenSuggestionIds} pendingSuggestionCount={pendingAwenSuggestionCount} pendingSuggestionReviewOpen={Boolean(pendingAwenSend)} pendingSuggestionReviewBusy={pendingAwenReviewBusy} bottomHeightPercent={awenBottomHeightPercent} transcriptUserPercent={awenTranscriptUserPercent} onBottomHeightChange={setAwenBottomHeightPercent} onTranscriptUserPercentChange={setAwenTranscriptUserPercent} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onLocateSuggestion={locateAwenSuggestion} onOpenMemoryManager={() => void openMemoryManager()} onRejectPendingAndContinue={() => void rejectPendingAwenSuggestionsAndContinue()} onKeepPendingAndContinue={() => void continueAwenSend()} onCancelPendingSend={cancelPendingAwenSend} onOpenWorkflowActivity={() => setRightPanel("activity")} onClose={() => setAwenOpen(false)} />}
-    {awenActivityExpanded && awenWorkflow && <AwenToolWorkflowActivityModal workflow={awenWorkflow} projectId={projectId} loading={awenLoading} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onClose={() => setAwenActivityExpanded(false)} />}
+    {awenOpen && <AwenBottomPanel messages={awenMessages} memory={awenMemory} value={awenInput} loading={awenLoading} workflow={awenWorkflowActive ? awenWorkflow : undefined} unsavedSuggestionIds={unsavedAwenSuggestionIds} savedSuggestionSyncPendingIds={savedAwenSuggestionSyncPendingIds} pendingSuggestionCount={pendingAwenSuggestionCount} pendingSuggestionReviewOpen={Boolean(pendingAwenSend)} pendingSuggestionReviewBusy={pendingAwenReviewBusy} bottomHeightPercent={awenBottomHeightPercent} transcriptUserPercent={awenTranscriptUserPercent} onBottomHeightChange={setAwenBottomHeightPercent} onTranscriptUserPercentChange={setAwenTranscriptUserPercent} onChange={setAwenInput} onSend={() => void sendAwenMessage()} onRetry={(message) => void sendAwenMessage(message)} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} onLocateSuggestion={locateAwenSuggestion} onOpenMemoryManager={() => void openMemoryManager()} onRejectPendingAndContinue={() => void rejectPendingAwenSuggestionsAndContinue()} onKeepPendingAndContinue={() => void continueAwenSend()} onCancelPendingSend={cancelPendingAwenSend} onOpenWorkflowActivity={openExecutionActivity} onClose={() => setAwenOpen(false)} />}
+        {awenActivityExpanded && <AwenToolWorkflowActivityModal workflow={awenWorkflow} displayGoal={articlePracticeTask?.latestGoal} projectId={projectId} articlePath={sourceArticlePath} loading={awenLoading || awenActivityLoading} loadError={awenActivityLoadError} onRetryLoad={openExecutionActivity} practiceTask={awenPracticeTaskActive} focusPermissionRequest={workflowActivityFocusRequest} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onOpenAwen={(prefill) => { if (prefill !== undefined) setAwenInput(prefill); setAwenActivityExpanded(false); setAwenOpen(true); setRightPanel("activity"); }} onClose={() => setAwenActivityExpanded(false)} />}
     {memoryManagerOpen && <AwenMemoryManager memories={formalMemories} candidates={memoryCandidates} busy={memoryManagerBusy} onPromote={(candidateId) => void promoteMemoryCandidate(candidateId)} onStatus={(memoryId, status) => void updateFormalMemory(memoryId, status)} onForget={(mode) => void forgetArticleMemory(mode)} onExport={() => void exportArticleMemory()} onImport={(file) => void importArticleMemory(file)} onClose={() => setMemoryManagerOpen(false)} />}
-    {executionOpen && <div className="execution-modal-backdrop" role="presentation"><section className="execution-modal" role="dialog" aria-modal="true" aria-label="代码与工具执行"><div className="execution-modal-header"><div><p className="eyebrow">文章工具</p><h2>代码与工具</h2><p className="hint compact-hint">需要执行 Demo 或分析源码时再打开；授权目录可以跨文章复用。</p></div><button type="button" className="text-button" onClick={() => setExecutionOpen(false)}>关闭</button></div><ExecutionPanel projectId={projectId} onError={setWorkspaceError} onInsertCitation={(citation) => onChange(`${markdown}\n\n${citation}\n`)} onClose={() => setExecutionOpen(false)} /></section></div>}
     {selectionComparisonOpen && selectionAiResult && <SelectionDiffModal before={selectionAiOriginal} after={selectionAiResult} onClose={() => setSelectionComparisonOpen(false)} onApply={applySelectionAiResult} />}
     {imageSearchOpen && <ImageCandidateSearchModal query={imageSearchQuery} candidates={imageCandidates} history={imageHistory} historyOpen={imageHistoryOpen} busy={imageSearchBusy} insertBusy={imageInsertBusy} onQueryChange={setImageSearchQuery} onSearch={() => void searchImageCandidates()} onInsert={(candidate) => void insertImageCandidate(candidate)} onPreview={setImagePreviewCandidate} onToggleHistory={() => setImageHistoryOpen((open) => !open)} onSelectHistory={restoreImageHistory} onClose={closeImageSearch} />}
     {imagePreviewCandidate && <ImageCandidatePreviewModal candidate={imagePreviewCandidate} onClose={() => setImagePreviewCandidate(undefined)} />}
-    {coverCropImage && <CoverCropModal image={coverCropImage} onCancel={() => setCoverCropImage(undefined)} onConfirm={(cropped) => void saveCroppedArticleCover(cropped)} />}
+    {coverCropImage && <CoverCropModal image={coverCropImage} purpose={coverCropPurpose} onCancel={() => { setCoverCropImage(undefined); setCoverCropParentAssetPath(undefined); setBodyCropTarget(undefined); setCoverCropPurpose("cover"); }} onConfirm={saveCroppedArticleCover} />}
     {leavePromptOpen && <div className="modal-backdrop priority-modal" role="presentation"><section className="modal-card" role="dialog" aria-modal="true" aria-label="保存文章修改"><div className="section-heading"><div><p className="eyebrow">离开文章</p><h2>文章还有未保存修改</h2></div><button type="button" className="text-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button></div><p className="hint">{unsavedAwenSuggestionIds.size > 0 ? `其中有 ${unsavedAwenSuggestionIds.size} 条阿文建议已经应用到当前草稿，但还没有保存到文章文件。` : "当前文章还有未保存的修改。"}</p><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setLeavePromptOpen(false)} disabled={leaving}>继续编辑</button><button type="button" className="secondary-button" onClick={discardAndLeave} disabled={leaving}>放弃本次修改</button><button type="button" onClick={() => void saveAndLeave()} disabled={leaving}>{leaving ? "正在保存…" : "保存并返回"}</button></div></section></div>}
-    {practicePlanViewerOpen && <Modal title="最小实践计划" eyebrow="正文起草前保存的计划" onClose={() => setPracticePlanViewerOpen(false)} disabled={practicePlanViewerLoading} closeOnBackdrop={false} wide>
-      {practicePlanViewerLoading ? <p className="hint">正在读取已保存的实践计划…</p> : practicePlanViewerError ? <p className="error" role="alert">{practicePlanViewerError}</p> : practicePlanViewer ? <>
-        <p className="hint">状态：{practicePlanViewer.status === "confirmed" ? "已确认" : practicePlanViewer.status === "skipped" ? "已选择不新增实践" : "暂存中"} · 更新于 {new Date(practicePlanViewer.updatedAt).toLocaleString()}</p>
-        <p className="hint compact-hint">计划记录的是建议步骤，不代表步骤已经执行。实际执行结果请在左侧“资料来源”中查看实验观察卡及其采纳状态。</p>
-        <pre className="practice-plan-viewer">{practicePlanViewer.markdown}</pre>
-      </> : <p className="hint">{!projectId ? "当前文章没有关联的文渡创作项目，因此没有可回看的实践计划。" : "这篇文章没有保存的实践计划。"}</p>}
-    </Modal>}
   </div>;
 }
 
