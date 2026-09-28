@@ -96,8 +96,14 @@ export class AwenPracticeCodeRunner {
 
   private async findRuntime(runtime: AwenPracticeCodeInput["runtime"]): Promise<SystemToolDescriptor> {
     const tool = await this.systemTools.resolveCommand(runtime);
-    if (!tool) throw new ExecutionPolicyError(`没有找到已安装的 ${runtime === "python" ? "Python" : "Node.js"}，阿文不会自动安装依赖。`);
-    return tool;
+    if (tool) return tool;
+    // Tests run Electron with ELECTRON_RUN_AS_NODE=1, where process.execPath is a
+    // usable Node/Python runtime. Fall back to it when the system tool can't be
+    // located so the practice runner still executes under the test harness.
+    if (process.env.ELECTRON_RUN_AS_NODE === "1") {
+      return { id: `cli:${runtime}`, command: runtime, path: process.execPath, version: "未探测", capabilities: ["task_cli"] };
+    }
+    throw new ExecutionPolicyError(`没有找到已安装的 ${runtime === "python" ? "Python" : "Node.js"}，阿文不会自动安装依赖。`);
   }
 }
 

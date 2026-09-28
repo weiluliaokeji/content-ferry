@@ -41,7 +41,7 @@ describe("AwenPracticeCommandRunner", () => {
     }) as { runId: string; status: string; exitCode: number; stdout: string };
 
     expect(result).toMatchObject({ status: "completed", exitCode: 0, stdout: "generic-cli-ok\n" });
-    expect(runs.require(result.runId).request.cwd).toBe(runner.getWorkflowDirectory(undefined, workflowId));
+    expect(runs.require(result.runId).request.cwd).toBe(fs.realpathSync.native(runner.getWorkflowDirectory(undefined, workflowId)));
     expect(runs.require(result.runId).request.workflowId).toBe(workflowId);
     expect(runs.require(result.runId).request.args).toEqual(["-e", "console.log('generic-cli-ok')"]);
   });

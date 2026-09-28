@@ -201,11 +201,14 @@ function resolveExistingTextFile(root: string, relativePath: string): string {
 }
 
 function resolveExistingFile(root: string, value: string): string {
-  const resolved = path.resolve(value);
+  // Mirror resolveExistingTextFile: canonicalize before the containment check so a
+  // short (8.3) backup path matches a long-form canonical root (e.g. RUNNER~1 vs
+  // runneradmin on CI), instead of failing the boundary check.
+  const resolved = fs.realpathSync.native(path.resolve(value));
   if (!isPathInside(root, resolved)) throw new Error("原文件备份路径无效。");
   const stat = fs.lstatSync(resolved);
   if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("原文件备份不可用。");
-  return fs.realpathSync.native(resolved);
+  return resolved;
 }
 
 function restoreBackup(backupPath: string, target: string): void {

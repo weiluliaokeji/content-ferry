@@ -36,7 +36,7 @@ describe("Awen practice code runner", () => {
     expect(result.status).toBe("completed");
     expect(result.stdout.trim()).toBe("practice-ok");
     expect(result.artifacts.some((artifact) => artifact.path.startsWith("attempt-") && /^[0-9a-f]{64}$/u.test(artifact.sha256))).toBe(true);
-    expect(runs.require(result.runId).request.cwd).toBe(target);
+    expect(runs.require(result.runId).request.cwd).toBe(fs.realpathSync.native(target));
     expect(runs.require(result.runId).request.workflowId).toBe(workflowId);
   });
 
@@ -57,7 +57,7 @@ describe("Awen practice code runner", () => {
     });
     runs.create({
       targetType: "host_trusted", runtime: "node", executable: process.execPath,
-      args: [path.join(target, "uncertain.cjs")], cwd: target,
+      args: [path.join(target, "uncertain.cjs")], cwd: fs.realpathSync.native(target),
       directoryGrants: [{ path: target, access: "write" }], networkPolicy: "disabled",
       confirmed: true, acknowledgeHostRisk: true
     }, preflight);

@@ -38,7 +38,7 @@ describe("AwenPracticeDemoCapture workspace boundary", () => {
     fs.writeFileSync(imagePath, "image bytes");
     fs.writeFileSync(outsidePath, "<!doctype html>");
 
-    expect(resolvePracticeDemoHtml(taskDirectory, "demo.html")).toBe(htmlPath);
+    expect(resolvePracticeDemoHtml(taskDirectory, "demo.html")).toBe(fs.realpathSync.native(htmlPath));
     expect(isPracticeDemoFileUrlAllowed(pathToFileURL(htmlPath).toString(), taskDirectory)).toBe(true);
     expect(isPracticeDemoFileUrlAllowed(pathToFileURL(imagePath).toString(), taskDirectory)).toBe(true);
     expect(isPracticeDemoFileUrlAllowed(pathToFileURL(outsidePath).toString(), taskDirectory)).toBe(false);
