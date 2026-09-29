@@ -211,9 +211,13 @@ export function isPracticeDemoFileUrlAllowed(rawUrl: string, workflowDirectory: 
     if (url.protocol !== "file:") return false;
     const candidate = fileURLToPath(url);
     const root = fs.realpathSync.native(path.resolve(workflowDirectory));
-    const resolved = path.resolve(candidate);
-    if (!isPathInside(root, resolved) || !fs.existsSync(resolved)) return false;
-    const realPath = fs.realpathSync.native(resolved);
+    const raw = path.resolve(candidate);
+    if (!fs.existsSync(raw)) return false;
+    // Canonicalize before containment checks: on CI/windows the candidate path
+    // may use 8.3 short names (e.g. RUNNER~1) while root is already expanded,
+    // which makes a raw isPathInside comparison fail. realpathSync.native
+    // expands both sides to the same long form.
+    const realPath = fs.realpathSync.native(raw);
     return isPathInside(root, realPath) && fs.statSync(realPath).isFile();
   } catch { return false; }
 }
