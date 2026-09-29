@@ -329,6 +329,7 @@ export function App() {
     titleEditSuggestions,
     titleEditSuggesting,
     openDraft,
+    openDraftDirectly,
     saveDraft,
     openReview,
     openZhuque,
@@ -744,6 +745,7 @@ export function App() {
       titleEditSuggestions,
       titleEditSuggesting,
       openDraft,
+      openDraftDirectly,
       saveDraft,
       openReview,
       openZhuque,
@@ -1613,6 +1615,7 @@ export function App() {
       openResearch={openResearch}
       openOutline={openOutline}
       openDraft={openDraft}
+      openDraftDirectly={openDraftDirectly}
       openPublishPreparation={openPublishPreparation}
       deleteProjectDraft={deleteProjectDraft}
       openSourceArticle={openSourceArticle}

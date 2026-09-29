@@ -2139,6 +2139,26 @@ describe("local API scaffold", () => {
     expect(approved.json()).toMatchObject({ status: "approved", factChecked: true });
   });
 
+  it("allows saving a manually written project body before outline generation", async () => {
+    server = createTestServer();
+    const project = await server.inject({ method: "POST", url: "/api/content-projects", payload: { topic: "直接写正文" } });
+    const projectId = project.json().id as string;
+
+    const saved = await server.inject({
+      method: "PUT",
+      url: `/api/content-projects/${projectId}/draft`,
+      payload: { markdown: "# 直接写正文\n\n不经过 AI 提纲直接编辑。" }
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ markdown: "# 直接写正文\n\n不经过 AI 提纲直接编辑。", generatedFromOutline: false });
+    const projects = await server.inject({ method: "GET", url: "/api/content-projects" });
+    expect(projects.json().items.find((item: { id: string }) => item.id === projectId)).toMatchObject({
+      outlineReady: false,
+      draftReady: true
+    });
+  });
+
   it("uses the configured AI provider to generate an outline and draft without saving them silently", async () => {
     const prompts: string[] = [];
     const researchInstructions: string[] = [];

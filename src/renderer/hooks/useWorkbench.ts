@@ -886,6 +886,27 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (project.draftReady) return openDraftAfterPracticePlan(project);
     return openDraftWithPractice(project);
   };
+  const openDraftDirectly = async (project: ContentProject) => {
+    if (!project.sourceRelativePath) {
+      setError("这篇文章还没有保存到本地文章库，暂时无法直接编辑。");
+      return;
+    }
+    setSaving(true);
+    setDraftProject(undefined);
+    setDraft(undefined);
+    setDraftGenerationStatus("");
+    setArticleWorkspacePanel("assistant");
+    try {
+      const article = await request<ContentSourceArticle>(`/content-source/article?path=${encodeURIComponent(project.sourceRelativePath)}`);
+      setDraftProject(project);
+      setDraft({ projectId: project.id, markdown: article.markdown, generatedFromOutline: false, sourceRelativePath: article.relativePath });
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法打开正文编辑器。");
+    } finally {
+      setSaving(false);
+    }
+  };
   const continueDraftAfterPractice = async () => {
     if (!draftProject || draftGenerating) return;
     await openDraftAfterPracticePlan(draftProject);
@@ -1162,6 +1183,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     titleEditSuggestions,
     titleEditSuggesting,
     openDraft,
+    openDraftDirectly,
     stopDraftGeneration,
     continueDraftAfterPractice,
     saveDraft,

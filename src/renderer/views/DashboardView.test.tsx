@@ -27,6 +27,7 @@ describe("dashboard actions for a brief without research", () => {
       openResearch={() => undefined}
       openOutline={() => undefined}
       openDraft={() => undefined}
+      openDraftDirectly={() => undefined}
       openPublishPreparation={() => undefined}
       deleteProjectDraft={() => undefined}
       openSourceArticle={() => undefined}
@@ -41,5 +42,6 @@ describe("dashboard actions for a brief without research", () => {
 
     expect(markup).toContain(">生成提纲</button>");
     expect(markup).toContain(">联网补研</button>");
+    expect(markup).toContain(">直接编辑正文</button>");
   });
 });

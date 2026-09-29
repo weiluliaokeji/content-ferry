@@ -18,6 +18,7 @@ export interface DashboardViewProps {
   openResearch: (project: ContentProject, followUp?: boolean) => Promise<void> | void;
   openOutline: (project: ContentProject) => Promise<void> | void;
   openDraft: (project: ContentProject) => Promise<void> | void;
+  openDraftDirectly: (project: ContentProject) => Promise<void> | void;
   openPublishPreparation: (project: ContentProject) => void;
   deleteProjectDraft: (project: ContentProject) => Promise<void> | void;
   openSourceArticle: (relativePath: string, panel?: "assistant" | "preview" | "settings", showError?: boolean) => Promise<boolean> | void;
@@ -36,7 +37,7 @@ export type DashboardItem =
   | { kind: "external"; id: string; title: string; createdAt: string; relativePath: string };
 
 function ProjectRow({
-  project, accounts, wechatJobs, saving, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, channelRowsFor, selected, onToggle
+  project, accounts, wechatJobs, saving, openBrief, openResearch, openOutline, openDraft, openDraftDirectly, openPublishPreparation, deleteProjectDraft, channelRowsFor, selected, onToggle
 }: {
   project: ContentProject;
   accounts: MediaAccount[];
@@ -46,6 +47,7 @@ function ProjectRow({
   openResearch: DashboardViewProps["openResearch"];
   openOutline: DashboardViewProps["openOutline"];
   openDraft: DashboardViewProps["openDraft"];
+  openDraftDirectly: DashboardViewProps["openDraftDirectly"];
   openPublishPreparation: DashboardViewProps["openPublishPreparation"];
   deleteProjectDraft: DashboardViewProps["deleteProjectDraft"];
   channelRowsFor: DashboardViewProps["channelRowsFor"];
@@ -53,7 +55,7 @@ function ProjectRow({
   onToggle: () => void;
 }) {
   const job = bestWechatJob(wechatJobs, (item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
-  const nextText = job?.status === "published" ? "文章已确认发布完成" : job?.status === "cancelled" ? "发布任务已取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，等待最终回执" : job?.status === "draft_ready" ? "微信草稿已同步，等待预览和发布" : project.draftReady ? "文章主稿已生成，可继续编辑或发布到其他平台" : project.outlineDraftReady ? "提纲草稿已暂存，可继续编辑或确认就绪" : project.outlineReady ? "文章提纲已确认，下一步生成主稿" : project.researchReady ? "资料已补充，可生成提纲或继续补研" : project.briefReady ? "创作方向已整理，可生成提纲或联网补研" : "下一步整理创作方向和资料";
+  const nextText = job?.status === "published" ? "文章已确认发布完成" : job?.status === "cancelled" ? "发布任务已取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，等待最终回执" : job?.status === "draft_ready" ? "微信草稿已同步，等待预览和发布" : project.draftReady ? "文章正文已保存，可继续编辑或发布到其他平台" : project.outlineDraftReady ? "提纲草稿已暂存，可继续编辑或确认就绪" : project.outlineReady ? "文章提纲已确认，下一步生成主稿或直接编辑" : project.researchReady ? "资料已补充，可生成提纲或继续补研" : project.briefReady ? "创作方向已整理，可直接编辑正文、生成提纲或联网补研" : "下一步整理创作方向和资料";
   const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.outlineDraftReady ? () => void openOutline(project) : project.researchReady || project.briefReady ? () => void openOutline(project) : () => void openBrief(project);
   const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.outlineDraftReady ? "编辑提纲" : project.researchReady || project.briefReady ? "生成提纲" : "整理创作方向";
   const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined;
@@ -85,6 +87,7 @@ function ProjectRow({
     <span className="account-actions">
       {project.briefReady && <button className="secondary-button" onClick={() => void openBrief(project)}>{project.outlineReady || project.draftReady ? "查看创作方向" : "编辑创作方向"}</button>}
       {project.briefReady && !project.researchReady && !project.outlineReady && !project.draftReady && <button className="secondary-button" onClick={() => void openResearch(project, true)}>联网补研</button>}
+      {project.briefReady && !project.draftReady && <button className="secondary-button" onClick={() => void openDraftDirectly(project)}>直接编辑正文</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearchForFollowUp()}>继续补研</button>}
       {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}
@@ -96,7 +99,7 @@ function ProjectRow({
 }
 
 export function DashboardView(props: DashboardViewProps) {
-  const { items, totalItems, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openPublishPreparation, deleteProjectDraft, openSourceArticle, channelRowsFor, onBatchArchive, page, totalPages, pageSize, setPage, setPageSize, PAGE_SIZE_OPTIONS } = props;
+  const { items, totalItems, accounts, wechatJobs, saving, openProjectCreator, openBrief, openResearch, openOutline, openDraft, openDraftDirectly, openPublishPreparation, deleteProjectDraft, openSourceArticle, channelRowsFor, onBatchArchive, page, totalPages, pageSize, setPage, setPageSize, PAGE_SIZE_OPTIONS } = props;
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState(false);
 
@@ -164,6 +167,7 @@ export function DashboardView(props: DashboardViewProps) {
             openResearch={openResearch}
             openOutline={openOutline}
             openDraft={openDraft}
+            openDraftDirectly={openDraftDirectly}
             openPublishPreparation={openPublishPreparation}
             deleteProjectDraft={deleteProjectDraft}
             channelRowsFor={channelRowsFor}

@@ -20,7 +20,8 @@ export class ContentDraftRepository {
   }
 
   save(projectId: string, markdown: string): ContentDraft {
-    this.get(projectId);
+    const project = this.db.prepare("SELECT id FROM content_projects WHERE id = ?").get(projectId);
+    if (!project) throw new Error("Content project not found.");
     this.db.prepare(`INSERT INTO content_drafts (project_id, markdown, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(project_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`)
       .run(projectId, markdown, new Date().toISOString());
