@@ -106,6 +106,19 @@ describe("local API scaffold", () => {
     vi.unstubAllEnvs();
   });
 
+  // `list_system_tools` discovers commands by reading real PATH entries, so a
+  // test that asserts on tool observations must not depend on what happens to
+  // be installed on the machine running the suite. Seed a temporary directory
+  // with the command the fake model asks for and put it first on PATH so
+  // discovery returns the same non-empty result everywhere, including CI
+  // runners where the real tool is absent.
+  function seedSystemTool(command: string): void {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `contentferry-fake-tool-${command}-`));
+    temporaryDirectories.push(directory);
+    fs.writeFileSync(path.join(directory, `${command}.cmd`), "@echo off\r\n");
+    vi.stubEnv("PATH", `${directory}${path.delimiter}${process.env.PATH ?? ""}`);
+  }
+
   function createTestServer(modelProvider?: ModelProvider, assetStore?: LocalAssetStore): FastifyInstance {
     database = openInMemoryDatabase();
     const sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-library-"));
@@ -456,6 +469,7 @@ describe("local API scaffold", () => {
     database = openInMemoryDatabase();
     const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-workflow-final-skills-"));
     temporaryDirectories.push(skillsDirectory);
+    seedSystemTool("scoop");
     let round = 0;
     const fakeProvider: ModelProvider = {
       id: "test-awen-workflow-final-ai",
@@ -484,7 +498,7 @@ describe("local API scaffold", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().workflow.status).toBe("completed");
+    expect(response.json().workflow.status, JSON.stringify(response.json().workflow.events)).toBe("completed");
     expect(response.json().workflow.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining(["tool_completed", "workflow_completed"]));
     expect(response.json().message.content).toContain("系统工具读取完成");
   });
@@ -928,6 +942,7 @@ describe("local API scaffold", () => {
     database = openInMemoryDatabase();
     const skillsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-editor-practice-skills-"));
     temporaryDirectories.push(skillsDirectory);
+    seedSystemTool("scoop");
     let modelTurn = 0;
     const fakeProvider: ModelProvider = {
       id: "test-awen-editor-practice-ai",
@@ -965,7 +980,7 @@ describe("local API scaffold", () => {
 
     const completed = await server.inject({ method: "POST", url: `/api/article-chat/workflows/${started.json().workflow.workflowId}/permission`, payload: { decision: "allow", scope: "run" } });
     expect(completed.statusCode, JSON.stringify(completed.json())).toBe(200);
-    expect(completed.json().workflow.status).toBe("completed");
+    expect(completed.json().workflow.status, JSON.stringify(completed.json().workflow.events)).toBe("completed");
     const task = await server.inject({ method: "GET", url: `/api/content-projects/${projectId}/practice-task` });
     expect(task.json().task).toMatchObject({ id: taskId, status: "waiting_edit_confirmation" });
     const thread = await server.inject({ method: "GET", url: `/api/article-chat?contextKey=${encodeURIComponent(`project:${projectId}`)}` });
