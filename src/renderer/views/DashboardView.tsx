@@ -53,9 +53,9 @@ function ProjectRow({
   onToggle: () => void;
 }) {
   const job = bestWechatJob(wechatJobs, (item) => item.projectId === project.id || item.sourceRelativePath === project.sourceRelativePath || item.title === project.topic);
-  const nextText = job?.status === "published" ? "文章已确认发布完成" : job?.status === "cancelled" ? "发布任务已取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，等待最终回执" : job?.status === "draft_ready" ? "微信草稿已同步，等待预览和发布" : project.draftReady ? "文章主稿已生成，可继续编辑或发布到其他平台" : project.outlineDraftReady ? "提纲草稿已暂存，可继续编辑或确认就绪" : project.outlineReady ? "文章提纲已确认，下一步生成主稿" : project.researchReady ? "资料已补充，可生成提纲或继续补研" : project.briefReady ? "创作方向已整理，下一步联网补研" : "下一步整理创作方向和资料";
-  const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.outlineDraftReady ? () => void openOutline(project) : project.researchReady ? () => void openOutline(project) : project.briefReady ? () => void openResearch(project, true) : () => void openBrief(project);
-  const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.outlineDraftReady ? "编辑提纲" : project.researchReady ? "生成提纲" : project.briefReady ? "联网补研" : "整理创作方向";
+  const nextText = job?.status === "published" ? "文章已确认发布完成" : job?.status === "cancelled" ? "发布任务已取消，可重新设置后再发布" : job?.status === "submitted" ? "已提交微信，等待最终回执" : job?.status === "draft_ready" ? "微信草稿已同步，等待预览和发布" : project.draftReady ? "文章主稿已生成，可继续编辑或发布到其他平台" : project.outlineDraftReady ? "提纲草稿已暂存，可继续编辑或确认就绪" : project.outlineReady ? "文章提纲已确认，下一步生成主稿" : project.researchReady ? "资料已补充，可生成提纲或继续补研" : project.briefReady ? "创作方向已整理，可生成提纲或联网补研" : "下一步整理创作方向和资料";
+  const action = project.draftReady || project.outlineReady ? () => void openDraft(project) : project.outlineDraftReady ? () => void openOutline(project) : project.researchReady || project.briefReady ? () => void openOutline(project) : () => void openBrief(project);
+  const label = project.draftReady ? "打开正文" : project.outlineReady ? "起草正文" : project.outlineDraftReady ? "编辑提纲" : project.researchReady || project.briefReady ? "生成提纲" : "整理创作方向";
   const account = project.targetAccountId ? accounts.find((item) => item.id === project.targetAccountId) : undefined;
   const canPrepare = !job || job.status === "failed" || job.status === "cancelled";
   const channelRows = channelRowsFor({ relativePath: project.sourceRelativePath ?? "", title: project.topic });
@@ -84,6 +84,7 @@ function ProjectRow({
     </span>
     <span className="account-actions">
       {project.briefReady && <button className="secondary-button" onClick={() => void openBrief(project)}>{project.outlineReady || project.draftReady ? "查看创作方向" : "编辑创作方向"}</button>}
+      {project.briefReady && !project.researchReady && !project.outlineReady && !project.draftReady && <button className="secondary-button" onClick={() => void openResearch(project, true)}>联网补研</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearch(project)}>查看资料</button>}
       {project.researchReady && <button className="secondary-button" onClick={() => void openResearchForFollowUp()}>继续补研</button>}
       {project.outlineReady && <button className="secondary-button" onClick={() => void openOutline(project)}>{job?.status === "published" ? "查看提纲" : "编辑提纲"}</button>}

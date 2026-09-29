@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
+import { continueAfterProjectCreation, resolveInitialResearchDepth, type ProjectCreationMode } from "./project-creation-flow";
 import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
@@ -54,6 +55,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [sourceArticle, setSourceArticle] = useState<ContentSourceArticle>();
   const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "preview" | "settings">("assistant");
   const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [projectCreationMode, setProjectCreationMode] = useState<ProjectCreationMode>("research");
   const [projectTopic, setProjectTopic] = useState("");
   const [projectTitle, setProjectTitle] = useState("");
   const [projectAccountId, setProjectAccountId] = useState("");
@@ -218,6 +220,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   };
   const openProjectCreator = () => {
     setProjectAccountId(accounts.length === 1 ? accounts[0].id : "");
+    setProjectCreationMode("research");
     setProjectModalOpen(true);
   };
   const closeBrief = () => {
@@ -283,12 +286,12 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setSaving(true);
     try {
       const depth = projectResearchDepth;
+      const creationMode = projectCreationMode;
       const project = await request<ContentProject>("/content-projects", { method: "POST", body: JSON.stringify({ topic, objective, audience: projectAudience.trim(), angle: projectAngle.trim(), sourceNotes: projectSourceNotes.trim(), specifiedSources, researchDepth: depth, ...(title ? { title } : {}), ...(targetAccountId ? { targetAccountId } : {}) }) });
-      setProjectTopic(""); setProjectTitle(""); setProjectAccountId("");
+      setProjectTopic(""); setProjectTitle(""); setProjectAccountId(""); setProjectCreationMode("research");
       setProjectObjective(""); setProjectAudience(""); setProjectAngle(""); setProjectSourceNotes(""); setProjectSpecifiedSources(""); setProjectResearchDepth("balanced");
       setProjectModalOpen(false);
-      await loadProjects();
-      await openResearch(project, true, depth);
+      await continueAfterProjectCreation(project, creationMode, depth, loadProjects, openResearch);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "内容项目创建失败。"); }
     finally { setSaving(false); }
   };
@@ -400,7 +403,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     }
     throw new Error("后台补研等待时间过长，请稍后重新打开资料窗口查看。");
   };
-  const openResearch = async (project: ContentProject, generate = false, requestedDepth: ResearchDepth = "balanced") => {
+  const openResearch = async (project: ContentProject, generate = false, requestedDepth?: ResearchDepth) => {
     setResearchProject(project);
     setResearch(undefined);
     setResearchFollowUp("");
@@ -412,9 +415,12 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setManualSourceExcerpt("");
     setManualSourceClaims("");
     setResearchError("");
-    setResearchDepth(requestedDepth);
+    setResearchDepth(requestedDepth ?? "balanced");
     try {
       if (generate) {
+        const existingResearch = requestedDepth ? undefined : await request<ContentResearch>(`/content-projects/${project.id}/research`);
+        const depth = resolveInitialResearchDepth(requestedDepth, existingResearch?.plan?.depth);
+        setResearchDepth(depth);
         setResearchGenerating(true);
         beginResearchProgress();
         setResearchStatus("阿文正在检索官方与公开网页，并整理可追溯资料卡…");
@@ -425,9 +431,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
           if (event === "status") { setResearchStatus(String((data as { message?: string }).message ?? "阿文正在补研…")); noteResearchProgress(); }
           if (event === "paused") setResearchPaused(true);
           if (event === "complete") setResearch(data as unknown as ContentResearch);
-        }, JSON.stringify({ depth: requestedDepth }));
+        }, JSON.stringify({ depth }));
         setResearch(research);
-        setResearchDepth(research.plan?.depth ?? requestedDepth);
+        setResearchDepth(research.plan?.depth ?? depth);
         setResearchStatus("");
         await loadProjects();
       } else {
@@ -436,9 +442,10 @@ export function useWorkbench(params: UseWorkbenchParams) {
           request<{ items: Array<{ id: string; status: string }> }>(`/content-projects/${project.id}/research/tasks`)
         ]);
         const activeTask = taskResult.items.find((task) => ["queued", "running", "paused"].includes(task.status));
+        const depth = resolveInitialResearchDepth(requestedDepth, savedResearch.plan?.depth);
         if (!activeTask) {
           setResearch(savedResearch);
-          setResearchDepth(savedResearch.plan?.depth ?? requestedDepth);
+          setResearchDepth(depth);
         } else {
           setResearch(savedResearch);
           setResearchGenerating(true);
@@ -447,7 +454,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
           researchAbortRef.current = controller;
           const recovered = await waitForResearchTask(project, activeTask.id, controller.signal);
           setResearch(recovered);
-          setResearchDepth(recovered.plan?.depth ?? requestedDepth);
+          setResearchDepth(recovered.plan?.depth ?? depth);
           await loadProjects();
         }
       }
@@ -1110,6 +1117,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     saveSourceArticle,
     setArticleArchived,
     createProject,
+    projectCreationMode,
+    setProjectCreationMode,
     deleteProjectDraft,
     openBrief,
     saveBrief,
