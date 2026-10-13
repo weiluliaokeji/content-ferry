@@ -3,11 +3,13 @@ import { VisualMarkdownEditor } from "./VisualMarkdownEditor";
 import type { VisualMarkdownSelection } from "./VisualMarkdownEditor";
 import { request, apiBase, renderPhonePreview, resolveArticleImageUrl, extractMarkdownImages } from "../main";
 import { locateMarkdownSelection } from "../markdown-selection";
+import { GenerationReviewSummary } from "./GenerationReviewSummary";
+import type { ContentGenerationReview } from "../types";
 
 interface CsdnChannelDraftShape {
   id: string; accountId: string; sourceRelativePath: string; generationMode: "rewrite" | "source";
   title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded";
+  status: "draft" | "approved" | "superseded"; generationReview?: ContentGenerationReview | null;
 }
 
 export type CsdnDraftPatch = Partial<Pick<CsdnChannelDraftShape, "title" | "markdown" | "author" | "digest" | "coverSource">>;
@@ -343,6 +345,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
         {job && job.status === "published" && (job.remoteUrl ? <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a> : <span className="status-badge success">已发布</span>)}
       </div>
     </header>
+    <GenerationReviewSummary review={draft.generationReview} subject="渠道稿" />
     <div className="editor-columns">
       <aside className="editor-left-panel">
         <h3>渠道稿工具</h3>

@@ -28,6 +28,25 @@ const importEsm = new Function("specifier", "return import(specifier)") as (spec
  *  codex binary is upgraded. */
 const CODEX_DEFAULT_MODEL = "gpt-6-luna";
 
+/** Allocate more reasoning to tasks where omissions or weak synthesis are
+ *  expensive. Keep simple assistant/image tasks at medium to avoid raising
+ *  latency and cost across routine interactions. */
+export function reasoningEffortForTask(
+  task: GenerateStructuredRequest<unknown>["task"]
+): "low" | "medium" | "high" {
+  switch (task) {
+    case "outline":
+      return "medium";
+    case "draft":
+    case "revision":
+    case "agent_workflow":
+    case "content_review":
+      return "high";
+    default:
+      return "medium";
+  }
+}
+
 function effectiveModel(modelId?: string): string {
   return modelId?.trim() || CODEX_DEFAULT_MODEL;
 }
@@ -50,12 +69,15 @@ export class OpenAICodexProvider implements ModelProvider {
   async generateStructured<T>(request: GenerateStructuredRequest<T>): Promise<GenerateStructuredResult<T>> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 180_000);
+    const abortFromCaller = () => controller.abort(request.signal?.reason);
+    request.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    if (request.signal?.aborted) abortFromCaller();
 
     // Built-in web search is opt-in per call. When on, Codex reaches the
     // network and performs its own retrieval (used by 联网补研 when the
     // connection's built-in search toggle is enabled). Otherwise writing and
     // synthesis stay offline — the app owns retrieval via WebSearchClient.
-    const allowWebSearch = request.webSearch === true && request.task === "research";
+    const allowWebSearch = request.webSearch === true && (request.task === "research" || request.task === "content_review");
 
     try {
       const { Codex } = await importEsm("@openai/codex-sdk");
@@ -68,7 +90,7 @@ export class OpenAICodexProvider implements ModelProvider {
         networkAccessEnabled: allowWebSearch,
         webSearchMode: allowWebSearch ? "live" : "disabled",
         model: effectiveModel(request.modelId),
-        modelReasoningEffort: request.task === "outline" ? "low" : "medium"
+        modelReasoningEffort: reasoningEffortForTask(request.task)
       });
 
       // When the caller wants progress feedback, stream the turn so we can emit
@@ -115,6 +137,7 @@ export class OpenAICodexProvider implements ModelProvider {
       throw new ModelProviderUnavailableError(normalizeCodexError(error), { cause: error });
     } finally {
       clearTimeout(timeout);
+      request.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
 
@@ -181,7 +204,7 @@ export class OpenAICodexProvider implements ModelProvider {
         networkAccessEnabled: false,
         webSearchMode: "disabled",
         model: effectiveModel(request.modelId),
-        modelReasoningEffort: request.task === "outline" ? "low" : "medium"
+        modelReasoningEffort: reasoningEffortForTask(request.task)
       });
       const streamed = await thread.runStreamed(`${request.prompt}\n\n直接逐步输出完整 Markdown，不要输出 JSON、解释或代码围栏。`, { signal: controller.signal });
       let markdown = "";

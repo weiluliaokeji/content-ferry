@@ -9,6 +9,7 @@ import type { ContentPracticePlanRepository } from "../content/content-practice-
 import type { ContentDraftRepository } from "../content/content-draft-repository";
 import type { ContentResearchRepository } from "../content/content-research-repository";
 import type { ContentReviewRepository } from "../content/content-review-repository";
+import type { ContentGenerationReviewRepository } from "../content/content-generation-review-repository";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { RemoteImageImportService } from "../content/remote-image-import-service";
 import type { AiContentService } from "../ai/ai-content-service";
@@ -38,11 +39,13 @@ import type { ToolWorkflowRepository } from "../agent/tool-workflow-repository";
 import type { GitSourceService } from "../agent/git-source-service";
 import type { ResearchTaskRepository } from "../content/research-task-repository";
 import type { ArticlePracticeTaskRepository } from "../content/article-practice-task-repository";
+import type { ArticleDraftRunRepository } from "../content/article-draft-run-repository";
 import type { ResearchTaskRunner } from "../content/research-task-runner";
 import type { ResearchRunRepository } from "../content/research-run-repository";
 import type { WebSearchClient } from "../ai/web-search";
 import type { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
 import type { ImageCandidateReviewService } from "../ai/image-candidate-review-service";
+import type { DraftImageCurationService } from "../ai/draft-image-curation-service";
 import type { AwenConversationService } from "../ai/awen-conversation-service";
 
 /** 组装本地 API 服务所需的所有依赖，供各路由模块解构使用。 */
@@ -64,6 +67,7 @@ export interface ServerContext {
   contentDrafts: ContentDraftRepository;
   contentResearch: ContentResearchRepository;
   contentReviews: ContentReviewRepository;
+  contentGenerationReviews: ContentGenerationReviewRepository;
   remoteImages: RemoteImageImportService;
   wechat: WechatPublishingService;
   wechatCallbacks: WechatCallbackService;
@@ -73,6 +77,7 @@ export interface ServerContext {
   webSearch: WebSearchClient;
   imageSearchHistory: ImageSearchHistoryRepository;
   imageCandidateReview: ImageCandidateReviewService;
+  draftImageCuration: DraftImageCurationService;
   modelConnections: ModelConnectionRepository;
   skills?: SkillRegistry;
   aiAuditLog?: AiAuditLog;
@@ -92,6 +97,7 @@ export interface ServerContext {
   awenPracticeWebCapture: AwenPracticeWebCapture;
   researchTasks: ResearchTaskRepository;
   articlePracticeTasks: ArticlePracticeTaskRepository;
+  articleDraftRuns: ArticleDraftRunRepository;
   researchRuns: ResearchRunRepository;
   researchTaskRunner?: ResearchTaskRunner;
   systemTools: SystemToolRegistry;

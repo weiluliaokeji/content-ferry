@@ -179,7 +179,13 @@ export class AwenConversationService {
     }
   }
 
-  private async sendOnce(input: ArticleChatInput): Promise<ArticleChatSendResult> {
+  /** Starts a durable tool workflow and returns its initial snapshot without waiting for model/tool completion. */
+  async startWorkflow(input: ArticleChatInput): Promise<ArticleChatSendResult> {
+    if (input.workflowMode !== "tool") throw new Error("后台工作流必须使用结构化工具模式。");
+    return this.sendOnce(input, true);
+  }
+
+  private async sendOnce(input: ArticleChatInput, backgroundWorkflow = false): Promise<ArticleChatSendResult> {
     if (!this.skills) throw new Error("技能目录尚未启用。");
     const skill = this.skills.get("awen-assistant");
     if (!skill.enabled) throw new Error("“阿文 · 文章顾问”技能已停用。");
@@ -208,7 +214,8 @@ export class AwenConversationService {
       }
     }
     let practiceRetryContext = "";
-    let practiceStepRetry: { failedToolId: string | null; completedToolIds: string[] } | undefined;
+    let practiceStepRetry: { mode: "exact_tool_retry" | "answer_repair"; failedToolId: string | null; completedToolIds: string[]; requestFingerprint: string | null } | undefined;
+    let practiceRetrySeed: { transcript: ToolWorkflowSnapshot["transcript"]; toolResults: ToolWorkflowSnapshot["toolResults"] } | undefined;
     if (input.practiceTaskId) {
       if (!input.projectId) throw new Error("自主实践工作流必须关联文章项目。");
       const task = this.toolWorkflowServices?.articlePracticeTasks?.require(input.practiceTaskId);
@@ -220,10 +227,12 @@ export class AwenConversationService {
             this.toolWorkflowServices?.workflowRepository,
             task.id,
             task.projectId,
-            task.checkpoint.workflowId
+            task.checkpoint.workflowId,
+            task.latestGoal
           );
           practiceRetryContext = retryContext.prompt;
           practiceStepRetry = retryContext.retry;
+          practiceRetrySeed = retryContext.seed;
         }
         const tasks = this.toolWorkflowServices?.articlePracticeTasks;
         tasks?.appendGoal(task.id, input.message, "chat");
@@ -301,6 +310,7 @@ export class AwenConversationService {
         practiceIntentMode: input.practiceIntentMode,
         directUserMessage: input.message,
         ...(practiceStepRetry ? { practiceStepRetry } : {}),
+        ...(practiceRetrySeed ? { practiceRetrySeed } : {}),
         ...(input.practiceIntentMode === "draft" && input.practiceTaskId && this.toolWorkflowServices.articlePracticeTasks
           ? { onPracticeTaskRequested: async () => {
             const tasks = this.toolWorkflowServices!.articlePracticeTasks!;
@@ -431,6 +441,10 @@ export class AwenConversationService {
         validateFinal: (text) => { articleChatOutput.parse(parseWorkflowFinalText(text)); },
         onSnapshot: (snapshot) => {
           this.persistAndPublishWorkflowSnapshot(snapshot, workflowInput);
+          if (backgroundWorkflow && workflowInput.practiceTaskId && (snapshot.status === "waiting_user" || isWorkflowTerminal(snapshot.status))) {
+            this.syncPracticeTask(workflowInput.practiceTaskId, snapshot);
+            if (isWorkflowTerminal(snapshot.status)) this.workflowEntries.delete(snapshot.workflowId);
+          }
           if (workflowEntry && !["completed", "completed_with_warnings", "incomplete", "failed", "cancelled"].includes(snapshot.status)) {
             this.rememberWorkflowEntry(snapshot.workflowId, workflowEntry);
           }
@@ -457,7 +471,7 @@ export class AwenConversationService {
       };
       let workflow: ToolWorkflowSnapshot;
       try {
-        workflow = await session.start();
+        workflow = backgroundWorkflow ? session.startBackground() : await session.start();
       } catch (error) {
         if (workflowInput.practiceTaskId) {
           const tasks = this.toolWorkflowServices.articlePracticeTasks;
@@ -468,6 +482,15 @@ export class AwenConversationService {
           }
         }
         throw error;
+      }
+      if (backgroundWorkflow) {
+        if (workflowInput.practiceTaskId) this.syncPracticeTask(workflowInput.practiceTaskId, workflow);
+        this.toolWorkflowServices.workflowRepository?.save(workflow, { contextKey: input.contextKey, projectId: input.projectId, request: workflowInput as unknown as Record<string, unknown> });
+        const entry = workflowEntry;
+        if (!entry) throw new Error("阿文工作流状态未能初始化。");
+        if (isWorkflowTerminal(workflow.status)) this.workflowEntries.delete(workflow.workflowId);
+        else this.rememberWorkflowEntry(workflow.workflowId, entry);
+        return { workflow, memory: thread.memory, writingMemory, provider, model };
       }
       if (workflowInput.practiceTaskId) this.syncPracticeTask(workflowInput.practiceTaskId, workflow);
       const entry = workflowEntry;
@@ -701,6 +724,10 @@ export class AwenConversationService {
     return entry.session.runner.getSnapshot(workflowId);
   }
 
+  reconcilePracticeTaskWorkflow(taskId: string, workflow: ToolWorkflowSnapshot): void {
+    this.syncPracticeTask(taskId, workflow);
+  }
+
   subscribeWorkflowEvents(workflowId: string, listener: (event: ToolWorkflowEvent) => void, afterSequence = 0): () => void {
     const snapshot = this.getWorkflow(workflowId);
     let cursor = afterSequence;
@@ -813,6 +840,7 @@ export class AwenConversationService {
     if (workflow.events.some((event) => event.type === "tool_deferred") && workflow.toolResults.length === 0) return;
     let task = tasks.require(taskId);
     if (["completed", "completed_with_gaps", "stopped", "failed"].includes(task.status)) return;
+    if (task.status === "waiting_feedback" && task.checkpoint.workflowId === workflow.workflowId) return;
     tasks.saveCheckpoint(taskId, { ...task.checkpoint, workflowId: workflow.workflowId, stepId: "awen-tool-workflow" });
     task = tasks.require(taskId);
     if (workflow.status === "waiting_user") {
@@ -827,7 +855,7 @@ export class AwenConversationService {
         results: practiceResults.map((result) => ({ toolId: result.toolId, result: result.output }))
       });
       if (task.status === "waiting_permission") tasks.permissionResolved(taskId);
-      tasks.waitForFeedback(taskId, `${getWorkflowBlockerMessage(workflow)} 已保留本轮已取得的实践结果。五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
+      tasks.reconcileFailedWorkflow(taskId, `${getWorkflowBlockerMessage(workflow)} 已保留本轮已取得的实践结果。五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
       return;
     }
     if (workflow.status === "completed" || workflow.status === "completed_with_warnings") {
@@ -842,14 +870,18 @@ export class AwenConversationService {
       if (["assessing", "practicing"].includes(task.status)) tasks.beginDraft(taskId, task.hasGaps || workflow.status === "completed_with_warnings");
       return;
     }
-    if (workflow.status === "failed" && ["assessing", "practicing", "waiting_permission"].includes(task.status)) {
+    if (workflow.status === "failed" && ["assessing", "practicing", "waiting_permission", "waiting_resume_choice"].includes(task.status)) {
       const practiceResults = selectPracticeEvidenceResults(workflow.toolResults);
       if (practiceResults.length > 0) tasks.recordPracticeResult(taskId, {
         workflowId: workflow.workflowId,
         summary: getWorkflowBlockerMessage(workflow),
         results: practiceResults.map((result) => ({ toolId: result.toolId, result: result.output }))
       });
-      tasks.waitForFeedback(taskId, `${getWorkflowBlockerMessage(workflow)}${practiceResults.length ? " 已保留本轮已取得的实践结果。" : ""}请告诉阿文如何继续；五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
+      tasks.reconcileFailedWorkflow(taskId, `${getWorkflowBlockerMessage(workflow)}${practiceResults.length ? " 已保留本轮已取得的实践结果。" : ""}请告诉阿文如何继续；五分钟未收到指示后，会继续起草并将未验证部分标为待核查。`);
+      return;
+    }
+    if (workflow.status === "cancelled" && ["assessing", "practicing", "waiting_permission", "waiting_resume_choice"].includes(task.status)) {
+      tasks.reconcileFailedWorkflow(taskId, "上次实践工作流已取消，未确认目标完成。请告诉阿文如何继续；五分钟未收到指示后，会继续起草并将未验证部分标为待核查。");
     }
   }
 
@@ -1121,6 +1153,10 @@ function createAssistantMessageId(clientMessageId: string): string {
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
+function isWorkflowTerminal(status: ToolWorkflowSnapshot["status"]): boolean {
+  return ["completed", "completed_with_warnings", "incomplete", "failed", "cancelled", "interrupted"].includes(status);
+}
+
 function buildPrompt(input: ArticleChatInput, writingMemory: string, articleMemory: string, history: string, article: string, webResearch: string): string {
   return `你正在和作者讨论一篇文章。只基于文章、会话与记忆给出专业、具体、可执行的建议；不虚构事实。
 
@@ -1162,37 +1198,94 @@ function isPracticeStepRetryRequest(message: string): boolean {
   return /重试.{0,12}(?:步骤|这一步|上一步|失败)|(?:失败|上一步|这一步).{0,12}重试/u.test(message);
 }
 
-function buildPracticeStepRetryContext(repository: AwenToolWorkflowServices["workflowRepository"], taskId: string,
-  projectId: string, workflowId: string | undefined): { prompt: string; retry: { failedToolId: string | null; completedToolIds: string[] } } {
-  const unavailable = "没有找到可核对的失败步骤记录。不要声称已准确重试；先向作者说明记录不足并请其指出要处理的步骤。";
-  if (!repository || !workflowId) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+export function buildPracticeStepRetryUnavailablePrompt(snapshot?: ToolWorkflowSnapshot): string {
+  const latestRecoveryEvent = snapshot && [...snapshot.events].reverse().find((event) =>
+    (event.type === "tool_duplicate_blocked"
+      || event.type === "goal_verification_incomplete"
+      || event.type === "goal_verification_continued") && event.message.trim());
+  if (latestRecoveryEvent?.type === "tool_duplicate_blocked") {
+    const duplicateBlocker = latestRecoveryEvent;
+    const reason = duplicateBlocker.message.trim().replace(/[。；\s]+$/u, "").slice(0, 900);
+    return `本次没有可重试的失败工具步骤：上次模型提出了重复调用，但运行时已拦截，实际没有再次执行。拦截记录：${reason}。不要声称工具执行失败，也不要重放此前已成功的调用。应告诉作者具体是哪一步被拦截、为什么没有新观察；若需改变方法或参数，应先说明变化并等待作者决定。若现有保存结果足以回答，可仅基于已有观察修复答复。`;
+  }
+  if (latestRecoveryEvent) {
+    const verifierBlocker = latestRecoveryEvent;
+    return `上次工作流没有记录失败或无有效输出的工具调用，因此没有可按原参数重试的具体步骤。它停在完成核验阶段；核验记录指出：${verifierBlocker.message.trim().slice(0, 900)}。不要把核验未通过误说成工具执行失败，不要重跑已有成功步骤，也不要声称已经重试。应向作者说明这个具体缺口；若要取得新观察或改变执行方式，先说明需要做什么并等待作者指示。`;
+  }
+  return "当前记录里没有可重试的失败调用或无有效输出调用。不要要求作者重述文章正文，也不要声称已经重试。请说明上次工作流没有留下可安全重试的具体调用；如需继续，应请作者给出新的处理要求。";
+}
+
+export function buildPracticeStepRetryContext(repository: AwenToolWorkflowServices["workflowRepository"], taskId: string,
+  projectId: string, workflowId: string | undefined, latestGoal: string): {
+    prompt: string;
+    retry: { mode: "exact_tool_retry" | "answer_repair"; failedToolId: string | null; completedToolIds: string[]; requestFingerprint: string | null };
+    seed?: { transcript: ToolWorkflowSnapshot["transcript"]; toolResults: ToolWorkflowSnapshot["toolResults"] };
+  } {
+  const emptyRetry = { mode: "exact_tool_retry" as const, failedToolId: null, completedToolIds: [], requestFingerprint: null };
+  if (!repository || !workflowId) return { prompt: buildPracticeStepRetryUnavailablePrompt(), retry: emptyRetry };
   let stored: StoredToolWorkflow;
-  try { stored = repository.require(workflowId); } catch { return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } }; }
-  if (stored.projectId !== projectId || stored.input?.practiceTaskId !== taskId || stored.snapshot.status !== "failed") return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+  try { stored = repository.require(workflowId); } catch { return { prompt: buildPracticeStepRetryUnavailablePrompt(), retry: emptyRetry }; }
+  if (stored.projectId !== projectId || stored.input?.practiceTaskId !== taskId || !["failed", "incomplete"].includes(stored.snapshot.status)) {
+    return { prompt: buildPracticeStepRetryUnavailablePrompt(stored.snapshot), retry: emptyRetry };
+  }
 
   let failureIndex = -1;
   for (let index = stored.snapshot.events.length - 1; index >= 0; index -= 1) {
-    if (stored.snapshot.events[index]?.type === "tool_failed") { failureIndex = index; break; }
+    const event = stored.snapshot.events[index];
+    if (event?.type === "tool_duplicate_blocked") {
+      // This is the latest attempted action, but it never ran. Do not skip it
+      // and accidentally offer an older failed call as the retry target.
+      return { prompt: buildPracticeStepRetryUnavailablePrompt(stored.snapshot), retry: emptyRetry };
+    }
+    if (event?.type === "tool_failed" || (event?.type === "tool_completed" && event.data?.noProgress === true)) {
+      failureIndex = index;
+      break;
+    }
   }
-  if (failureIndex < 0) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+  if (failureIndex < 0) {
+    const verifierBlocker = [...stored.snapshot.events].reverse().find((event) =>
+      (event.type === "goal_verification_incomplete" || event.type === "goal_verification_continued") && event.message.trim());
+    const candidate = stored.snapshot.finalText ?? [...stored.snapshot.transcript].reverse().find((message) => message.role === "assistant")?.content ?? "";
+    if (verifierBlocker && candidate && stored.snapshot.toolResults.length > 0) {
+      const retry = { mode: "answer_repair" as const, failedToolId: null, completedToolIds: [], requestFingerprint: null };
+      const transcript = stored.snapshot.transcript.slice(-32).map((message) => ({
+        ...message,
+        content: message.content.length > 6000 ? `${message.content.slice(0, 6000)}\n[历史消息已截短]` : message.content
+      }));
+      return {
+        prompt: [
+          `本次实践目标：${latestGoal}`,
+          "上次没有工具执行失败，失败发生在完成核验阶段。作者要求只重试上次失败步骤，因此本次只允许依据已保存的候选答复和工具观察修复答复并重新核验。",
+          `上次核验阻塞：${verifierBlocker.message.trim().slice(0, 900)}`,
+          "不得再次调用工具、重跑命令或扩大范围。原始工具观察将随恢复上下文载入；如观察足以回答，直接引用并修正答复；如仍不足，明确说明缺少哪项证据和为何无法仅靠旧观察补齐。"
+        ].join("\n"),
+        retry,
+        seed: { transcript, toolResults: stored.snapshot.toolResults }
+      };
+    }
+    return { prompt: buildPracticeStepRetryUnavailablePrompt(stored.snapshot), retry: emptyRetry };
+  }
   const failedEvent = stored.snapshot.events[failureIndex]!;
   const failedToolId = failedEvent.data?.toolId;
-  if (typeof failedToolId !== "string" || !PRACTICE_TOOL_IDS.has(failedToolId)) return { prompt: unavailable, retry: { failedToolId: null, completedToolIds: [] } };
+  const requestFingerprint = failedEvent.data?.retryFingerprint ?? failedEvent.data?.requestFingerprint;
+  if (typeof failedToolId !== "string" || !PRACTICE_TOOL_IDS.has(failedToolId)
+    || typeof requestFingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(requestFingerprint)) {
+    return { prompt: buildPracticeStepRetryUnavailablePrompt(stored.snapshot), retry: emptyRetry };
+  }
 
   const completedBeforeFailure = [...new Set(stored.snapshot.events.slice(0, failureIndex)
     .filter((event) => event.type === "tool_completed")
     .map((event) => event.data?.toolId)
     .filter((toolId): toolId is string => typeof toolId === "string" && PRACTICE_TOOL_IDS.has(toolId)))];
-  if (completedBeforeFailure.includes(failedToolId)) {
-    return { prompt: "同一种工具在上一次工作流里既有成功调用也有失败调用，当前记录无法唯一指认失败的那一次。不要自动重试；请向作者说明情况并请其具体指出要重试的步骤。", retry: { failedToolId: null, completedToolIds: completedBeforeFailure } };
-  }
   return { prompt: [
+    `本次实践目标：${latestGoal}`,
     `上一次失败的工具步骤：${failedToolId}。`,
     completedBeforeFailure.length
       ? `此前已完成的工具步骤：${completedBeforeFailure.join("、")}。这些步骤及其结果已保留，不要重复执行。`
       : "此前没有记录到已完成的工具步骤。",
-    "作者明确要求重试失败步骤。重新规划时只可提出与该失败工具相同的一项调用；仍须遵守当前任务授权和工具策略。需要不同参数或新增权限时，按正常流程请求作者决定。不得把失败说成成功。"
-  ].join("\n"), retry: { failedToolId, completedToolIds: completedBeforeFailure } };
+    failedEvent.type === "tool_completed" ? "该步骤曾运行成功，但没有产生可用于目标的观察；按作者要求可重试这一个无结果步骤。" : "该步骤执行失败；按作者要求可重试这一个步骤。",
+    "文章正文可能尚未生成；重试依据是上面的持久化实践目标和失败步骤，不要要求作者提供文章正文或重新指出步骤。只能原样重试这一次调用：工具、操作、目标和参数必须与上次记录完全一致；若无法还原原调用，或需要调整任一参数/扩大影响范围，停止并请作者决定。此前有有效结果的步骤不得重做。授权仍按当前工具策略重新检查，不得把失败说成成功。"
+  ].join("\n"), retry: { mode: "exact_tool_retry", failedToolId, completedToolIds: completedBeforeFailure, requestFingerprint } };
 }
 
 const WEB_RESEARCH_INTENT = /联网|网页|官网|官方|来源|核实|验证|查证|最新|当前版本|访问|连接|打不开|无法打开|网络|herdr\.dev/i;

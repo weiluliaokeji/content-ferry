@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import { AccountRepository } from "../accounts/account-repository";
 import { ContentSourceService } from "../content/content-source-service";
 import { openInMemoryDatabase, type AppDatabase } from "../db/database";
@@ -38,10 +39,18 @@ publish: false
     const contentSources = new ContentSourceService(database.connection);
     contentSources.setSource(workspace.id, sourceDirectory);
     const account = accounts.createAccount({ workspaceId: workspace.id, platform: "csdn", displayName: "测试 CSDN" });
+    const styleVersionId = randomUUID();
+    database.connection.prepare(`INSERT INTO account_style_profile_versions
+      (id, account_id, version_number, profile_json, sample_sources_json, confirmed_at) VALUES (?, ?, 1, ?, '[]', ?)`)
+      .run(styleVersionId, account.id, JSON.stringify({ commonVoice: "先交代条件，再给结论。", genreTraits: [{ genre: "实测", traits: "补充环境和限制。" }], visualTraits: "关键步骤后配操作截图。" }), new Date().toISOString());
+    database.connection.prepare("INSERT INTO account_style_profile_active (account_id, version_id) VALUES (?, ?)")
+      .run(account.id, styleVersionId);
+    let capturedPrompt = "";
     const provider: ModelProvider = {
       id: "test",
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         expect(request.skillId).toBe("platform-rewrite");
+        capturedPrompt = request.prompt;
         return {
           value: request.parse({ title: "适配后的 CSDN 标题", markdown: "# 适配后的 CSDN 标题\n\n适配后的独立正文。" }),
           provider: "test",
@@ -59,6 +68,8 @@ publish: false
     expect(draft).toMatchObject({ title: "适配后的 CSDN 标题", status: "draft" });
     expect(draft.markdown).toContain("# 适配后的 CSDN 标题");
     expect(draft.markdown).not.toContain("微信公众号");
+    expect(capturedPrompt).toContain("账号已确认风格档案 v1");
+    expect(capturedPrompt).toContain("关键步骤后配操作截图");
 
     const sameDraft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "rewrite" });
     expect(sameDraft.id).toBe(draft.id);

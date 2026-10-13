@@ -7,6 +7,11 @@ import { openDatabase } from "../db/database";
 import { ARTICLE_PRACTICE_LEGACY_EXECUTION_MIGRATION_VERSION } from "./article-practice-legacy-execution-migration";
 import { ARTICLE_PRACTICE_GAP_FLAG_MIGRATION_VERSION } from "./article-practice-gap-flag-migration";
 import { ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION } from "./article-practice-independent-edit-migration";
+import { ACCOUNT_STYLE_PROFILE_MIGRATION_VERSION, ACCOUNT_STYLE_SAMPLE_MIGRATION_VERSION } from "./account-style-sample-migration";
+import { CONTENT_GENERATION_REVIEW_MIGRATION_VERSION } from "./content-generation-review-migration";
+import { CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION } from "./content-generation-review-repair-rounds-migration";
+import { ARTICLE_DRAFT_RUN_MIGRATION_VERSION } from "./article-draft-run-migration";
+import { CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION } from "./content-brief-depth-preference-migration";
 import { ArticlePracticeTaskRepository } from "./article-practice-task-repository";
 
 describe("legacy execution practice migration", () => {
@@ -44,6 +49,16 @@ describe("legacy execution practice migration", () => {
     old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ARTICLE_PRACTICE_LEGACY_EXECUTION_MIGRATION_VERSION);
     old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ARTICLE_PRACTICE_GAP_FLAG_MIGRATION_VERSION);
     old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION);
+    old.exec("DROP TABLE account_style_samples");
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ACCOUNT_STYLE_SAMPLE_MIGRATION_VERSION);
+    old.exec("DROP TABLE account_style_profile_active; DROP TABLE account_style_profile_versions; DROP TABLE account_style_profile_proposals");
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ACCOUNT_STYLE_PROFILE_MIGRATION_VERSION);
+    old.exec("DROP TABLE content_generation_reviews");
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_GENERATION_REVIEW_MIGRATION_VERSION);
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION);
+    old.exec("DROP TABLE article_draft_run_events; DROP TABLE article_draft_runs; ALTER TABLE content_briefs DROP COLUMN draft_depth_preference");
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ARTICLE_DRAFT_RUN_MIGRATION_VERSION);
+    old.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION);
     old.close();
 
     const upgraded = openDatabase(directory);

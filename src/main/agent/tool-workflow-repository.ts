@@ -159,6 +159,10 @@ function toStoredWorkflow(row: ToolWorkflowRow): StoredToolWorkflow {
 function deriveConsecutiveNoProgressCalls(events: ToolWorkflowEvent[]): number {
   let count = 0;
   for (const event of events) {
+    if (event.type === "user_instruction_added") {
+      count = 0;
+      continue;
+    }
     if (event.type !== "tool_completed" && event.type !== "tool_failed") continue;
     count = event.data?.noProgress === true ? count + 1 : 0;
   }

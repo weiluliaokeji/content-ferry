@@ -270,15 +270,27 @@ export class ContentResearchRepository {
       this.db.prepare(`INSERT INTO content_research_plans (project_id, plan_markdown, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(project_id) DO UPDATE SET plan_markdown = excluded.plan_markdown, updated_at = excluded.updated_at`)
         .run(projectId, planMarkdown, now);
-      const existingSources = this.db.prepare("SELECT url FROM content_research_sources WHERE project_id = ?").all(projectId) as Array<{ url: string }>;
-      const existingUrls = new Set(existingSources.map((row) => normalizeResearchUrl(row.url)));
+      const existingSources = this.db.prepare("SELECT id, url, adoption_status FROM content_research_sources WHERE project_id = ?")
+        .all(projectId) as Array<{ id: string; url: string; adoption_status: string }>;
+      const existingUrls = new Map(existingSources.map((row) => [normalizeResearchUrl(row.url), row]));
+      const refreshRecommended = this.db.prepare(`UPDATE content_research_sources SET evidence_json = ?, retrieved_at = ?
+        WHERE id = ? AND project_id = ? AND adoption_status = 'recommended'`);
       const insert = this.db.prepare(`INSERT INTO content_research_sources
         (id, project_id, title, url, excerpt, claims_json, provenance_json, evidence_json, adoption_history_json, adoption_status, source_type, retrieved_at, selected)
         VALUES (?, ?, ?, ?, ?, ?, '{}', ?, '[]', 'recommended', ?, ?, 0)`);
       for (const source of input.sources) {
         const url = normalizeResearchUrl(source.url);
-        if (existingUrls.has(url)) continue;
-        existingUrls.add(url);
+        const existing = existingUrls.get(url);
+        if (existing) {
+          // Refresh only unconfirmed recommendations. Author adoption/rejection
+          // and edited card text are never silently replaced by a follow-up.
+          if (existing.adoption_status === "recommended" && source.evidence?.snapshots?.some((snapshot) =>
+            normalizeResearchUrl(snapshot.url) === url && snapshot.excerpt.trim().length >= 8 && /^[a-f0-9]{64}$/iu.test(snapshot.sha256))) {
+            refreshRecommended.run(JSON.stringify(source.evidence), now, existing.id, projectId);
+          }
+          continue;
+        }
+        existingUrls.set(url, { id: "", url, adoption_status: "recommended" });
         insert.run(randomUUID(), projectId, source.title, url, source.excerpt, JSON.stringify(source.keyClaims), JSON.stringify(source.evidence ?? {}), source.sourceType, now);
       }
     });

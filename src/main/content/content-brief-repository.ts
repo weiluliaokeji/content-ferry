@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { DraftDepthPreference } from "../../shared/draft-workflow";
 
 export interface ContentBrief {
   projectId: string;
@@ -7,6 +8,7 @@ export interface ContentBrief {
   audience: string;
   angle: string;
   sourceNotes: string;
+  draftDepthPreference: DraftDepthPreference;
   generatedFromAccountProfile: boolean;
 }
 
@@ -14,7 +16,7 @@ export class ContentBriefRepository {
   constructor(private readonly db: Database.Database) {}
 
   get(projectId: string): ContentBrief {
-    const row = this.db.prepare(`SELECT p.id, p.topic AS project_topic, b.topic AS brief_topic, b.objective, b.audience, b.angle, b.source_notes,
+    const row = this.db.prepare(`SELECT p.id, p.topic AS project_topic, b.topic AS brief_topic, b.objective, b.audience, b.angle, b.source_notes, b.draft_depth_preference,
       ap.positioning, ap.target_audience FROM content_projects p
       LEFT JOIN content_briefs b ON b.project_id = p.id
       LEFT JOIN account_profiles ap ON ap.account_id = p.target_account_id WHERE p.id = ?`).get(projectId) as Record<string, string | null> | undefined;
@@ -27,17 +29,21 @@ export class ContentBriefRepository {
       audience: row.audience ?? row.target_audience ?? "",
       angle: row.angle ?? "",
       sourceNotes: row.source_notes ?? "",
+      draftDepthPreference: row.draft_depth_preference === "concise" || row.draft_depth_preference === "standard" || row.draft_depth_preference === "detailed"
+        ? row.draft_depth_preference : null,
       generatedFromAccountProfile: !hasSavedBrief && Boolean(row.positioning || row.target_audience)
     };
   }
 
-  save(projectId: string, input: Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">): ContentBrief {
-    this.get(projectId);
+  save(projectId: string, input: Omit<ContentBrief, "projectId" | "generatedFromAccountProfile" | "draftDepthPreference"> & { draftDepthPreference?: DraftDepthPreference }): ContentBrief {
+    const existing = this.get(projectId);
+    const draftDepthPreference = input.draftDepthPreference === undefined ? existing.draftDepthPreference : input.draftDepthPreference;
     const now = new Date().toISOString();
-    this.db.prepare(`INSERT INTO content_briefs (project_id, topic, objective, audience, angle, source_notes, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET topic = excluded.topic, objective = excluded.objective,
-      audience = excluded.audience, angle = excluded.angle, source_notes = excluded.source_notes, updated_at = excluded.updated_at`)
-      .run(projectId, input.topic, input.objective, input.audience, input.angle, input.sourceNotes, now);
-    return { projectId, ...input, generatedFromAccountProfile: false };
+    this.db.prepare(`INSERT INTO content_briefs (project_id, topic, objective, audience, angle, source_notes, draft_depth_preference, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET topic = excluded.topic, objective = excluded.objective,
+      audience = excluded.audience, angle = excluded.angle, source_notes = excluded.source_notes,
+      draft_depth_preference = excluded.draft_depth_preference, updated_at = excluded.updated_at`)
+      .run(projectId, input.topic, input.objective, input.audience, input.angle, input.sourceNotes, draftDepthPreference, now);
+    return { projectId, ...input, draftDepthPreference, generatedFromAccountProfile: false };
   }
 }

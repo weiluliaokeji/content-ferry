@@ -1,5 +1,5 @@
 import type { ResearchCard, WebResearchContext } from "./research-prompts";
-import type { ResearchDepth } from "../../shared/research-state";
+import type { ResearchDepth, ResearchSearchAttempt } from "../../shared/research-state";
 
 export interface AiUsage {
   inputTokens: number;
@@ -9,22 +9,22 @@ export interface AiUsage {
 }
 
 export interface GenerateStructuredRequest<T> {
-  task: "research" | "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt" | "assistant";
+  task: "research" | "outline" | "draft" | "revision" | "summary" | "selection" | "cover_prompt" | "assistant" | "agent_workflow" | "content_review";
   skillId?: string;
   /** Optional provider-specific model override selected in 模型连接. */
   modelId?: string;
   prompt: string;
   outputSchema: object;
   timeoutMs?: number;
+  signal?: AbortSignal;
   parse(value: unknown): T;
   /** When false, the provider must NOT prepend skill instructions (the caller
    *  already embedded them — used by web-research sub-calls). Defaults to true. */
   prependInstructions?: boolean;
   /** Provider lifecycle feedback. Only some providers emit this during structured calls. */
   onStatus?: (message: string) => void;
-  /** When true, the provider may perform its own built-in web search during the
-   *  call (currently only OpenAI Codex). Used by 联网补研 when the connection's
-   *  built-in search toggle is on. Off by default — the app drives retrieval. */
+  /** When true, the provider may perform built-in web search during an explicitly
+   *  authorized research or content-review call. Off by default. */
   webSearch?: boolean;
 }
 
@@ -33,6 +33,8 @@ export interface GenerateStructuredResult<T> {
   provider: string;
   model: string | null;
   usage: AiUsage | null;
+  /** Concise author-facing summary metadata; never model private reasoning. */
+  styleSelectionNote?: string;
 }
 
 export interface ReviewImageRequest<T> {
@@ -62,6 +64,12 @@ export interface WebResearchOptions {
   instruction?: string;
   /** Execution budget only; research completeness is tracked by the application. */
   depth?: ResearchDepth;
+  /** Queries already attempted for the same draft run, including earlier review-driven research calls. */
+  previousSearches?: ResearchSearchAttempt[];
+  /** Persist a bounded summary after each query returns. */
+  onSearchCompleted?: (attempt: ResearchSearchAttempt) => void;
+  /** Cancels subsequent research stages and provider calls; an in-flight network tool may finish before cancellation is observed. */
+  signal?: AbortSignal;
 }
 
 export interface ModelProvider {

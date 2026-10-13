@@ -125,6 +125,27 @@ describe("ConfiguredModelProvider audit", () => {
     expect(call.response).toContain("流式生成的正文内容");
   });
 
+  it("falls back to structured generation when the configured Codex provider cannot stream Markdown", async () => {
+    const { auditLog, record } = fakeAuditLog();
+    const codex = stubCodex({ markdown: "普通模式生成的正文" });
+    const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, auditLog, stubWebSearch());
+    const deltas: string[] = [];
+    const statuses: string[] = [];
+
+    const result = await provider.generateMarkdownStream({
+      task: "draft", skillId: "wechat-writing", prompt: "任务",
+      onDelta: (markdown) => deltas.push(markdown),
+      onStatus: (message) => statuses.push(message),
+      timeoutMs: 1_000
+    });
+
+    expect(result.value.markdown).toBe("普通模式生成的正文");
+    expect(deltas).toEqual(["普通模式生成的正文"]);
+    expect(statuses).toContain("当前模型不支持流式输出，正在改用普通生成模式…");
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record.mock.calls[0][0].response).toContain("普通模式生成的正文");
+  });
+
   it("skips recording when no audit log is provided", async () => {
     const codex = stubCodex({ title: "x" });
     const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, undefined, stubWebSearch());
@@ -158,6 +179,140 @@ describe("ConfiguredModelProvider audit", () => {
     const call = record.mock.calls[0][0];
     expect(call.provider).toBe("openai_codex");
     expect(call.model).toBe("gpt-test");
+  });
+});
+
+describe("ConfiguredModelProvider adaptive research retrieval", () => {
+  it("pivots to a new search when candidate body extraction fails, without promoting snippets", async () => {
+    const prompts: string[] = [];
+    const plannerResponses = [
+      { action: "search", query: "official scoop install instructions" },
+      { action: "done", query: "" },
+      { action: "search", query: "Scoop current installation official documentation" }
+    ];
+    const codex = {
+      generateStructured: vi.fn(async (request: { prompt: string }) => {
+        prompts.push(request.prompt);
+        const value = request.prompt.includes("研究规划器")
+          ? plannerResponses.shift() ?? { action: "done", query: "" }
+          : { planMarkdown: "依据已核验正文整理", sources: [], coverage: { answeredQuestions: [], remainingQuestions: [] } };
+        return { value, provider: "openai_codex", model: "gpt-test", usage: null };
+      })
+    } as unknown as ModelProvider;
+    const search = vi.fn(async (query: string) => [{
+      title: `候选 ${query}`,
+      url: query.includes("official scoop") ? "https://example.com/blocked" : "https://example.com/verified",
+      snippet: query.includes("official scoop") ? "不可作为依据的搜索摘要" : "新的搜索摘要"
+    }]);
+    const extract = vi.fn(async (url: string) => {
+      if (url.endsWith("/blocked")) throw new Error("页面拒绝访问");
+      return { content: "已核验网页正文：当前官方安装步骤。" };
+    });
+    const webSearch = { search, extract, activeProviderId: "test" } as unknown as WebSearchClient;
+    const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, undefined, webSearch);
+    const result = await provider.webResearch({
+      topic: "Scoop 安装", objective: "提供可执行安装步骤", audience: "Windows 用户", angle: "当前安装方式", positioning: "实用指南", sourceNotes: ""
+    });
+
+    expect(result.value.execution?.rounds).toBe(2);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(extract).toHaveBeenCalledTimes(2);
+    const recoveryPlannerPrompt = prompts[2] ?? "";
+    expect(recoveryPlannerPrompt).toContain("未能取得可核验正文");
+    expect(recoveryPlannerPrompt).toContain("不能使用搜索摘要代替正文");
+    const synthesisPrompt = prompts.find((prompt) => prompt.includes("可追溯资料卡")) ?? "";
+    expect(synthesisPrompt).toContain("已核验网页正文：当前官方安装步骤。");
+    expect(synthesisPrompt).not.toContain("不可作为依据的搜索摘要");
+  });
+
+  it("does not repeat a query or exceed the research round budget during recovery", async () => {
+    const responses = [
+      { action: "search", query: "new query" },
+      { action: "done", query: "" },
+      { action: "search", query: "new query" }
+    ];
+    const codex = {
+      generateStructured: vi.fn(async () => ({ value: responses.shift(), provider: "openai_codex", model: "gpt-test", usage: null }))
+    } as unknown as ModelProvider;
+    const search = vi.fn(async () => [{ title: "候选", url: "https://example.com/blocked", snippet: "摘要" }]);
+    const extract = vi.fn(async () => { throw new Error("页面拒绝访问"); });
+    const history = [{ query: "already tried", resultCount: 1, resultUrls: ["https://example.com/blocked"] }];
+    const webSearch = { search, extract, activeProviderId: "test" } as unknown as WebSearchClient;
+    const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, undefined, webSearch);
+    await expect(provider.webResearch({
+      topic: "主题", objective: "目标", audience: "读者", angle: "角度", positioning: "定位", sourceNotes: "", searchHistory: history
+    })).rejects.toThrow("所有网页正文提取均失败");
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(codex.generateStructured).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses an unused search round when the first query produces no candidate pages", async () => {
+    const prompts: string[] = [];
+    const plannerResponses = [
+      { action: "search", query: "specific documentation keyword" },
+      { action: "done", query: "" },
+      { action: "search", query: "official product installation guide" }
+    ];
+    const codex = {
+      generateStructured: vi.fn(async (request: { prompt: string }) => {
+        prompts.push(request.prompt);
+        const value = request.prompt.includes("研究规划器")
+          ? plannerResponses.shift() ?? { action: "done", query: "" }
+          : { planMarkdown: "已找到并核验资料", sources: [], coverage: { answeredQuestions: [], remainingQuestions: [] } };
+        return { value, provider: "openai_codex", model: "gpt-test", usage: null };
+      })
+    } as unknown as ModelProvider;
+    const search = vi.fn(async (query: string) => query.includes("official product")
+      ? [{ title: "官方指南", url: "https://example.com/official-guide", snippet: "未核验摘要" }]
+      : []);
+    const extract = vi.fn(async () => ({ content: "官方正文：安装步骤与当前要求。" }));
+    const webSearch = { search, extract, activeProviderId: "test" } as unknown as WebSearchClient;
+    const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, undefined, webSearch);
+
+    const result = await provider.webResearch({
+      topic: "应用安装", objective: "提供可执行安装步骤", audience: "新用户", angle: "从零开始", positioning: "实用指南", sourceNotes: ""
+    });
+
+    expect(result.value.execution?.rounds).toBe(2);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(extract).toHaveBeenCalledOnce();
+    expect(prompts[2]).toContain("没有返回候选网页");
+  });
+
+  it("deduplicates equivalent page URLs before extraction and synthesis", async () => {
+    const prompts: string[] = [];
+    const plannerResponses = [
+      { action: "search", query: "first source query" },
+      { action: "search", query: "second source query" }
+    ];
+    const codex = {
+      generateStructured: vi.fn(async (request: { prompt: string }) => {
+        prompts.push(request.prompt);
+        const value = request.prompt.includes("研究规划器")
+          ? plannerResponses.shift() ?? { action: "done", query: "" }
+          : { planMarkdown: "依据已核验正文整理", sources: [], coverage: { answeredQuestions: [], remainingQuestions: [] } };
+        return { value, provider: "openai_codex", model: "gpt-test", usage: null };
+      })
+    } as unknown as ModelProvider;
+    const search = vi.fn(async (query: string) => [{
+      title: `结果 ${query}`,
+      url: query.startsWith("first") ? "https://example.com/guide?utm_source=first" : "https://example.com/guide",
+      snippet: `搜索摘要 ${query}`
+    }]);
+    const extract = vi.fn(async () => ({ content: "唯一核验的正文内容。" }));
+    const webSearch = { search, extract, activeProviderId: "test" } as unknown as WebSearchClient;
+    const provider = new ConfiguredModelProvider(stubConnections(), stubSkills(), codex, undefined, webSearch);
+
+    const result = await provider.webResearch({
+      topic: "主题", objective: "目标", audience: "读者", angle: "角度", positioning: "定位", sourceNotes: ""
+    });
+
+    expect(result.value.execution?.rounds).toBe(2);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(extract).toHaveBeenCalledOnce();
+    expect(prompts[1]).toContain("https://example.com/guide?utm_source=first");
+    const synthesisPrompt = prompts.find((prompt) => prompt.includes("可追溯资料卡")) ?? "";
+    expect(synthesisPrompt.match(/唯一核验的正文内容。/gu)).toHaveLength(1);
   });
 });
 
@@ -350,6 +505,166 @@ describe("ConfiguredModelProvider structured-output fallback", () => {
       expect(result.value.title).toBe("恢复成功");
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(bodies[1]).toContain("资料卡数量由独立证据决定");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does not apply research-card length limits when retrying a draft", async () => {
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? "");
+      const content = bodies.length === 1 ? '{"markdown":"未完成' : '{"markdown":"# 标题\\n\\n## 第一节\\n正文"}';
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "custom:test-draft", modelId: "test-model", enabled: true, credentialConfigured: true, displayName: "测试正文", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const skills = {
+        get: () => ({ enabled: true, name: "测试技能", provider: "custom:test-draft" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1];
+      const provider = new ConfiguredModelProvider(connections, skills, stubCodex({ title: "unused" }));
+      await provider.generateStructured({
+        task: "draft", skillId: "wechat-writing", prompt: "请写正文",
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"] },
+        parse: (value) => value as { markdown: string }, timeoutMs: 1000
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(bodies[1]).toContain("保留已确认提纲的全部章节");
+      expect(bodies[1]).not.toContain("每条摘要不超过 120 个汉字");
+      expect((JSON.parse(bodies[0]) as { max_tokens: number }).max_tokens).toBe(8_000);
+      expect((JSON.parse(bodies[1]) as { max_tokens: number }).max_tokens).toBe(12_000);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("retries a draft when the provider reports an output-length stop even if the JSON is valid", async () => {
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? "");
+      const truncatedButValid = bodies.length === 1;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ markdown: truncatedButValid ? "# Guide\n\n## Part 1\nShort" : "# Guide\n\n## Part 1\nComplete draft" }) }, finish_reason: truncatedButValid ? "length" : "stop" }]
+      }), { status: 200 });
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "custom:test-draft", modelId: "test-model", enabled: true, credentialConfigured: true, displayName: "测试正文", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const provider = new ConfiguredModelProvider(connections, {
+        get: () => ({ enabled: true, name: "测试正文", provider: "custom:test-draft" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1], stubCodex({ title: "unused" }));
+      const generated = await provider.generateStructured({
+        task: "draft", skillId: "wechat-writing", prompt: "请写完整正文",
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"] },
+        parse: (value) => value as { markdown: string }, timeoutMs: 1000
+      });
+
+      expect(generated.value.markdown).toContain("Complete draft");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((JSON.parse(bodies[1]!) as { max_tokens: number }).max_tokens).toBe(12_000);
+      expect(bodies[1]).toContain("保留已确认提纲的全部章节");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("retries a draft when a gateway reports normal completion at the edge of the output budget", async () => {
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? "");
+      const firstAttempt = bodies.length === 1;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ markdown: firstAttempt ? "# Guide\n\n## Part 1\nCompressed" : "# Guide\n\n## Part 1\nExpanded complete draft" }) }, finish_reason: "stop" }],
+        usage: { completion_tokens: firstAttempt ? 7_900 : 7_200 }
+      }), { status: 200 });
+    });
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "custom:test-draft", modelId: "test-model", enabled: true, credentialConfigured: true, displayName: "测试正文", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const provider = new ConfiguredModelProvider(connections, {
+        get: () => ({ enabled: true, name: "测试正文", provider: "custom:test-draft" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1], stubCodex({ title: "unused" }));
+      const generated = await provider.generateStructured({
+        task: "draft", skillId: "wechat-writing", prompt: "请写完整正文",
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"] },
+        parse: (value) => value as { markdown: string }, timeoutMs: 1000
+      });
+
+      expect(generated.value.markdown).toContain("Expanded complete draft");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((JSON.parse(bodies[1]!) as { max_tokens: number }).max_tokens).toBe(12_000);
+      expect(bodies[1]).toContain("触及本轮输出预算上限附近");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does not accept a draft that reaches the expanded output budget without a length stop signal", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ markdown: "# 仍可能偏短的候选正文" }) }, finish_reason: "stop" }],
+      usage: { completion_tokens: 11_800 }
+    }), { status: 200 }));
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "custom:test-draft", modelId: "test-model", enabled: true, credentialConfigured: true, displayName: "测试正文", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const provider = new ConfiguredModelProvider(connections, {
+        get: () => ({ enabled: true, name: "测试正文", provider: "custom:test-draft" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1], stubCodex({ title: "unused" }));
+
+      await expect(provider.generateStructured({
+        task: "draft", skillId: "wechat-writing", prompt: "请写完整正文",
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"] },
+        parse: (value) => value as { markdown: string }, timeoutMs: 1000
+      })).rejects.toThrow("正文在扩展输出重试后仍接近输出上限；已拒绝将可能压缩的候选交给评审");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("rejects a draft that still reports an output-length stop after the expanded retry", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ markdown: "# 可能不完整" }) }, finish_reason: "length" }]
+    }), { status: 200 }));
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const connections = {
+        get: () => ({ provider: "custom:test-draft", modelId: "test-model", enabled: true, credentialConfigured: true, displayName: "测试正文", baseUrl: "https://example.test/v1", proxyUrl: "" }),
+        getCredential: () => "test-key"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[0];
+      const provider = new ConfiguredModelProvider(connections, {
+        get: () => ({ enabled: true, name: "测试正文", provider: "custom:test-draft" }),
+        instructionsFor: () => "RULES"
+      } as unknown as ConstructorParameters<typeof ConfiguredModelProvider>[1], stubCodex({ title: "unused" }));
+
+      await expect(provider.generateStructured({
+        task: "draft", skillId: "wechat-writing", prompt: "请写完整正文",
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"] },
+        parse: (value) => value as { markdown: string }, timeoutMs: 1000
+      })).rejects.toThrow("已拒绝将可能不完整的候选正文交给评审");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       globalThis.fetch = original;
     }

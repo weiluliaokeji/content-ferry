@@ -90,6 +90,75 @@ describe("withSvgIntrinsicSize", () => {
   });
 });
 
+describe("ContentSourceService style sample article selection", () => {
+  let database: ReturnType<typeof openInMemoryDatabase>;
+  let sourceDirectory: string;
+  let contentSources: ContentSourceService;
+  let workspaceId: string;
+
+  beforeEach(() => {
+    database = openInMemoryDatabase();
+    sourceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-style-samples-"));
+    const writeArticle = (directory: string, markdown: string) => {
+      const articleDirectory = path.join(sourceDirectory, "posts", directory);
+      fs.mkdirSync(articleDirectory, { recursive: true });
+      fs.writeFileSync(path.join(articleDirectory, "index.md"), markdown, "utf8");
+    };
+    writeArticle("published", "---\ntitle: 已发布文章\ncreated: 2025-01-02\nstatus: published\n---\n\n正文。\n");
+    writeArticle("plain", "---\ntitle: 已完成旧文\ncreated: 2024-12-31\n---\n\n正文。\n");
+    writeArticle("draft", "---\ntitle: 草稿\ncreated: 2025-01-04\nstatus: draft\n---\n\n正文。\n");
+    writeArticle("archived", "---\ntitle: 已归档\ncreated: 2025-01-03\narchived: true\n---\n\n正文。\n");
+    fs.mkdirSync(path.join(sourceDirectory, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDirectory, "assets", "not-article.md"), "# 不在文章路径中\n");
+
+    contentSources = new ContentSourceService(database.connection);
+    const accounts = new AccountRepository(database.connection);
+    workspaceId = accounts.getOrCreateDefaultWorkspace().id;
+    contentSources.setSource(workspaceId, sourceDirectory, "plain");
+  });
+
+  afterEach(() => {
+    fs.rmSync(sourceDirectory, { recursive: true, force: true });
+    database.connection.close();
+  });
+
+  it("lists completed articles newest first, filters inclusively by creation date, and includes archived articles", () => {
+    expect(contentSources.listStyleSampleArticles(workspaceId)).toEqual({
+      items: [
+        { title: "已归档", relativePath: "posts/archived/index.md", createdAt: "2025-01-03", status: null, archived: true },
+        { title: "已发布文章", relativePath: "posts/published/index.md", createdAt: "2025-01-02", status: "published", archived: false },
+        { title: "已完成旧文", relativePath: "posts/plain/index.md", createdAt: "2024-12-31", status: null, archived: false }
+      ],
+      truncated: false
+    });
+    expect(contentSources.listStyleSampleArticles(workspaceId, { createdFrom: "2025-01-02", createdTo: "2025-01-03" }).items.map((item) => item.title))
+      .toEqual(["已归档", "已发布文章"]);
+    expect(contentSources.listStyleSampleArticles(workspaceId, { createdFrom: "2025-01-04" }).items).toEqual([]);
+    expect(contentSources.listStyleSampleArticles(workspaceId, {}, 1)).toMatchObject({
+      items: [{ relativePath: "posts/archived/index.md" }], truncated: true
+    });
+  });
+
+  it("rechecks draft and archived status when loading an article selected from an earlier list", () => {
+    expect(contentSources.getStyleSampleArticle(workspaceId, "posts/published/index.md"))
+      .toMatchObject({ title: "已发布文章", createdAt: "2025-01-02", status: "published", archived: false });
+    expect(contentSources.getStyleSampleArticle(workspaceId, "posts/draft/index.md"))
+      .toMatchObject({ title: "草稿", status: "draft", archived: false });
+    expect(contentSources.getStyleSampleArticle(workspaceId, "posts/archived/index.md"))
+      .toMatchObject({ title: "已归档", archived: true });
+    expect(() => contentSources.getStyleSampleArticle(workspaceId, "assets/not-article.md"))
+      .toThrow("所选文件不是文章库中的文章。");
+  });
+
+  it("uses file creation time when an article has no valid created date", () => {
+    const articlePath = path.join(sourceDirectory, "posts", "fallback", "index.md");
+    fs.mkdirSync(path.dirname(articlePath), { recursive: true });
+    fs.writeFileSync(articlePath, "---\ntitle: 文件时间回退\ncreated: invalid\n---\n正文。", "utf8");
+    expect(contentSources.getStyleSampleArticle(workspaceId, "posts/fallback/index.md")?.createdAt)
+      .toBe(fs.statSync(articlePath).birthtime.toISOString());
+  });
+});
+
 // The rasterize option gates a wire-boundary conversion from SVG to PNG so the
 // renderer's `<img>` does not have to load the SVG as a self-contained
 // document (which would fail in sandboxed previews when the SVG references
@@ -417,6 +486,10 @@ describe("ContentSourceService plain Markdown source", () => {
         relativePath: "Markdown/index.md",
         excerpt: expect.stringContaining("标题使用井号")
       });
+      expect(service.searchRelatedArticles(workspaceId, "Markdown 标题 层级", "当前/index.md", 3, new Set(["旅行/index.md"])))
+        .toEqual([]);
+      expect(service.searchRelatedArticles(workspaceId, "Markdown 标题 层级", "当前/index.md", 3, new Set(["Markdown/index.md"])))
+        .toEqual(results);
     } finally {
       fs.rmSync(sourceDirectory, { recursive: true, force: true });
       database.close();

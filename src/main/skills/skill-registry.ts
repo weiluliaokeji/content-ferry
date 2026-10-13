@@ -8,9 +8,10 @@ export interface ManagedSkill {
   id: string;
   name: string;
   description: string;
-  category: "创作" | "改写" | "检测" | "图片" | "研究";
+  category: "创作" | "改写" | "检测" | "图片" | "研究" | "评审";
   enabled: boolean;
   provider: ModelProviderKey | null;
+  providerInherited: boolean;
   markdown: string;
   filePath: string;
   files: SkillFileSummary[];
@@ -21,8 +22,9 @@ export interface SkillFileSummary {
   size: number;
 }
 
-type BuiltInSkillDefinition = Omit<ManagedSkill, "enabled" | "provider" | "filePath" | "files"> & {
+type BuiltInSkillDefinition = Omit<ManagedSkill, "enabled" | "provider" | "providerInherited" | "filePath" | "files"> & {
   defaultProvider: ModelProviderKey | null;
+  inheritProviderFrom?: string;
   references?: Record<string, string>;
   legacyMarkdown?: string[];
 };
@@ -35,6 +37,7 @@ type BuiltInSkillManifest = {
     description: string;
     category: ManagedSkill["category"];
     defaultProvider: ModelProviderKey | null;
+    inheritProviderFrom?: string;
     legacyFiles?: string[];
   }>;
 };
@@ -59,9 +62,10 @@ const KNOWN_LEGACY_BUILT_IN_HASHES = new Set([
 export function shouldUpgradeReference(currentHash: string | undefined, builtInHash: string, seedHash: string | undefined): boolean {
   return (
     currentHash === undefined ||
-    currentHash === builtInHash ||
-    KNOWN_LEGACY_BUILT_IN_HASHES.has(currentHash) ||
-    (seedHash !== undefined && currentHash === seedHash)
+    (currentHash !== builtInHash && (
+      KNOWN_LEGACY_BUILT_IN_HASHES.has(currentHash) ||
+      (seedHash !== undefined && currentHash === seedHash)
+    ))
   );
 }
 
@@ -108,7 +112,7 @@ function loadBuiltInSkills(directory: string): BuiltInSkillDefinition[] {
   return manifest.skills.map((entry) => {
     if (!/^[a-z0-9-]+$/.test(entry.id) || ids.has(entry.id)) throw new Error("内置技能 ID 不合法或重复。");
     ids.add(entry.id);
-    if (!["研究", "创作", "改写", "检测", "图片"].includes(entry.category)) throw new Error(`内置技能分类不合法：${entry.id}`);
+    if (!["研究", "创作", "改写", "检测", "图片", "评审"].includes(entry.category)) throw new Error(`内置技能分类不合法：${entry.id}`);
     const skillDirectory = path.join(directory, entry.id);
     const markdown = fs.readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8");
     const ownReferences = readReferencesFrom(skillDirectory);
@@ -137,6 +141,9 @@ export class SkillRegistry {
     if (!definition) throw new Error("找不到这个技能。");
     const setting = this.db.prepare("SELECT enabled, provider FROM skill_settings WHERE skill_id = ?")
       .get(skillId) as { enabled: number; provider: ModelProviderKey | null } | undefined;
+    const inheritedProvider = definition.inheritProviderFrom
+      ? this.get(definition.inheritProviderFrom).provider
+      : definition.defaultProvider;
     const filePath = this.filePath(skillId);
     return {
       id: definition.id,
@@ -146,7 +153,8 @@ export class SkillRegistry {
       enabled: setting ? Boolean(setting.enabled) : true,
       // Detection skills run through a visible browser session. Older builds
       // allowed a model setting to be saved here; ignore that stale setting.
-      provider: isBrowserAutomationSkill(skillId) ? null : (setting?.provider ?? definition.defaultProvider),
+      provider: isBrowserAutomationSkill(skillId) ? null : (setting?.provider ?? inheritedProvider),
+      providerInherited: !isBrowserAutomationSkill(skillId) && Boolean(definition.inheritProviderFrom && setting?.provider == null),
       markdown: fs.readFileSync(filePath, "utf8"),
       filePath,
       files: this.listFiles(skillId)
@@ -257,7 +265,9 @@ export class SkillRegistry {
 
   private writeReferenceSeedState(state: Record<string, Record<string, string>>): void {
     const seedFile = path.join(this.rootDirectory, ".skill-reference-seed.json");
-    fs.writeFileSync(seedFile, JSON.stringify(state), "utf8");
+    const serialized = JSON.stringify(state);
+    if (fs.existsSync(seedFile) && fs.readFileSync(seedFile, "utf8") === serialized) return;
+    fs.writeFileSync(seedFile, serialized, "utf8");
   }
 
   private filePath(skillId: string): string {

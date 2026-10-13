@@ -124,6 +124,7 @@ export class AwenPracticeCommandRunner {
         resolvedCommandPath: tool.path,
         status: run.status,
         exitCode: run.exitCode,
+        outputCaptureMode: process.platform === "win32" ? "conpty_combined" : "separate_streams",
         stdout: run.stdout.slice(0, 16_000),
         stderr: run.stderr.slice(0, 8_000),
         truncated: run.truncated,

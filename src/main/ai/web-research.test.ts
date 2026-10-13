@@ -92,6 +92,14 @@ function codexPlannerThenSynthesis(): ModelProvider {
 }
 
 describe("ConfiguredModelProvider.webResearch", () => {
+  it("does not start another research stage after cancellation", async () => {
+    const search = fakeWebSearch();
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), undefined, search);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(provider.webResearch(context, undefined, { signal: controller.signal })).rejects.toThrow();
+    expect(search.search).not.toHaveBeenCalled();
+  });
   it("scheme B: multi-round planner + synthesis on a non-tool model (Codex), audit records retrieval", async () => {
     const { auditLog, record } = fakeAuditLog();
     const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), auditLog, fakeWebSearch());
@@ -117,13 +125,60 @@ describe("ConfiguredModelProvider.webResearch", () => {
     expect(result.value.execution).toEqual({ rounds: 1, maxRounds: 1, budgetExhausted: true });
   });
 
-  it("continues for application-owned coverage gaps even when the planner says done", async () => {
+  it("respects the planner stop decision when coverage gaps remain", async () => {
     const webSearch = fakeWebSearch();
     const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codexPlannerThenSynthesis(), undefined, webSearch);
     await provider.webResearch({ ...context, coverageGaps: ["待补充：官方原始资料", "待补充：限制、反例或适用边界"] }, () => {}, { depth: "balanced" });
-    expect(webSearch.search).toHaveBeenCalledTimes(2);
-    expect(webSearch.search).toHaveBeenNthCalledWith(1, expect.stringContaining("官方原始资料"));
-    expect(webSearch.search).toHaveBeenNthCalledWith(2, expect.stringContaining("限制、反例"));
+    expect(webSearch.search).toHaveBeenCalledTimes(1);
+    expect(webSearch.search).toHaveBeenCalledWith("检索词一");
+  });
+
+  it("feeds prior query results to the planner and blocks a normalized-equivalent retry", async () => {
+    const webSearch = fakeWebSearch();
+    const plannerPrompts: string[] = [];
+    const completed: Array<{ query: string; resultCount: number; resultUrls: string[] }> = [];
+    let plannerCalls = 0;
+    const codex: Partial<ModelProvider> = {
+      generateStructured: vi.fn(async (request: { prependInstructions?: boolean; prompt?: string }) => {
+        if (request.prependInstructions) {
+          plannerPrompts.push(request.prompt ?? "");
+          plannerCalls++;
+          return { value: { action: "search", query: plannerCalls === 1 ? "官方安装命令" : "官方 安装命令" }, provider: "openai_codex", model: "gpt-test", usage: null };
+        }
+        return { value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null };
+      })
+    };
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as ModelProvider, undefined, webSearch);
+
+    await provider.webResearch(context, () => {}, { depth: "deep", onSearchCompleted: (attempt) => completed.push(attempt) });
+
+    expect(plannerCalls).toBe(2);
+    expect(webSearch.search).toHaveBeenCalledTimes(1);
+    expect(plannerPrompts[1]).toContain("查询「官方安装命令」；结果 1 条");
+    expect(plannerPrompts[1]).toContain("不得重复相同或实质等价的查询");
+    expect(completed).toEqual([{ query: "官方安装命令", resultCount: 1, resultUrls: ["https://example.com/x"] }]);
+  });
+
+  it("shows cross-round prior searches and refuses to repeat them", async () => {
+    const webSearch = fakeWebSearch();
+    const plannerPrompts: string[] = [];
+    const codex: Partial<ModelProvider> = {
+      generateStructured: vi.fn(async (request: { prependInstructions?: boolean; prompt?: string }) => {
+        if (request.prependInstructions) {
+          plannerPrompts.push(request.prompt ?? "");
+          return { value: { action: "search", query: "官方安装命令" }, provider: "openai_codex", model: "gpt-test", usage: null };
+        }
+        return { value: { planMarkdown: "结论", sources: [SINGLE_SOURCE] }, provider: "openai_codex", model: "gpt-test", usage: null };
+      })
+    };
+    const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as ModelProvider, undefined, webSearch);
+
+    await expect(provider.webResearch(context, () => {}, { previousSearches: [
+      { query: "官方安装命令", resultCount: 0, resultUrls: [] }
+    ] })).rejects.toThrow(/没有找到候选网页/);
+
+    expect(webSearch.search).not.toHaveBeenCalled();
+    expect(plannerPrompts[0]).toContain("查询「官方安装命令」；结果 0 条");
   });
 
   it("uses the app-owned body verification path even when Codex built-in search is enabled", async () => {
@@ -302,11 +357,11 @@ describe("ConfiguredModelProvider.webResearch", () => {
     };
     const provider = new ConfiguredModelProvider(stubConnections(), codexSkills(), codex as unknown as ModelProvider, auditLog, emptySearch);
 
-    await expect(provider.webResearch(context, () => {})).rejects.toThrow(/未获取到任何可用资料/);
+    await expect(provider.webResearch(context, () => {})).rejects.toThrow(/没有找到候选网页/);
     const call = record.mock.calls.map(([entry]) => entry).find((entry) => entry.task === "research-orchestration" && !entry.ok);
     expect(call).toBeDefined();
     expect(call.ok).toBe(false);
-    expect(call.error).toMatch(/未获取到任何可用资料/);
+    expect(call.error).toMatch(/没有找到候选网页/);
   });
 
   it("throws a clear, actionable error when the web-research skill has no provider assigned", async () => {

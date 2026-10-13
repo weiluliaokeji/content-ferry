@@ -567,9 +567,25 @@ describe("failed practice step recovery", () => {
       task, busy: false, onDecision: async () => {}, onOpenAwen: () => {}
     }));
 
-    expect(markup).toContain("重试上次失败的步骤");
+    expect(markup).toContain("重试上次失败或无结果的步骤");
     expect(markup).toContain("告诉阿文如何处理");
-    expect(RETRY_FAILED_PRACTICE_STEP_PROMPT).toContain("不要重新执行已经完成的步骤");
+    expect(RETRY_FAILED_PRACTICE_STEP_PROMPT).toContain("不要重新执行已取得有效结果的步骤");
+  });
+
+  it("shows an immediate busy state while resuming a task after restart", () => {
+    const task: ArticlePracticeTask = {
+      id: "task-2", projectId: "project-1", sourceType: "awen", legacyExecutionRunId: null,
+      status: "waiting_resume_choice", goalRevision: 1, latestGoal: "按提纲准备正文",
+      waitingReason: null, feedbackDeadline: null,
+      checkpoint: { workflowId: "workflow-2" }, hasGaps: false,
+      createdAt: "2026-09-25T00:00:00.000Z", updatedAt: "2026-09-25T00:00:00.000Z"
+    };
+    const markup = renderToStaticMarkup(createElement(ArticlePracticeTaskCard, {
+      task, busy: true, onDecision: async () => {}, onOpenAwen: () => {}
+    }));
+
+    expect(markup).toContain("正在恢复…");
+    expect(markup).toContain("disabled=\"\"");
   });
 });
 

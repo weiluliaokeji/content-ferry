@@ -9,13 +9,16 @@ import { JuejinDraftWorkspace } from "./components/JuejinDraftWorkspace";
 import { FiftyoneCtoDraftWorkspace } from "./components/FiftyoneCtoDraftWorkspace";
 import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { Modal, ProfileFields } from "./components/Modal";
+import { AccountStyleSamplesModal } from "./components/AccountStyleSamplesModal";
 import { CoverCropModal } from "./components/CoverCropModal";
 import { QualityWorkspace } from "./components/QualityWorkspace";
 import { ArticleWorkspace } from "./components/ArticleWorkspace";
+import { GenerationReviewSummary } from "./components/GenerationReviewSummary";
+import { MarkdownDiffPreview } from "./components/MarkdownDiffPreview";
 import { ZhuqueReportView } from "./components/ZhuqueReportViews";
 import { resolveArticleImageUrl } from "./markdown-preview";
 import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
-import { emptyProfile, isHighAiDetectionResult, markdownOffsetAtTextareaTop, markdownTitle, parseZhuqueReport, providerName, runtimeLogLevel, skillModelStatus, sourceAssetContextId } from "./utils";
+import { emptyProfile, isHighAiDetectionResult, markdownOffsetAtTextareaTop, markdownTitle, parseZhuqueReport, providerName, runtimeLogLevel, skillModelStatus, skillUsesSameConnectionAsWriter, sourceAssetContextId } from "./utils";
 import { skillModelGroups } from "./app-constants";
 import { byUpdatedAtDesc, getPageTitle, PublishEntry } from "./app-helpers";
 import { useWorkbench } from "./hooks/useWorkbench";
@@ -64,6 +67,7 @@ export function App() {
   const [displayName, setDisplayName] = useState("");
   const [platformExternalId, setPlatformExternalId] = useState("");
   const [editing, setEditing] = useState<MediaAccount>();
+  const [styleSamplesAccount, setStyleSamplesAccount] = useState<MediaAccount>();
   const [editingDisplayName, setEditingDisplayName] = useState("");
   const [editingExternalId, setEditingExternalId] = useState("");
   const [profile, setProfile] = useState<AccountProfile>(emptyProfile);
@@ -207,6 +211,7 @@ export function App() {
     setOutlineRefinementMode,
     outlineRefinementProposal,
     setOutlineRefinementProposal,
+    outlineRefinementBaseMarkdown,
     outlineTitleSuggestions,
     setOutlineTitleSuggestions,
     outlineTitleSuggesting,
@@ -262,11 +267,14 @@ export function App() {
     draftGenerating,
     setDraftGenerating,
     draftGenerationStatus,
+    draftRunId,
+    draftRunEvents,
     setDraftGenerationStatus,
     draftAbortRef,
     setDraftAbortRef,
     stopDraftGeneration,
     continueDraftAfterPractice,
+    adjustDraftScope,
     reviewProject,
     setReviewProject,
     review,
@@ -307,6 +315,7 @@ export function App() {
     addManualResearchSource,
     generateOutline,
     openOutline,
+    reviewOutline,
     switchOutlineToMarkdown,
     switchOutlineToVisual,
     saveOutline,
@@ -623,6 +632,7 @@ export function App() {
       setOutlineRefinementMode,
       outlineRefinementProposal,
       setOutlineRefinementProposal,
+      outlineRefinementBaseMarkdown,
       outlineTitleSuggestions,
       setOutlineTitleSuggestions,
       outlineTitleSuggesting,
@@ -682,11 +692,14 @@ export function App() {
       draftGenerating,
       setDraftGenerating,
       draftGenerationStatus,
+      draftRunId,
+      draftRunEvents,
       setDraftGenerationStatus,
       draftAbortRef,
       setDraftAbortRef,
       stopDraftGeneration,
       continueDraftAfterPractice,
+      adjustDraftScope,
       reviewProject,
       setReviewProject,
       review,
@@ -723,6 +736,7 @@ export function App() {
        addManualResearchSource,
       generateOutline,
       openOutline,
+      reviewOutline,
       switchOutlineToMarkdown,
       switchOutlineToVisual,
       saveOutline,
@@ -1175,7 +1189,7 @@ export function App() {
       job={csdnPublishJob}
       error={error}
       onClearError={() => setError("")}
-      onChange={(patch) => setCsdnDraft((current) => current ? { ...current, ...patch } : current)}
+      onChange={(patch) => setCsdnDraft((current) => current ? { ...current, ...patch, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onSave={() => void saveCsdnChannelDraft()}
       onPublish={() => requestPublishCsdn()}
       onStartBrowserAssist={(jobId) => void startCsdnBrowserAssist(jobId)}
@@ -1193,7 +1207,7 @@ export function App() {
       job={cnblogsPublishJob}
       error={error}
       onClearError={() => setError("")}
-      onChange={(patch) => setCnblogsDraft((current) => current ? { ...current, ...patch } : current)}
+      onChange={(patch) => setCnblogsDraft((current) => current ? { ...current, ...patch, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onSave={() => void saveCnblogsChannelDraft()}
       onPublish={(options) => requestPublishCnblogs(options)}
       onConfirmPublish={(jobId) => void confirmCnblogsPublish(jobId)}
@@ -1222,7 +1236,7 @@ export function App() {
       job={juejinPublishJob}
       error={error}
       onClearError={() => setError("")}
-      onChange={(patch) => setJuejinDraft((current) => current ? { ...current, ...patch } : current)}
+      onChange={(patch) => setJuejinDraft((current) => current ? { ...current, ...patch, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onSave={() => void saveJuejinChannelDraft()}
       onPublish={(options) => requestPublishJuejin(options)}
       onConfirmPublish={(jobId) => void confirmJuejinPublish(jobId)}
@@ -1249,7 +1263,7 @@ export function App() {
       job={fiftyoneCtoPublishJob}
       error={error}
       onClearError={() => setError("")}
-      onChange={(patch) => setFiftyoneCtoDraft((current) => current ? { ...current, ...patch } : current)}
+      onChange={(patch) => setFiftyoneCtoDraft((current) => current ? { ...current, ...patch, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onSave={() => void saveFiftyoneCtoChannelDraft()}
       onPublish={(options, republishFromJobId) => requestPublishFiftyoneCto(options, republishFromJobId)}
       onConfirmPublish={(jobId) => void confirmFiftyoneCtoPublish(jobId)}
@@ -1308,12 +1322,17 @@ export function App() {
       projectId={projects.find((project) => project.sourceRelativePath === sourceArticle.relativePath)?.id}
       accounts={accounts}
       initialRightPanel={articleWorkspacePanel}
+      backLabel={activeView === "library" ? "返回归档库" : activeView === "publish" ? "返回发布记录" : "返回工作台"}
       saving={saving}
       onChange={(markdown) => setSourceArticle((current) => current ? { ...current, markdown } : current)}
       onBack={() => setSourceArticle(undefined)}
       onSave={saveSourceArticle}
       onPublish={() => void prepareSourcePublish(sourceArticle)}
-      onEnterChannel={enterChannelDraftFor(sourceArticle.relativePath)}
+      onEnterChannel={async (platform) => {
+        const result = await saveSourceArticle();
+        if (!result.success) return;
+        enterChannelDraftFor(sourceArticle.relativePath)(platform);
+      }}
     />;
   }
 
@@ -1328,12 +1347,23 @@ export function App() {
       projectId={draftProject.id}
       accounts={accounts}
       initialRightPanel={articleWorkspacePanel}
+      backLabel="返回工作台"
       saving={saving}
       generating={draftGenerating}
       generationStatus={draftGenerationStatus}
+      draftRunId={draftRunId}
+      draftRunEvents={draftRunEvents}
+      generationReview={draft.generationReview}
+      draftStyleSelectionNote={draft.styleSelectionNote}
+      draftImageCuration={draft.imageCuration}
+      recoveredCandidate={draft.recoveredCandidate}
+      recoveryOutlineChanged={draft.recoveryOutlineChanged}
+      recoveryArticleChanged={draft.recoveryArticleChanged}
       onStopGeneration={() => void stopDraftGeneration()}
       onContinueDraftAfterPractice={continueDraftAfterPractice}
-      onChange={(markdown) => setDraft((current) => current ? { ...current, markdown } : current)}
+      onResumeRecoveredCandidate={continueDraftAfterPractice}
+      onAdjustDraftScope={adjustDraftScope}
+      onChange={(markdown) => setDraft((current) => current ? { ...current, markdown, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onBack={() => { draftAbortRef.current?.abort(); setDraftProject(undefined); setDraft(undefined); setDraftGenerationStatus(""); }}
       onSave={saveDraft}
       onPublish={() => void prepareProjectPublish(draftProject, draft)}
@@ -1392,6 +1422,7 @@ export function App() {
     if (project) void openBrief(project);
   };
   const outlineReadOnly = archiveReadOnly || (outlineProject ? bestWechatJob(wechatJobs, (item) => item.projectId === outlineProject.id || item.sourceRelativePath === outlineProject.sourceRelativePath || item.title === outlineProject.topic)?.status === "published" : false);
+  const outlineReviewBlocked = Boolean(outline?.generationReview && outline.generationReview.status !== "passed");
   const briefReadOnly = archiveReadOnly || (briefProject ? bestWechatJob(wechatJobs, (item) => item.projectId === briefProject.id || item.sourceRelativePath === briefProject.sourceRelativePath || item.title === briefProject.topic)?.status === "published" : false);
 
   // 分页通用配置：每页条数选项；切换条数时页码重置到第 1 页。
@@ -1524,6 +1555,7 @@ export function App() {
       openJuejinConnection={openJuejinConnection}
       openFiftyoneCtoConnection={openFiftyoneCtoConnection}
       openProfile={openProfile}
+      openStyleSamples={setStyleSamplesAccount}
       addAccount={addAccount}
     />}
 
@@ -1654,8 +1686,11 @@ export function App() {
         <p className="hint">{editingSkill.description}</p>
         <div className="skill-settings-row">
           <label className="toggle-label"><input type="checkbox" checked={editingSkill.enabled} onChange={(event) => setEditingSkill((current) => current ? { ...current, enabled: event.target.checked } : current)} />启用此技能</label>
-          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? { ...current, provider: (event.target.value || null) as ModelProviderId | null } : current)}>{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "agnes" : connection.provider === "openai_codex" || connection.custom).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
+          {["zhuque-detection", "contentany-detection"].includes(editingSkill.id) ? <p className="hint">此技能使用可见浏览器自动化，不需要大模型连接；浏览器登录状态会在本机保留。</p> : <label>模型连接<select value={editingSkill.providerInherited ? "__inherit__" : editingSkill.provider ?? ""} onChange={(event) => setEditingSkill((current) => current ? event.target.value === "__inherit__" ? { ...current, providerInherited: true } : { ...current, provider: (event.target.value || null) as ModelProviderId | null, providerInherited: false } : current)}>{editingSkill.id === "content-review" && <option value="__inherit__">跟随微信公众号文章撰写模型</option>}{modelConnections.filter((connection) => editingSkill.category === "图片" ? connection.provider === "modelscope" || connection.provider === "agnes" : connection.provider === "openai_codex" || connection.custom).map((connection) => <option key={connection.provider} value={connection.provider}>{connection.displayName}</option>)}</select></label>}
         </div>
+        {editingSkill.id === "content-review" && <p className="hint">{skillUsesSameConnectionAsWriter(editingSkill, skills.find((skill) => skill.id === "wechat-writing") ?? { provider: null })
+          ? "当前评审与撰写使用同一模型连接。评审是单独调用，但模型仍可能有同源判断偏差；需要更独立的复核时，可在上方为评审选择另一模型连接。"
+          : "当前评审与撰写使用不同的模型连接，可减少同源判断偏差；评审仍可按需检索公开网页，检索结果不会自动写入正文。"}</p>}
         <div className="skill-file-workspace">
           <aside><strong>技能文件</strong>{editingSkill.files.map((file) => <button type="button" className={editingSkillFile?.relativePath === file.relativePath ? "active" : ""} onClick={() => void chooseSkillFile(file.relativePath)} key={file.relativePath}><span>{file.relativePath}</span><small>{Math.max(1, Math.ceil(file.size / 1024))} KB</small></button>)}</aside>
           <label><span>{editingSkillFile?.relativePath ?? "正在读取…"}{editingSkillFile && editingSkillFile.content !== savedSkillFileContent ? " · 未保存" : ""}</span><textarea className="skill-markdown-editor" value={editingSkillFile?.content ?? ""} onChange={(event) => setEditingSkillFile((current) => current ? { ...current, content: event.target.value, size: new Blob([event.target.value]).size } : current)} spellCheck={false} disabled={!editingSkillFile} /></label>
@@ -1704,6 +1739,7 @@ export function App() {
       </form>
     </Modal>}
 
+    {styleSamplesAccount && <AccountStyleSamplesModal account={styleSamplesAccount} onClose={() => setStyleSamplesAccount(undefined)} />}
     {editing && <Modal onClose={() => setEditing(undefined)} disabled={saving} closeOnBackdrop={false} title={`编辑定位：${editing.displayName}`} eyebrow="账号创作上下文"><p className="hint">这些内容会在后续创作时自动作为默认上下文；不确定的项目可以先留空。</p><form onSubmit={saveProfile} className="profile-form"><label>账号名称<input value={editingDisplayName} maxLength={100} onChange={(event) => setEditingDisplayName(event.target.value)} /></label>{editing.platform === "cnblogs" && <label>博客地址/博客名<input value={editingExternalId} onChange={(event) => setEditingExternalId(event.target.value)} placeholder="例如：https://www.cnblogs.com/weiluliaokeji 或 weiluliaokeji" maxLength={200} /><small>用于定位博客园博客；发布任务重试时会自动校验。留空会清空已保存的博客名。</small></label>}<ProfileFields profile={profile} onChange={changeProfile} /><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setEditing(undefined)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在保存…" : "保存定位"}</button></div></form></Modal>}
     {wechatAccount && <Modal onClose={() => setWechatAccount(undefined)} disabled={saving} closeOnBackdrop={false} title={`连接微信：${wechatAccount.displayName}`} eyebrow="微信公众号开发者接口">
       {!wechatCredentialStatus ? <p>正在读取已有配置…</p> : <><p className="hint">AppID 可以回显。出于安全原因，AppSecret 和消息校验 Token 不会把明文返回页面；显示“已配置”时留空即可保留，填写新值才会覆盖。</p>
@@ -1895,7 +1931,7 @@ export function App() {
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProjectModalOpen(false)} disabled={saving}>取消</button><button disabled={saving}>{saving ? "正在创建…" : projectCreationMode === "research" ? "创建并联网补研" : "仅创建草稿"}</button></div>
       </form>
     </Modal>}
-    {briefProject && <Modal onClose={closeBrief} disabled={saving} closeOnBackdrop={false} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{briefReadOnly ? "这篇文章已发布，创作方向仅供查看，不可修改。" : brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"}{briefReadOnly ? "" : " 保存后，阿文会默认联网补充资料，再生成文章提纲。"}</p><form onSubmit={briefReadOnly ? (event) => { event.preventDefault(); } : saveBrief} className="profile-form"><label>创作主题或想法<textarea autoFocus readOnly={briefReadOnly} value={brief.topic} onChange={(event) => changeBrief("topic", event.target.value)} maxLength={12000} placeholder="这篇文章想讨论的问题、判断或初始构思" /></label><label>写作目标<textarea readOnly={briefReadOnly} value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea readOnly={briefReadOnly} value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea readOnly={briefReadOnly} value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea readOnly={briefReadOnly} value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>文章标题<input readOnly={briefReadOnly} value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label>{!briefReadOnly && <div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>}{!briefReadOnly && historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{!briefReadOnly && titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>{briefReadOnly ? "关闭" : "稍后继续"}</button>{!briefReadOnly && <button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button>}</div></form></>}</Modal>}
+    {briefProject && <Modal onClose={closeBrief} disabled={saving} closeOnBackdrop={false} title="确认创作方向" eyebrow="第二步：确认创作方向">{!brief ? <p>正在准备简报…</p> : <><p className="hint">{briefReadOnly ? "这篇文章已发布，创作方向仅供查看，不可修改。" : brief.generatedFromAccountProfile ? "这是根据已选账号定位生成的初始草稿，请补充和调整。" : "你可以继续完善这份已保存的简报。"}{briefReadOnly ? "" : " 保存后，阿文会默认联网补充资料，再生成文章提纲。"}</p><form onSubmit={briefReadOnly ? (event) => { event.preventDefault(); } : saveBrief} className="profile-form"><label>创作主题或想法<textarea autoFocus readOnly={briefReadOnly} value={brief.topic} onChange={(event) => changeBrief("topic", event.target.value)} maxLength={12000} placeholder="这篇文章想讨论的问题、判断或初始构思" /></label><label>写作目标<textarea readOnly={briefReadOnly} value={brief.objective} onChange={(event) => changeBrief("objective", event.target.value)} placeholder="希望这篇文章帮助读者完成什么？" /></label><label>目标读者<textarea readOnly={briefReadOnly} value={brief.audience} onChange={(event) => changeBrief("audience", event.target.value)} placeholder="这篇文章主要给谁看？" /></label><label>核心角度<textarea readOnly={briefReadOnly} value={brief.angle} onChange={(event) => changeBrief("angle", event.target.value)} placeholder="这篇文章独特的观点、切入角度或边界" /></label><label>已有资料与想法<textarea readOnly={briefReadOnly} value={brief.sourceNotes} onChange={(event) => changeBrief("sourceNotes", event.target.value)} placeholder="粘贴链接、笔记、数据、个人经历或必须参考的资料" /></label><label>正文篇幅<select disabled={briefReadOnly} value={brief.draftDepthPreference ?? "adaptive"} onChange={(event) => changeBrief("draftDepthPreference", event.target.value === "adaptive" ? null : event.target.value)}><option value="adaptive">由阿文按文章类型判断（指南默认详细）</option><option value="concise">精简</option><option value="standard">标准</option><option value="detailed">详细</option></select></label><p className="hint compact-hint">篇幅用于规划各章节要覆盖的内容，不会为了字数重复扩写。</p><label>文章标题<input readOnly={briefReadOnly} value={briefTitle} onChange={(event) => setBriefTitle(event.target.value)} maxLength={120} placeholder="可直接填写，或让阿文推荐" /></label>{!briefReadOnly && <div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void suggestBriefTitles()} disabled={titleSuggesting}>{titleSuggesting ? "阿文正在推荐…" : "让阿文推荐标题"}</button></div>}{!briefReadOnly && historicalSeries.length > 0 && <p className="hint compact-hint">已用于推荐的历史系列：{historicalSeries.map((series) => `${series.name}（${series.count} 篇）`).join("、")}</p>}{!briefReadOnly && titleSuggestions.length > 0 && <div className="title-suggestion-list">{titleSuggestions.map((title) => <button type="button" className={briefTitle === title ? "selected-title-suggestion" : "secondary-button"} onClick={() => setBriefTitle(title)} key={title}>{title}</button>)}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={closeBrief} disabled={saving}>{briefReadOnly ? "关闭" : "稍后继续"}</button>{!briefReadOnly && <button disabled={saving}>{saving ? "正在保存…" : "保存简报"}</button>}</div></form></>}</Modal>}
     {researchProject && <section className="research-workspace-screen" role="region" aria-label={`联网资料：${researchProject.topic}`}>
       <header className="research-workspace-header"><div><p className="eyebrow">第三步：补充资料</p><h2>联网资料：{researchProject.topic}</h2><p className="hint compact-hint">研究计划、资料卡、缺口和运行历史集中在这里；完成后可返回创作方向或进入提纲。</p></div><button className="text-button" onClick={() => { if (!researchGenerating && !researchFollowingUp) returnToBriefFromResearch(); }} disabled={researchGenerating || researchFollowingUp}>返回创作方向</button></header>
       {research && <>
@@ -1938,13 +1974,14 @@ export function App() {
     </Modal>}
     {outlineProject && <Modal className="outline-modal" onClose={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving || outlineRefining} closeOnBackdrop={false} title={`文章提纲：${outlineProject.topic}`} eyebrow="第四步：审核文章结构" wide>
       {!outline ? <p>正在准备提纲…</p> : <>
-        <p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "AI 会在可用时逐步写入下方编辑区；可继续等待，或停止后保留已有内容。" : outlineHasDraft ? "这是上次暂存的提纲草稿，请继续编辑；点击确认后才会标记为“提纲已就绪”。" : outline.generatedFromBrief ? "这是 AI 根据账号定位、创作简报和已选资料生成的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>
+        <p className="hint">{outlineReadOnly ? "这篇文章已发布，提纲仅供查看，不可编辑。" : outlineGenerating ? "阿文正在生成并独立评审提纲；评审结束后才会显示候选内容。" : outlineHasDraft ? "这是上次暂存的提纲草稿，请继续编辑；点击确认后才会标记为“提纲已就绪”。" : outline.generatedFromBrief ? "这是阿文根据账号定位、创作简报和已选资料生成并评审的提纲。请审核论证方向和文章结构。" : "你可以继续编辑已保存的提纲。"}</p>
         {outlineGenerating && <div className="generation-progress" role="status"><span className="loading-dot" aria-hidden="true" /> <span>{outlineGenerationStatus || "AI 正在生成…"}</span></div>}
+        {!outlineGenerating && <GenerationReviewSummary review={outline.generationReview} subject="提纲" onReReview={() => void reviewOutline()} disabled={outlineReadOnly || outlineGenerating || outlineRefining} />}
         <form onSubmit={saveOutline} className="profile-form">
           <label>文章提纲</label>
-          {outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在等待 AI 的第一段内容。生成过程中可以停止，已生成的内容会保留。</div> : outlineEditorMode === "markdown" ? <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchOutlineToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={outlineMarkdownSourceRef} className="markdown-source-editor" value={outline.markdown} readOnly={outlineReadOnly} onChange={(event) => setOutline((current) => current ? { ...current, markdown: event.target.value } : current)} spellCheck={false} /></div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onSwitchToMarkdown={switchOutlineToMarkdown} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown } : current)} /></Suspense>}
-          {!outlineReadOnly && !outlineGenerating && <section className="outline-refinement-panel"><div><h3>和阿文一起优化</h3><p className="hint compact-hint">标题优化会生成候选供你选择；结构优化会生成完整提纲建议。任何建议都不会自动覆盖当前内容。</p></div><div className="outline-refinement-mode" role="tablist" aria-label="优化内容"><button type="button" role="tab" aria-selected={outlineRefinementMode === "structure"} className={outlineRefinementMode === "structure" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("structure"); setOutlineTitleSuggestions([]); }}>优化提纲结构</button><button type="button" role="tab" aria-selected={outlineRefinementMode === "title"} className={outlineRefinementMode === "title" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("title"); setOutlineRefinementProposal(undefined); }}>优化文章标题</button></div>{outlineRefinementMode === "title" && <p className="hint compact-hint">当前标题：{leadingMarkdownTitle(outline?.markdown) || outlineProject?.topic || "未设置"}。选择候选后会同步更新提纲一级标题，保存提纲时才会正式更新文章标题。</p>}<textarea value={outlineRefinementInstruction} onChange={(event) => setOutlineRefinementInstruction(event.target.value)} maxLength={4000} placeholder={outlineRefinementMode === "title" ? "例如：更突出实际使用场景，面向个人开发者" : "例如：压缩成 5 个章节，保留第二章的实战案例"} disabled={outlineRefining || outlineTitleSuggesting} /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void ((outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction)) ? suggestOutlineTitles() : refineOutline())} disabled={outlineRefining || outlineTitleSuggesting || !outlineRefinementInstruction.trim()}>{outlineRefining || outlineTitleSuggesting ? "阿文正在分析…" : outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction) ? "生成标题候选" : "生成修改建议"}</button>{outlinePreviousMarkdown !== undefined && <button type="button" className="secondary-button" onClick={undoOutlineRefinement}>{outlineRegenerated ? "恢复原提纲（重新生成前）" : "撤销上次应用"}</button>}</div>{outlineRefinementMode === "title" && outlineTitleSuggestions.length > 0 && <div className="outline-refinement-proposal"><h4>标题候选</h4><div className="title-suggestion-list">{outlineTitleSuggestions.map((title) => <button type="button" className="secondary-button" onClick={() => applyOutlineTitle(title)} key={title}>{title} · 采用此标题并继续编辑</button>)}</div></div>}{outlineRefinementMode === "structure" && outlineRefinementProposal && <div className="outline-refinement-proposal"><h4>修改建议预览</h4><textarea value={outlineRefinementProposal} readOnly /><div className="inline-actions"><button type="button" className="secondary-button" onClick={discardOutlineRefinement}>放弃建议</button><button type="button" onClick={applyOutlineRefinement}>应用建议</button></div></div>}</section>}
-          <div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => void saveOutlineDraft()} disabled={saving || outlineGenerating || !outline.markdown.trim()}>暂存提纲</button><button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>放弃本次修改</button><button disabled={saving || outlineGenerating || !outline.markdown.trim()}>{saving ? "正在保存…" : "确认提纲并标记为已就绪"}</button></>}</div>
+          {outlineGenerating && !outline.markdown.trim() ? <div className="generation-placeholder">正在生成和评审提纲。通过评审或明确列出待处理项后会显示结果。</div> : outlineEditorMode === "markdown" ? <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchOutlineToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={outlineMarkdownSourceRef} className="markdown-source-editor" value={outline.markdown} readOnly={outlineReadOnly} onChange={(event) => setOutline((current) => current ? { ...current, markdown: event.target.value, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)} spellCheck={false} /></div> : <Suspense fallback={<p className="hint">正在打开可视化编辑器…</p>}><VisualMarkdownEditor value={outline.markdown} assetContextId={outlineProject.id} readOnly={outlineReadOnly} onSwitchToMarkdown={switchOutlineToMarkdown} onChange={(markdown) => setOutline((current) => current ? { ...current, markdown, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)} /></Suspense>}
+          {!outlineReadOnly && !outlineGenerating && <section className="outline-refinement-panel"><div><h3>和阿文一起优化</h3><p className="hint compact-hint">标题优化会生成候选供你选择；结构优化会展示相对当前提纲的逐行差异。任何建议都不会自动覆盖当前内容。</p></div><div className="outline-refinement-mode" role="tablist" aria-label="优化内容"><button type="button" role="tab" aria-selected={outlineRefinementMode === "structure"} className={outlineRefinementMode === "structure" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("structure"); setOutlineTitleSuggestions([]); }}>优化提纲结构</button><button type="button" role="tab" aria-selected={outlineRefinementMode === "title"} className={outlineRefinementMode === "title" ? "active" : "secondary-button"} onClick={() => { setOutlineRefinementMode("title"); setOutlineRefinementProposal(undefined); }}>优化文章标题</button></div>{outlineRefinementMode === "title" && <p className="hint compact-hint">当前标题：{leadingMarkdownTitle(outline?.markdown) || outlineProject?.topic || "未设置"}。选择候选后会同步更新提纲一级标题，保存提纲时才会正式更新文章标题。</p>}<textarea value={outlineRefinementInstruction} onChange={(event) => setOutlineRefinementInstruction(event.target.value)} maxLength={4000} placeholder={outlineRefinementMode === "title" ? "例如：更突出实际使用场景，面向个人开发者" : "例如：压缩成 5 个章节，保留第二章的实战案例"} disabled={outlineRefining || outlineTitleSuggesting} /><div className="inline-actions"><button type="button" className="secondary-button" onClick={() => void ((outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction)) ? suggestOutlineTitles() : refineOutline())} disabled={outlineRefining || outlineTitleSuggesting || !outlineRefinementInstruction.trim()}>{outlineRefining || outlineTitleSuggesting ? "阿文正在分析…" : outlineRefinementMode === "title" || isTitleOnlyInstruction(outlineRefinementInstruction) ? "生成标题候选" : "生成修改建议"}</button>{outlinePreviousMarkdown !== undefined && <button type="button" className="secondary-button" onClick={undoOutlineRefinement}>{outlineRegenerated ? "恢复原提纲（重新生成前）" : "撤销上次应用"}</button>}</div>{outlineRefinementMode === "title" && outlineTitleSuggestions.length > 0 && <div className="outline-refinement-proposal"><h4>标题候选</h4><div className="title-suggestion-list">{outlineTitleSuggestions.map((title) => <button type="button" className="secondary-button" onClick={() => applyOutlineTitle(title)} key={title}>{title} · 采用此标题并继续编辑</button>)}</div></div>}{outlineRefinementMode === "structure" && outlineRefinementProposal && <div className="outline-refinement-proposal"><div className="outline-refinement-proposal-heading"><h4>修改差异预览</h4><span>左侧编号为原提纲，右侧编号为建议</span></div>{outline && outlineRefinementBaseMarkdown !== undefined && outline.markdown !== outlineRefinementBaseMarkdown && <p className="outline-diff-stale" role="alert">生成建议后，原提纲又发生了修改。为避免覆盖你的新内容，请重新生成修改建议。</p>}<MarkdownDiffPreview before={outlineRefinementBaseMarkdown ?? outline?.markdown ?? ""} after={outlineRefinementProposal} /><div className="inline-actions"><button type="button" className="secondary-button" onClick={discardOutlineRefinement}>放弃建议</button><button type="button" onClick={applyOutlineRefinement} disabled={!outline || outlineRefinementBaseMarkdown === undefined || outline.markdown !== outlineRefinementBaseMarkdown}>应用建议</button></div></div>}</section>}
+          <div className="modal-actions">{outlineReadOnly ? <button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }}>关闭</button> : <>{outlineGenerating && <button type="button" className="secondary-button" onClick={() => outlineAbortRef.current?.abort()}>停止生成</button>}<button type="button" className="secondary-button" onClick={() => void saveOutlineDraft()} disabled={saving || outlineGenerating || !outline.markdown.trim()} title={outlineGenerating ? "提纲生成完成后即可保存草稿" : !outline.markdown.trim() ? "提纲内容为空，暂时无法保存" : undefined}>保存提纲草稿</button><button type="button" className="secondary-button" onClick={() => { outlineAbortRef.current?.abort(); setOutlineProject(undefined); setOutline(undefined); setOutlineGenerationStatus(""); }} disabled={saving}>放弃本次修改</button><button disabled={saving || outlineGenerating || !outline.markdown.trim() || outlineReviewBlocked}>{saving ? "正在保存…" : "确认提纲并标记为已就绪"}</button></>}</div>
         </form>
       </>}
     </Modal>}

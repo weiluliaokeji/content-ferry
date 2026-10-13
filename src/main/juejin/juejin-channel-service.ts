@@ -16,12 +16,14 @@ import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 import { convertHighlightMarkdown } from "../../shared/markdown-highlight";
 import type Database from "better-sqlite3";
 import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
+import { formatConfirmedAccountStylePrompt } from "../accounts/account-style-prompt";
 import type { CredentialVault } from "../security/credential-vault";
 import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { appendArticleSignature } from "../publishing/article-signature";
+import { findChannelCrossPromotion } from "../publishing/channel-cross-promotion";
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
@@ -306,7 +308,8 @@ export class JuejinChannelService {
             positioning: account.profile.positioning,
             audience: account.profile.targetAudience,
             writingStyle: account.profile.writingStyle,
-            prohibitedTopics: account.profile.prohibitedTopics
+            prohibitedTopics: account.profile.prohibitedTopics,
+            confirmedStyleProfile: this.accounts.getConfirmedStyleProfile(account.id)
           }),
           outputSchema: juejinDraftSchema,
           timeoutMs: 240_000,
@@ -912,16 +915,8 @@ function buildJuejinBriefContent(digestText: string, markdown: string): string {
 }
 
 function assertNoJuejinPromotion(markdown: string): void {
-  const forbidden = [
-    /https?:\/\/mp\.weixin\.qq\.com\//i,
-    /公众号原文/,
-    /延伸阅读/,
-    /关注(?:我的|本)?公众号/,
-    /扫描(?:下方|文末)?二维码/
-  ];
-  if (forbidden.some((pattern) => pattern.test(markdown))) {
-    throw new JuejinChannelError("生成的掘金渠道稿包含被禁用的公众号引流内容，请重新生成。");
-  }
+  const match = findChannelCrossPromotion(markdown);
+  if (match) throw new JuejinChannelError(`检测到疑似公众号引流内容：“${match}”。请移除该内容后再保存或发布渠道稿。`);
 }
 
 function buildJuejinRewritePrompt(input: {
@@ -931,7 +926,9 @@ function buildJuejinRewritePrompt(input: {
   audience: string;
   writingStyle: string;
   prohibitedTopics: string;
+  confirmedStyleProfile: ReturnType<AccountRepository["getConfirmedStyleProfile"]>;
 }): string {
+  const confirmedStyle = formatConfirmedAccountStylePrompt(input.confirmedStyleProfile);
   return `你是专业的技术内容编辑。请把下面主稿改写成一篇适合掘金技术读者独立阅读的中文文章。
 
 硬性要求：
@@ -945,7 +942,7 @@ function buildJuejinRewritePrompt(input: {
 账号定位：${input.positioning || "未设置"}
 目标读者：${input.audience || "掘金技术读者"}
 写作风格：${input.writingStyle || "清晰、具体、自然"}
-禁用话题/表达：${input.prohibitedTopics || "无"}
+禁用话题/表达：${input.prohibitedTopics || "无"}${confirmedStyle}
 
 主稿标题：${input.title}
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAwenToolWorkflowSession } from "./awen-tool-workflow";
+import { createAwenToolWorkflowSession, validateRecoveryPlan } from "./awen-tool-workflow";
 import type { ModelProvider } from "./model-provider";
 import type { SearchResultItem, WebSearchClient } from "./web-search";
 import type { ContentProjectRepository } from "../content/content-project-repository";
@@ -14,8 +14,56 @@ import type { AwenPracticeCommandRunner } from "../agent/awen-practice-command-r
 import type { AwenPracticeProjectEditor } from "../agent/awen-practice-project-editor";
 import type { ToolPermissionGrant } from "../agent/permission-policy";
 import type { ToolWorkflowSnapshot } from "../agent/tool-workflow-runner";
+import { fingerprintToolRequestForRetry } from "../agent/tool-workflow-runner";
 
 describe("Awen tool workflow adapter", () => {
+  it("stops a continue verdict that has no actionable recovery plan", () => {
+    const result = validateRecoveryPlan({
+      decision: "continue",
+      reason: "还有缺口。",
+      nextStep: "继续核对。",
+      unresolvedRequirements: ["需要取得本机清单。"],
+      unresolvedRequirementIds: ["R1"],
+      recoveryPlan: null,
+      evidence: []
+    });
+
+    expect(result).toMatchObject({
+      decision: "incomplete",
+      recoveryPlan: null,
+      reason: expect.stringContaining("未给出与未满足要求逐项对应的可执行恢复计划")
+    });
+  });
+
+  it("still requires an actual CLI observation for a direct author request to run a local command", async () => {
+    const commandRunner = {
+      async validate(input: unknown) { return input as { command: string; args: string[] }; },
+      getTarget(_projectId: string | undefined, _workflowId: string, command: string) { return `system-cli:${command}@practice`; }
+    } as unknown as AwenPracticeCommandRunner;
+    const reply = JSON.stringify({ reply: "已经查询完成。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null });
+    const session = createAwenToolWorkflowSession(createServices([
+      { kind: "final", text: reply }, { kind: "final", text: reply }, { kind: "final", text: reply }
+    ], undefined, undefined, undefined, undefined, [], undefined, undefined, commandRunner), {
+      practiceIntentMode: "chat",
+      directUserMessage: "请在本机运行 scoop list",
+      prompt: "请在本机运行 scoop list"
+    });
+
+    const result = await session.start();
+
+    expect(result.status).toBe("failed");
+    expect(result.events.at(-1)?.message).toContain("作者明确要求在本机运行命令，但本轮尚无本机 CLI 工具结果");
+  });
+
+  it("keeps task-scoped retries bound to operation input while allowing a fresh sandbox directory", () => {
+    const original = { toolId: "practice_run_command", action: "read" as const, target: "system-cli:scoop@scope@workflow-one", input: { command: "scoop", args: ["list"] } };
+    const retry = { ...original, target: "system-cli:scoop@scope@workflow-two" };
+
+    expect(fingerprintToolRequestForRetry(retry)).toBe(fingerprintToolRequestForRetry(original));
+    expect(fingerprintToolRequestForRetry({ ...retry, input: { command: "scoop", args: ["search", "java"] } }))
+      .not.toBe(fingerprintToolRequestForRetry(original));
+  });
+
   it("requires a fresh project-file read fingerprint before proposing an authorized write", async () => {
     const observedSha256 = "a".repeat(64);
     let writtenInput: unknown;
@@ -109,7 +157,7 @@ describe("Awen tool workflow adapter", () => {
       matchesCommandTarget(target: string | undefined, command: string) { return target === `system-cli:${command.toLowerCase()}@practice`; },
       async run(input: unknown) {
         inputSeen = input;
-        return { status: "completed", exitCode: 0, stdout: "1.2.3", stderr: "", artifacts: [] };
+        return { status: "completed", exitCode: 0, outputCaptureMode: "conpty_combined", stdout: "diagnostic-only\n1.2.3", stderr: "", artifacts: [] };
       }
     } as unknown as AwenPracticeCommandRunner;
     const session = createAwenToolWorkflowSession(createServices([
@@ -128,6 +176,8 @@ describe("Awen tool workflow adapter", () => {
     expect(pending.pendingPermission?.request.action).toBe("read");
     expect(pending.pendingPermission?.request.target).toContain("system-cli:scoop@");
     expect(promptSeen).toContain("软件无需预先登记在源码中");
+    expect(promptSeen).toContain("conpty_combined");
+    expect(promptSeen).toContain("不能因错误样式的诊断行丢弃后续有效结果");
     expect(promptSeen).not.toContain("没有合适已登记能力");
 
     const result = await session.respond({ decision: "allow", scope: "task" });
@@ -135,6 +185,41 @@ describe("Awen tool workflow adapter", () => {
     expect(result.status).toBe("completed");
     expect(inputSeen).toEqual({ command: "scoop", args: ["search", "java"] });
     expect(result.transcript.some((entry) => entry.role === "tool" && entry.content.includes("1.2.3"))).toBe(true);
+    expect(result.transcript.some((entry) => entry.role === "tool" && entry.content.includes("conpty_combined"))).toBe(true);
+  });
+
+  it("keeps the tail of a long command result visible to completion verification", async () => {
+    const tailEvidence = "corretto21-jdk 21.0.12.8.1 java";
+    const commandRunner = {
+      async validate(input: unknown) { return input as { command: string; args: string[] }; },
+      getTarget(_projectId: string | undefined, _workflowId: string, command: string) { return `system-cli:${command.toLowerCase()}@practice`; },
+      matchesCommandTarget(target: string | undefined, command: string) { return target === `system-cli:${command.toLowerCase()}@practice`; },
+      async run() { return { status: "completed", exitCode: 0, stdout: `${"irrelevant-output\n".repeat(2_000)}${tailEvidence}`, stderr: "", artifacts: [] }; }
+    } as unknown as AwenPracticeCommandRunner;
+    const prompts: string[] = [];
+    const session = createAwenToolWorkflowSession(createServices([
+      { kind: "tool_calls", calls: [{ toolId: "practice_run_command", action: "read", input: { command: "scoop", args: ["list"] } }] },
+      { kind: "final", goalAssessment: "achieved", text: JSON.stringify({ reply: "已找到本机 Java 安装项。", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }) }
+    ], undefined, undefined, (request) => { if (request.prompt) prompts.push(request.prompt); }, undefined, [], undefined, undefined, commandRunner), {
+      prompt: "统计本机已安装的 Java 包",
+      onPracticeTaskRequested: async () => "practice-task-id"
+    });
+
+    const pending = await session.start();
+    expect(pending.status).toBe("waiting_user");
+    await session.respond({ decision: "allow", scope: "task" });
+
+    const verifierPrompt = prompts.find((prompt) => prompt.includes("你是与执行阿文分开的完成条件验证器"));
+    expect(verifierPrompt).toContain("[中间工具结果已省略]");
+    expect(verifierPrompt).toContain("[user request-1]");
+    expect(verifierPrompt).toContain("[tool-1] [practice_run_command]");
+    expect(verifierPrompt).toContain(tailEvidence);
+    expect(verifierPrompt).toContain("unresolvedRequirements 必须逐项列出作者目标中仍未满足的具体要求");
+    expect(verifierPrompt).toContain("同一个缺口，即使改写了表述，也必须沿用原标识");
+    expect(verifierPrompt).toContain("只有非阻断表达偏好，不得判定 continue");
+    const planningPrompt = prompts.findLast((prompt) => prompt.includes("<tool-workflow-transcript>"));
+    expect(planningPrompt).toContain("[中间工具结果已省略]");
+    expect(planningPrompt).toContain(tailEvidence);
   });
 
   it("tries a different public method after an empty CLI result without treating it as local evidence", async () => {
@@ -168,7 +253,7 @@ describe("Awen tool workflow adapter", () => {
     expect(searchCount).toBe(1);
     expect(prompts.filter((prompt) => prompt.includes("<tool-workflow-transcript>")).length).toBe(3);
     expect(prompts[1]).toContain("运行元数据不能作为目标结果");
-    expect(prompts[1]).not.toContain("exitCode");
+    expect(prompts[1]).toContain("conpty_combined");
     expect(result.transcript.some((item) => item.role === "tool" && item.content.includes("public catalog result"))).toBe(true);
   });
 
@@ -181,6 +266,13 @@ describe("Awen tool workflow adapter", () => {
     await session.start();
     expect(requests[0]?.prependInstructions).toBe(false);
     expect(requests[0]?.prompt).toContain("工具状态 completed、进程退出码 0、或出现任何输出，都不单独代表目标完成");
+    expect(requests[0]?.prompt).toContain("先把每条未满足要求映射到作者目标中的具体要求");
+    expect(requests[0]?.prompt).toContain("核验失败恢复要求");
+    expect(requests[0]?.prompt).toContain("区分“已有观察足够但答复没用好”“引文/来源对应错误”“确实缺少新观察”“工具不可用/授权不足”四类情况");
+    expect(requests[0]?.prompt).toContain("选择与已失败方法在工具、参数、环境或来源上有实质差异");
+    expect(requests[0]?.prompt).toContain("下一轮不得只改写上一版措辞或重复“证据不足”");
+    expect(requests[0]?.prompt).toContain("只有新有效观察、作者新指示，或核验器确认先前未满足要求已减少，才算核验进展");
+    expect(requests[0]?.prompt).toContain("验证器的核验引文错误误当成目标本身缺少事实");
     expect(requests[0]?.prompt).toContain("包括公开网页检索");
     expect(requests[0]?.prompt).toContain("不能把它冒充本机状态");
     expect(requests[0]?.prompt).toContain("goalAssessment");
@@ -219,6 +311,7 @@ describe("Awen tool workflow adapter", () => {
 
   it("automatically runs a low-risk web search before the final answer", async () => {
     const searches: string[] = [];
+    const verifierSkillIds: string[] = [];
     const webSearch: WebSearchClient = {
       activeProviderId: "test",
       async search(query: string): Promise<SearchResultItem[]> {
@@ -230,20 +323,24 @@ describe("Awen tool workflow adapter", () => {
     const session = createAwenToolWorkflowSession(createServices([
       { kind: "tool_calls", calls: [{ toolId: "web_search", action: "network_read", input: { query: "ContentFerry" } }] },
       { kind: "final", text: JSON.stringify({ reply: "已核验", memorySuggestion: "", writingMemorySuggestion: "", suggestions: [], imageSearchRequest: null }) }
-    ], webSearch), { prompt: "核验 ContentFerry" });
+    ], webSearch, undefined, (request) => {
+      if (request.prompt?.includes("你是与执行阿文分开的完成条件验证器")) verifierSkillIds.push(request.skillId ?? "");
+    }), { prompt: "核验 ContentFerry" });
 
     const result = await session.start();
     expect(result.status).toBe("completed");
     expect(searches).toEqual(["ContentFerry"]);
+    expect(verifierSkillIds).toEqual(["goal-verification"]);
     expect(result.transcript.some((item) => item.role === "tool" && item.content.includes("example.com"))).toBe(true);
   });
 
   it("blocks a different tool when the author explicitly retries one failed practice step", async () => {
+    const failedRequest = { toolId: "practice_run_code", action: "write" as const, input: { runtime: "node", code: "throw new Error('x')" } };
     const session = createAwenToolWorkflowSession(createServices([
       { kind: "tool_calls", calls: [{ toolId: "web_search", action: "network_read", input: { query: "unrelated" } }] }
     ]), {
       projectId: "project-id", practiceTaskId: "practice-task-id", practiceIntentMode: "chat",
-      practiceStepRetry: { failedToolId: "practice_run_code", completedToolIds: ["list_system_tools"] },
+      practiceStepRetry: { failedToolId: failedRequest.toolId, completedToolIds: ["list_system_tools"], requestFingerprint: fingerprintToolRequestForRetry(failedRequest) },
       prompt: "只重试失败的代码运行步骤"
     });
 
@@ -251,16 +348,17 @@ describe("Awen tool workflow adapter", () => {
 
     expect(result.status).toBe("failed");
     expect(result.events.some((event) => event.type === "tool_started")).toBe(false);
-    expect(result.events.at(-1)?.message).toContain("只允许重新规划上一次失败的步骤");
+    expect(result.events.at(-1)?.message).toContain("参数与上次失败调用不完全一致");
   });
 
   it("allows only one invocation of the failed tool across the retry workflow", async () => {
+    const failedRequest = { toolId: "list_system_tools", action: "read" as const, input: { query: "python" } };
     const session = createAwenToolWorkflowSession(createServices([
       { kind: "tool_calls", calls: [{ toolId: "list_system_tools", action: "read", input: { query: "python" } }] },
       { kind: "tool_calls", calls: [{ toolId: "list_system_tools", action: "read", input: { query: "python" } }] }
     ]), {
       projectId: "project-id", practiceTaskId: "practice-task-id", practiceIntentMode: "chat",
-      practiceStepRetry: { failedToolId: "list_system_tools", completedToolIds: [] },
+      practiceStepRetry: { failedToolId: "list_system_tools", completedToolIds: [], requestFingerprint: fingerprintToolRequestForRetry(failedRequest) },
       prompt: "只重试失败的工具步骤"
     });
 
@@ -269,7 +367,24 @@ describe("Awen tool workflow adapter", () => {
     expect(result.status).toBe("failed");
     expect(result.events.filter((event) => event.type === "tool_started")).toHaveLength(1);
     expect(result.events.filter((event) => event.type === "tool_completed")).toHaveLength(1);
-    expect(result.events.at(-1)?.message).toContain("只允许重新规划上一次失败的步骤");
+    expect(result.events.at(-1)?.message).toContain("参数与上次失败调用不完全一致");
+  });
+
+  it("blocks a retry that changes the previous call parameters before execution", async () => {
+    const originalRequest = { toolId: "list_system_tools", action: "read" as const, input: { query: "python" } };
+    const session = createAwenToolWorkflowSession(createServices([
+      { kind: "tool_calls", calls: [{ ...originalRequest, input: { query: "node" } }] }
+    ]), {
+      projectId: "project-id", practiceTaskId: "practice-task-id", practiceIntentMode: "chat",
+      practiceStepRetry: { failedToolId: originalRequest.toolId, completedToolIds: [], requestFingerprint: fingerprintToolRequestForRetry(originalRequest) },
+      prompt: "只原样重试失败步骤"
+    });
+
+    const result = await session.start();
+
+    expect(result.status).toBe("failed");
+    expect(result.events.some((event) => event.type === "tool_started")).toBe(false);
+    expect(result.events.at(-1)?.message).toContain("参数与上次失败调用不完全一致");
   });
 
   it("captures a public webpage inside the article practice task and returns its Markdown asset", async () => {
@@ -652,7 +767,7 @@ function createServices(
   turns: unknown[],
   webSearch?: WebSearchClient,
   gitSources?: GitSourceService,
-  onRequest?: (request: { prependInstructions?: boolean; outputSchema?: unknown; prompt?: string }) => void,
+  onRequest?: (request: { skillId?: string; prependInstructions?: boolean; outputSchema?: unknown; prompt?: string }) => void,
   practiceCodeRunner?: AwenPracticeCodeRunner,
   grants: ToolPermissionGrant[] = [],
   practiceWebCapture?: AwenPracticeWebCapture,
@@ -662,18 +777,18 @@ function createServices(
   let index = 0;
   const provider: ModelProvider = {
     id: "test",
-    async generateStructured<T>(request: { parse(value: unknown): T; prependInstructions?: boolean; outputSchema?: unknown; prompt?: string }): Promise<{ value: T; provider: string; model: string | null; usage: null }> {
+    async generateStructured<T>(request: { skillId?: string; parse(value: unknown): T; prependInstructions?: boolean; outputSchema?: unknown; prompt?: string }): Promise<{ value: T; provider: string; model: string | null; usage: null }> {
       onRequest?.(request);
       if (request.prompt?.includes("你是与执行阿文分开的完成条件验证器")) {
         const incompleteAssessment = request.prompt.includes("<candidate-final goalAssessment=incomplete>");
         const requestText = request.prompt.match(/<author-request>\s*([\s\S]*?)\s*<\/author-request>/u)?.[1]?.trim() ?? "作者请求";
         const rawToolText = request.prompt.match(/\[原始工具观察\]\n([\s\S]*?)\n<candidate-final/u)?.[1] ?? "";
-        const toolQuote = rawToolText.match(/\[[^\]]+\]\s*(.+)/u)?.[1]?.trim();
+        const toolQuote = rawToolText.match(/\[tool-\d+\]\s+\[[^\]]+\]\s*(.+)/u)?.[1]?.trim();
         const evidence = [
           { source: "request", quote: requestText.slice(0, 80) },
           ...(!incompleteAssessment && toolQuote ? [{ source: "tool", quote: toolQuote.slice(0, 80) }] : [])
         ];
-        return { value: request.parse({ decision: incompleteAssessment ? "incomplete" : "verified", reason: incompleteAssessment ? "测试目标明确标为证据不足。" : "测试验证器确认请求范围符合测试预期。", nextStep: null, evidence }), provider: "test", model: "test-model", usage: null };
+        return { value: request.parse({ decision: incompleteAssessment ? "incomplete" : "verified", reason: incompleteAssessment ? "测试目标明确标为证据不足。" : "测试验证器确认请求范围符合测试预期。", nextStep: null, unresolvedRequirements: incompleteAssessment ? ["答复未说明限制"] : [], unresolvedRequirementIds: incompleteAssessment ? ["R1"] : [], recoveryPlan: null, evidence }), provider: "test", model: "test-model", usage: null };
       }
       return { value: request.parse(turns[index++]), provider: "test", model: "test-model", usage: null };
     },

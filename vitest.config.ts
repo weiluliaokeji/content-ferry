@@ -10,6 +10,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
+    // Electron's test subprocess can lose worker IPC channels when Vitest
+    // starts the machine-wide default worker count; keep full-suite runs bounded.
+    maxWorkers: 4,
     // 全仓 35+ 个测试文件并行 + Windows CI 2 核 runner 会让真实磁盘 IO / resvg
     // 光栅化这类重型用例远超 vitest 默认 5s 预算（v0.1.4 release 两次挂在
     // create-server 的 SVG 预览用例上；本地全量跑也偶发 content-source /

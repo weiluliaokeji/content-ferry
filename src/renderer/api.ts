@@ -47,7 +47,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function streamGeneration<T>(path: string, signal: AbortSignal, onEvent: (event: string, data: Record<string, unknown>) => void, body?: string): Promise<T> {
   try {
     const response = await fetch(`${apiBase}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: body ?? "{}", signal });
-    if (!response.ok || !response.body) throw new Error(`本地服务暂不可用（${response.status}）。`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
+      throw new Error(typeof payload?.error === "string" ? payload.error : `本地服务暂不可用（${response.status}）。`);
+    }
+    if (!response.body) throw new Error("本地服务没有返回生成进度。");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";

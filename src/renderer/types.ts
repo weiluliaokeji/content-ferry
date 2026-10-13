@@ -36,7 +36,8 @@ export type MediaAccount = { id: string; platform: AccountPlatform; displayName:
 export type ContentSourcePreview = { rootPath: string; articleCount: number; sitePageCount: number; items: Array<{ relativePath: string; title: string | null; frontMatterKeys: string[]; tags: string[]; createdAt: string | null; status: "draft" | "published" | null; archived: boolean }>; truncated: boolean; warnings: string[] };
 export type ContentSourceArticle = { relativePath: string; title: string | null; markdown: string; frontMatter: string };
 export type ContentProject = { id: string; targetAccountId: string | null; sourceRelativePath: string | null; topic: string; status: "idea"; createdAt: string; updatedAt: string; briefReady: boolean; researchReady: boolean; outlineReady: boolean; outlineDraftReady: boolean; draftReady: boolean; reviewStatus: "pending" | "needs_revision" | "approved" | null };
-export type ContentBrief = { projectId: string; topic: string; objective: string; audience: string; angle: string; sourceNotes: string; generatedFromAccountProfile: boolean };
+export type ContentBrief = { projectId: string; topic: string; objective: string; audience: string; angle: string; sourceNotes: string; draftDepthPreference: "concise" | "standard" | "detailed" | null; generatedFromAccountProfile: boolean };
+export type { DraftRunEvent } from "../shared/draft-workflow";
 export type { ResearchDepth, ResearchPlan } from "../shared/research-state";
 export type { ResearchEvidence } from "../shared/research-evidence";
 export type ResearchSource = { id: string; title: string; url: string; excerpt: string; keyClaims: string[]; sourceType: "official" | "public"; evidence?: import("../shared/research-evidence").ResearchEvidence; adoptionHistory?: import("../shared/research-evidence").ResearchAdoptionDecision[]; adoptionStatus: "recommended" | "adopted" | "rejected" | "pending_verification"; retrievedAt: string; selected: boolean; provenance?: { kind: "execution_observation"; executionRunId: string; observationId: string; status: "pending" | "accepted" | "rejected"; targetType: string; runtime: string; command: string[]; networkPolicy: string; artifacts: Array<{ path: string; sha256: string }> } };
@@ -47,7 +48,13 @@ export type ResearchTask = { id: string; projectId: string; kind: "generate" | "
 export type TemporaryResearchScope = "selection" | "paragraph" | "article";
 export type TemporaryResearchResult = { scope: TemporaryResearchScope; context: string; planMarkdown: string; sources: Array<Omit<ResearchSource, "id" | "adoptionStatus" | "selected" | "retrievedAt"> & { retrievedAt?: string; sourceUrls?: string[]; claim?: string; recommendation?: string; qualityReason?: string; freshness?: string; boundary?: string; evidenceKind?: string; evidence?: ResearchSource["evidence"] }>; provider?: string; model?: string | null };
 export type TitleSuggestion = { projectId: string; titles: string[]; historicalSeries: Array<{ name: string; count: number; examples: string[] }> };
-export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean };
+export type ContentGenerationReview = {
+  id: string; projectId: string; artifactType: "outline" | "draft" | "channel_draft"; revisionSha256: string;
+  status: "passed" | "needs_author" | "review_failed"; repairRounds: number;
+  report: { findings: Array<{ severity: "blocker" | "warning"; resolution?: "research" | "practice" | "revision" | "scope_decision"; title: string; detail: string; evidence?: string[] }>; evidenceUsed: string[]; summary: string; error?: string };
+  createdAt: string; stale: boolean;
+};
+export type ContentOutline = { projectId: string; markdown: string; generatedFromBrief: boolean; generationReview?: ContentGenerationReview | null };
 export type ContentPracticePlan = { projectId: string; markdown: string; status: "draft" | "confirmed" | "skipped"; updatedAt: string };
 export type ArticlePracticeStatus = "queued" | "assessing" | "practicing" | "waiting_permission" | "waiting_feedback" | "waiting_stop_choice" | "drafting" | "waiting_edit_confirmation" | "waiting_resume_choice" | "completed" | "completed_with_gaps" | "stopped" | "failed";
 export type ArticlePracticeTask = {
@@ -57,7 +64,7 @@ export type ArticlePracticeTask = {
   checkpoint: { workflowId?: string; uncertainSideEffect?: boolean; stepId?: string }; hasGaps: boolean;
   events?: Array<{ sequence: number; kind: string; payload: Record<string, unknown>; createdAt: string }>;
 };
-export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null };
+export type ContentDraft = { projectId: string; markdown: string; generatedFromOutline: boolean; sourceRelativePath?: string | null; recoveredCandidate?: boolean; recoveryOutlineChanged?: boolean; recoveryArticleChanged?: boolean; styleSelectionNote?: string; imageCuration?: { inserted: number; outcome: "added" | "not_added" | "unavailable"; reason: string }; generationReview?: ContentGenerationReview | null };
 export type ContentReview = { projectId: string; status: "pending" | "needs_revision" | "approved"; factChecked: boolean; accountFitChecked: boolean; aiCheckResult: string; notes: string };
 export type WechatPublishJob = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string | null; mode: "draft" | "publish" | "mass"; title: string;
@@ -69,7 +76,7 @@ export type WechatPublishJob = {
 export type CsdnChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
   generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded"; updatedAt: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string; generationReview?: ContentGenerationReview | null;
 };
 export type CsdnPublishJob = {
   id: string; accountId: string; channelDraftId: string;
@@ -83,7 +90,7 @@ export type CsdnPublishJob = {
 export type CnblogsChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
   generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded"; updatedAt: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string; generationReview?: ContentGenerationReview | null;
 };
 export type CnblogsPublishJob = {
   id: string; accountId: string; channelDraftId: string;
@@ -101,7 +108,7 @@ export type CnblogsPublishOptions = {
 export type JuejinChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
   generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded"; updatedAt: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string; generationReview?: ContentGenerationReview | null;
   suggestedCategoryId: string; suggestedTagIds: string[];
 };
 export type JuejinPublishJob = {
@@ -120,7 +127,7 @@ export type JuejinPublishOptions = {
 export type FiftyoneCtoChannelDraft = {
   id: string; accountId: string; projectId: string | null; sourceRelativePath: string; sourceHash: string;
   generationMode: "rewrite" | "source"; title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded"; updatedAt: string;
+  status: "draft" | "approved" | "superseded"; updatedAt: string; generationReview?: ContentGenerationReview | null;
 };
 export type FiftyoneCtoPublishJob = {
   id: string; accountId: string; channelDraftId: string;
@@ -212,8 +219,8 @@ export type WebSearchSettings = {
   researchProxyUrl: string;
 };
 export type ManagedSkill = {
-  id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片" | "研究";
-  enabled: boolean; provider: ModelProviderId | null; markdown: string; filePath: string;
+  id: string; name: string; description: string; category: "创作" | "改写" | "检测" | "图片" | "研究" | "评审";
+  enabled: boolean; provider: ModelProviderId | null; providerInherited: boolean; markdown: string; filePath: string;
   files: Array<{ relativePath: string; size: number }>;
 };
 export type SkillFileContent = { relativePath: string; content: string; size: number };

@@ -12,13 +12,15 @@ import { ContentPracticePlanRepository } from "../content/content-practice-plan-
 import { ContentDraftRepository } from "../content/content-draft-repository";
 import { ContentResearchError, ContentResearchRepository } from "../content/content-research-repository";
 import { ContentReviewRepository } from "../content/content-review-repository";
+import { ContentGenerationReviewRepository } from "../content/content-generation-review-repository";
 import { LocalAssetStore } from "../content/local-asset-store";
 import { RemoteImageImportService } from "../content/remote-image-import-service";
 import type { ImageReviewImageSource } from "../ai/image-candidate-review-service";
 import { ImageCandidateReviewService } from "../ai/image-candidate-review-service";
+import { DraftImageCurationService } from "../ai/draft-image-curation-service";
 import { AiContentService } from "../ai/ai-content-service";
 import { AwenConversationService } from "../ai/awen-conversation-service";
-import { createWebSearchClient, type VisibleBrowserSearch, type WebSearchClient } from "../ai/web-search";
+import { createWebSearchClient, type VisibleBrowserSearch, type WebSearchClient, type WebSearchFetch } from "../ai/web-search";
 import { ModelProviderUnavailableError, UnavailableModelProvider, type ModelProvider } from "../ai/model-provider";
 import type { CredentialVault } from "../security/credential-vault";
 import type { HealthResponse } from "../../shared/contracts";
@@ -76,6 +78,8 @@ import { getDataDirectory } from "../config/paths";
 import { AgentMemoryRepository } from "../ai/agent-memory-repository";
 import { ResearchTaskRepository } from "../content/research-task-repository";
 import { ArticlePracticeTaskRepository } from "../content/article-practice-task-repository";
+import { ArticleDraftRunRepository } from "../content/article-draft-run-repository";
+import { contentRevisionSha256 } from "../content/content-generation-review-repository";
 import { ResearchTaskRunner } from "../content/research-task-runner";
 import { ResearchRunRepository } from "../content/research-run-repository";
 import { ImageSearchHistoryRepository } from "../content/image-search-history-repository";
@@ -125,6 +129,8 @@ export function buildServer(
     visibleBrowserSearch?: VisibleBrowserSearch;
     /** 可选注入：文章对话使用的应用侧网页检索客户端（测试和桌面装配共用）。 */
     webSearch?: WebSearchClient;
+    /** 桌面端使用 Electron/Chromium 网络栈；测试可省略或注入替身。 */
+    webSearchFetchImpl?: WebSearchFetch;
     /** 可选注入：图片初审下载源（测试替换远程图片下载，桌面使用默认服务）。 */
     imageReviewImageSource?: ImageReviewImageSource;
     /** 可选注入：阿文代码实践临时工作区（测试隔离；桌面使用默认临时目录）。 */
@@ -154,10 +160,12 @@ export function buildServer(
   const contentResearch = new ContentResearchRepository(database.connection);
   const researchTasks = new ResearchTaskRepository(database.connection);
   const articlePracticeTasks = new ArticlePracticeTaskRepository(database.connection);
+  const articleDraftRuns = new ArticleDraftRunRepository(database.connection);
   const interruptedPracticeTasks = articlePracticeTasks.recoverInterrupted();
   if (interruptedPracticeTasks.length > 0) server.log.info({ count: interruptedPracticeTasks.length }, "Article practice tasks await an explicit resume choice");
   const researchRuns = new ResearchRunRepository(database.connection);
   const contentReviews = new ContentReviewRepository(database.connection);
+  const contentGenerationReviews = new ContentGenerationReviewRepository(database.connection);
   const remoteImages = new RemoteImageImportService(assetStore, contentSources);
   const wechat = new WechatPublishingService(database.connection, accounts, vault, assetStore, contentSources);
   const wechatCallbacks = new WechatCallbackService(database.connection, accounts, vault);
@@ -175,7 +183,8 @@ export function buildServer(
   const webSearch = options?.webSearch ?? createWebSearchClient({
     getTavilyApiKey,
     getResearchProxyUrl,
-    visibleBrowserSearch: options?.visibleBrowserSearch
+    visibleBrowserSearch: options?.visibleBrowserSearch,
+    systemFetchImpl: options?.webSearchFetchImpl
   });
   const imageSearchHistory = new ImageSearchHistoryRepository(database.connection);
   const effectiveModelProvider = skills
@@ -188,7 +197,8 @@ export function buildServer(
     )
     : modelProvider;
   const imageCandidateReview = new ImageCandidateReviewService(options?.imageReviewImageSource ?? remoteImages, effectiveModelProvider, modelConnections, skills);
-  const aiContent = new AiContentService(database.connection, effectiveModelProvider, contentSources);
+  const draftImageCuration = new DraftImageCurationService(effectiveModelProvider, webSearch, imageCandidateReview, remoteImages, contentSources);
+  const aiContent = new AiContentService(database.connection, effectiveModelProvider, contentSources, webSearch);
   const publishTasks = new PublishTaskModule(database.connection);
   const csdnChannels = new CsdnChannelService(database.connection, accounts, contentSources, effectiveModelProvider, assetStore, publishTasks);
   const cnblogsChannels = options?.cnblogsChannel
@@ -220,6 +230,46 @@ export function buildServer(
   const toolWorkflows = new ToolWorkflowRepository(database.connection);
   const interruptedToolWorkflows = toolWorkflows.recoverInterrupted();
   if (interruptedToolWorkflows > 0) server.log.warn({ interruptedToolWorkflows }, "Agent tool workflows marked interrupted after restart");
+  const interruptedDraftRuns = articleDraftRuns.listInterrupted();
+  for (const run of interruptedDraftRuns) {
+    const project = contentProjects.require(run.projectId);
+    let currentArticleRevisionSha256: string | null = null;
+    let currentOutlineRevisionSha256: string | null = null;
+    if (project.sourceRelativePath) {
+      try { currentArticleRevisionSha256 = contentRevisionSha256(contentSources.getArticle(project.workspaceId, project.sourceRelativePath).markdown); }
+      catch { /* Recovery records the interruption even when an article file is temporarily unavailable. */ }
+    }
+    try { currentOutlineRevisionSha256 = contentRevisionSha256(contentOutlines.get(run.projectId).markdown); }
+    catch { /* Older projects may not have a current outline to compare. */ }
+    const adoptedResearchCardIds = contentResearch.get(run.projectId).sources
+      .filter((source) => source.adoptionStatus === "adopted").map((source) => source.id);
+    const practiceTask = (run.checkpoint.practiceTaskId
+      ? articlePracticeTasks.listRecent(run.projectId, 50).find((task) => task.id === run.checkpoint.practiceTaskId)
+      : undefined) ?? articlePracticeTasks.findActive(run.projectId) ?? undefined;
+    let recoveryPractice: Parameters<typeof articleDraftRuns.reconcileInterrupted>[1]["practiceTask"];
+    if (practiceTask) {
+      const workflowId = practiceTask.checkpoint.workflowId;
+      let workflowStatus: string | undefined;
+      let authorizationState: "not_pending" | "requires_reconfirmation" | "workflow_unavailable" = "not_pending";
+      if (workflowId) {
+        try {
+          const workflow = toolWorkflows.require(workflowId).snapshot;
+          workflowStatus = workflow.status;
+          authorizationState = workflow.pendingPermission ? "requires_reconfirmation" : "not_pending";
+        } catch {
+          authorizationState = "workflow_unavailable";
+        }
+      }
+      recoveryPractice = { id: practiceTask.id, status: practiceTask.status, ...(workflowStatus ? { workflowStatus } : {}), authorizationState };
+    }
+    articleDraftRuns.reconcileInterrupted(run.id, {
+      currentArticleRevisionSha256,
+      currentOutlineRevisionSha256,
+      adoptedResearchCardIds,
+      ...(recoveryPractice ? { practiceTask: recoveryPractice } : {})
+    });
+  }
+  if (interruptedDraftRuns.length > 0) server.log.info({ count: interruptedDraftRuns.length }, "Interrupted article draft runs were reconciled against current author data");
   const gitSources = new GitSourceService(execution, executionRuns, () => loadAppSettings().agentWorkspaceDir);
   const articleChat = new AwenConversationService(
     database.connection,
@@ -423,6 +473,7 @@ export function buildServer(
     contentDrafts,
     contentResearch,
     contentReviews,
+    contentGenerationReviews,
     remoteImages,
     wechat,
     wechatCallbacks,
@@ -432,6 +483,7 @@ export function buildServer(
     webSearch,
     imageSearchHistory,
     imageCandidateReview,
+    draftImageCuration,
     modelConnections,
     skills,
     aiAuditLog,
@@ -451,6 +503,7 @@ export function buildServer(
     awenPracticeWebCapture,
     researchTasks,
     articlePracticeTasks,
+    articleDraftRuns,
     researchRuns,
     researchTaskRunner,
     systemTools,
@@ -516,9 +569,10 @@ export async function createServer(
   visibleBrowserSearch?: VisibleBrowserSearch,
   csdnBrowserConfirm?: (jobId: string) => Promise<CsdnBrowserConfirmResult | null>,
   juejinChannel?: JuejinChannelService,
-  buildId?: string
+  buildId?: string,
+  webSearchFetchImpl?: WebSearchFetch
 ) {
-  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, buildId, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel, runMigrations: true });
+  const server = buildServer(startedAt, database, vault, modelProvider, assetStore, { logFilePath, buildId, skillsDirectory, visibleBrowserSearch, csdnBrowserConfirm, juejinChannel, webSearchFetchImpl, runMigrations: true });
   await server.listen({ host: "127.0.0.1", port: 4317 });
   return server;
 }

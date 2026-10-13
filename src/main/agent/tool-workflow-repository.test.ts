@@ -102,7 +102,7 @@ describe("ToolWorkflowRepository", () => {
     database.close();
   });
 
-  it("reconstructs the consecutive no-progress guard from persisted workflow events", () => {
+  it("reconstructs the consecutive no-progress guard and resets it after a new author direction", () => {
     const database = openInMemoryDatabase();
     const repository = new ToolWorkflowRepository(database.connection);
     const snapshot: ToolWorkflowSnapshot = {
@@ -127,11 +127,15 @@ describe("ToolWorkflowRepository", () => {
     const progressed: ToolWorkflowSnapshot = {
       ...snapshot,
       events: [...snapshot.events, {
-        id: "three", type: "tool_completed", at: "2026-09-28T00:00:02.000Z", message: "有效观察", data: { noProgress: false }
+        id: "three", type: "user_instruction_added", at: "2026-09-28T00:00:02.000Z", message: "换一种查询方法"
       }]
     };
     repository.save(progressed, { contextKey: "project:demo" });
     expect(repository.require(snapshot.workflowId).snapshot.consecutiveNoProgressCalls).toBe(0);
+    repository.save({ ...progressed, events: [...progressed.events, {
+      id: "four", type: "tool_failed", at: "2026-09-28T00:00:03.000Z", message: "新方法也失败", data: { noProgress: true }
+    }] }, { contextKey: "project:demo" });
+    expect(repository.require(snapshot.workflowId).snapshot.consecutiveNoProgressCalls).toBe(1);
     database.close();
   });
 });

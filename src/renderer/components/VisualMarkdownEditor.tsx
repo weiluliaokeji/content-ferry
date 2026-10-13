@@ -54,6 +54,8 @@ export function VisualMarkdownEditor({
   onAcceptSuggestion,
   onRejectSuggestion,
   locateSuggestionRequest,
+  researchLinks = [],
+  locateResearchRequest,
   minHeight = 420,
   readOnly = false
 }: {
@@ -80,6 +82,8 @@ export function VisualMarkdownEditor({
   onAcceptSuggestion?: (id: string) => void;
   onRejectSuggestion?: (id: string) => void;
   locateSuggestionRequest?: { id: string; original: string; replacement: string; sequence: number };
+  researchLinks?: Array<{ id: string; claimText: string; status: "pending_author" | "confirmed" | "rejected" | "needs_recheck" }>;
+  locateResearchRequest?: { claimText: string; sequence: number };
   minHeight?: number;
   readOnly?: boolean;
 }) {
@@ -535,6 +539,38 @@ export function VisualMarkdownEditor({
       });
     };
   }, [suggestions, editorReady]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    const editorRoot = root?.querySelector<HTMLElement>(".ProseMirror");
+    if (!root || !editorRoot || !editorReady) return;
+    const marked = new Set<HTMLElement>();
+    for (const link of researchLinks) {
+      if (link.status !== "pending_author" && link.status !== "needs_recheck" && link.status !== "rejected") continue;
+      const range = findUniqueTextRange(editorRoot, suggestionAnchorCandidates(link.claimText));
+      const block = range ? closestSuggestionBlock(range.startContainer, root) : undefined;
+      if (!block) continue;
+      block.classList.add("research-source-pending");
+      block.title = link.status === "needs_recheck" ? "来源关联需要重新核对"
+        : link.status === "rejected" ? "依据已拒绝，请修改或删去这处正文" : "这处网页事实待作者确认";
+      marked.add(block);
+    }
+    return () => marked.forEach((block) => { block.classList.remove("research-source-pending"); block.removeAttribute("title"); });
+  }, [editorReady, researchLinks, value]);
+
+  useEffect(() => {
+    if (!locateResearchRequest || !editorReady) return;
+    const root = rootRef.current;
+    const editorRoot = root?.querySelector<HTMLElement>(".ProseMirror");
+    if (!root || !editorRoot) return;
+    const range = findUniqueTextRange(editorRoot, suggestionAnchorCandidates(locateResearchRequest.claimText));
+    const block = range ? closestSuggestionBlock(range.startContainer, root) : undefined;
+    if (!block) return;
+    block.scrollIntoView({ behavior: "smooth", block: "center" });
+    block.classList.add("awen-suggestion-target-located");
+    const timer = window.setTimeout(() => block.classList.remove("awen-suggestion-target-located"), 1600);
+    return () => window.clearTimeout(timer);
+  }, [editorReady, locateResearchRequest]);
 
   useEffect(() => {
     const request = locateSuggestionRequest;

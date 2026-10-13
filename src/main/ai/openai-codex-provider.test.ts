@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { consumeStructuredStream, mapCodexEventToStatus } from "./openai-codex-provider";
+import { consumeStructuredStream, mapCodexEventToStatus, reasoningEffortForTask } from "./openai-codex-provider";
 import type { ThreadEvent } from "@openai/codex-sdk";
 
 async function* toAsyncIterable(events: ThreadEvent[]): AsyncGenerator<ThreadEvent> {
@@ -22,6 +22,21 @@ describe("mapCodexEventToStatus", () => {
     expect(mapCodexEventToStatus({ type: "item.started", item: { id: "r", type: "reasoning", text: "x" } } as ThreadEvent)).toBe("正在分析并规划内容…");
     expect(mapCodexEventToStatus({ type: "item.completed", item: { id: "a", type: "agent_message", text: "x" } } as ThreadEvent)).toBe("正在整理可追溯内容…");
     expect(mapCodexEventToStatus({ type: "turn.started" })).toBe("正在理解任务要求…");
+  });
+});
+
+describe("reasoningEffortForTask", () => {
+  it("uses stronger reasoning for autonomous workflow, outline, draft, revision, and independent review tasks", () => {
+    expect(reasoningEffortForTask("outline")).toBe("medium");
+    expect(reasoningEffortForTask("draft")).toBe("high");
+    expect(reasoningEffortForTask("revision")).toBe("high");
+    expect(reasoningEffortForTask("agent_workflow")).toBe("high");
+    expect(reasoningEffortForTask("content_review")).toBe("high");
+  });
+
+  it("keeps routine assistant and selection tasks at the existing medium effort", () => {
+    expect(reasoningEffortForTask("assistant")).toBe("medium");
+    expect(reasoningEffortForTask("selection")).toBe("medium");
   });
 });
 

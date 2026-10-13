@@ -17,6 +17,7 @@ import {
 import { ToolRunner } from "../agent/tool-runner";
 import {
   buildPlannerPrompt,
+  formatResearchSearchHistory,
   buildResearchSynthesisPrompt,
   buildResearchFollowUpSynthesisPrompt,
   type ResearchCard,
@@ -28,7 +29,7 @@ import {
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { createHash, randomUUID } from "node:crypto";
-import type { ResearchDepth, ResearchExecution } from "../../shared/research-state";
+import type { ResearchDepth, ResearchExecution, ResearchSearchAttempt } from "../../shared/research-state";
 import type { ResearchEvidence, ResearchEvidenceSnapshot } from "../../shared/research-evidence";
 import { loadAppSettings } from "../config/first-run";
 
@@ -115,11 +116,31 @@ export class ConfiguredModelProvider implements ModelProvider {
     meta.provider = skill.provider ?? "openai_codex";
     meta.model = this.modelIdFor(meta.provider);
     if (skill.provider === "openai_codex" || !skill.provider) {
-      return this.withAudit(meta, async () => {
-        if (!this.codexProvider.generateMarkdownStream) throw new ModelProviderUnavailableError("当前 Codex 连接不支持流式生成。");
-        const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${this.skills.instructionsFor(skillId, request.prompt)}\n\n本次任务：\n${request.prompt}` };
-        return this.codexProvider.generateMarkdownStream!({ ...enriched, modelId: this.connections.get("openai_codex").modelId });
+      if (this.codexProvider.generateMarkdownStream) {
+        return this.withAudit(meta, async () => {
+          const enriched = { ...request, prompt: `请遵循以下 ContentFerry 技能说明：\n\n${this.skills.instructionsFor(skillId, request.prompt)}\n\n本次任务：\n${request.prompt}` };
+          return this.codexProvider.generateMarkdownStream!({ ...enriched, modelId: this.connections.get("openai_codex").modelId });
+        });
+      }
+      request.onStatus?.("当前模型不支持流式输出，正在改用普通生成模式…");
+      const generated = await this.generateStructured({
+        task: request.task,
+        skillId,
+        prompt: request.prompt,
+        outputSchema: { type: "object", properties: { markdown: { type: "string" } }, required: ["markdown"], additionalProperties: false },
+        parse: (value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)
+            || typeof (value as Record<string, unknown>).markdown !== "string") {
+            throw new Error("模型没有返回 Markdown 正文。");
+          }
+          return { markdown: (value as { markdown: string }).markdown };
+        },
+        timeoutMs: request.timeoutMs,
+        signal: request.signal,
+        onStatus: request.onStatus
       });
+      request.onDelta(generated.value.markdown);
+      return generated;
     }
     const generated = await this.generateStructured({
       task: request.task,
@@ -170,6 +191,7 @@ export class ConfiguredModelProvider implements ModelProvider {
    *  universal path; scheme A (model tool-calling) is used when the selected
    *  provider supports tools, and falls back to scheme B if it stalls. */
   async webResearch(context: WebResearchContext, onStatus?: (message: string) => void, options?: WebResearchOptions): Promise<GenerateStructuredResult<ResearchCard>> {
+    options?.signal?.throwIfAborted();
     const skillId = "web-research";
     const correlationId = randomUUID();
     const meta: AuditMeta = { task: "research-orchestration", skillId, prompt: JSON.stringify(context), correlationId };
@@ -187,20 +209,32 @@ export class ConfiguredModelProvider implements ModelProvider {
     const instructions = this.skills.instructionsFor(skillId, "");
     const onStatusHook = onStatus ?? (() => {});
     const maxRounds = RESEARCH_ROUNDS_BY_DEPTH[options?.depth ?? "balanced"];
+    // Keep one round available for recovery when body extraction reveals that
+    // the search results were not actually usable evidence.
+    const initialSearchRounds = maxRounds > 1 ? maxRounds - 1 : maxRounds;
 
     const accumulated: SearchSourceForPrompt[] = [];
+    const searchHistory: ResearchSearchAttempt[] = [];
+    for (const attempt of [...(context.searchHistory ?? []), ...(options?.previousSearches ?? [])]) {
+      const normalized = normalizeResearchQuery(attempt.query);
+      if (!searchHistory.some((item) => normalizeResearchQuery(item.query) === normalized)) searchHistory.push(attempt);
+    }
+    const researchContext = { ...context, searchHistory };
     let rounds = 0;
 
     if (this.providerSupportsTools(provider)) {
       try {
-        rounds += await this.gatherSchemeA(provider, context, accumulated, onStatusHook, maxRounds, correlationId);
+        rounds += await this.gatherSchemeA(provider, researchContext, accumulated, onStatusHook, initialSearchRounds, correlationId, options?.signal,
+          (attempt) => options?.onSearchCompleted?.(attempt));
       } catch (error) {
+        options?.signal?.throwIfAborted();
         const reason = error instanceof Error ? error.message.slice(0, 160) : "未知错误";
         onStatusHook(`工具调用检索未成功（${reason}），改用规划式检索继续补充资料…`);
       }
     }
-    if (accumulated.length === 0 || (context.coverageGaps?.length && rounds < maxRounds)) {
-      rounds += await this.gatherSchemeB(provider, context, accumulated, onStatusHook, maxRounds - rounds, correlationId);
+    if (accumulated.length === 0 || (context.coverageGaps?.length && rounds < initialSearchRounds)) {
+      rounds += await this.gatherSchemeB(provider, researchContext, accumulated, onStatusHook, initialSearchRounds - rounds, correlationId, options?.signal,
+        (attempt) => options?.onSearchCompleted?.(attempt));
     }
 
     const specifiedSources = (context.specifiedSourceUrls ?? []).map((url) => ({
@@ -211,16 +245,52 @@ export class ConfiguredModelProvider implements ModelProvider {
     }));
     // Put user-required URLs first so they are not delayed behind a long list
     // of discovered candidates.
-    const candidates = [...specifiedSources, ...accumulated];
-    if (candidates.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("联网检索未获取到任何可用资料，请检查网络或配置搜索服务后重试。"));
+    let candidates = [...specifiedSources, ...accumulated];
+    if (candidates.length === 0 && rounds < maxRounds) {
+      researchContext.coverageGaps = [
+        ...(researchContext.coverageGaps ?? []),
+        "前序搜索没有返回候选网页；请尝试不同关键词或官方资料入口，不要重复既有查询。"
+      ];
+      onStatusHook("当前查询没有找到候选网页，正在尝试另一种检索方向…");
+      rounds += await this.gatherSchemeB(provider, researchContext, accumulated, onStatusHook, maxRounds - rounds, correlationId, options?.signal,
+        (attempt) => options?.onSearchCompleted?.(attempt), rounds, maxRounds);
+      candidates = [...specifiedSources, ...accumulated];
+    }
+    if (candidates.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError(
+      rounds >= maxRounds
+        ? "联网检索没有找到候选网页；已用完本次检索轮次，请调整主题或稍后重试。"
+        : "联网检索没有找到候选网页，规划器也没有可用的新检索方向。请补充关键词或指定来源后重试。"
+    ));
 
-    const verifiedSources = await this.extractResearchSources(candidates, onStatusHook);
-    if (verifiedSources.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError("已找到搜索候选，但所有网页正文提取均失败；请检查网络、搜索服务或指定来源后重试。"));
+    const extraction = await this.extractResearchSources(candidates, onStatusHook, options?.signal);
+    let verifiedSources = extraction.verified;
+    if (extraction.failures.length > 0 && rounds < maxRounds) {
+      // Search snippets and extraction errors are never promoted to facts.
+      // They only tell the planner to pivot to a different source/query.
+      researchContext.coverageGaps = [
+        ...(researchContext.coverageGaps ?? []),
+        `上一轮有 ${extraction.failures.length} 个候选网页未能取得可核验正文；请改换来源或查询方向，不能使用搜索摘要代替正文。`
+      ];
+      const attemptedUrls = new Set(candidates.map((source) => canonicalUrl(source.url)));
+      onStatusHook("候选网页正文未能全部核验，正在调整检索方向并寻找其他来源…");
+      rounds += await this.gatherSchemeB(provider, researchContext, accumulated, onStatusHook, maxRounds - rounds, correlationId, options?.signal,
+        (attempt) => options?.onSearchCompleted?.(attempt), rounds, maxRounds);
+      const recoveryCandidates = accumulated.filter((source) => !attemptedUrls.has(canonicalUrl(source.url)));
+      const recovery = await this.extractResearchSources(recoveryCandidates, onStatusHook, options?.signal);
+      verifiedSources = [...verifiedSources, ...recovery.verified];
+      extraction.failures.push(...recovery.failures);
+    }
+    if (verifiedSources.length === 0) return this.failResearch(meta, new ModelProviderUnavailableError(
+      extraction.failures.length
+        ? `已找到搜索候选，但所有网页正文提取均失败；系统已尝试调整检索方向，仍未取得可核验正文。请检查网络、搜索服务或指定来源后重试。`
+        : "联网检索没有找到可核验的网页正文，请调整主题或检查搜索服务后重试。"
+    ));
     const synthesisPrompt = options?.instruction
       ? buildResearchFollowUpSynthesisPrompt(context, verifiedSources, options.instruction, instructions)
       : buildResearchSynthesisPrompt(context, verifiedSources, instructions);
     meta.retrieval = { rounds, sources: verifiedSources.length, provider: this.webSearch.activeProviderId };
-    const generated = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId);
+    const generated = await this.dispatchResearchSynthesis(provider, synthesisPrompt, onStatusHook, meta.retrieval, correlationId, options?.signal);
+    options?.signal?.throwIfAborted();
     const verifiedUrls = new Set(verifiedSources.map((source) => canonicalUrl(source.url)));
     const specifiedSourceResults = (context.specifiedSourceUrls ?? []).map((url) => ({
       url,
@@ -233,28 +303,40 @@ export class ConfiguredModelProvider implements ModelProvider {
   // --- research retrieval schemes -------------------------------------------
 
   /** Scheme B: app drives the loop; the model returns a JSON plan each round. */
-  private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string): Promise<number> {
+  private async gatherSchemeB(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string, signal?: AbortSignal,
+    onSearchCompleted?: (attempt: ResearchSearchAttempt) => void, roundOffset = 0, totalRoundBudget = maxRounds): Promise<number> {
     let rounds = 0;
-    const gaps = [...(context.coverageGaps ?? [])];
-    for (let round = 1; round <= maxRounds; round++) {
+    const attemptedQueries = new Set((context.searchHistory ?? []).map((item) => normalizeResearchQuery(item.query)));
+    for (let localRound = 1; localRound <= maxRounds; localRound++) {
+      signal?.throwIfAborted();
+      const round = roundOffset + localRound;
       onStatus(`第 ${round} 轮研究：规划检索方向…`);
-      const plan = await this.dispatchPlanner(provider, context, accumulated, round, maxRounds, onStatus, correlationId);
-      const gap = gaps.shift();
-      if (plan.action === "done" && !gap) break;
-      const query = gap ? coverageQuery(context.topic, gap) : (plan.query ?? "").trim();
+      const plan = await this.dispatchPlanner(provider, context, accumulated, round, totalRoundBudget, onStatus, correlationId, signal);
+      if (plan.action === "done") break;
+      const query = (plan.query ?? "").trim();
       if (!query) break;
+      const normalizedQuery = normalizeResearchQuery(query);
+      if (attemptedQueries.has(normalizedQuery)) {
+        onStatus(`规划器再次提出已执行过的检索「${query}」；未重复搜索，本轮补研停止。`);
+        break;
+      }
+      attemptedQueries.add(normalizedQuery);
       rounds++;
       onStatus(`第 ${round} 轮研究：检索「${query}」`);
       const results = await this.webSearch!.search(query);
+      signal?.throwIfAborted();
       onStatus(`第 ${round} 轮研究：找到 ${results.length} 条资料`);
-      for (const r of results) accumulated.push({ title: r.title, url: r.url, snippet: r.snippet, sourceType: "public" });
+      appendUniqueResearchCandidates(accumulated, results);
+      context.searchHistory?.push({ query, resultCount: results.length, resultUrls: results.slice(0, 8).map((result) => result.url) });
+      onSearchCompleted?.({ query, resultCount: results.length, resultUrls: results.slice(0, 8).map((result) => result.url) });
     }
     return rounds;
   }
 
   /** Scheme A: the model calls our web_search tool; we execute it and feed
    *  results back, looping until the model stops calling tools. */
-  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string): Promise<number> {
+  private async gatherSchemeA(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], onStatus: (m: string) => void, maxRounds: number, correlationId: string, signal?: AbortSignal,
+    onSearchCompleted?: (attempt: ResearchSearchAttempt) => void): Promise<number> {
     const tool = {
       name: "web_search",
       description: "检索网页，返回相关结果的标题、URL 与摘要，用于为文章补研查找官方与公开资料。",
@@ -262,16 +344,22 @@ export class ConfiguredModelProvider implements ModelProvider {
     };
     let rounds = 0;
     await this.generateWithTools(provider, {
-      system: `你是阿文，正在为一篇中文自媒体文章做联网补研。你拥有 web_search 工具，主动调用它查找官方与公开资料，必要时多次检索，覆盖事实、限制、反例与使用路径。资料足够时，停止调用工具，用一段中文说明本次补研结论。\n文章主题：${context.topic}\n写作目标：${context.objective}\n核心角度：${context.angle}`,
-      user: `请开始检索：主题「${context.topic}」`,
+      system: `你是阿文，正在为一篇中文自媒体文章做联网补研。你拥有 web_search 工具，主动调用它查找官方与公开资料，必要时多次检索，覆盖事实、限制、反例与使用路径。不得重复已尝试的相同或实质等价查询；结果不足时要换明确不同的来源或检索方向。资料足够或没有有意义的新方法时，停止调用工具并说明缺口。检索词应提炼文章主题、核心角度和待补缺口中的实体及问题；不要把“编写/写一篇/公众号文章”等写作指令拼进查询。\n文章主题：${context.topic}\n作者原始创作要求（仅用于理解范围）：${context.creationIdea ?? context.topic}\n写作目标：${context.objective}\n核心角度：${context.angle}\n已尝试查询（仅用于避免重复，不是核验依据）：\n${formatResearchSearchHistory(context.searchHistory ?? [])}`,
+      user: `请围绕文章主题「${context.topic}」开始检索；按实际缺口构造具体查询词。`,
       tools: [tool],
       maxRounds,
       onStatus,
       correlationId,
+      signal,
       toolHandler: async (name, args) => {
+        signal?.throwIfAborted();
         if (name !== "web_search") return "未知工具。";
         const query = String((args as { query?: string }).query ?? "").trim();
         if (!query) return "缺少检索词。";
+        const normalizedQuery = normalizeResearchQuery(query);
+        if ((context.searchHistory ?? []).some((item) => normalizeResearchQuery(item.query) === normalizedQuery)) {
+          return "本任务的当前或前序补研已经执行过相同查询；不要再次调用，请换成确实不同的检索方法或结束并如实说明缺口。";
+        }
         rounds++;
         onStatus(`第 ${rounds} 轮检索：正在搜索「${query}」`);
         const execution = await this.researchTools.run({
@@ -281,17 +369,21 @@ export class ConfiguredModelProvider implements ModelProvider {
           defaultAllow: true,
           input: { query }
         }, []);
+        signal?.throwIfAborted();
         if (execution.status !== "completed") return execution.status === "denied" ? "当前任务未获联网检索授权。" : "等待用户授权联网检索。";
         const results = execution.output as Awaited<ReturnType<WebSearchClient["search"]>>;
         onStatus(`第 ${rounds} 轮检索：找到 ${results.length} 条资料`);
-        for (const r of results) accumulated.push({ title: r.title, url: r.url, snippet: r.snippet, sourceType: "public" });
+        appendUniqueResearchCandidates(accumulated, results);
+        const attempt = { query, resultCount: results.length, resultUrls: results.slice(0, 8).map((result) => result.url) };
+        context.searchHistory?.push(attempt);
+        onSearchCompleted?.(attempt);
         return JSON.stringify(results.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })));
       }
     });
     return rounds;
   }
 
-  private async extractResearchSources(candidates: SearchSourceForPrompt[], onStatus: (message: string) => void): Promise<SearchSourceForPrompt[]> {
+  private async extractResearchSources(candidates: SearchSourceForPrompt[], onStatus: (message: string) => void, signal?: AbortSignal): Promise<{ verified: SearchSourceForPrompt[]; failures: string[] }> {
     const unique = [...new Map(candidates.map((source) => [canonicalUrl(source.url), source])).values()];
     const verified = new Array<SearchSourceForPrompt | undefined>(unique.length);
     const failed = new Array<string | undefined>(unique.length);
@@ -300,11 +392,13 @@ export class ConfiguredModelProvider implements ModelProvider {
     let nextIndex = 0;
     const worker = async (): Promise<void> => {
       while (true) {
+        if (signal?.aborted) return;
         const index = nextIndex++;
         const source = unique[index];
         if (!source) return;
         try {
           const content = (await this.webSearch!.extract(source.url)).content.trim();
+          signal?.throwIfAborted();
           if (!content) failed[index] = `${source.title}（正文为空）`;
           else {
             const capturedAt = new Date().toISOString();
@@ -324,14 +418,15 @@ export class ConfiguredModelProvider implements ModelProvider {
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, unique.length) }, () => worker()));
+    signal?.throwIfAborted();
     const verifiedSources = verified.filter((source): source is SearchSourceForPrompt => Boolean(source));
     const failedSources = failed.filter((message): message is string => Boolean(message));
     if (failedSources.length) onStatus(`有 ${failedSources.length} 个网页正文核验失败，可重试：${failedSources.slice(0, 3).join("；")}${failedSources.length > 3 ? "；其余失败已省略" : ""}`);
     onStatus(`已核验 ${verifiedSources.length} 个网页正文。`);
-    return verifiedSources;
+    return { verified: verifiedSources, failures: failedSources };
   }
 
-  private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string): Promise<{ action: "search" | "done"; query?: string }> {
+  private async dispatchPlanner(provider: string, context: WebResearchContext, accumulated: SearchSourceForPrompt[], round: number, maxRounds: number, onStatus: (m: string) => void, correlationId: string, signal?: AbortSignal): Promise<{ action: "search" | "done"; query?: string }> {
     const prompt = buildPlannerPrompt(context, accumulated, round, maxRounds);
     const request: GenerateStructuredRequest<{ action: string; query?: string }> = {
       task: "research",
@@ -344,6 +439,7 @@ export class ConfiguredModelProvider implements ModelProvider {
         additionalProperties: false
       },
       timeoutMs: 60_000,
+      signal,
       parse: (value) => value as { action: string; query?: string },
       prependInstructions: true,
       onStatus
@@ -356,13 +452,14 @@ export class ConfiguredModelProvider implements ModelProvider {
     return { action: value.action === "done" ? "done" : "search", query: value.query };
   }
 
-  private async dispatchResearchSynthesis(provider: string, prompt: string, onStatus: (m: string) => void, retrieval: { rounds: number; sources: number; provider: string | null } | undefined, correlationId: string): Promise<GenerateStructuredResult<ResearchCard>> {
+  private async dispatchResearchSynthesis(provider: string, prompt: string, onStatus: (m: string) => void, retrieval: { rounds: number; sources: number; provider: string | null } | undefined, correlationId: string, signal?: AbortSignal): Promise<GenerateStructuredResult<ResearchCard>> {
     const request: GenerateStructuredRequest<ResearchCard> = {
       task: "research",
       skillId: "web-research",
       prompt,
       outputSchema: RESEARCH_SCHEMA as object,
       timeoutMs: 240_000,
+      signal,
       parse: (value) => researchOutput.parse(value) as ResearchCard,
       prependInstructions: false,
       onStatus
@@ -389,6 +486,7 @@ export class ConfiguredModelProvider implements ModelProvider {
       maxRounds?: number;
       onStatus: (message: string) => void;
       correlationId: string;
+      signal?: AbortSignal;
     }
   ): Promise<{ finalText: string }> {
     const connection = this.connections.get(provider);
@@ -400,6 +498,7 @@ export class ConfiguredModelProvider implements ModelProvider {
     ];
     const maxRounds = params.maxRounds ?? RESEARCH_ROUNDS_BY_DEPTH.balanced;
     for (let i = 0; i < maxRounds; i++) {
+      params.signal?.throwIfAborted();
       const startedAt = Date.now();
       const prompt = JSON.stringify({ messages, tools: params.tools, tool_choice: "auto" });
       let responseText: string | null = null;
@@ -410,7 +509,7 @@ export class ConfiguredModelProvider implements ModelProvider {
           method: "POST",
           headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
           body: JSON.stringify({ model: connection.modelId, messages, tools: params.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: "auto" }),
-          signal: AbortSignal.timeout(180_000)
+          signal: params.signal ? AbortSignal.any([AbortSignal.timeout(180_000), params.signal]) : AbortSignal.timeout(180_000)
         });
         responseText = await res.text();
         if (!res.ok) throw new WebSearchError(`${connection.displayName} 工具调用失败（HTTP ${res.status}）。`);
@@ -597,19 +696,25 @@ export class ConfiguredModelProvider implements ModelProvider {
         content: `${request.prompt}\n\n返回值必须符合此 JSON Schema：\n${JSON.stringify(request.outputSchema)}`
       }
     ];
-    const buildBody = (withSchema: boolean, compactRetry = false): string => JSON.stringify({
+    type DraftRetryMode = "incomplete_json" | "near_output_budget";
+    const buildBody = (withSchema: boolean, retryMode?: DraftRetryMode): string => JSON.stringify({
       model: connection.modelId,
-      messages: compactRetry
+      messages: retryMode
         ? [...messages, {
           role: "user",
-          content: "上一次输出不是完整 JSON。请从头重新输出一个完整、紧凑的 JSON 对象；不要解释、不要 Markdown、不要展开推理。资料卡数量由独立证据决定，同质来源必须合并；每条摘要不超过 120 个汉字，每条最多 2 个 keyClaims。"
+          content: retryMode === "near_output_budget"
+            ? nearOutputBudgetRetryInstruction()
+            : incompleteJsonRetryInstruction(request.task)
         }]
         : messages,
       // Do not leave the provider's output budget implicit. In particular,
       // free OpenAI-compatible endpoints can close a long structured request
       // instead of returning a useful 4xx response when their default output
       // budget is exceeded.
-      max_tokens: maxTokensForTask(request.task),
+      // A truncated full-article JSON cannot be repaired by repeating the same
+      // output limit. Let the second attempt use more room; an endpoint that
+      // cannot provide it should fail visibly instead of silently shrinking prose.
+      max_tokens: retryMode && request.task === "draft" ? 12_000 : maxTokensForTask(request.task),
       ...(withSchema ? {
         response_format: {
           type: "json_schema",
@@ -617,8 +722,8 @@ export class ConfiguredModelProvider implements ModelProvider {
         }
       } : {})
     });
-    const post = async (withSchema: boolean, compactRetry = false): Promise<{ response: Response; text: string }> => {
-      const body = buildBody(withSchema, compactRetry);
+    const post = async (withSchema: boolean, retryMode?: DraftRetryMode): Promise<{ response: Response; text: string }> => {
+      const body = buildBody(withSchema, retryMode);
       const startedAt = Date.now();
       let responseText: string | null = null;
       let failure: unknown = null;
@@ -630,7 +735,9 @@ export class ConfiguredModelProvider implements ModelProvider {
             "content-type": "application/json"
           },
           body,
-          signal: AbortSignal.timeout(request.timeoutMs ?? 180_000)
+          signal: request.signal
+            ? AbortSignal.any([AbortSignal.timeout(request.timeoutMs ?? 180_000), request.signal])
+            : AbortSignal.timeout(request.timeoutMs ?? 180_000)
         });
         responseText = await response.text();
         if (!response.ok) failure = new ModelProviderUnavailableError(`${connection.displayName} 请求失败（HTTP ${response.status}）。`);
@@ -668,19 +775,44 @@ export class ConfiguredModelProvider implements ModelProvider {
       throw new ModelProviderUnavailableError(`${connection.displayName} 请求失败（HTTP ${response.status}）：${text.slice(0, 300)}`);
     }
     let completion = readChatCompletion(text, connection.displayName);
+    let retriedForOutputBoundary = false;
+    const initialDraftBudget = maxTokensForTask("draft");
+    const shouldRetryNearOutputBudget = request.task === "draft"
+      && !isOutputLengthLimit(completion.finishReason)
+      && isNearOutputBudget(completion.usage, initialDraftBudget);
+    if (request.task === "draft" && (isOutputLengthLimit(completion.finishReason) || shouldRetryNearOutputBudget)) {
+      const retryMode: DraftRetryMode = shouldRetryNearOutputBudget ? "near_output_budget" : "incomplete_json";
+      const retried = await post(false, retryMode);
+      if (!retried.response.ok) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 扩展输出重试失败（HTTP ${retried.response.status}）：${retried.text.slice(0, 300)}`);
+      }
+      completion = readChatCompletion(retried.text, connection.displayName);
+      retriedForOutputBoundary = true;
+      if (isOutputLengthLimit(completion.finishReason)) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 正文在扩展输出重试后仍达到长度上限；已拒绝将可能不完整的候选正文交给评审。`);
+      }
+      if (isNearOutputBudget(completion.usage, 12_000)) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 正文在扩展输出重试后仍接近输出上限；已拒绝将可能压缩的候选交给评审。`);
+      }
+    }
     let value: T;
     try {
       value = parseStructured(completion.content, request.parse);
     } catch (error) {
       // A reasoning model occasionally reaches its output boundary after it has
-      // started a JSON string. Retry once with a deliberately smaller contract
-      // rather than making the user repeat the full research workflow.
-      if (!isIncompleteJson(error)) throw error;
-      const retried = await post(false, true);
+      // started a JSON string. Retry once with task-specific guidance.
+      if (!isIncompleteJson(error) || retriedForOutputBoundary) throw error;
+      const retried = await post(false, "incomplete_json");
       if (!retried.response.ok) {
         throw new ModelProviderUnavailableError(`${connection.displayName} 紧凑重试失败（HTTP ${retried.response.status}）：${retried.text.slice(0, 300)}`);
       }
       completion = readChatCompletion(retried.text, connection.displayName);
+      if (request.task === "draft" && isOutputLengthLimit(completion.finishReason)) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 正文在扩展输出重试后仍达到长度上限；已拒绝将可能不完整的候选正文交给评审。`);
+      }
+      if (request.task === "draft" && isNearOutputBudget(completion.usage, 12_000)) {
+        throw new ModelProviderUnavailableError(`${connection.displayName} 正文在扩展输出重试后仍接近输出上限；已拒绝将可能压缩的候选交给评审。`);
+      }
       value = parseStructured(completion.content, request.parse);
     }
     return {
@@ -700,7 +832,10 @@ export class ConfiguredModelProvider implements ModelProvider {
 function maxTokensForTask(task: GenerateStructuredRequest<unknown>["task"]): number {
   switch (task) {
     case "draft":
-      return 6_000;
+      // Match full guide drafts without forcing a second complete generation:
+      // the observed DSH guide used 7.4k output tokens. Keep headroom here and
+      // retain the 12k recovery path for drafts that genuinely need more.
+      return 8_000;
     case "research":
       return 8_192;
     case "outline":
@@ -708,6 +843,17 @@ function maxTokensForTask(task: GenerateStructuredRequest<unknown>["task"]): num
     default:
       return 1_600;
   }
+}
+
+function incompleteJsonRetryInstruction(task: GenerateStructuredRequest<unknown>["task"]): string {
+  const base = "上一次输出不是完整 JSON。请从头重新输出符合原始 JSON Schema 的完整对象；不要解释、不要 Markdown、不要展开推理。";
+  if (task === "research") {
+    return `${base} 资料卡数量由独立证据决定，同质来源必须合并；每条摘要不超过 120 个汉字，每条最多 2 个 keyClaims。`;
+  }
+  if (task === "draft") {
+    return `${base} markdown 字段必须保留已确认提纲的全部章节和各节的具体内容；不要为缩短 JSON 而压缩正文、删减步骤或合并章节。`;
+  }
+  return base;
 }
 
 function readUsage(text: string | null): { prompt_tokens?: number; completion_tokens?: number } | undefined {
@@ -762,6 +908,7 @@ type OpenAiCompatibleChoice = {
 
 function readChatCompletion(text: string, displayName: string): {
   content: string;
+  finishReason?: string | null;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 } {
   const payload = JSON.parse(text) as {
@@ -776,7 +923,19 @@ function readChatCompletion(text: string, displayName: string): {
   if (!content) throw new ModelProviderUnavailableError(
     `${displayName} 没有返回可用内容。${describeEmptyChatChoice(firstChoice)}`
   );
-  return { content, usage: payload.usage };
+  return { content, finishReason: firstChoice?.finish_reason, usage: payload.usage };
+}
+
+function isOutputLengthLimit(finishReason: string | null | undefined): boolean {
+  return typeof finishReason === "string" && /^(?:length|max_tokens)$/iu.test(finishReason.trim());
+}
+
+function isNearOutputBudget(usage: { completion_tokens?: number } | undefined, budget: number): boolean {
+  return typeof usage?.completion_tokens === "number" && usage.completion_tokens >= Math.ceil(budget * 0.95);
+}
+
+function nearOutputBudgetRetryInstruction(): string {
+  return "上一版正文触及本轮输出预算上限附近。请从头重新输出完整正文，逐项兑现已确认提纲的读者承诺；不要为了适应上次预算而压缩章节、步骤、案例或解释。";
 }
 
 function isIncompleteJson(error: unknown): boolean {
@@ -858,8 +1017,24 @@ function canonicalUrl(value: string): string {
   }
 }
 
-function coverageQuery(topic: string, gap: string): string {
-  return `${topic} ${gap.replace(/^(待补充|待核验)：?/, "").trim()}`;
+function appendUniqueResearchCandidates(
+  accumulated: SearchSourceForPrompt[],
+  results: Array<{ title: string; url: string; snippet: string }>
+): void {
+  const knownUrls = new Set(accumulated.map((source) => canonicalUrl(source.url)));
+  for (const result of results) {
+    const normalizedUrl = canonicalUrl(result.url);
+    if (knownUrls.has(normalizedUrl)) continue;
+    knownUrls.add(normalizedUrl);
+    accumulated.push({ title: result.title, url: result.url, snippet: result.snippet, sourceType: "public" });
+  }
+}
+
+function normalizeResearchQuery(query: string): string {
+  return query.normalize("NFKC").toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/(\p{Script=Han})\s+(?=\p{Script=Han})/gu, "$1")
+    .trim().replace(/\s+/gu, " ");
 }
 
 /** True when a failed chat/completions call is due to the model not supporting

@@ -25,12 +25,34 @@
       ]
     },
     {
+      "id": "content-review",
+      "name": "文章独立评审",
+      "description": "分阶段评审提纲、正文和渠道稿；提纲可规划实践证据，正文事实结论必须有实际依据。",
+      "category": "创作",
+      "defaultProvider": null,
+      "inheritProviderFrom": "wechat-writing",
+      "legacyFiles": [
+        "legacy/v1.md"
+      ]
+    },
+    {
+      "id": "goal-verification",
+      "name": "目标完成核验",
+      "description": "独立检查阿文工具工作流是否真正完成作者目标；可单独选择核验模型。",
+      "category": "评审",
+      "defaultProvider": null,
+      "inheritProviderFrom": "awen-assistant",
+      "legacyFiles": []
+    },
+    {
       "id": "web-research",
       "name": "联网资料补研",
       "description": "默认联网检索官方与公开资料，形成可追溯、可筛选的文章资料卡；不把研究待办混入文章提纲。",
       "category": "研究",
       "defaultProvider": null,
-      "legacyFiles": []
+      "legacyFiles": [
+        "legacy/v1.md"
+      ]
     },
     {
       "id": "platform-rewrite",

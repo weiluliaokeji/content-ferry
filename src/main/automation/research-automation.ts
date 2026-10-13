@@ -6,6 +6,7 @@ import { loadAppSettings } from "../config/first-run";
 import { state, enqueueResearchSearch } from "./state";
 import { createWenduWindowIcon } from "./windows";
 import { delay } from "./delay";
+import { resolveResearchProxyConfig } from "./research-proxy";
 
 async function getOrCreateResearchBrowserWindow(): Promise<BrowserWindow> {
   if (state.researchBrowserWindow && !state.researchBrowserWindow.isDestroyed()) return state.researchBrowserWindow;
@@ -63,24 +64,15 @@ async function installResearchStealth(window: BrowserWindow): Promise<void> {
   }
 }
 
-/** Point a session partition at the global research proxy (or clear it).
- * Mirrors the proxy used by the fetch-based providers so both channels behave
- * identically. A blank/invalid value falls back to a direct connection. */
+/** Point a session partition at the explicit research proxy, or at Windows'
+ * system proxy/PAC route when no valid app-specific research proxy is set. */
 export async function applyProxyToPartition(partition: string): Promise<void> {
   const proxy = loadAppSettings().researchProxyUrl?.trim() ?? "";
   try {
     const targetSession = session.fromPartition(partition);
-    if (proxy) {
-      const parsed = new URL(proxy);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "socks5:") {
-        console.warn(`[contentferry] 检索代理协议不支持，已忽略并直连：${proxy}`);
-        await targetSession.setProxy({ proxyRules: "" });
-        return;
-      }
-      await targetSession.setProxy({ proxyRules: proxy });
-    } else {
-      await targetSession.setProxy({ proxyRules: "" });
-    }
+    const config = resolveResearchProxyConfig(proxy);
+    if (proxy && "mode" in config) console.warn("[contentferry] 检索代理地址无效或协议不支持，已忽略并使用 Windows 系统网络路线。");
+    await targetSession.setProxy(config);
   } catch {
     /* proxy misconfiguration must not block the browser */
   }

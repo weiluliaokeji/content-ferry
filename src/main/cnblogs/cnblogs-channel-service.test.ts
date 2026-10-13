@@ -185,10 +185,15 @@ describe("CnblogsChannelService", () => {
   it("rejects drafts containing WeChat promotion", async () => {
     const { account, service } = setupHarness();
     const draft = await service.createFromSource({ accountId: account.id, relativePath: "posts/source/index.md", generationMode: "source" });
+    const neutral = service.saveDraft(draft.id, {
+      title: "操作指南",
+      markdown: "# 操作指南\n\n## 延伸阅读\n\n参考文档。"
+    });
+    expect(neutral.markdown).toContain("延伸阅读");
     expect(() => service.saveDraft(draft.id, {
       title: "违规标题",
       markdown: "# 违规标题\n\n关注公众号获取更多。"
-    })).toThrow(/公众号引流/);
+    })).toThrow(/公众号引流.*关注公众号/);
   });
 
   it("soft deletes a channel draft while retaining its publish history", async () => {

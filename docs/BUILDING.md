@@ -46,6 +46,18 @@ npm run pack
 npm run verify:installer
 ```
 
+### 隔离开发版用户数据
+
+若需排查启动或迁移问题，可让开发版使用全新用户配置目录，避免打开日常配置和数据库。设置 `CONTENTFERRY_DEV_USER_DATA_DIR` 后运行 `npm run dev`：
+
+```powershell
+$env:CONTENTFERRY_DEV_USER_DATA_DIR = Join-Path $env:TEMP "contentferry-dev-profile"
+npm run dev
+```
+
+此目录不包含现有模型连接和凭据；未设置该变量时，开发版仍使用 Electron 默认用户配置。隔离目录中的文章和设置与日常配置相互独立。
+
+
 产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。文件名在版本号后附本次打包的 UTC 时间（`YYYYMMDDTHHMMSSZ`）；包内 `dist/build-info.json`、应用“关于文渡”和每条运行日志使用同一个构建标识，便于核对正在运行的包。目录中的旧版本会保留，构建报告只列出本次构建与目标对应的文件：
 
 | 文件                            | 含义                                                                                       |
@@ -79,6 +91,8 @@ npm run verify:installer
 - 安装包升级**不**覆盖 `%APPDATA%\contentferry\app-settings.json` 与 `…\data`。
 - 升级前会由 NSIS 把旧 `app.asar` 备份到 `%APPDATA%\contentferry\backups\`（自动备份逻辑在 `spec/02 §12.4` 后续阶段补；本流水线不强制，但建议保留目录结构）。
 - 旧数据库首次应用自主实践任务表迁移时，程序会先在所选数据目录的 `backups/` 下生成 `contentferry-before-schema-v1-*.db` 一致性副本。迁移失败时停止服务启动；回退旧程序前应关闭文渡，用该副本恢复 `contentferry.db`，不要让旧程序直接写新版库。应用的一键数据库恢复界面尚未实现。
+- 后续 schema 迁移也会在执行前创建一致性备份。schema v9 将内容评审记录允许的修订轮数扩展至 5 并保留旧记录；迁移失败时程序停止开放业务服务。
+- schema v13 新增独立的正文候选稿表；迁移前同样会备份数据库。回退到不支持 v13 的程序时，关闭文渡后恢复 `backups/` 中升级前的数据库副本，不要直接用旧程序打开新版库。
 - `package.json` 的 `productName` 是 `文渡`，NSIS 会以它作为安装目录与快捷方式名。
 
 如需自动更新，再加 `electron-updater` 并设置 `publish: { provider: "generic", url: "https://your-cdn/contentferry" }`，届时 `latest.yml` 才会有用。

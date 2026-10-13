@@ -64,7 +64,7 @@ export const contentProjectInput = z.object({
   researchDepth: researchDepthInput
 });
 export const contentProjectTitleInput = z.object({ title: z.string().trim().min(1).max(120) });
-export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000) });
+export const contentBriefInput = z.object({ topic: z.string().trim().min(1).max(12000).optional(), objective: z.string().max(4000), audience: z.string().max(4000), angle: z.string().max(4000), sourceNotes: z.string().max(12000), draftDepthPreference: z.enum(["concise", "standard", "detailed"]).nullable().optional() });
 export const titleSuggestionInput = contentBriefInput;
 export const contentOutlineInput = z.object({ markdown: z.string().trim().min(1).max(30000) });
 export const practicePlanInput = z.object({

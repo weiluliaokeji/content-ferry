@@ -7,7 +7,8 @@
  *
  * Providers declare capability flags (supportsSearch / supportsExtract) and the
  * client picks the first available one per capability. The fallback chain is
- * Tavily (when an API key is present) → DuckDuckGo (zero-key, always available).
+ * Tavily (when configured) → Brave → Bing RSS → DuckDuckGo. The public
+ * providers require no key and are tried in sequence when one is unavailable.
  */
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
@@ -77,7 +78,8 @@ export class BrowserVerificationRequiredError extends WebSearchError {
   }
 }
 
-type FetchImpl = typeof fetch;
+export type WebSearchFetch = typeof fetch;
+type FetchImpl = WebSearchFetch;
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -154,18 +156,19 @@ function safeFetch(fetchImpl: FetchImpl, url: string, init?: RequestInit): Promi
 }
 
 /**
- * Build a fetch implementation that routes through the global research proxy
- * (an explicit, app-wide setting) when one is configured, and falls back to a
- * direct native fetch otherwise. The proxy is resolved lazily on every call so
- * a settings change takes effect without restarting the local service.
+ * Build a fetch implementation that routes through the explicitly configured
+ * research proxy when one is configured. Otherwise use the host application's
+ * network implementation, which desktop composition supplies from Electron's
+ * Chromium stack so Windows proxy/PAC settings apply. The proxy is resolved
+ * lazily on every call so settings changes take effect without restarting.
  *
  * A model connection's own proxy must never leak into research traffic — that
  * was the earlier bug (a hardcoded `gemini` proxy redirected all searches to a
  * dead local port). The research proxy is deliberately independent from any
  * model setting and only active when the user explicitly provides one here.
  */
-function makeProxyAwareFetch(getProxyUrl?: () => string | undefined): FetchImpl {
-  if (!getProxyUrl) return fetch;
+function makeProxyAwareFetch(getProxyUrl?: () => string | undefined, systemFetchImpl: FetchImpl = fetch): FetchImpl {
+  if (!getProxyUrl) return systemFetchImpl;
   let cachedAgent: ProxyAgent | null = null;
   let cachedProxy = "";
   const resolveAgent = (): ProxyAgent | null => {
@@ -180,7 +183,7 @@ function makeProxyAwareFetch(getProxyUrl?: () => string | undefined): FetchImpl 
       cachedProxy = proxy;
       return cachedAgent;
     } catch {
-      console.warn(`[contentferry] 检索代理地址无效，已忽略并直连：${proxy}`);
+      console.warn("[contentferry] 检索代理地址无效，已忽略并使用系统网络路线。");
       cachedAgent = null;
       cachedProxy = proxy;
       return null;
@@ -188,7 +191,7 @@ function makeProxyAwareFetch(getProxyUrl?: () => string | undefined): FetchImpl 
   };
   return (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const agent = resolveAgent();
-    if (!agent) return fetch(input, init);
+    if (!agent) return systemFetchImpl(input, init);
     return undiciFetch(input as Parameters<typeof undiciFetch>[0], { ...init, dispatcher: agent } as Parameters<typeof undiciFetch>[1]);
   };
 }
@@ -250,6 +253,71 @@ function stripTags(html: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function filterSearchResultsForSite(query: string, results: SearchResultItem[]): SearchResultItem[] {
+  const match = /(?:^|\s)site:([^\s]+)/iu.exec(query);
+  if (!match) return results;
+  let site: URL;
+  try {
+    site = new URL(`https://${match[1].replace(/^https?:\/\//iu, "")}`);
+  } catch {
+    return results;
+  }
+  const host = site.hostname.toLowerCase();
+  const pathPrefix = site.pathname.replace(/\/$/u, "").toLowerCase();
+  return results.filter((result) => {
+    try {
+      const url = new URL(result.url);
+      const resultHost = url.hostname.toLowerCase();
+      return (resultHost === host || resultHost.endsWith(`.${host}`))
+        && (!pathPrefix || url.pathname.toLowerCase().startsWith(`${pathPrefix}/`) || url.pathname.toLowerCase() === pathPrefix);
+    } catch { return false; }
+  });
+}
+
+function githubRawDocumentUrl(targetUrl: string): string | null {
+  try {
+    const url = new URL(targetUrl);
+    if (url.protocol !== "https:" || url.hostname !== "github.com") return null;
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 5 || parts[2] !== "blob") return null;
+    return `https://raw.githubusercontent.com/${parts[0]}/${parts[1]}/${parts.slice(3).join("/")}`;
+  } catch {
+    return null;
+  }
+}
+
+function requireHttpUrl(targetUrl: string): void {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch {
+    throw new WebSearchError("网页地址无效，无法抓取正文。");
+  }
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new WebSearchError("网页正文抓取只支持 HTTP 或 HTTPS 地址。");
+  }
+}
+
+async function fetchPageText(fetchImpl: FetchImpl, targetUrl: string): Promise<string> {
+  requireHttpUrl(targetUrl);
+  const page = await safeFetch(fetchImpl, targetUrl);
+  if (page.ok) {
+    const content = stripTags(await page.text());
+    if (content) return truncate(content, 6000);
+  }
+  // GitHub's HTML frontend can fail while the same public repository file is
+  // still served by its canonical raw host. Keep the original URL as provenance.
+  const rawUrl = githubRawDocumentUrl(targetUrl);
+  if (rawUrl) {
+    const raw = await safeFetch(fetchImpl, rawUrl);
+    if (raw.ok) {
+      const content = (await raw.text()).trim();
+      if (content) return truncate(content, 6000);
+    }
+  }
+  throw new WebSearchError(`无法抓取页面（HTTP ${page.status}）。`);
 }
 
 /** DuckDuckGo HTML result links are wrapped in redirect URLs; unwrap them. */
@@ -356,10 +424,7 @@ export class DuckDuckGoProvider implements WebSearchProvider {
   }
 
   async extract(targetUrl: string): Promise<{ content: string }> {
-    const res = await safeFetch(this.fetchImpl, targetUrl);
-    if (!res.ok) throw new WebSearchError(`无法抓取页面（HTTP ${res.status}）。`);
-    const html = await res.text();
-    return { content: truncate(stripTags(html), 6000) };
+    return { content: await fetchPageText(this.fetchImpl, targetUrl) };
   }
 }
 
@@ -404,6 +469,48 @@ export class BingRssProvider implements WebSearchProvider {
 
   async extract(): Promise<{ content: string }> {
     throw new WebSearchError("Bing RSS 不支持网页正文抓取。");
+  }
+}
+
+export class BraveSearchProvider implements WebSearchProvider {
+  readonly id = "brave-search";
+
+  constructor(private readonly fetchImpl: FetchImpl = fetch) {}
+
+  isAvailable(): boolean { return true; }
+  supportsSearch(): boolean { return true; }
+  supportsExtract(): boolean { return false; }
+
+  async search(query: string, limit = 8): Promise<SearchResultItem[]> {
+    const url = `https://search.brave.com/search?q=${encodeURIComponent(query)}`;
+    const res = await safeFetch(this.fetchImpl, url);
+    if (!res.ok) throw new WebSearchError(`Brave 检索失败（HTTP ${res.status}）。`);
+    const html = await res.text();
+    const starts = [...html.matchAll(/<div class="snippet[^"]*"[^>]*data-pos="\d+" data-type="web"/giu)]
+      .map((match) => match.index ?? -1).filter((index) => index >= 0);
+    const results: SearchResultItem[] = [];
+    for (const [index, start] of starts.entries()) {
+      const end = starts[index + 1] ?? html.length;
+      const block = html.slice(start, end);
+      const href = /<a href="(https?:\/\/[^"]+)"/iu.exec(block)?.[1];
+      const titleMatch = /<div class="title[^"]*" title="([^"]*)">([\s\S]*?)<\/div>/iu.exec(block);
+      if (!href || !titleMatch) continue;
+      const title = decodeEntities(stripTags(titleMatch[1] || titleMatch[2]));
+      const snippetMatch = /<div class="generic-snippet[^"]*">[\s\S]*?<div class="content[^"]*">([\s\S]*?)<\/div>/iu.exec(block);
+      const snippet = snippetMatch ? decodeEntities(stripTags(snippetMatch[1])) : "";
+      try {
+        const parsedUrl = new URL(decodeEntities(href));
+        if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") continue;
+        results.push({ title, url: parsedUrl.toString(), snippet });
+      } catch { /* Ignore malformed search result URLs. */ }
+      if (results.length >= limit) break;
+    }
+    if (results.length === 0) throw new WebSearchError("Brave 未返回可用搜索结果。");
+    return results;
+  }
+
+  async extract(): Promise<{ content: string }> {
+    throw new WebSearchError("Brave 只负责搜索，不提供网页正文抓取。");
   }
 }
 
@@ -487,9 +594,7 @@ export class TavilyProvider implements WebSearchProvider {
       if (text) return { content: truncate(text, 6000) };
     }
     // Fall back to a plain fetch if the dedicated extract endpoint is unavailable.
-    const plain = await safeFetch(this.fetchImpl, targetUrl);
-    if (!plain.ok) throw new WebSearchError(`无法抓取页面（HTTP ${plain.status}）。`);
-    return { content: truncate(stripTags(await plain.text()), 6000) };
+    return { content: await fetchPageText(this.fetchImpl, targetUrl) };
   }
 }
 
@@ -502,6 +607,9 @@ export interface CreateWebSearchClientOptions {
    * any model connection's proxy). Empty/blank means direct connection. */
   getResearchProxyUrl?: () => string | undefined;
   visibleBrowserSearch?: VisibleBrowserSearch;
+  /** Desktop composition supplies Electron/Chromium fetch so Windows system proxy and PAC settings apply. */
+  systemFetchImpl?: FetchImpl;
+  /** Explicit test override; bypasses both the research proxy and system fetch selection. */
   fetchImpl?: FetchImpl;
 }
 
@@ -509,12 +617,13 @@ export function createWebSearchClient(options: CreateWebSearchClientOptions = {}
   // Web research is app-owned traffic. A proxy configured for one model connection
   // must never silently redirect searches performed for another model or skill.
   // The global research-proxy (if the user sets one) is explicit and independent
-  // from model settings; when unset, searches go direct.
-  const directFetch = options.fetchImpl ?? makeProxyAwareFetch(options.getResearchProxyUrl);
+  // from model settings; otherwise the desktop app can use the OS-aware Chromium stack.
+  const directFetch = options.fetchImpl ?? makeProxyAwareFetch(options.getResearchProxyUrl, options.systemFetchImpl);
   const getProviders = (): WebSearchProvider[] => {
     const providers: WebSearchProvider[] = [];
     const tavilyApiKey = options.getTavilyApiKey?.()?.trim() || options.tavilyApiKey?.trim();
     if (tavilyApiKey) providers.push(new TavilyProvider(tavilyApiKey, directFetch));
+    providers.push(new BraveSearchProvider(directFetch));
     providers.push(new BingRssProvider(directFetch));
     providers.push(new DuckDuckGoProvider(directFetch));
     if (options.visibleBrowserSearch) providers.push(new VisibleBrowserSearchProvider(options.visibleBrowserSearch));
@@ -539,7 +648,11 @@ export function createWebSearchClient(options: CreateWebSearchClientOptions = {}
       const errors: string[] = [];
       for (const provider of searchProviders) {
         try {
-          const results = await provider.search(query, limit);
+          const results = filterSearchResultsForSite(query, await provider.search(query, limit));
+          if (results.length === 0) {
+            errors.push(`${provider.id}：结果未满足查询中的站点范围。`);
+            continue;
+          }
           lastSearchProvider = provider.id;
           return results;
         } catch (error) {
@@ -564,6 +677,7 @@ export function createWebSearchClient(options: CreateWebSearchClientOptions = {}
       return results;
     },
     async extract(targetUrl) {
+      requireHttpUrl(targetUrl);
       const provider = pick("supportsExtract");
       if (!provider) throw new WebSearchError("未配置可用的网页抓取服务。");
       return provider.extract(targetUrl);

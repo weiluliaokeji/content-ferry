@@ -18,7 +18,10 @@ function startDesktop() {
   // undefined、主进程崩溃、"程序启动不起来"。启动前显式清除该变量。
   const desktopEnv = { ...process.env };
   delete desktopEnv.ELECTRON_RUN_AS_NODE;
-  desktop = spawn(electronExecutable, ["."], {
+  const desktopArgs = ["."];
+  const devUserDataDirectory = desktopEnv.CONTENTFERRY_DEV_USER_DATA_DIR?.trim();
+  if (devUserDataDirectory) desktopArgs.push(`--user-data-dir=${path.resolve(devUserDataDirectory)}`);
+  desktop = spawn(electronExecutable, desktopArgs, {
     cwd: projectRoot,
     env: {
       ...desktopEnv,

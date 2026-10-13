@@ -16,12 +16,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { renderMermaidBlocks } from "../publishing/mermaid-markdown";
 import type Database from "better-sqlite3";
 import type { AccountRepository, MediaAccount } from "../accounts/account-repository";
+import { formatConfirmedAccountStylePrompt } from "../accounts/account-style-prompt";
 import type { CredentialVault } from "../security/credential-vault";
 import type { ContentSourceService } from "../content/content-source-service";
 import type { LocalAssetStore } from "../content/local-asset-store";
 import type { ModelProvider } from "../ai/model-provider";
 import type { PublishCapabilities } from "../publishing/platform-publisher-connector";
 import { appendArticleSignature } from "../publishing/article-signature";
+import { findChannelCrossPromotion } from "../publishing/channel-cross-promotion";
 import { CTOClient, mdToHtml51 } from "./fiftyone-cto-client";
 import { uploadFiftyoneCtoLocalImages } from "./fiftyone-cto-image-inliner";
 import { FiftyoneCtoImageUploader } from "./fiftyone-cto-image-uploader";
@@ -208,7 +210,8 @@ export class FiftyoneCtoChannelService {
             positioning: account.profile.positioning,
             audience: account.profile.targetAudience,
             writingStyle: account.profile.writingStyle,
-            prohibitedTopics: account.profile.prohibitedTopics
+            prohibitedTopics: account.profile.prohibitedTopics,
+            confirmedStyleProfile: this.accounts.getConfirmedStyleProfile(account.id)
           }),
           outputSchema: fiftyoneCtoDraftSchema,
           timeoutMs: 240_000,
@@ -722,16 +725,8 @@ function normalizeMarkdown(markdown: string, title: string): string {
 }
 
 function assertNoFiftyoneCtoPromotion(markdown: string): void {
-  const forbidden = [
-    /https?:\/\/mp\.weixin\.qq\.com\//i,
-    /公众号原文/,
-    /延伸阅读/,
-    /关注(?:我的|本)?公众号/,
-    /扫描(?:下方|文末)?二维码/
-  ];
-  if (forbidden.some((pattern) => pattern.test(markdown))) {
-    throw new FiftyoneCtoChannelError("生成的 51CTO 渠道稿包含被禁用的公众号引流内容，请重新生成。");
-  }
+  const match = findChannelCrossPromotion(markdown);
+  if (match) throw new FiftyoneCtoChannelError(`检测到疑似公众号引流内容：“${match}”。请移除该内容后再保存或发布渠道稿。`);
 }
 
 function buildFiftyoneCtoRewritePrompt(input: {
@@ -741,7 +736,9 @@ function buildFiftyoneCtoRewritePrompt(input: {
   audience: string;
   writingStyle: string;
   prohibitedTopics: string;
+  confirmedStyleProfile: ReturnType<AccountRepository["getConfirmedStyleProfile"]>;
 }): string {
+  const confirmedStyle = formatConfirmedAccountStylePrompt(input.confirmedStyleProfile);
   return `你是专业的技术内容编辑。请把下面主稿改写成一篇适合 51CTO 技术读者独立阅读的中文文章。
 
 硬性要求：
@@ -755,7 +752,7 @@ function buildFiftyoneCtoRewritePrompt(input: {
 账号定位：${input.positioning || "未设置"}
 目标读者：${input.audience || "51CTO 技术读者"}
 写作风格：${input.writingStyle || "清晰、具体、自然"}
-禁用话题/表达：${input.prohibitedTopics || "无"}
+禁用话题/表达：${input.prohibitedTopics || "无"}${confirmedStyle}
 
 主稿标题：${input.title}
 

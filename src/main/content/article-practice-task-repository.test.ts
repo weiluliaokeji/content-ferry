@@ -77,6 +77,18 @@ describe("article practice task decisions", () => {
     expect(tasks.finish(task.id).status).toBe("completed_with_gaps");
   });
 
+  it("moves a failed pre-practice assessment into a recoverable feedback state", () => {
+    const tasks = setup();
+    const task = tasks.create("project", "判断是否需要实践");
+    tasks.beginAssessment(task.id);
+
+    const waiting = tasks.waitForFeedback(task.id, "模型评审失败，候选内容已保留。");
+
+    expect(waiting.status).toBe("waiting_feedback");
+    expect(waiting.waitingReason).toContain("模型评审失败");
+    expect(waiting.feedbackDeadline).toBeTruthy();
+  });
+
   it("waits for the author's drafting choice after a manual stop", () => {
     const tasks = setup();
     const task = tasks.create("project", "运行示例");
@@ -119,6 +131,24 @@ describe("article practice task decisions", () => {
     expect(resumed.task.feedbackDeadline).toBe("2026-09-25T00:05:00.000Z");
     expect(resumed.task.waitingReason).toBe("缺少工具");
     expect(tasks.expireFeedback(task.id, new Date("2026-09-25T00:05:00Z")).status).toBe("drafting");
+  });
+
+  it("resumes interrupted drafting with gaps when its terminal practice workflow was incomplete", () => {
+    const tasks = setup();
+    const task = tasks.create("project", "继续起草并保留未核验标记");
+    tasks.beginAssessment(task.id);
+    tasks.beginPractice(task.id);
+    tasks.beginDraft(task.id);
+    tasks.saveCheckpoint(task.id, { workflowId: "incomplete-workflow", stepId: "awen-tool-workflow" });
+    tasks.recoverInterrupted(new Date("2026-09-25T00:01:00Z"));
+
+    const resumed = tasks.reconcileFailedWorkflow(task.id, "完成核验没有通过，继续起草时保留待核查标记。", new Date("2026-09-25T00:02:00Z"));
+
+    expect(resumed).toMatchObject({ status: "drafting", hasGaps: true, waitingReason: null, resumeStatus: null });
+    expect(tasks.listEvents(task.id).at(-1)).toMatchObject({
+      kind: "resumed_draft_with_gaps",
+      payload: { reason: "完成核验没有通过，继续起草时保留待核查标记。", recoveredTerminalWorkflow: true, hasGaps: true }
+    });
   });
 
   it("continues the same task when the author provides feedback after a practice failure", () => {

@@ -1,9 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
 import { SkillRegistry, shouldUpgradeReference } from "./skill-registry";
 
 function tmpRoot(): string {
@@ -54,8 +53,90 @@ describe("SkillRegistry shared references", () => {
     expect(fs.existsSync(path.join(root, "web-research", "references"))).toBe(false);
   });
 
+  it("registers the reviewer prompt as an editable skill with stage-specific evidence rules", () => {
+    const reviewer = registry.get("content-review");
+    expect(reviewer.name).toBe("文章独立评审");
+    expect(reviewer.providerInherited).toBe(true);
+    expect(reviewer.provider).toBe("openai_codex");
+    expect(reviewer.files.map((file) => file.relativePath)).toContain("SKILL.md");
+    const instructions = registry.instructionsFor("content-review", "评审阶段：提纲");
+    expect(instructions).toContain("提纲阶段尚无实际实践结果本身不是 blocker 或 warning");
+    expect(instructions).toContain("正文中的第一手实践、操作结果、数量和条件性结论");
+    expect(instructions).toContain("各部分是否有不同的信息作用");
+    expect(instructions).toContain("不以字数和小标题数量代替质量判断");
+    expect(instructions).toContain("稳定的概念解释和广泛成立的一般原理，不因没有逐句来源而要求补研");
+    expect(instructions).toContain("作者经历、本机状态和实测结果必须有作者记录或本篇实践观察");
+    expect(instructions).toContain("不同官方资料冲突时，要求说明差异或适用范围");
+    expect(instructions).toContain("单次用户报告可揭示边界或失败模式");
+    expect(instructions).toContain("提纲评审先给出全文简报对齐结论");
+  });
+
+  it("registers a separately configurable goal-verification skill inherited from the Awen model by default", () => {
+    const verifier = registry.get("goal-verification");
+
+    expect(verifier.category).toBe("评审");
+    expect(verifier.providerInherited).toBe(true);
+    expect(verifier.provider).toBe("openai_codex");
+    const instructions = registry.instructionsFor("goal-verification", "核验一项工具结果");
+    expect(instructions).toContain("只依据作者目标、持久化工具观察和最终候选答复作出判断");
+    expect(instructions).toContain("不能把核验器没给出引文表述成工具没结果");
+    expect(instructions).toContain("答复遗漏已有观察、证据不足需新观察、来源/引文错配、工具失败或不可用、等待授权/作者输入");
+  });
+
+  it("loads source-selection and conflict-resolution rules for research", () => {
+    const instructions = registry.instructionsFor("web-research", "为正文补充安装依据");
+
+    expect(instructions).toContain("按具体主张选择最接近事实本身的一手来源");
+    expect(instructions).toContain("不同官方页面互相冲突");
+    expect(instructions).toContain("将社区教程、论坛、Issue 和个人经验用于发现边界与失败模式");
+    expect(instructions).toContain("不得重复相同或实质等价的查询");
+  });
+
+  it("upgrades the exact previous built-in research/review skills and preserves custom edits", () => {
+    for (const id of ["web-research", "content-review"]) {
+      const file = path.join(root, id, "SKILL.md");
+      const legacy = fs.readFileSync(path.resolve(__dirname, `../../../assets/skills/${id}/legacy/v1.md`), "utf8");
+      const current = fs.readFileSync(path.resolve(__dirname, `../../../assets/skills/${id}/SKILL.md`), "utf8");
+
+      fs.writeFileSync(file, legacy, "utf8");
+      new SkillRegistry(stubDb, root);
+      expect(fs.readFileSync(file, "utf8")).toBe(current);
+
+      const custom = `${current}\n\n<!-- 作者自定义规则 -->\n`;
+      fs.writeFileSync(file, custom, "utf8");
+      new SkillRegistry(stubDb, root);
+      expect(fs.readFileSync(file, "utf8")).toBe(custom);
+    }
+  });
+
+  it("uses a saved reviewer skill edit on the next instruction load", () => {
+    registry.saveFile("content-review", "SKILL.md", "# 自定义评审规则\n\n提纲阶段不得要求实测结果。\n");
+
+    expect(registry.instructionsFor("content-review", "评审阶段：提纲")).toContain("自定义评审规则");
+  });
+
   it("writes a seed-state file at the skills root", () => {
     expect(fs.existsSync(path.join(root, ".skill-reference-seed.json"))).toBe(true);
+  });
+
+  it("does not rewrite a reference file that already matches the built-in", () => {
+    const file = path.join(root, "awen-assistant", "references", "memory-policy.md");
+    const write = vi.spyOn(fs, "writeFileSync");
+
+    new SkillRegistry(stubDb, root);
+
+    expect(write.mock.calls.some(([target]) => target === file)).toBe(false);
+    write.mockRestore();
+  });
+
+  it("does not rewrite unchanged reference seed state on startup", () => {
+    const file = path.join(root, ".skill-reference-seed.json");
+    const write = vi.spyOn(fs, "writeFileSync");
+
+    new SkillRegistry(stubDb, root);
+
+    expect(write.mock.calls.some(([target]) => target === file)).toBe(false);
+    write.mockRestore();
   });
 
   it("preserves a user-edited reference instead of overwriting it", () => {
@@ -88,16 +169,7 @@ describe("SkillRegistry shared references", () => {
 
   it("upgrades a legacy built-in file seeded before the seed-state migration", () => {
     const file = path.join(root, "wechat-writing", "references", "public-writing-patterns.md");
-    let oldContent: string;
-    try {
-      oldContent = execSync("git show HEAD:assets/skills/wechat-writing/references/public-writing-patterns.md", {
-        cwd: path.resolve(__dirname, "../../.."),
-        encoding: "utf8"
-      });
-    } catch {
-      // 仓库无法调用 git 时跳过；纯函数测试已覆盖该判据逻辑。
-      return;
-    }
+    const oldContent = fs.readFileSync(path.join(__dirname, "fixtures", "public-writing-patterns-pre-shared.md"), "utf8");
     // beforeEach 已 seed 当前 built-in 并写入 seed-state（记录当前哈希）。
     // 把数据文件覆盖成旧版内置内容（哈希不同）但保持 seed-state 不变——
     // 这正是老用户卡住的状态：seed-state 记的是新哈希，数据文件是旧哈希。
@@ -116,7 +188,7 @@ describe("SkillRegistry shared references", () => {
 
 describe("shouldUpgradeReference", () => {
   const builtIn = "current-built-in-hash";
-  const seedHash = "current-built-in-hash";
+  const seedHash = "previous-seed-hash";
   const legacyHash = "dea93921ac95a8d3e0b4ad19428b3a63de1274a08ff188a9e1c83ea6b96c90e7"; // public-writing-patterns 旧版
   const userEdit = "some-unrelated-user-edit-hash";
 
@@ -124,8 +196,8 @@ describe("shouldUpgradeReference", () => {
     expect(shouldUpgradeReference(undefined, builtIn, seedHash)).toBe(true);
   });
 
-  it("upgrades when already at the current built-in", () => {
-    expect(shouldUpgradeReference(builtIn, builtIn, seedHash)).toBe(true);
+  it("does not rewrite content that already matches the current built-in", () => {
+    expect(shouldUpgradeReference(builtIn, builtIn, seedHash)).toBe(false);
   });
 
   it("upgrades a known legacy built-in hash", () => {

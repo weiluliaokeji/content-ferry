@@ -6,9 +6,110 @@ import { isCurrentAwenSuggestionSync } from "./awen-suggestion-utils";
 import { reconcileMarkdownAfterSave } from "./article-save-state";
 import { reconcileAwenSuggestionSaveState } from "./awen-suggestion-save-state";
 import { resolveLoadedCoverPrompt } from "./article-settings-state";
+import { getDraftWorkflowProgressEvents } from "./DraftWorkflowProgress";
+import { getGenerationReviewHeading } from "./GenerationReviewSummary";
+import { appendDraftRunEvent } from "../draft-run-events";
+import type { DraftRunEvent } from "../../shared/draft-workflow";
 
 const rendererStyles = readFileSync(resolve(__dirname, "../styles.css"), "utf8");
 const articleWorkspaceSource = readFileSync(resolve(__dirname, "./ArticleWorkspace.tsx"), "utf8");
+const draftNoticesSource = readFileSync(resolve(__dirname, "./DraftGenerationNotices.tsx"), "utf8");
+const visualMarkdownEditorSource = readFileSync(resolve(__dirname, "./VisualMarkdownEditor.tsx"), "utf8");
+const draftWorkflowProgressSource = readFileSync(resolve(__dirname, "./DraftWorkflowProgress.tsx"), "utf8");
+const workbenchSource = readFileSync(resolve(__dirname, "../hooks/useWorkbench.ts"), "utf8");
+
+describe("draft generation notices", () => {
+  it("keeps style selection and image curation in separate author-facing notices", () => {
+    expect(workbenchSource).not.toMatch(/setDraftGenerationStatus\(`阿文的风格选择:[^\n]*imageCuration/);
+    expect(articleWorkspaceSource).toContain("draftStyleSelectionNote");
+    expect(articleWorkspaceSource).toContain("draftImageCuration");
+    expect(articleWorkspaceSource).toContain("<DraftGenerationNotices");
+    expect(draftNoticesSource).toContain("aria-label=\"风格选择说明\"");
+    expect(draftNoticesSource).toContain("aria-label=\"配图处理结果\"");
+    expect(draftNoticesSource).toContain("阿文的风格选择");
+    expect(draftNoticesSource).toContain("配图处理：{imageTitle}");
+  });
+
+  it("renders the complete progress history from an ordered workflow snapshot", () => {
+    expect(articleWorkspaceSource).toContain("<DraftWorkflowProgress events={awenWorkflow?.events ?? []} draftRunId={draftRunId} draftRunEvents={draftRunEvents} />");
+    expect(articleWorkspaceSource).not.toMatch(/awenWorkflow\.events[\s\S]{0,500}\.slice\(-6\)/);
+    expect(articleWorkspaceSource).toContain('role="status"');
+    expect(articleWorkspaceSource).toContain('generating ? (generationStatus || "AI 正在起草正文…")');
+    expect(articleWorkspaceSource).toContain("generationStatus || \"正在等待 AI 的第一段正文内容…\"");
+    expect(articleWorkspaceSource).toContain("draftRunEvents={draftRunEvents}");
+  });
+});
+
+describe("draft workflow progress history", () => {
+  it("keeps the complete ordered progress history instead of replacing it with a six-event window", () => {
+    const events = Array.from({ length: 9 }, (_, index) => ({
+      id: `event-${index + 1}`,
+      sequence: index + 1,
+      type: index === 4 ? "internal_note" : "progress",
+      at: new Date(index).toISOString(),
+      message: `进度 ${index + 1}`
+    }));
+
+    expect(getDraftWorkflowProgressEvents(events).map((event) => event.id)).toEqual([
+      "event-1", "event-2", "event-3", "event-4", "event-6", "event-7", "event-8", "event-9"
+    ]);
+  });
+
+  it("reconciles streamed draft events with a restored snapshot in sequence order without duplicates", () => {
+    const restored: DraftRunEvent = { runId: "run-1", sequence: 1, kind: "stage_started", stage: "drafting",
+      summary: "开始起草", payload: {}, createdAt: "2026-10-02T00:00:00.000Z" };
+    const next: DraftRunEvent = { ...restored, sequence: 2, kind: "stage_completed", summary: "第一节已完成" };
+    const skipped: DraftRunEvent = { ...restored, sequence: 3, kind: "stage_skipped", stage: "curating_images", summary: "本篇无需配图" };
+    const late: DraftRunEvent = { ...restored, sequence: 4, kind: "review_completed", stage: "reviewing", summary: "评审完成" };
+
+    const afterReconnect = appendDraftRunEvent([restored], late);
+    const reconciled = appendDraftRunEvent(appendDraftRunEvent(appendDraftRunEvent(afterReconnect, skipped), next), next);
+
+    expect(reconciled.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+    expect(reconciled.map((event) => event.summary)).toEqual(["开始起草", "第一节已完成", "本篇无需配图", "评审完成"]);
+    expect(appendDraftRunEvent(reconciled, { runId: "run-1", sequence: 5, kind: "progress" })).toBe(reconciled);
+  });
+
+  it("keeps actionable tool and authorization updates in progress while excluding private notes", () => {
+    const events = ["tool_started", "permission_requested", "tool_completed", "internal_note"].map((type, index) => ({
+      id: `event-${index}`, sequence: index + 1, type, at: new Date(index).toISOString(), message: type
+    }));
+    expect(getDraftWorkflowProgressEvents(events).map((event) => event.type))
+      .toEqual(["tool_started", "permission_requested", "tool_completed"]);
+    expect(draftWorkflowProgressSource).toContain("event.message");
+    expect(draftWorkflowProgressSource).toContain("event.summary");
+  });
+
+  it("distinguishes successful review, author action, and reviewer failure", () => {
+    expect(getGenerationReviewHeading("passed", "正文")).toBe("正文评审通过");
+    expect(getGenerationReviewHeading("needs_author", "正文")).toBe("正文需要处理");
+    expect(getGenerationReviewHeading("review_failed", "正文")).toBe("正文评审未完成");
+  });
+});
+
+describe("candidate source confirmation in the editor", () => {
+  it("shows source, excerpt, and author decision beside candidate claims", () => {
+    expect(articleWorkspaceSource).toContain("正文中的候选事实");
+    expect(articleWorkspaceSource).toContain("依据：{link.supportingExcerpt}");
+    expect(articleWorkspaceSource).toContain("待作者确认");
+    expect(articleWorkspaceSource).toContain("拒绝依据");
+    expect(articleWorkspaceSource).toContain("{link.sourceTitle}</a>");
+    expect(articleWorkspaceSource).toContain("onLocate={locateResearchLink}");
+  });
+
+  it("rechecks associations after Markdown edits and only highlights unresolved claims", () => {
+    expect(articleWorkspaceSource).toMatch(/draft\/research-links\/check[\s\S]{0,200}JSON\.stringify\(\{ markdown \}\)/);
+    expect(articleWorkspaceSource).toMatch(/\}, \[projectId, markdown\]\);/);
+    expect(visualMarkdownEditorSource).toContain('link.status !== "pending_author" && link.status !== "needs_recheck" && link.status !== "rejected"');
+    expect(visualMarkdownEditorSource).toContain('"这处网页事实待作者确认"');
+    expect(articleWorkspaceSource).toContain("researchLinks={articleResearchLinks}");
+    expect(articleWorkspaceSource).toContain("待处理来源 {articleResearchLinks.filter");
+    expect(articleWorkspaceSource).toContain("markdown.indexOf(claimText)");
+    expect(articleWorkspaceSource).toContain("setSourceLocateRequest({ claimText, sequence: Date.now() })");
+    expect(visualMarkdownEditorSource).toContain("locateResearchRequest.claimText");
+    expect(visualMarkdownEditorSource).toContain('block.scrollIntoView({ behavior: "smooth", block: "center" })');
+  });
+});
 
 describe("image preview layout", () => {
   it("wraps long titles and keeps the full image centered inside the modal", () => {

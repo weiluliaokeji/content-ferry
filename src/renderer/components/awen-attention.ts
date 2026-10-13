@@ -1,6 +1,27 @@
-import type { ArticlePracticeTask, ToolWorkflowSnapshot } from "../types";
+import type { ArticleChatMessage, ArticlePracticeTask, ToolWorkflowSnapshot } from "../types";
+import { findUniqueSuggestionRange, isAwenSuggestionApplied } from "./awen-suggestion-utils";
 
 export type AwenAttentionNotice = { key: string; title: string; body: string };
+export type EditSuggestionDecision = "accepted" | "rejected" | "unavailable";
+
+export function resolvePendingEditSuggestion(
+  taskId: string,
+  messages: ArticleChatMessage[],
+  markdown: string
+): { pending: boolean; decision?: EditSuggestionDecision } {
+  const suggestions = messages.flatMap((message) => message.role === "assistant"
+    ? message.suggestions.filter((suggestion) => suggestion.practiceTaskId === taskId)
+    : []);
+  const anchoredPending = suggestions.some((suggestion) =>
+    (!suggestion.status || suggestion.status === "pending")
+      && !isAwenSuggestionApplied(markdown, suggestion)
+      && Boolean(findUniqueSuggestionRange(markdown, suggestion.original))
+  );
+  if (anchoredPending) return { pending: true };
+  if (suggestions.some((suggestion) => suggestion.status === "accepted" || isAwenSuggestionApplied(markdown, suggestion))) return { pending: false, decision: "accepted" };
+  if (suggestions.some((suggestion) => suggestion.status === "rejected")) return { pending: false, decision: "rejected" };
+  return { pending: false, decision: "unavailable" };
+}
 
 const TASK_WAITING_COPY: Partial<Record<ArticlePracticeTask["status"], { title: string; fallback: string }>> = {
   waiting_permission: { title: "阿文需要你的授权", fallback: "请查看这次操作的目标和影响，再决定是否允许。" },
@@ -19,7 +40,8 @@ function compact(value: string, fallback: string): string {
 export function resolveAwenAttentionNotice(
   task: ArticlePracticeTask | undefined,
   workflow: ToolWorkflowSnapshot | undefined,
-  articleTitle: string
+  articleTitle: string,
+  hasPendingEditSuggestion = true
 ): AwenAttentionNotice | undefined {
   if (task?.status === "waiting_permission" && workflow?.status === "waiting_user" && workflow.pendingPermission) {
     const pending = workflow.pendingPermission;
@@ -34,6 +56,7 @@ export function resolveAwenAttentionNotice(
 
   const waitingCopy = task ? TASK_WAITING_COPY[task.status] : undefined;
   if (task && waitingCopy) {
+    if (task.status === "waiting_edit_confirmation" && !hasPendingEditSuggestion) return undefined;
     const stage = task.status === "waiting_permission" ? "permission" : task.status;
     return {
       key: `${stage}:${task.checkpoint.workflowId ?? task.id}`,

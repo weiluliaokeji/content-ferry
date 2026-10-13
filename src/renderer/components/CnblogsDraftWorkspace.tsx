@@ -3,11 +3,13 @@ import { VisualMarkdownEditor } from "./VisualMarkdownEditor";
 import type { VisualMarkdownSelection } from "./VisualMarkdownEditor";
 import { request, apiBase, renderPhonePreview, resolveArticleImageUrl, extractMarkdownImages } from "../main";
 import { locateMarkdownSelection } from "../markdown-selection";
+import { GenerationReviewSummary } from "./GenerationReviewSummary";
+import type { ContentGenerationReview } from "../types";
 
 interface CnblogsChannelDraftShape {
   id: string; accountId: string; sourceRelativePath: string; generationMode: "rewrite" | "source";
   title: string; markdown: string; author: string; digest: string; coverSource: string;
-  status: "draft" | "approved" | "superseded";
+  status: "draft" | "approved" | "superseded"; generationReview?: ContentGenerationReview | null;
 }
 
 export type CnblogsDraftPatch = Partial<Pick<CnblogsChannelDraftShape, "title" | "markdown" | "author" | "digest" | "coverSource">>;
@@ -437,6 +439,7 @@ export function CnblogsDraftWorkspace({ draft, accountDisplay, saving, job, erro
         {showReconciliationForm && !correcting && <button className="secondary-button" onClick={() => setCorrecting(true)} disabled={correctionBusy}>人工校正</button>}
       </div>
     </header>
+    <GenerationReviewSummary review={draft.generationReview} subject="渠道稿" />
     <div className="editor-columns">
       <aside className="editor-left-panel">
         <h3>渠道稿工具</h3>

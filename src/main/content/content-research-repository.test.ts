@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { openInMemoryDatabase } from "../db/database";
 import { ContentResearchRepository, normalizeResearchUrl } from "./content-research-repository";
 import { buildResearchPlan } from "./research-plan";
@@ -38,6 +39,36 @@ describe("ContentResearchRepository", () => {
     } finally {
       database.close();
     }
+  });
+
+  it("refreshes a recommended source from checked page text without changing author decisions", () => {
+    const database = openInMemoryDatabase();
+    try {
+      const now = new Date().toISOString();
+      database.connection.prepare("INSERT INTO workspaces (id, display_name, created_at) VALUES (?, ?, ?)").run("workspace-refresh", "测试", now);
+      database.connection.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run("project-refresh", "workspace-refresh", "测试", now, now);
+      const repository = new ContentResearchRepository(database.connection);
+      const original = repository.save("project-refresh", { planMarkdown: "初次", sources: [
+        { title: "保留的标题", url: "https://example.com/guide", excerpt: "原摘录", keyClaims: ["原主张"], sourceType: "official" },
+        { title: "作者拒绝", url: "https://example.com/rejected", excerpt: "旧", keyClaims: ["旧"], sourceType: "public" }
+      ] });
+      repository.updateAdoption("project-refresh", original.sources.find((source) => source.title === "作者拒绝")!.id, "rejected");
+      const excerpt = "网页正文明确写出了安装要求与适用条件。";
+      const checked = (url: string) => ({ kind: "official" as const, claim: "安装要求", recommendation: "", qualityReason: "", freshness: "", boundary: "",
+        sourceUrls: [url], snapshots: [{ url, excerpt, capturedAt: now, sha256: createHash("sha256").update(excerpt).digest("hex") }] });
+      const updated = repository.append("project-refresh", { planMarkdown: "后续", sources: [
+        { title: "新标题", url: "https://example.com/guide", excerpt: "新摘录", keyClaims: ["新主张"], sourceType: "official", evidence: checked("https://example.com/guide") },
+        { title: "不能恢复拒绝", url: "https://example.com/rejected", excerpt: "新", keyClaims: ["新"], sourceType: "public", evidence: checked("https://example.com/rejected") }
+      ] });
+      expect(updated.sources).toHaveLength(2);
+      expect(updated.sources.find((source) => source.url === "https://example.com/guide")).toMatchObject({
+        title: "保留的标题", adoptionStatus: "recommended", evidence: { snapshots: [{ excerpt }] }
+      });
+      expect(updated.sources.find((source) => source.url === "https://example.com/rejected")).toMatchObject({
+        adoptionStatus: "rejected", evidence: undefined
+      });
+    } finally { database.close(); }
   });
 
   it("does not add a manually entered URL that is already a source card", () => {

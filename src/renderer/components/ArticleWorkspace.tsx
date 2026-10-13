@@ -10,14 +10,45 @@ import { CoverCropModal } from "./CoverCropModal";
 import { SelectionDiffModal } from "./SelectionDiffModal";
 import { ContentAnyReferenceView, ZhuqueReportView } from "./ZhuqueReportViews";
 import { Modal } from "./Modal";
+import { GenerationReviewSummary } from "./GenerationReviewSummary";
+import { DraftGenerationNotices } from "./DraftGenerationNotices";
+import { DraftWorkflowProgress } from "./DraftWorkflowProgress";
 import { isCurrentImageSearchRequest } from "./image-search-utils";
 import { reconcileMarkdownAfterSave } from "./article-save-state";
 import { resolveLoadedCoverPrompt } from "./article-settings-state";
-import { resolveAwenAttentionNotice } from "./awen-attention";
+import { resolveAwenAttentionNotice, resolvePendingEditSuggestion } from "./awen-attention";
 import { reconcileAwenSuggestionSaveState } from "./awen-suggestion-save-state";
-import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ArticlePracticeTask, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot } from "../types";
+import type { AppSettingsContract, RootState, AccountPlatform, AccountProfile, MediaAccount, ContentSourcePreview, ContentSourceArticle, ContentProject, ContentBrief, ResearchSource, ContentResearch, TitleSuggestion, ContentOutline, ContentDraft, ContentGenerationReview, ArticlePracticeTask, ContentReview, WechatPublishJob, CsdnChannelDraft, CsdnPublishJob, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, ChannelAction, ChannelRow, WechatCredentialStatus, WechatMaterial, SelectedImage, ArticleSettings, ModelProviderId, ModelConnection, WebSearchSettings, ManagedSkill, SkillFileContent, ArticleChatSuggestion, ArticleChatMessage, ZhuqueReport, ContentAnyReference, RuntimeLogEntry, RuntimeLogResponse, AgentMemoryRecord, AgentMemoryCandidateRecord, TemporaryResearchResult, TemporaryResearchScope, ImageSearchResultItem, ImageSearchHistoryRecord, ArticleChatWorkflowResult, ToolWorkflowSnapshot, DraftRunEvent } from "../types";
 
 type ArticleSaveResult = { success: boolean; markdown?: string; error?: string; sourceArticlePath?: string };
+type ArticleResearchLink = { id: string; claimText: string; supportingExcerpt: string; sourceTitle: string; sourceUrl: string; retrievedAt: string; status: "pending_author" | "confirmed" | "rejected" | "needs_recheck" };
+
+function ArticleResearchLinksPanel({ links, busyId, onLocate, onDecide }: {
+  links: ArticleResearchLink[];
+  busyId?: string;
+  onLocate: (claimText: string) => void;
+  onDecide: (id: string, decision: "confirmed" | "rejected") => void;
+}) {
+  if (links.length === 0) return null;
+  return <div className="tool-detail article-research-link-panel">
+    <strong>正文中的候选事实</strong>
+    <small>阿文已对照抓取的网页正文标出来源。确认只代表你核对了这一处表述；拒绝依据后，请修改或删去未获支持的正文。修改段落会要求重新核对。</small>
+    {links.map((link) => <article className="article-research-link-card" key={link.id}>
+      <span className={`article-research-link-status status-${link.status}`}>{link.status === "confirmed" ? "已确认" : link.status === "rejected" ? "依据已拒绝 · 请修改正文" : link.status === "needs_recheck" ? "正文已变化 · 待复核" : "待作者确认"}</span>
+      <p>{link.claimText}</p>
+      <small>依据：{link.supportingExcerpt}</small>
+      <a href={link.sourceUrl} target="_blank" rel="noreferrer">{link.sourceTitle}</a>
+      <small>抓取于 {new Date(link.retrievedAt).toLocaleString()}</small>
+      <div className="article-research-link-actions">
+        <button type="button" className="text-button" onClick={() => onLocate(link.claimText)}>定位正文</button>
+        {link.status !== "confirmed" && <>
+          <button type="button" className="text-button" disabled={busyId === link.id} onClick={() => onDecide(link.id, "confirmed")}>{link.status === "pending_author" ? "确认" : "核对后确认"}</button>
+          {link.status !== "rejected" && <button type="button" className="text-button" disabled={busyId === link.id} onClick={() => onDecide(link.id, "rejected")}>拒绝依据</button>}
+        </>}
+      </div>
+    </article>)}
+  </div>;
+}
 
 // 可视化 Markdown 编辑器（按需加载）
 const VisualMarkdownEditor = lazy(() =>
@@ -36,11 +67,22 @@ export function ArticleWorkspace({
   projectId,
   accounts,
   initialRightPanel,
+  backLabel = "返回工作台",
   saving,
   generating = false,
   generationStatus = "",
+  draftRunId,
+  draftRunEvents = [],
+  generationReview,
+  draftStyleSelectionNote,
+  draftImageCuration,
+  recoveredCandidate = false,
+  recoveryOutlineChanged = false,
+  recoveryArticleChanged = false,
   onStopGeneration,
   onContinueDraftAfterPractice,
+  onResumeRecoveredCandidate,
+  onAdjustDraftScope,
   onChange,
   onBack,
   onSave,
@@ -54,12 +96,23 @@ export function ArticleWorkspace({
   sourceArticlePath?: string;
   projectId?: string;
   accounts: MediaAccount[];
-  initialRightPanel: "assistant" | "preview" | "settings";
+  initialRightPanel: "assistant" | "activity" | "preview" | "settings";
+  backLabel?: string;
   saving: boolean;
   generating?: boolean;
   generationStatus?: string;
+  draftRunId?: string;
+  draftRunEvents?: DraftRunEvent[];
+  generationReview?: ContentGenerationReview | null;
+  draftStyleSelectionNote?: string;
+  draftImageCuration?: ContentDraft["imageCuration"];
+  recoveredCandidate?: boolean;
+  recoveryOutlineChanged?: boolean;
+  recoveryArticleChanged?: boolean;
   onStopGeneration?: () => void;
   onContinueDraftAfterPractice?: () => Promise<void>;
+  onResumeRecoveredCandidate?: () => Promise<void>;
+  onAdjustDraftScope?: (adjustment: string) => Promise<void>;
   onChange: (markdown: string) => void;
   onBack: () => void;
   onSave: () => Promise<ArticleSaveResult>;
@@ -67,6 +120,7 @@ export function ArticleWorkspace({
   // 非微信平台的发布在渠道稿中进行：这里提供入口，直接打开对应平台的渠道稿。
   onEnterChannel?: (platform: AccountPlatform) => void;
 }) {
+  const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
   const [rightPanel, setRightPanel] = useState<"assistant" | "activity" | "preview" | "settings">(initialRightPanel);
   const [workflowActivityFocusRequest, setWorkflowActivityFocusRequest] = useState(0);
   const openExecutionActivity = () => {
@@ -97,6 +151,7 @@ export function ArticleWorkspace({
   const [modeScrollOffset, setModeScrollOffset] = useState(0);
   const markdownSourceRef = useRef<HTMLTextAreaElement>(null);
   const [leftTool, setLeftTool] = useState<"body" | "structure" | "sources" | "images">("body");
+  const [scopeAdjustment, setScopeAdjustment] = useState("");
   const [articleSettings, setArticleSettings] = useState<ArticleSettings>({
     author: "",
     digest: "",
@@ -149,6 +204,20 @@ export function ArticleWorkspace({
   const [temporaryResearch, setTemporaryResearch] = useState<TemporaryResearchResult>();
   const [temporaryResearchBusy, setTemporaryResearchBusy] = useState(false);
   const [savedResearchSources, setSavedResearchSources] = useState<ResearchSource[]>([]);
+  const [articleResearchLinks, setArticleResearchLinks] = useState<ArticleResearchLink[]>([]);
+  const [researchLinkBusyId, setResearchLinkBusyId] = useState<string>();
+  const [sourceLocateRequest, setSourceLocateRequest] = useState<{ claimText: string; sequence: number }>();
+  const locateResearchLink = (claimText: string) => {
+    setLeftTool("body");
+    if (editorMode === "markdown") {
+      const offset = markdown.indexOf(claimText);
+      if (offset >= 0) {
+        markdownSourceRef.current?.focus();
+        markdownSourceRef.current?.setSelectionRange(offset, offset + claimText.length);
+        scrollTextareaToMarkdownOffset(markdownSourceRef.current, markdown, offset);
+      }
+    } else setSourceLocateRequest({ claimText, sequence: Date.now() });
+  };
   useEffect(() => {
     if (temporaryResearch && temporaryResearch.scope !== temporaryResearchScope) setTemporaryResearch(undefined);
   }, [temporaryResearch, temporaryResearchScope]);
@@ -160,6 +229,29 @@ export function ArticleWorkspace({
       .catch(() => { if (!cancelled) setSavedResearchSources([]); });
     return () => { cancelled = true; };
   }, [projectId, leftTool]);
+  useEffect(() => {
+    if (!projectId) { setArticleResearchLinks([]); return; }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void request<{ items: ArticleResearchLink[] }>(`/content-projects/${projectId}/draft/research-links/check`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ markdown })
+      }).then((result) => { if (!cancelled) setArticleResearchLinks(result.items); })
+        .catch(() => { if (!cancelled) setArticleResearchLinks([]); });
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [projectId, markdown]);
+  const decideResearchLink = async (linkId: string, decision: "confirmed" | "rejected") => {
+    if (!projectId) return;
+    setResearchLinkBusyId(linkId);
+    try {
+      const updated = await request<ArticleResearchLink>(`/content-projects/${projectId}/draft/research-links/${linkId}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ markdown, decision })
+      });
+      setArticleResearchLinks((current) => current.map((link) => link.id === linkId ? updated : link));
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : "来源确认失败，请稍后重试。");
+    } finally { setResearchLinkBusyId(undefined); }
+  };
   const [selectionDetectionTool, setSelectionDetectionTool] = useState<"zhuque" | "contentany">("zhuque");
   const [selectionDetectionBusy, setSelectionDetectionBusy] = useState(false);
   const [selectionDetectionResult, setSelectionDetectionResult] = useState("");
@@ -175,6 +267,7 @@ export function ArticleWorkspace({
   const [awenLoading, setAwenLoading] = useState(false);
   const [awenWorkflow, setAwenWorkflow] = useState<ToolWorkflowSnapshot>();
   const [articlePracticeTask, setArticlePracticeTask] = useState<ArticlePracticeTask>();
+  const [pendingEditSuggestionCheck, setPendingEditSuggestionCheck] = useState<{ taskId: string; pending: boolean }>();
   const attentionNoticeTimerRef = useRef<number | undefined>(undefined);
   const scheduledAttentionKeyRef = useRef<string | undefined>(undefined);
   const notifiedAttentionKeyRef = useRef<string | undefined>(undefined);
@@ -185,7 +278,45 @@ export function ArticleWorkspace({
   const awenWorkflowActive = Boolean(awenWorkflow && ["queued", "planning", "running", "waiting_user", "replanning", "cancel_requested"].includes(awenWorkflow.status));
   const awenPracticeTaskActive = Boolean(articlePracticeTask?.sourceType === "awen" && !["completed", "completed_with_gaps", "stopped", "failed"].includes(articlePracticeTask.status));
   useEffect(() => {
-    const notice = resolveAwenAttentionNotice(articlePracticeTask, awenWorkflow, title);
+    if (!projectId || !articlePracticeTask || articlePracticeTask.status !== "waiting_edit_confirmation") {
+      setPendingEditSuggestionCheck(undefined);
+      return;
+    }
+    const taskId = articlePracticeTask.id;
+    let active = true;
+    setPendingEditSuggestionCheck(undefined);
+    void (async () => {
+      try {
+        const chat = await request<{ messages: ArticleChatMessage[] }>(`/article-chat?contextKey=${encodeURIComponent(contextKey)}`);
+        if (!active) return;
+        const resolution = resolvePendingEditSuggestion(taskId, chat.messages, markdown);
+        setPendingEditSuggestionCheck({ taskId, pending: resolution.pending });
+        if (!resolution.decision) return;
+        const decision = resolution.decision === "accepted" ? "edit_confirmed"
+          : resolution.decision === "rejected" ? "edit_rejected" : "edit_unavailable";
+        const resolved = await request<{ task: ArticlePracticeTask }>(`/content-projects/${projectId}/practice-task/${taskId}/decision`, {
+          method: "POST", body: JSON.stringify({ decision })
+        });
+        if (active) setArticlePracticeTask(resolved.task);
+      } catch {
+        // If the conversation cannot be checked, avoid claiming that an action is pending.
+        if (active) setPendingEditSuggestionCheck({ taskId, pending: false });
+      }
+    })();
+    return () => { active = false; };
+  }, [projectId, articlePracticeTask?.id, articlePracticeTask?.status, contextKey]);
+  useEffect(() => {
+    if (articlePracticeTask?.status === "waiting_edit_confirmation"
+      && pendingEditSuggestionCheck?.taskId !== articlePracticeTask.id) {
+      if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
+      attentionNoticeTimerRef.current = undefined;
+      scheduledAttentionKeyRef.current = undefined;
+      return;
+    }
+    const hasPendingEditSuggestion = articlePracticeTask?.status === "waiting_edit_confirmation"
+      && pendingEditSuggestionCheck?.taskId === articlePracticeTask.id
+      && pendingEditSuggestionCheck.pending;
+    const notice = resolveAwenAttentionNotice(articlePracticeTask, awenWorkflow, title, hasPendingEditSuggestion);
     if (!notice) {
       if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
       attentionNoticeTimerRef.current = undefined;
@@ -203,7 +334,7 @@ export function ArticleWorkspace({
       const bridge = window.contentFerry;
       if (bridge) void bridge.app.notifyAttention(notice.title, notice.body).catch(() => undefined);
     }, 1400);
-  }, [articlePracticeTask, awenWorkflow, title]);
+  }, [articlePracticeTask, awenWorkflow, title, pendingEditSuggestionCheck]);
   useEffect(() => () => {
     if (attentionNoticeTimerRef.current !== undefined) window.clearTimeout(attentionNoticeTimerRef.current);
   }, []);
@@ -226,7 +357,7 @@ export function ArticleWorkspace({
   const [savedAwenSuggestionSyncPendingIds, setSavedAwenSuggestionSyncPendingIds] = useState<Set<string>>(new Set());
   const [leavePromptOpen, setLeavePromptOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [savedMarkdown, setSavedMarkdown] = useState(markdown);
+  const [savedMarkdown, setSavedMarkdown] = useState(recoveredCandidate ? "" : markdown);
   const markdownRef = useRef(markdown);
   markdownRef.current = markdown;
   const [savedSettings, setSavedSettings] = useState<ArticleSettings>({
@@ -242,7 +373,6 @@ export function ArticleWorkspace({
     isAiGenerated: false,
     collectionName: ""
   });
-  const contextKey = sourceArticlePath ? `source:${sourceArticlePath}` : `project:${projectId ?? assetContextId}`;
   const awenContextKeyRef = useRef(contextKey);
   awenContextKeyRef.current = contextKey;
   const imageSearchContextKeyRef = useRef(contextKey);
@@ -380,7 +510,8 @@ export function ArticleWorkspace({
         if (resumed.needsReconciliation) return;
         if (resumed.task.status === "drafting" && !generating) await onContinueDraftAfterPractice?.();
         const workflowId = resumed.task.checkpoint.workflowId;
-        if (workflowId && resumed.task.status !== "drafting") {
+        const canResumeWorkflow = ["assessing", "practicing", "waiting_permission"].includes(resumed.task.status);
+        if (workflowId && canResumeWorkflow) {
           const workflow = await request<{ workflow: ToolWorkflowSnapshot }>(`/article-chat/workflows/${workflowId}/resume`, { method: "POST" });
           setAwenWorkflow(workflow.workflow);
         } else if (!workflowId && resumed.task.status === "practicing") {
@@ -1530,13 +1661,29 @@ export function ArticleWorkspace({
   };
   const editorWorkspaceStyle = awenOpen ? { "--awen-bottom-height": `${awenBottomHeightPercent}vh` } as CSSProperties : undefined;
   return <div className={`editor-workspace${awenOpen ? " with-awen-panel" : ""}`} style={editorWorkspaceStyle}>
-    <header className="editor-topbar">
-      <button className="secondary-button" onClick={leaveWorkspace}>← 返回归档库</button>
+    <header className={`editor-topbar${generationReview ? " has-generation-review" : ""}`}>
+      <button className="secondary-button" onClick={leaveWorkspace}>← {backLabel}</button>
       <div className="editor-document-title"><strong>{title}</strong></div>
+      {articleResearchLinks.some((link) => link.status === "pending_author" || link.status === "needs_recheck" || link.status === "rejected") &&
+        <button type="button" className="article-source-review-trigger" onClick={() => setLeftTool("sources")}>
+          待处理来源 {articleResearchLinks.filter((link) => link.status === "pending_author" || link.status === "needs_recheck" || link.status === "rejected").length}
+        </button>}
+      <GenerationReviewSummary review={generationReview} subject="正文" placement="topbar" />
       <div className="editor-top-actions"><span title={generating ? generationStatus : undefined}>{generating ? (generationStatus || "AI 正在起草正文…") : busy ? "正在保存…" : hasUnsavedChanges ? "有未保存修改" : hasSavedSuggestionSyncPending ? "正文已保存，建议状态待同步" : "已保存"}</span>{generating && <button className="secondary-button" onClick={onStopGeneration}>停止生成</button>}<button onClick={() => void saveArticleAndSettings()} disabled={busy || generating || (!hasUnsavedChanges && !hasSavedSuggestionSyncPending)}>保存文章</button>{channelHandoffPlatform && onEnterChannel
   ? <button onClick={() => void enterChannelDraft()} disabled={busy || generating}>进入{platformName(channelHandoffPlatform)}渠道稿</button>
   : onPublish && <button onClick={() => void prepareFromWorkspace()} disabled={busy || generating}>准备发布</button>}</div>
     </header>
+    {!generating && <DraftGenerationNotices styleSelectionNote={draftStyleSelectionNote} imageCuration={draftImageCuration} />}
+    {!generating && draftRunId && onAdjustDraftScope && generationReview?.status === "needs_author" && !generationReview.stale
+      && generationReview.report.findings.some((finding) => finding.resolution === "practice" || finding.resolution === "scope_decision")
+      && !recoveryOutlineChanged && !recoveryArticleChanged && <form className="draft-scope-adjustment" onSubmit={(event) => {
+        event.preventDefault();
+        if (scopeAdjustment.trim().length >= 20) void onAdjustDraftScope(scopeAdjustment.trim());
+      }}>
+        <label htmlFor="draft-scope-adjustment"><strong>调整文章范围后继续</strong><small>如果不做本篇实践，请明确说明本文改为提供什么，以及不再承诺什么。阿文会修改候选正文并重新评审，不会把未执行的步骤写成亲测。</small></label>
+        <div><input id="draft-scope-adjustment" value={scopeAdjustment} onChange={(event) => setScopeAdjustment(event.target.value)} minLength={20} maxLength={1200} placeholder="例如：本篇只讲安装原理与操作步骤，不提供本机实测结果；标题和实践章节据此调整。" /><button type="submit" className="secondary-button" disabled={scopeAdjustment.trim().length < 20}>按新范围修订并复审</button></div>
+      </form>}
+    {recoveredCandidate && <div className="hint" role="status">已恢复上次未保存的候选正文。{recoveryOutlineChanged ? "提纲已变化，请对照提纲检查内容；" : ""}{recoveryArticleChanged ? "正式文章已变化或旧任务缺少文章基准，请核对后手动处理；" : ""}本次恢复没有自动重新评审。请核对实践与来源，再决定修改或保存。{!recoveryOutlineChanged && !recoveryArticleChanged && onResumeRecoveredCandidate && <button type="button" className="text-button" disabled={generating} onClick={() => void onResumeRecoveredCandidate()}>从候选继续评审</button>}</div>}
     <div className="editor-columns">
       <aside className="editor-left-panel">
         <h3>文章工具</h3>
@@ -1546,13 +1693,14 @@ export function ArticleWorkspace({
         <button className={`workspace-tool${leftTool === "images" ? " active" : ""}`} onClick={() => setLeftTool("images")}>图片素材</button>
         {leftTool === "body" && <div className="editor-stats"><span>{wordCount} 字</span><span>{images.length} 张图片</span><span>约 {Math.max(1, Math.ceil(wordCount / 500))} 分钟阅读</span></div>}
         {leftTool === "structure" && <div className="tool-detail"><strong>文章结构</strong>{headings.length ? headings.map((heading, index) => <button className="structure-link" key={index} style={{ paddingLeft: `${(heading[1].length - 1) * 10}px` }} onClick={() => scrollEditorToHeading(heading[2], index, markdown, editorMode)}>{heading[2]}</button>) : <small>正文中还没有标题。</small>}</div>}
-        {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? <div className="article-source-links">{sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>)}</div> : <small>暂未识别到正文链接来源。</small>}{projectId && <>{savedResearchSources.length > 0 && <div className="temporary-research-results"><p><strong>已保存证据</strong><small>来自资料工作台；只有已采纳的卡会进入提纲和正文上下文。</small></p>{savedResearchSources.map((source) => <article className="temporary-research-card" key={source.id}><strong>{source.title}</strong><small>{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : "待核验"}</small><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p></article>)}</div>}<div className="temporary-research-box"><label>临时调研范围<select value={temporaryResearchScope} onChange={(event) => setTemporaryResearchScope(event.target.value as TemporaryResearchScope)} disabled={temporaryResearchBusy}><option value="selection">选中文本</option><option value="paragraph">当前段落</option><option value="article">整篇文章</option></select></label><small>结果只在本次编辑会话保留，不会自动改写正文或进入正式资料。</small><button type="button" className="secondary-button" onClick={() => void runTemporaryResearch()} disabled={temporaryResearchBusy}>{temporaryResearchBusy ? "正在临时调研…" : "开始临时调研"}</button>{temporaryResearch && <div className="temporary-research-results"><p><strong>临时结果</strong><small>{temporaryResearchScope === "selection" ? "选中文本" : temporaryResearchScope === "paragraph" ? "当前段落" : "整篇文章"} · 本次范围已记录</small></p>{temporaryResearch.sources.length ? temporaryResearch.sources.map((source) => <article className="temporary-research-card" key={`${source.url}-${source.title}`}><strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p>{source.keyClaims?.length ? <ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul> : null}{source.recommendation && <p><strong>为什么值得看：</strong>{source.recommendation}</p>}{source.freshness?.startsWith("易变：") && <p><strong>发布前复核：</strong>{source.freshness.slice(3)}</p>}{source.evidence?.snapshots?.[0]?.capturedAt && <small>抓取时间：{new Date(source.evidence.snapshots[0].capturedAt).toLocaleString()}</small>}<div className="temporary-research-actions"><button type="button" className="text-button" onClick={() => insertTemporaryText(source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为摘录</button><button type="button" className="text-button" onClick={() => insertTemporaryText(source.claim ?? source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为改写建议</button><button type="button" className="text-button" onClick={() => void saveTemporaryResearchSource(source)} disabled={temporaryResearchBusy}>保存为待核验证据</button></div>{!canInsertTemporaryText && <small>请选择当前正文中的一段文字后再插入。</small>}</article>) : <small>本次没有获得可核验资料卡。</small>}</div>}</div></>}</div>}
+        {leftTool === "sources" && <ArticleResearchLinksPanel links={articleResearchLinks} busyId={researchLinkBusyId} onLocate={locateResearchLink} onDecide={(id, decision) => void decideResearchLink(id, decision)} />}
+        {leftTool === "sources" && <div className="tool-detail"><strong>资料来源</strong>{sources.length ? <div className="article-source-links">{sources.map((source) => <a className="source-link" href={source} target="_blank" rel="noreferrer" title={`在浏览器中打开：${source}`} key={source}>{source}</a>)}</div> : <small>暂未识别到正文链接来源。</small>}{projectId && <>{savedResearchSources.length > 0 && <div className="temporary-research-results"><p><strong>已保存证据</strong><small>来自资料工作台；已采纳资料供提纲参考，网页正文已核对的候选资料可进入待确认正文。起草中发现缺口仍可继续调研和实践。</small></p>{savedResearchSources.map((source) => <article className="temporary-research-card" key={source.id}><strong>{source.title}</strong><small>{source.adoptionStatus === "adopted" ? "已采纳" : source.adoptionStatus === "rejected" ? "已拒绝" : "待核验"}</small><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p></article>)}</div>}<div className="temporary-research-box"><label>临时调研范围<select value={temporaryResearchScope} onChange={(event) => setTemporaryResearchScope(event.target.value as TemporaryResearchScope)} disabled={temporaryResearchBusy}><option value="selection">选中文本</option><option value="paragraph">当前段落</option><option value="article">整篇文章</option></select></label><small>结果只在本次编辑会话保留，不会自动改写正文或进入正式资料。</small><button type="button" className="secondary-button" onClick={() => void runTemporaryResearch()} disabled={temporaryResearchBusy}>{temporaryResearchBusy ? "正在临时调研…" : "开始临时调研"}</button>{temporaryResearch && <div className="temporary-research-results"><p><strong>临时结果</strong><small>{temporaryResearchScope === "selection" ? "选中文本" : temporaryResearchScope === "paragraph" ? "当前段落" : "整篇文章"} · 本次范围已记录</small></p>{temporaryResearch.sources.length ? temporaryResearch.sources.map((source) => <article className="temporary-research-card" key={`${source.url}-${source.title}`}><strong>{source.title}</strong><a href={source.url} target="_blank" rel="noreferrer">{source.url}</a><p>{source.excerpt}</p>{source.keyClaims?.length ? <ul>{source.keyClaims.map((claim) => <li key={claim}>{claim}</li>)}</ul> : null}{source.recommendation && <p><strong>为什么值得看：</strong>{source.recommendation}</p>}{source.freshness?.startsWith("易变：") && <p><strong>发布前复核：</strong>{source.freshness.slice(3)}</p>}{source.evidence?.snapshots?.[0]?.capturedAt && <small>抓取时间：{new Date(source.evidence.snapshots[0].capturedAt).toLocaleString()}</small>}<div className="temporary-research-actions"><button type="button" className="text-button" onClick={() => insertTemporaryText(source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为摘录</button><button type="button" className="text-button" onClick={() => insertTemporaryText(source.claim ?? source.excerpt)} disabled={temporaryResearchBusy || !canInsertTemporaryText}>替换选区为改写建议</button><button type="button" className="text-button" onClick={() => void saveTemporaryResearchSource(source)} disabled={temporaryResearchBusy}>保存为待核验证据</button></div>{!canInsertTemporaryText && <small>请选择当前正文中的一段文字后再插入。</small>}</article>) : <small>本次没有获得可核验资料卡。</small>}</div>}</div></>}</div>}
         {leftTool === "images" && <div className="tool-detail image-materials-panel"><div className="image-panel-heading"><div><strong>图片素材</strong><small>{images.length ? `正文已有 ${images.length} 张图片` : "正文中还没有图片"}</small></div><span>{imageCandidates.length ? `${imageCandidates.length} 个候选` : ""}</span></div><button type="button" className="secondary-button image-search-launcher" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>打开联网找图</button>{imageHistory.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(true); setImageSearchOpen(true); }}>查看搜图历史（{imageHistory.length}）</button>}<small>找图和候选初审会在宽版面板中进行，历史记录会按当前文章保存。</small>{imageCandidates.length > 0 && <button type="button" className="text-button image-candidate-reopen" onClick={() => { setImageHistoryOpen(false); setImageSearchOpen(true); }}>查看最近候选</button>}{images.length ? <div className="article-image-list">{images.map((image, index) => <div className="article-image-item" key={`${image.src}-${index}`}><img src={resolveArticleImageUrl(image.src, assetContextId, sourceArticlePath)} alt={image.alt || "文章图片"} />{sourceArticlePath && isLocalArticleImageSource(image.src) && <button type="button" className="text-button" onClick={() => void cropExistingBodyImage(image, images.slice(0, index).filter((candidate) => candidate.src === image.src).length)}>裁剪并替换此图</button>}</div>)}</div> : <small>确认插入的图片会显示在这里。</small>}</div>}
       </aside>
       <section className={`editor-canvas${editorMode === "markdown" ? " markdown-mode" : ""}`}>
         {workspaceError && <p className="error editor-inline-error">{workspaceError}</p>}
-        {generating && !markdown.trim() ? <div className="generation-placeholder editor-generation-placeholder" role="status"><span className="loading-dot" aria-hidden="true" /><span>{generationStatus || "正在等待 AI 的第一段正文内容…"}</span><small>收到内容后会直接显示在编辑器中；你可以随时停止并保留已生成的部分。</small></div> : editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
-          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} suggestionOffsets={awenSuggestionOffsets} onSuggestionOffsetChange={(id, offset) => setAwenSuggestionOffsets((current) => ({ ...current, [id]: offset }))} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} locateSuggestionRequest={awenLocateSuggestionRequest} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
+        {generating && !markdown.trim() ? <div className="generation-placeholder editor-generation-placeholder" role="status"><span className="loading-dot" aria-hidden="true" /><span>{generationStatus || "正在等待 AI 的第一段正文内容…"}</span><small>收到内容后会直接显示在编辑器中；你可以随时停止并保留已生成的部分。</small>{(awenWorkflow || draftRunEvents.length > 0) && <DraftWorkflowProgress events={awenWorkflow?.events ?? []} draftRunId={draftRunId} draftRunEvents={draftRunEvents} />}</div> : editorMode === "visual" ? <Suspense fallback={<p className="hint">正在打开文章编辑器…</p>}>
+          <VisualMarkdownEditor key={sourceArticlePath ?? assetContextId} value={markdown} assetContextId={assetContextId} sourceArticlePath={sourceArticlePath} minHeight={680} initialScrollOffset={modeScrollOffset} onSwitchToMarkdown={switchToMarkdown} suggestions={awenSuggestions} suggestionOffsets={awenSuggestionOffsets} onSuggestionOffsetChange={(id, offset) => setAwenSuggestionOffsets((current) => ({ ...current, [id]: offset }))} onAcceptSuggestion={(id) => void applyAwenSuggestion(id)} onRejectSuggestion={(id) => void dismissAwenSuggestion(id)} locateSuggestionRequest={awenLocateSuggestionRequest} researchLinks={articleResearchLinks} locateResearchRequest={sourceLocateRequest} onChange={onChange} onError={setWorkspaceError} onTextSelection={captureVisualSelection} />
         </Suspense> : <div className="markdown-editor-shell"><div className="markdown-mode-toolbar editor-mode-switch" aria-label="编辑模式"><button type="button" className="editor-mode-icon" title="切换到所见即所得编辑" aria-label="切换到所见即所得编辑" onClick={switchToVisual}>✎</button><button type="button" className="active editor-mode-icon" title="当前：Markdown 原文" aria-label="当前：Markdown 原文">{"</>"}</button></div><textarea ref={markdownSourceRef} className="markdown-source-editor" value={markdown} onChange={(event) => onChange(event.target.value)} onPaste={(event) => void importPastedRemoteMarkdownImage(event)} onSelect={(event) => { const target = event.currentTarget; const selected = target.selectionEnd > target.selectionStart; setSelectionRange(selected ? { start: target.selectionStart, end: target.selectionEnd } : undefined); setSelectionDocumentMarkdown(selected ? markdown : undefined); if (selected) { setSelectionAiAction("humanize"); setRightPanel("assistant"); } setSelectionAiResult(""); }} spellCheck={false} /></div>}
       </section>
       <aside className="editor-right-panel">
@@ -1562,6 +1710,7 @@ export function ArticleWorkspace({
           <button className={rightPanel === "preview" ? "active" : ""} onClick={() => setRightPanel("preview")}>手机预览</button>
           <button className={rightPanel === "settings" ? "active" : ""} onClick={() => setRightPanel("settings")}>文章设置</button>
         </div>
+        {rightPanel === "activity" && draftRunEvents.length > 0 && <DraftWorkflowProgress events={awenWorkflow?.events ?? []} draftRunId={draftRunId} draftRunEvents={draftRunEvents} />}
         {rightPanel === "activity" && <>{projectId && <AwenPracticeProjectDirectoryCard projectId={projectId} />}{articlePracticeTask && <ArticlePracticeTaskCard task={articlePracticeTask} busy={practiceTaskBusy} onDecision={decidePracticeTask} onOpenAwen={(prefill) => { if (prefill !== undefined) setAwenInput(prefill); setAwenOpen(true); setRightPanel("activity"); }} onOpenExecutionActivity={openExecutionActivity} />}{projectId && <ArticlePracticeHistory projectId={projectId} articlePath={sourceArticlePath} refreshKey={articlePracticeTask?.updatedAt} />}<ArticlePracticeSources articlePath={sourceArticlePath} refreshKey={`${articlePracticeTask?.updatedAt ?? ""}:${saving ? "saving" : "saved"}:${practiceSourceRefresh}`} />{!articlePracticeTask && !awenWorkflow && !awenLoading && <section className="awen-practice-empty"><strong>想验证文章里的代码或操作？</strong><p>告诉阿文验证目标；阿文会判断是否需要实践，并在这里显示过程和结果。</p><button type="button" onClick={() => void openAwen()}>告诉阿文验证目标</button></section>}<AwenToolWorkflowActivity workflow={awenWorkflow} displayGoal={articlePracticeTask?.latestGoal} projectId={projectId} articlePath={sourceArticlePath} loading={awenLoading} practiceTask={awenPracticeTaskActive} focusPermissionRequest={workflowActivityFocusRequest} onWorkflowPermission={(decision, scope) => void respondAwenWorkflowPermission(decision, scope)} onCancelWorkflow={() => void cancelAwenWorkflow()} onResumeWorkflow={() => void resumeAwenWorkflow()} onOpenAwen={(prefill) => { if (prefill !== undefined) setAwenInput(prefill); setAwenOpen(true); setRightPanel("activity"); }} onExpand={() => setAwenActivityExpanded(true)} /></>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-assistant"><div className="assistant-heading"><div><h3>AI 处理选中文字</h3><small>选中正文后可改写、去 AI 味或检测。</small></div><button type="button" className="secondary-button compact-action" onClick={() => void openAwen()}>与阿文讨论本文</button></div>{selectionRange ? <><p className="selection-ready">已选中 {selectionRange.end - selectionRange.start} 个字符，默认使用“去 AI 味”。</p><blockquote>{(selectionDocumentMarkdown ?? markdown).slice(selectionRange.start, selectionRange.end)}</blockquote></> : <div className="selection-guide"><strong>先选中一段正文，再让 AI 处理</strong><p>生成建议后可比较、选择部分修改，再决定是否应用。</p></div>}<div className="selection-action-grid">{([["humanize", "去 AI 味"], ["rewrite", "改写"], ["expand", "扩写"], ["shorten", "缩写"], ["example", "补充案例"]] as const).map(([value, label]) => <button type="button" className={selectionAiAction === value ? "active" : ""} onClick={() => setSelectionAiAction(value)} key={value}>{label}</button>)}</div><label className="selection-instruction"><span>补充要求（可选）</span><textarea value={selectionAiInstruction} onChange={(event) => setSelectionAiInstruction(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void runSelectionAi(); } }} disabled={!selectionRange || selectionAiBusy} maxLength={1000} placeholder="例如：保留技术术语，语气更直接；不要使用营销化表达" /></label><button type="button" onClick={() => void runSelectionAi()} disabled={!selectionRange || selectionAiBusy}>{selectionAiBusy ? "AI 正在处理…" : selectionAiAction === "humanize" ? "AI 去 AI 味（先预览）" : "生成替换建议（先预览）"}</button>{selectionAiResult && <div className="selection-result"><strong>AI 建议，不会自动覆盖原文</strong><pre>{selectionAiResult}</pre><div className="selection-result-actions"><button type="button" className="secondary-button" onClick={() => setSelectionComparisonOpen(true)}>对比修改</button><button type="button" className="secondary-button" onClick={() => { setSelectionAiResult(""); setSelectionAiOriginal(""); }}>放弃</button><button type="button" onClick={applySelectionAiResult}>用建议替换选中文字</button></div></div>}<small>“去 AI 味”的处理规则来自“技能与模型”中的“文章选区去 AI 味”技能，可单独修改和切换模型。</small></div>}
         {rightPanel === "assistant" && <div className="side-panel-content selection-detection"><h3>AIGC 特征检测</h3><p>{selectionRange ? "针对当前选中段落检测；朱雀或 ContentAny 任一结果都可作为优化参考。" : "未选中段落时会检测当前文章全文；朱雀或 ContentAny 任一结果都可作为优化参考。"}</p><div className="selection-detection-controls"><select value={selectionDetectionTool} onChange={(event) => setSelectionDetectionTool(event.target.value as "zhuque" | "contentany")}><option value="zhuque">腾讯朱雀</option><option value="contentany">ContentAny</option></select><button type="button" className="secondary-button" onClick={() => void runSelectionDetection()} disabled={!markdown.trim() || selectionDetectionBusy}>{selectionDetectionBusy ? "正在检测…" : selectionRange ? "检测选中内容" : "检测全文内容"}</button></div>{!selectionRange && <small>你也可以先选中一段文字，只检测这一段。</small>}{selectionZhuqueReport && <ZhuqueReportView report={selectionZhuqueReport} />}{selectionContentAnyReference && <ContentAnyReferenceView reference={selectionContentAnyReference} />}{selectionDetectionResult && !selectionContentAnyReference && <pre className="selection-detection-result">{selectionDetectionResult}</pre>}</div>}

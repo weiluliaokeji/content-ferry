@@ -37,6 +37,13 @@ export interface MediaAccount {
   fiftyoneCtoCateOptionsByPid: Record<string, Array<{ value: string; label: string }>>;
 }
 
+export interface ConfirmedAccountStyleProfile {
+  versionNumber: number;
+  commonVoice: string;
+  genreTraits: Array<{ genre: string; traits: string }>;
+  visualTraits: string;
+}
+
 export class AccountAlreadyExistsError extends Error {
   constructor() {
     super("该平台下已存在同名账号。");
@@ -190,6 +197,63 @@ export class AccountRepository {
       FROM media_accounts a JOIN account_profiles p ON p.account_id = a.id WHERE a.id = ? AND a.deleted_at IS NULL`).get(id) as Record<string, string | null> | undefined;
     if (!row) throw new Error("Account not found.");
     return this.mapAccount(row);
+  }
+
+  publishedArticlePaths(accountId: string): Set<string> {
+    const rows = this.db.prepare(`
+      SELECT source_relative_path AS relativePath FROM wechat_publish_jobs
+        WHERE account_id = ? AND status = 'published' AND source_relative_path IS NOT NULL
+      UNION
+      SELECT d.source_relative_path AS relativePath FROM publish_lifecycle_jobs p
+        JOIN channel_drafts d ON d.id = p.channel_draft_id
+        WHERE p.account_id = ? AND p.status = 'published'
+      UNION
+      SELECT d.source_relative_path AS relativePath FROM csdn_publish_jobs p
+        JOIN channel_drafts d ON d.id = p.channel_draft_id
+        WHERE p.account_id = ? AND p.status = 'published'
+      UNION
+      SELECT d.source_relative_path AS relativePath FROM cnblogs_publish_jobs p
+        JOIN channel_drafts d ON d.id = p.channel_draft_id
+        WHERE p.account_id = ? AND p.status = 'published'
+      UNION
+      SELECT d.source_relative_path AS relativePath FROM juejin_publish_jobs p
+        JOIN channel_drafts d ON d.id = p.channel_draft_id
+        WHERE p.account_id = ? AND p.status = 'published'
+      UNION
+      SELECT d.source_relative_path AS relativePath FROM fiftyone_cto_publish_jobs p
+        JOIN channel_drafts d ON d.id = p.channel_draft_id
+        WHERE p.account_id = ? AND p.status = 'published'
+    `).all(accountId, accountId, accountId, accountId, accountId, accountId) as Array<{ relativePath: string | null }>;
+    return new Set(rows.flatMap(({ relativePath }) => relativePath ? [relativePath] : []));
+  }
+
+  getConfirmedStyleProfile(accountId: string): ConfirmedAccountStyleProfile | null {
+    const row = this.db.prepare(`SELECT v.version_number AS versionNumber, v.profile_json AS profileJson
+      FROM account_style_profile_active a JOIN account_style_profile_versions v
+        ON v.account_id = a.account_id AND v.id = a.version_id
+      WHERE a.account_id = ?`).get(accountId) as { versionNumber: number; profileJson: string } | undefined;
+    if (!row) return null;
+    try {
+      const profile: unknown = JSON.parse(row.profileJson);
+      if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+      const value = profile as Record<string, unknown>;
+      if (typeof value.commonVoice !== "string") return null;
+      const genreTraits = Array.isArray(value.genreTraits) ? value.genreTraits.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const trait = item as Record<string, unknown>;
+        return typeof trait.genre === "string" && typeof trait.traits === "string"
+          ? [{ genre: trait.genre, traits: trait.traits }]
+          : [];
+      }) : [];
+      return {
+        versionNumber: row.versionNumber,
+        commonVoice: value.commonVoice,
+        genreTraits,
+        visualTraits: typeof value.visualTraits === "string" ? value.visualTraits : ""
+      };
+    } catch {
+      return null;
+    }
   }
 
   getCredential(accountId: string, credentialKind: string, vault: CredentialVault): string {

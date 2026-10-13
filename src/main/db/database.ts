@@ -7,8 +7,15 @@ import { ARTICLE_PRACTICE_PROJECT_DIRECTORY_MIGRATION_VERSION, migrateArticlePra
 import { ARTICLE_PRACTICE_LEGACY_EXECUTION_MIGRATION_VERSION, migrateArticlePracticeLegacyExecutions } from "../content/article-practice-legacy-execution-migration";
 import { migrateArticlePracticeGapFlag } from "../content/article-practice-gap-flag-migration";
 import { ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION, migrateArticlePracticeIndependentEdits } from "../content/article-practice-independent-edit-migration";
+import { ACCOUNT_STYLE_PROFILE_MIGRATION_VERSION, ACCOUNT_STYLE_SAMPLE_MIGRATION_VERSION, migrateAccountStyleProfiles, migrateAccountStyleSamples } from "../content/account-style-sample-migration";
+import { migrateContentGenerationReviews } from "../content/content-generation-review-migration";
+import { CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION, migrateContentGenerationReviewRepairRounds } from "../content/content-generation-review-repair-rounds-migration";
+import { migrateArticleDraftRuns } from "../content/article-draft-run-migration";
+import { CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION, migrateContentBriefDepthPreference } from "../content/content-brief-depth-preference-migration";
+import { ARTICLE_RESEARCH_LINK_MIGRATION_VERSION, migrateArticleResearchLinks } from "../content/article-research-link-migration";
+import { ARTICLE_DRAFT_CANDIDATE_MIGRATION_VERSION, migrateArticleDraftCandidates } from "../content/article-draft-candidate-migration";
 
-const LATEST_SCHEMA_MIGRATION_VERSION = ARTICLE_PRACTICE_INDEPENDENT_EDIT_MIGRATION_VERSION;
+const LATEST_SCHEMA_MIGRATION_VERSION = ARTICLE_DRAFT_CANDIDATE_MIGRATION_VERSION;
 
 export interface AppDatabase {
   connection: Database.Database;
@@ -22,7 +29,7 @@ export function openDatabase(dataDirectory: string): AppDatabase {
   const db = new Database(databasePath);
   try {
     assertSupportedSchemaVersion(db);
-    if (existingDatabase && !hasAppliedMigration(db, LATEST_SCHEMA_MIGRATION_VERSION)) {
+    if (existingDatabase && needsSchemaUpgrade(db)) {
       // VACUUM INTO creates a consistent SQLite snapshot, including committed
       // WAL pages. Keep it outside the schema transaction for recovery.
       const backupDirectory = path.join(dataDirectory, "backups");
@@ -162,6 +169,7 @@ export function initialiseDatabase(db: Database.Database): void {
       audience TEXT NOT NULL DEFAULT '',
       angle TEXT NOT NULL DEFAULT '',
       source_notes TEXT NOT NULL DEFAULT '',
+      draft_depth_preference TEXT CHECK(draft_depth_preference IS NULL OR draft_depth_preference IN ('concise', 'standard', 'detailed')),
       updated_at TEXT NOT NULL
     );
 
@@ -1185,6 +1193,14 @@ export function initialiseDatabase(db: Database.Database): void {
   migrateArticlePracticeLegacyExecutions(db);
   migrateArticlePracticeGapFlag(db);
   migrateArticlePracticeIndependentEdits(db);
+  migrateAccountStyleSamples(db);
+  migrateAccountStyleProfiles(db);
+  migrateContentGenerationReviews(db);
+  migrateContentGenerationReviewRepairRounds(db);
+  migrateArticleDraftRuns(db);
+  migrateContentBriefDepthPreference(db);
+  migrateArticleResearchLinks(db);
+  migrateArticleDraftCandidates(db);
 }
 
 function assertSupportedSchemaVersion(db: Database.Database): void {
@@ -1200,4 +1216,15 @@ function hasAppliedMigration(db: Database.Database, version: number): boolean {
   const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
   if (!table) return false;
   return Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version));
+}
+
+function needsSchemaUpgrade(db: Database.Database): boolean {
+  if (!hasAppliedMigration(db, LATEST_SCHEMA_MIGRATION_VERSION)) return true;
+  // Migration ledgers can outlive a partially packaged development build.
+  // Validate the column used on normal brief reads even when the ledger says
+  // the latest migration was applied, and back up before repairing it.
+  const tableExists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'content_briefs'").get();
+  if (!tableExists) return true;
+  const columns = db.prepare("PRAGMA table_info(content_briefs)").all() as Array<{ name: string }>;
+  return !columns.some((column) => column.name === "draft_depth_preference");
 }

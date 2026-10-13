@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { evaluatePermission, type PermissionDecision, type PermissionScope, type ToolAction, type ToolRisk, type ToolPermissionGrant, type ToolPermissionRequest } from "./permission-policy";
 import { ToolRunner, type ToolRunResult } from "./tool-runner";
+import { containsLiteralEvidence } from "../../shared/literal-evidence";
 
 export type ToolWorkflowStatus = "queued" | "planning" | "running" | "waiting_user" | "replanning" | "completed" | "completed_with_warnings" | "incomplete" | "failed" | "cancel_requested" | "cancelled" | "interrupted";
 export type ToolWorkflowEventType = "progress" | "workflow_created" | "model_round_started" | "model_plan_superseded" | "model_output_repair_requested" | "goal_verification_passed" | "goal_verification_continued" | "goal_verification_incomplete" | "permission_requested" | "permission_decided" | "user_instruction_added" | "tool_started" | "tool_output" | "tool_completed" | "tool_duplicate_blocked" | "tool_deferred" | "tool_denied" | "tool_failed" | "workflow_completed" | "workflow_incomplete" | "workflow_failed" | "workflow_cancel_requested" | "workflow_cancelled" | "workflow_interrupted";
@@ -31,8 +32,17 @@ export interface ToolWorkflowCompletionVerificationInput extends ToolWorkflowMod
   toolResults: ToolWorkflowToolResult[];
 }
 
+export interface ToolWorkflowRecoveryPlan {
+  action: "reuse_observations" | "collect_new_evidence" | "request_author";
+  requirementIds: string[];
+  nextAction: string;
+  expectedResult: string;
+}
+
 export interface ToolWorkflowCompletionEvidence {
   source: "request" | "tool";
+  /** Stable one-based source reference (request-1, tool-1, ...), when available. */
+  sourceId?: string | null;
   quote: string;
 }
 
@@ -40,6 +50,12 @@ export interface ToolWorkflowCompletionVerification {
   decision: "verified" | "continue" | "incomplete";
   reason: string;
   nextStep?: string;
+  /** Concrete unmet parts of the author's request; used to direct and audit recovery. */
+  unresolvedRequirements?: string[];
+  /** Stable IDs paired by index with unresolvedRequirements across verifier rounds. */
+  unresolvedRequirementIds?: string[];
+  /** Structured recovery direction so the next model turn can act on the gap, not just paraphrase it. */
+  recoveryPlan?: ToolWorkflowRecoveryPlan | null;
   evidence: ToolWorkflowCompletionEvidence[];
 }
 
@@ -80,6 +96,10 @@ export interface ToolWorkflowPolicy {
   defaultAllowReadOnly: boolean;
   /** Fails closed when a final answer has not passed the model's separate verifier. */
   requireCompletionVerification?: boolean;
+  /** Allows an evidence-free result only for a bounded stage decision such as deciding whether practice is needed. */
+  allowEvidenceFreeCompletion?: boolean;
+  /** Recovery mode that can only reuse seeded observations and must not execute new tools. */
+  reuseObservationsOnly?: boolean;
   /** Restricts pre-existing grants for selected tools (for example, host code execution). */
   allowedGrantScopesByTool?: Record<string, PermissionScope[]>;
   /** Validates an author-edited pending input using the same runtime schemas as the tool adapter. */
@@ -93,6 +113,9 @@ export interface ToolWorkflowOptions {
   maxRounds?: number;
   maxCallsPerRound?: number;
   maxRetainedWorkflows?: number;
+  /** Prior immutable observations used only for an answer-only recovery workflow. */
+  initialTranscript?: ToolWorkflowMessage[];
+  initialToolResults?: ToolWorkflowToolResult[];
   /** Called after every durable lifecycle event so the host can persist/stream the latest state. */
   onSnapshot?: (snapshot: ToolWorkflowSnapshot) => void;
 }
@@ -153,26 +176,35 @@ export class ToolWorkflowRunner {
   private readonly maxRounds: number;
   private readonly maxCallsPerRound: number;
   private readonly maxRetainedWorkflows: number;
+  private readonly options: ToolWorkflowOptions;
 
   constructor(private readonly toolRunner: ToolRunner, private readonly model: ToolWorkflowModel, options: ToolWorkflowOptions = {}) {
     this.maxRounds = options.maxRounds ?? DEFAULT_MAX_ROUNDS;
     this.maxCallsPerRound = options.maxCallsPerRound ?? DEFAULT_MAX_CALLS_PER_ROUND;
     this.maxRetainedWorkflows = options.maxRetainedWorkflows ?? 100;
+    this.options = options;
     this.onSnapshot = options.onSnapshot;
   }
 
   private readonly onSnapshot: ToolWorkflowOptions["onSnapshot"];
 
   async start(userRequest: string, policy: ToolWorkflowPolicy): Promise<ToolWorkflowSnapshot> {
+    const snapshot = this.startBackground(userRequest, policy);
+    const state = this.requireWorkflow(snapshot.workflowId);
+    if (state.activeAdvance) await state.activeAdvance;
+    return this.cloneSnapshot(state);
+  }
+
+  startBackground(userRequest: string, policy: ToolWorkflowPolicy): ToolWorkflowSnapshot {
     const workflowId = randomUUID();
     const state: WorkflowState = {
       workflowId,
       status: "queued",
       round: 0,
       userRequest,
-      transcript: [{ role: "user", content: userRequest }],
+      transcript: [...(this.options.initialTranscript ?? []).map((message) => ({ ...message })), { role: "user", content: userRequest }],
       events: [],
-      toolResults: [],
+      toolResults: (this.options.initialToolResults ?? []).map((result) => ({ ...result, output: cloneUnknown(result.output) })),
       pendingPermission: null,
       finalText: null,
       warningCount: 0,
@@ -185,14 +217,22 @@ export class ToolWorkflowRunner {
     this.workflows.set(workflowId, state);
     this.pruneRetainedWorkflows();
     this.addEvent(state, "workflow_created", "已创建工具工作流。", { workflowId });
-    const activeAdvance = this.advance(state);
+    if (policy.reuseObservationsOnly) {
+      this.addEvent(state, "progress", "已载入上次保存的候选答复与工具观察；本次只修复答复和核验，不会重新运行工具。", {
+        reusedObservationCount: state.toolResults.length
+      });
+    }
+    const activeAdvance = this.advance(state).catch((error: unknown) => {
+      state.status = "failed";
+      this.addEvent(state, "workflow_failed", error instanceof Error ? error.message : String(error));
+      return this.cloneSnapshot(state);
+    });
     state.activeAdvance = activeAdvance;
-    try {
-      return await activeAdvance;
-    } finally {
+    void activeAdvance.finally(() => {
       state.activeAdvance = undefined;
       state.busy = false;
-    }
+    });
+    return this.cloneSnapshot(state);
   }
 
   async respondToPermission(workflowId: string, response: PermissionResponse): Promise<ToolWorkflowSnapshot> {
@@ -368,6 +408,7 @@ export class ToolWorkflowRunner {
     if (!normalized || normalized.length > 4000) throw new Error("新增实践要求必须在 1 到 4000 个字符之间。" );
     const state = this.requireWorkflow(workflowId);
     if (["completed", "completed_with_warnings", "incomplete", "failed", "cancel_requested", "cancelled", "interrupted"].includes(state.status)) throw new Error("已结束或中断的工作流不能追加在线要求。" );
+    state.consecutiveNoProgressCalls = 0;
     state.transcript.push({ role: "user", content: `新增实践目标：${normalized}` });
     this.addEvent(state, "user_instruction_added", "新增实践目标已并入此工作流，后续规划将据此更新。", { taskId: state.policy.practiceTaskId ?? null });
     return this.cloneSnapshot(state);
@@ -420,11 +461,23 @@ export class ToolWorkflowRunner {
         continue;
       }
 
+      if (state.policy.reuseObservationsOnly && turn.kind === "tool_calls") {
+        state.consecutiveNoProgressCalls += 1;
+        const reason = "本次恢复只允许复用上次保存的观察；新工具调用已拦截，没有执行。请直接据现有记录修订答复；若观察不足，说明具体缺口。";
+        state.transcript.push({ role: "tool", content: `工具未执行：${reason}` });
+        this.addEvent(state, "tool_duplicate_blocked", reason, { reason: "reuse_observations_only", noProgress: true });
+        if (state.consecutiveNoProgressCalls >= MAX_CONSECUTIVE_NO_PROGRESS_CALLS) return this.finishAfterNoProgress(state);
+        state.status = "replanning";
+        continue;
+      }
+
       if (turn.kind === "final") {
         if (state.policy.requireCompletionVerification) {
           if (!this.model.verifyCompletion) {
             state.status = "failed";
-            this.addEvent(state, "workflow_failed", "完成条件验证器不可用；本轮没有标记为完成。", { round: state.round });
+            state.transcript.push({ role: "assistant", content: turn.text });
+            state.transcript.push({ role: "tool", content: "goal_verification_error：完成条件验证器不可用；候选答复没有通过验证。" });
+            this.addEvent(state, "workflow_failed", "完成条件验证器不可用；本轮没有标记为完成。", { round: state.round, candidateChars: turn.text.length });
             return this.cloneSnapshot(state);
           }
           let verification: ToolWorkflowCompletionVerification;
@@ -440,29 +493,220 @@ export class ToolWorkflowRunner {
             });
           } catch (error) {
             state.status = "failed";
-            this.addEvent(state, "workflow_failed", `完成条件验证失败；本轮没有标记为完成：${error instanceof Error ? error.message : String(error)}`);
+            const failure = `完成条件验证失败；本轮没有标记为完成：${(error instanceof Error ? error.message : String(error)).slice(0, 1200)}`;
+            state.transcript.push({ role: "assistant", content: turn.text });
+            state.transcript.push({ role: "tool", content: `goal_verification_error：${failure}` });
+            this.addEvent(state, "workflow_failed", failure, { round: state.round, candidateChars: turn.text.length });
             return this.cloneSnapshot(state);
           }
           const usefulToolResults = state.toolResults.filter((result) =>
             !state.events.some((event) => event.type === "tool_completed" && event.data?.callId === result.callId && event.data.noProgress === true));
-          const grounded = hasGroundedCompletionEvidence(verification.evidence, state.transcript, usefulToolResults);
-          const verifiedWithToolEvidence = verification.decision !== "verified" || state.toolResults.length === 0 || (usefulToolResults.length > 0 &&
-            verification.evidence.some((evidence) => evidence.source === "tool" && hasToolObservationQuote(evidence.quote, usefulToolResults)));
-          const decision = grounded && verifiedWithToolEvidence ? verification.decision : "continue";
-          const reason = decision === "continue" && (!grounded || !verifiedWithToolEvidence)
-            ? "验证器没有提供能在本轮请求或工具观察中逐字找到的依据；不能据此判定目标已达成。"
-            : verification.reason.trim().slice(0, 1200) || "验证器未说明判定依据。";
+          const evidenceFreeStageCompletion = state.policy.allowEvidenceFreeCompletion === true
+            && state.toolResults.length === 0
+            && verification.decision === "verified"
+            && verification.evidence.length === 0;
+          let grounded = evidenceFreeStageCompletion || hasGroundedCompletionEvidence(verification.evidence, state.transcript, state.toolResults);
+          let verifiedWithToolEvidence = verification.decision !== "verified" || state.toolResults.length === 0 || (usefulToolResults.length > 0 &&
+            verification.evidence.some((evidence) => evidence.source === "tool" && hasToolObservationEvidence(evidence, state.toolResults)));
+          let evidenceRepairFailed = false;
+          let evidenceRepairCallFailed = false;
+          if (verification.decision === "verified" && (!grounded || !verifiedWithToolEvidence)) {
+            // Source IDs are assigned against the complete toolResults list shown to
+            // the verifier. Keep that same index space when auditing; filtering
+            // no-progress results here would make tool-2 point at a different result.
+            const firstAttemptEvidenceAudit = auditCompletionEvidence(verification.evidence, state.transcript, state.toolResults);
+            const firstAttemptReason = verification.reason.trim().slice(0, 900) || "验证器未说明判定依据。";
+            const firstAttemptEvidenceProblem = describeCompletionEvidenceProblem(
+              verification.evidence, firstAttemptEvidenceAudit, state.transcript, state.toolResults, !verifiedWithToolEvidence
+            );
+            const repairPrompt = `goal_verification_evidence_repair：你刚才判定 verified，但证据校验发现：${firstAttemptEvidenceProblem} 请仅根据原始工具观察重新核对同一个候选答复；若观察确实支持完成，evidence.quote 必须复制一段连续原文并选择正确来源。作者请求只能证明作者提出了什么要求，不能代替工具结果；若观察不支持目标，改判 continue 或 incomplete，并说明真实缺口。不要转述、拼接或引用这条修复提示。之前的诊断：${firstAttemptReason}。引文核对：${JSON.stringify(firstAttemptEvidenceAudit)}`;
+            state.transcript.push({ role: "tool", content: repairPrompt });
+            this.addEvent(state, "progress", `完成核验发现证据问题：${firstAttemptEvidenceProblem}；正在基于原始观察修正核验，不会重复正文生成或工具操作。`, {
+              round: state.round,
+              evidenceRepairAttempt: 1,
+              evidenceRepairProblem: firstAttemptEvidenceProblem,
+              ungroundedEvidenceCount: firstAttemptEvidenceAudit.filter((evidence) => !evidence.grounded).length
+            });
+            try {
+              verification = await this.model.verifyCompletion({
+                workflowId: state.workflowId,
+                round: state.round,
+                userRequest: state.userRequest,
+                transcript: [...state.transcript],
+                candidateFinal: turn.text,
+                goalAssessment: turn.goalAssessment,
+                toolResults: state.toolResults.map((result) => ({ ...result, output: cloneUnknown(result.output) }))
+              });
+            } catch (error) {
+              evidenceRepairFailed = true;
+              evidenceRepairCallFailed = true;
+              verification = {
+                decision: "incomplete",
+                reason: `核验器未能修正无法定位的证据引文：${(error instanceof Error ? error.message : String(error)).slice(0, 700)}`,
+                evidence: []
+              };
+            }
+            grounded = verification.decision === "verified"
+              && (state.policy.allowEvidenceFreeCompletion === true && state.toolResults.length === 0 && verification.evidence.length === 0
+            || hasGroundedCompletionEvidence(verification.evidence, state.transcript, state.toolResults));
+            verifiedWithToolEvidence = verification.decision !== "verified" || state.toolResults.length === 0 || (usefulToolResults.length > 0 &&
+              verification.evidence.some((evidence) => evidence.source === "tool" && hasToolObservationEvidence(evidence, state.toolResults)));
+            evidenceRepairFailed = evidenceRepairFailed || (verification.decision === "verified" && (!grounded || !verifiedWithToolEvidence));
+          }
+          // Evidence grounding is a gate for claiming success. A conservative
+          // `incomplete` result must remain incomplete without citations. A
+          // malformed `verified` citation receives one same-round verifier-only
+          // repair before any planning retry is considered.
+          const groundingRejectedSuccess = verification.decision === "verified" && (!grounded || !verifiedWithToolEvidence);
+          const verifierReason = verification.reason.trim().slice(0, 900) || "验证器未说明判定依据。";
+          const evidenceRepairFailureDetail = evidenceRepairFailed
+            ? describeCompletionEvidenceProblem(verification.evidence, auditCompletionEvidence(verification.evidence, state.transcript, state.toolResults), state.transcript, state.toolResults, !verifiedWithToolEvidence)
+            : "";
+          const unresolvedRequirements = (verification.unresolvedRequirements ?? [])
+            .map((requirement) => requirement.trim())
+            .filter(Boolean)
+            .slice(0, 6);
+          const unresolvedRequirementIds = normalizeUnresolvedRequirementIds(
+            unresolvedRequirements,
+            verification.unresolvedRequirementIds,
+            state.events
+          );
+          const nextStep = verification.nextStep?.trim().slice(0, 800) ?? "";
+          const continueWithoutActionableGap = !evidenceRepairFailed
+            && (verification.decision === "continue" || groundingRejectedSuccess)
+            && (unresolvedRequirements.length === 0 || !nextStep);
+          // A malformed verifier citation is not proof that the task itself is
+          // impossible. Give the planner one bounded chance to reuse existing
+          // observations or choose a different evidence route; duplicate tool
+          // calls and the ordinary no-progress cutoff still apply.
+          const canReplanAfterEvidenceRepair = evidenceRepairFailed && !evidenceRepairCallFailed && state.round < this.maxRounds;
+          const decision = continueWithoutActionableGap
+            ? "incomplete"
+            : evidenceRepairFailed
+              ? canReplanAfterEvidenceRepair ? "continue" : "incomplete"
+              : groundingRejectedSuccess ? "continue" : verification.decision;
+          const reason = evidenceRepairCallFailed
+            ? `完成核验引文修复调用失败；本轮未标记成功，也没有重跑工具操作。错误：${verifierReason}`
+            : evidenceRepairFailed
+            ? canReplanAfterEvidenceRepair
+              ? `核验器经过一次引文修正后仍未通过证据校验：${evidenceRepairFailureDetail} 本轮没有标记成功。下一步可基于原始观察重整答复，必要时选择新的取证路线；已完成的操作不会重放。验证器说明：${verifierReason}`
+              : `核验器经过一次引文修正后仍未通过证据校验：${evidenceRepairFailureDetail} 没有据此标记成功。请检查候选答复和原始观察。验证器说明：${verifierReason}`
+            : groundingRejectedSuccess
+              ? `验证器判定目标已达成，但证据校验未通过：${evidenceRepairFailureDetail || describeCompletionEvidenceProblem(verification.evidence, auditCompletionEvidence(verification.evidence, state.transcript, state.toolResults), state.transcript, state.toolResults, !verifiedWithToolEvidence)} 不能据此标记成功。验证器说明：${verifierReason}`
+              : continueWithoutActionableGap
+                ? `核验器要求继续，但没有同时提供具体未满足的作者要求和可执行的下一步；已停止盲目重试并保留候选答复。验证器说明：${verifierReason}`
+            : verifierReason;
+          const needsReplan = !continueWithoutActionableGap
+            && (canReplanAfterEvidenceRepair || (!evidenceRepairFailed
+              && (decision === "continue" || (decision === "incomplete" && turn.goalAssessment === "achieved"))));
+          const candidateRevision = needsReplan && state.lastUnverifiedFinal !== undefined
+            && isSubstantiveCandidateRevision(state.lastUnverifiedFinal, turn.text);
+          if (candidateRevision) {
+            this.addEvent(state, "progress", "阿文已根据上一轮核验意见实质修订候选答复，正在重新核验。", {
+              round: state.round,
+              candidateRevision: true,
+              previousCandidateChars: state.lastUnverifiedFinal?.length ?? 0,
+              candidateChars: turn.text.length
+            });
+          }
           const eventType = decision === "verified" ? "goal_verification_passed" : decision === "incomplete" ? "goal_verification_incomplete" : "goal_verification_continued";
-          this.addEvent(state, eventType, reason, { round: state.round, evidenceCount: verification.evidence.length });
+          const evidenceAudit = auditCompletionEvidence(verification.evidence, state.transcript, state.toolResults);
+          const groundedEvidenceCount = evidenceAudit.filter((evidence) => evidence.grounded).length;
+          const ungroundedEvidenceCount = evidenceAudit.length - groundedEvidenceCount;
+          this.addEvent(state, eventType, reason, {
+            round: state.round,
+            evidenceCount: verification.evidence.length,
+            groundedEvidenceCount,
+            candidateChars: turn.text.length,
+            candidateRevision,
+            unresolvedRequirementsJson: JSON.stringify(unresolvedRequirements),
+            unresolvedRequirementIdsJson: JSON.stringify(unresolvedRequirementIds),
+            recoveryAction: verification.recoveryPlan?.action ?? null,
+            recoveryRequirementIdsJson: JSON.stringify(verification.recoveryPlan?.requirementIds ?? []),
+            recoveryExpectedResult: verification.recoveryPlan?.expectedResult ?? null
+          });
 
-          if (decision === "continue" || (decision === "incomplete" && turn.goalAssessment === "achieved")) {
+          if (needsReplan) {
             state.lastUnverifiedFinal = turn.text;
             state.lastVerificationBlocker = reason;
+            const priorUnprogressedRejections = countVerifierRejectionsSinceProgress(state.events);
+            const answerOnlyGraceAlreadyUsed = state.events.some((event) => event.type === "progress"
+              && event.data?.answerOnlyVerifierGraceUsed === true);
+            // A meaningful answer repair can make better use of existing
+            // observations without producing another tool result. It does not
+            // reset the no-progress counter, but one final verification is
+            // useful before we conclude that the verifier/planner is stuck.
+            // Keep this grace strictly bounded and require usable observations.
+            const answerOnlyVerifierGrace = priorUnprogressedRejections >= 2
+              && candidateRevision && usefulToolResults.length > 0 && !answerOnlyGraceAlreadyUsed;
+            if (priorUnprogressedRejections >= 2 && !answerOnlyVerifierGrace) {
+              const evidenceStatus = verification.evidence.length === 0
+                ? "核验器没有返回证据引文；这表示核验依据缺失，不等同于工具没有取得观察"
+                : ungroundedEvidenceCount > 0
+                  ? `核验器返回 ${verification.evidence.length} 条引文，其中 ${ungroundedEvidenceCount} 条无法与其标注的本轮请求或工具观察逐字对应；这是引文定位失败，不能据此认定原始观察不存在`
+                  : "核验引文都能定位到本轮请求或工具观察，但这些观察仍不足以满足目标";
+              const unresolvedSummary = unresolvedRequirements.length > 0
+                ? `仍未满足的要求：${unresolvedRequirements.join("；")}。`
+                : "验证器没有列出具体未满足要求。";
+              const revisionStatus = candidateRevision
+                ? "上一轮候选答复有实质改动，但核验器仍保留相同未满足要求"
+                : "上一轮候选答复没有实质改动";
+              const stopPrefix = answerOnlyGraceAlreadyUsed
+                ? "基于现有观察的额外修答核验仍未通过，期间没有新增工具观察或作者要求"
+                : "完成核验连续两轮未通过，期间没有新增工具观察或作者要求";
+              const stopReason = `${stopPrefix}；${revisionStatus}，已停止自动重试并保留候选答复。${unresolvedSummary}${evidenceStatus}。未通过原因：${reason}`;
+              state.status = "incomplete";
+              state.warningCount += 1;
+              state.finalText = appendIncompleteBlockerToFinal(turn.text, stopReason);
+              state.transcript.push({ role: "assistant", content: turn.text });
+              state.transcript.push({ role: "tool", content: `goal_verification：连续重试保护已停止自动循环。${stopReason}\n证据核对：${JSON.stringify(evidenceAudit)}` });
+              state.transcript.push({ role: "assistant", content: state.finalText });
+              this.addEvent(state, "workflow_incomplete", stopReason, {
+                round: state.round,
+                noProgressVerifierRejections: priorUnprogressedRejections,
+                evidenceCount: verification.evidence.length,
+                groundedEvidenceCount,
+                ungroundedEvidenceCount,
+                candidateChangedSinceLastRejection: candidateRevision,
+                answerOnlyVerifierGraceUsed: answerOnlyGraceAlreadyUsed,
+                unresolvedRequirementSummary: unresolvedRequirements.join("；")
+              });
+              return this.cloneSnapshot(state);
+            }
+            if (answerOnlyVerifierGrace) {
+              const graceMessage = "核验连续两次未通过，但候选答复已根据现有观察作出实质修订；允许最后一次核验，不会重跑工具。";
+              state.transcript.push({ role: "tool", content: `${graceMessage} 下一轮只需基于现有观察修正答复；若同一要求仍未解决，将停止并保留具体原因。` });
+              this.addEvent(state, "progress", graceMessage, {
+                round: state.round,
+                answerOnlyVerifierGraceUsed: true,
+                candidateChars: turn.text.length,
+                unresolvedRequirementSummary: unresolvedRequirements.join("；")
+              });
+            }
             state.status = "replanning";
-            const nextStep = verification.nextStep?.trim().slice(0, 800);
+            state.transcript.push({ role: "assistant", content: turn.text });
+            const unresolvedBlock = unresolvedRequirements.length > 0
+              ? `\n仍未满足的作者要求（下一轮必须逐项处理；相同缺口沿用同一标识；不得用增加无关内容替代）：\n${unresolvedRequirements.map((item, index) => `${unresolvedRequirementIds[index] ?? `R${index + 1}`}. ${item}`).join("\n")}`
+              : "\n验证器没有列出具体未满足项。下一轮必须对照作者原始要求与候选答复找出确切缺口；若已有观察足够，直接修订答复，不要重复工具调用。";
+            const evidenceRepairGuidance = answerOnlyVerifierGrace
+              ? "这是唯一一次基于现有观察的额外修答机会：逐项对照作者原始要求，直接使用已有工具原文补齐候选答复；不要重跑已有调用、换句复述或加入无关内容。若现有观察确实无法支持要求，应明确指出具体缺口并停止。"
+              : evidenceRepairFailed
+              ? "核验器在一次引文修正后仍未能定位依据。下一步不要重复已完成的调用：先从原始工具观察中选择连续原文并据此重整候选答复；如果观察确实不支持目标，再选择能补足该具体事实的新路线。相同无进展请求会被拦截。"
+              : ungroundedEvidenceCount > 0
+              ? `本轮有 ${ungroundedEvidenceCount} 条核验引文无法定位（grounded=false）。下一轮先处理这些引文：只能从下方原始工具观察中复制连续原文作为依据；如果原始观察确实不包含所需事实，再选择不同且能补足该事实的方法。不要重复已完成且没有新结果的调用。`
+              : verification.evidence.length === 0 && decision === "continue"
+                ? "验证器没有给出可核对的证据摘录。下一轮先判断现有工具观察是否已经支持目标；能支持时引用其中的连续原文，不能支持时取得新的相关观察，不能只改写结论后再次提交。"
+                : "按验证器指出的具体缺口继续；若现有观察已经足够，直接据此修正候选答复并引用原文，不要为了增加轮次而重复工具调用。";
+            const recoveryPlanBlock = verification.recoveryPlan
+              ? `\n结构化恢复计划（本轮必须按此执行；若发现计划与原始观察或权限不符，先说明冲突再选择安全路线）：\n${JSON.stringify(verification.recoveryPlan)}`
+              : "";
             state.transcript.push({
               role: "tool",
-              content: `goal_verification：${decision === "incomplete" ? "阿文声称目标已达成，但验证器判定证据不足" : "尚未通过"}。${reason}${nextStep ? ` 下一步方向：${nextStep}` : "请检查目标范围与已观察结果，选择其他相关方法继续核验。"}不得把未核实内容写成事实。`
+              content: `goal_verification：${decision === "incomplete" ? "阿文声称目标已达成，但验证器判定证据不足" : "尚未通过"}。${reason}${nextStep ? ` 下一步方向：${nextStep}` : "请检查目标范围与已观察结果，选择其他相关方法继续核验。"}${unresolvedBlock}${recoveryPlanBlock}\n${evidenceRepairGuidance}\n证据核对：${JSON.stringify(evidenceAudit)}\n不得把未核实内容写成事实。`
+            });
+            this.addEvent(state, "progress", "已保存本轮候选答复、逐项未满足要求和证据核对结果；下一轮会据此修订或补充观察。", {
+              round: state.round,
+              unresolvedRequirementCount: unresolvedRequirements.length
             });
             continue;
           }
@@ -470,9 +714,22 @@ export class ToolWorkflowRunner {
           if (decision === "incomplete") {
             state.warningCount += 1;
             state.status = "incomplete";
-            state.finalText = turn.text;
+            state.finalText = evidenceRepairFailed || continueWithoutActionableGap ? appendIncompleteBlockerToFinal(turn.text, reason) : turn.text;
             state.transcript.push({ role: "assistant", content: turn.text });
-            this.addEvent(state, "workflow_incomplete", "验证器确认当前证据不足，已返回明确标注待核查的答复；本轮不计为目标完成。", { warningCount: state.warningCount });
+            this.addEvent(state, "workflow_incomplete", evidenceRepairFailed
+              ? "核验器无法提供可定位引文，已保留候选答复并说明核验故障；本轮不计为目标完成。"
+              : continueWithoutActionableGap
+                ? "核验器没有提供可执行的未满足要求，已停止重规划并保留具体诊断；本轮不计为目标完成。"
+                : "验证器确认当前证据不足，已返回明确标注待核查的答复；本轮不计为目标完成。", {
+              warningCount: state.warningCount,
+              evidenceRepairFailed,
+              evidenceRepairCallFailed,
+              evidenceCount: verification.evidence.length,
+              groundedEvidenceCount,
+              ungroundedEvidenceCount,
+              unresolvedRequirementSummary: unresolvedRequirements.join("；")
+            });
+            if (evidenceRepairFailed || continueWithoutActionableGap) state.transcript.push({ role: "assistant", content: state.finalText });
             return this.cloneSnapshot(state);
           }
         }
@@ -541,6 +798,7 @@ export class ToolWorkflowRunner {
 
   private async runCall(state: WorkflowState, callId: string, request: ModelToolRequest, extraGrants: ToolPermissionGrant[] = []): Promise<ToolRunResult> {
     const requestFingerprint = fingerprintToolRequest(request);
+    const retryFingerprint = fingerprintToolRequestForRetry(request);
     const invocation: ToolPermissionRequest & { input: unknown } = {
       ...request,
       projectId: state.policy.projectId,
@@ -585,7 +843,7 @@ export class ToolWorkflowRunner {
       state.toolResults.push({ callId, toolId: request.toolId, output: cloneUnknown(result.output) });
       if (noProgress) state.warningCount += 1;
       this.addEvent(state, "tool_output", noProgress ? `${request.toolId} 没有返回可用于回答目标的结果。` : `${request.toolId} 返回了结果，正在继续核验。`, { callId, toolId: request.toolId, noProgress });
-      this.addEvent(state, "tool_completed", noProgress ? `${request.toolId} 已运行，但没有产生可用观察。` : `${request.toolId} 已完成。`, { callId, toolId: request.toolId, requestFingerprint, noProgress });
+      this.addEvent(state, "tool_completed", noProgress ? `${request.toolId} 已运行，但没有产生可用观察。` : `${request.toolId} 已完成。`, { callId, toolId: request.toolId, requestFingerprint, retryFingerprint, noProgress });
       return result;
     }
     if (result.status === "denied") {
@@ -595,7 +853,7 @@ export class ToolWorkflowRunner {
     }
     state.transcript.push({ role: "tool", content: `${request.toolId}：执行失败：${result.error}` });
     state.consecutiveNoProgressCalls += 1;
-      this.addEvent(state, "tool_failed", result.error, { callId, toolId: request.toolId, requestFingerprint, noProgress: true });
+    this.addEvent(state, "tool_failed", result.error, { callId, toolId: request.toolId, requestFingerprint, retryFingerprint, noProgress: true });
     return result;
   }
 
@@ -705,16 +963,160 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasGroundedCompletionEvidence(evidence: ToolWorkflowCompletionEvidence[], transcript: ToolWorkflowMessage[], toolResults: ToolWorkflowToolResult[]): boolean {
   if (!evidence.length) return false;
-  return evidence.every(({ source, quote }) => {
+  return evidence.every(({ source, sourceId, quote }) => {
     if (!quote.trim()) return false;
     return source === "request"
-      ? transcript.some((message) => message.role === "user" && message.content.includes(quote))
-      : hasToolObservationQuote(quote, toolResults);
+      ? hasRequestEvidence(sourceId, quote, transcript)
+      : hasToolObservationEvidence({ source, sourceId, quote }, toolResults);
   });
 }
 
+function auditCompletionEvidence(evidence: ToolWorkflowCompletionEvidence[], transcript: ToolWorkflowMessage[], toolResults: ToolWorkflowToolResult[]): Array<ToolWorkflowCompletionEvidence & { grounded: boolean }> {
+  return evidence.map((item) => ({
+    ...item,
+    grounded: item.source === "request"
+      ? hasRequestEvidence(item.sourceId, item.quote, transcript)
+      : hasToolObservationEvidence(item, toolResults)
+  }));
+}
+
+function describeCompletionEvidenceProblem(
+  evidence: ToolWorkflowCompletionEvidence[],
+  audit: Array<ToolWorkflowCompletionEvidence & { grounded: boolean }>,
+  transcript: ToolWorkflowMessage[],
+  toolResults: ToolWorkflowToolResult[],
+  requiresToolObservation: boolean
+): string {
+  if (evidence.length === 0) return "核验器没有返回任何证据引文";
+
+  const ungrounded = audit.filter((item) => !item.grounded);
+  if (ungrounded.length > 0) {
+    const quoteAppearsSomewhere = ungrounded.some((item) => item.source === "request"
+      ? transcript.some((message) => message.role === "user" && hasLiteralEvidenceQuote(message.content, item.quote))
+      : toolResults.some((result) => hasLiteralEvidenceQuote(formatToolContent(result.toolId, result.output), item.quote)
+        || collectTextLeaves(result.output).some((text) => hasLiteralEvidenceQuote(text, item.quote))));
+    return quoteAppearsSomewhere
+      ? "至少一条引文虽出现在本轮记录中，但未能对应到它标注的来源，或对应工具结果不构成可用于完成目标的有效观察"
+      : "至少一条引文无法在本轮作者请求或原始工具观察中找到连续原文";
+  }
+
+  if (requiresToolObservation && !audit.some((item) => item.grounded && item.source === "tool")) {
+    return "引文只能在作者请求中定位；请求能证明作者要求了什么，不能证明本机或其他工具实际取得了什么结果";
+  }
+
+  return "现有引文不能充分支持核验器的完成结论";
+}
+
+function hasRequestEvidence(sourceId: string | null | undefined, quote: string, transcript: ToolWorkflowMessage[]): boolean {
+  const requests = transcript.filter((message) => message.role === "user");
+  if (sourceId) {
+    const match = /^request-(\d+)$/u.exec(sourceId);
+    const request = match ? requests[Number(match[1]) - 1] : undefined;
+    return request !== undefined && hasLiteralEvidenceQuote(request.content, quote);
+  }
+  return requests.some((message) => hasLiteralEvidenceQuote(message.content, quote));
+}
+
+function countVerifierRejectionsSinceProgress(events: ToolWorkflowEvent[]): number {
+  let rejections = 0;
+  let previousUnresolvedIds: string[] | undefined;
+  for (const event of events) {
+    if (event.type === "user_instruction_added"
+      || (event.type === "tool_output" && event.data?.noProgress !== true)) {
+      rejections = 0;
+      previousUnresolvedIds = undefined;
+      continue;
+    }
+
+    if (event.type !== "goal_verification_continued" && event.type !== "goal_verification_incomplete") continue;
+    const unresolvedIds = readEventStringArray(event.data?.unresolvedRequirementIdsJson);
+
+    // Rewriting candidate text or paraphrasing a blocker is not progress. Only
+    // a stable ID disappearing from the unresolved set proves an earlier item
+    // was resolved.
+    if (previousUnresolvedIds && hasResolvedRequirementIds(previousUnresolvedIds, unresolvedIds)) rejections = 0;
+    rejections += 1;
+    previousUnresolvedIds = unresolvedIds;
+  }
+  return rejections;
+}
+
+function normalizeUnresolvedRequirementIds(requirements: string[], candidateIds: string[] | undefined, events: ToolWorkflowEvent[]): string[] {
+  if (requirements.length === 0) return [];
+  const previous = [...events].reverse().find((event) => event.type === "goal_verification_continued" || event.type === "goal_verification_incomplete");
+  const previousRequirements = readEventStringArray(previous?.data?.unresolvedRequirementsJson);
+  const previousIds = readEventStringArray(previous?.data?.unresolvedRequirementIdsJson);
+  const usedPrevious = new Set<number>();
+  return requirements.map((requirement, index) => {
+    const exactPrior = previousRequirements.findIndex((prior, priorIndex) => !usedPrevious.has(priorIndex)
+      && normalizeRequirement(prior) === normalizeRequirement(requirement));
+    if (exactPrior >= 0) {
+      usedPrevious.add(exactPrior);
+      return previousIds[exactPrior] ?? candidateIds?.[index]?.trim() ?? `R${index + 1}`;
+    }
+    return candidateIds?.[index]?.trim() || `R${index + 1}`;
+  });
+}
+
+function readEventStringArray(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch { return []; }
+}
+
+function normalizeRequirement(value: string): string {
+  return Array.from(value.normalize("NFKC").toLocaleLowerCase())
+    .filter((character) => /[\p{L}\p{N}]/u.test(character))
+    .join("");
+}
+
+function hasResolvedRequirementIds(previous: string[], current: string[]): boolean {
+  return previous.length > 0 && current.length > 0 && previous.some((requirementId) => !current.includes(requirementId));
+}
+
+/**
+ * A changed candidate can be meaningful progress even when it reuses existing
+ * observations. Ignore whitespace/punctuation-only edits so paraphrasing cannot
+ * keep the verifier loop alive indefinitely.
+ */
+function isSubstantiveCandidateRevision(previous: string, current: string): boolean {
+  const normalize = (value: string) => Array.from(value.normalize("NFKC").toLocaleLowerCase())
+    .filter((character) => /[\p{L}\p{N}]/u.test(character));
+  const before = normalize(previous);
+  const after = normalize(current);
+  if (!before.length || !after.length || before.join("") === after.join("")) return false;
+
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix
+    && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+
+  const changedLength = Math.max(before.length - prefix - suffix, after.length - prefix - suffix);
+  const minimumChange = Math.max(12, Math.min(120, Math.ceil(Math.min(before.length, after.length) * 0.015)));
+  return changedLength >= minimumChange;
+}
+
 function hasToolObservationQuote(quote: string, toolResults: ToolWorkflowToolResult[]): boolean {
-  return toolResults.some((result) => formatToolContent(result.toolId, result.output).includes(quote) || collectTextLeaves(result.output).some((text) => text.includes(quote)));
+  return toolResults.some((result) => hasLiteralEvidenceQuote(formatToolContent(result.toolId, result.output), quote)
+    || collectTextLeaves(result.output).some((text) => hasLiteralEvidenceQuote(text, quote)));
+}
+
+function hasToolObservationEvidence(evidence: ToolWorkflowCompletionEvidence, toolResults: ToolWorkflowToolResult[]): boolean {
+  if (evidence.sourceId) {
+    const match = /^tool-(\d+)$/u.exec(evidence.sourceId);
+    const result = match ? toolResults[Number(match[1]) - 1] : undefined;
+    return result !== undefined && hasUsefulObservation(result.output) && (hasLiteralEvidenceQuote(formatToolContent(result.toolId, result.output), evidence.quote)
+      || collectTextLeaves(result.output).some((text) => hasLiteralEvidenceQuote(text, evidence.quote)));
+  }
+  return hasToolObservationQuote(evidence.quote, toolResults);
+}
+
+/** Allow line wrapping differences while keeping the quoted words and punctuation literal. */
+function hasLiteralEvidenceQuote(source: string, quote: string): boolean {
+  return containsLiteralEvidence(source, quote);
 }
 
 function collectTextLeaves(value: unknown, result: string[] = [], depth = 0): string[] {
@@ -729,8 +1131,24 @@ function collectTextLeaves(value: unknown, result: string[] = [], depth = 0): st
   return result;
 }
 
-function fingerprintToolRequest(request: ModelToolRequest): string {
+export function fingerprintToolRequest(request: ModelToolRequest): string {
   const normalized = stableValue({ toolId: request.toolId, action: request.action, target: request.target ?? null, input: request.input });
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
+/**
+ * Practice retry identity excludes only the fresh per-workflow sandbox path
+ * generated by the runtime. The operation and its complete input stay bound;
+ * permission evaluation still checks the new concrete target before running.
+ */
+export function fingerprintToolRequestForRetry(request: ModelToolRequest): string {
+  const workflowScopedTools = new Set(["practice_run_code", "practice_run_command", "practice_capture_demo", "practice_capture_command_output"]);
+  const normalized = stableValue({
+    toolId: request.toolId,
+    action: request.action,
+    target: workflowScopedTools.has(request.toolId) ? null : request.target ?? null,
+    input: request.input
+  });
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
@@ -759,8 +1177,19 @@ function stableValue(value: unknown): unknown {
 function formatToolContent(toolId: string, output: unknown): string {
   let serialized: string;
   try { serialized = JSON.stringify(output) ?? "null"; } catch { serialized = "[无法序列化的工具结果]"; }
-  if (serialized.length > MAX_TOOL_TRANSCRIPT_CHARS) serialized = `${serialized.slice(0, MAX_TOOL_TRANSCRIPT_CHARS)}…[工具结果已截断]`;
+  serialized = truncateToolObservation(serialized, MAX_TOOL_TRANSCRIPT_CHARS);
   return `${toolId}：${serialized}`;
+}
+
+/** Keeps the beginning and end of bounded tool results so list tails survive context compaction. */
+export function truncateToolObservation(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const marker = "\n…[中间工具结果已省略]…\n";
+  if (maxChars <= marker.length) return value.slice(0, maxChars);
+  const available = maxChars - marker.length;
+  const headLength = Math.ceil(available / 2);
+  const tailLength = available - headLength;
+  return `${value.slice(0, headLength)}${marker}${tailLength ? value.slice(-tailLength) : ""}`;
 }
 
 function appendIncompleteBlockerToFinal(candidate: string, blocker: string): string {

@@ -7,6 +7,13 @@ export interface ResearchExecution {
   budgetExhausted: boolean;
 }
 
+/** Search attempt history fed back into later research turns to prevent blind retries. */
+export interface ResearchSearchAttempt {
+  query: string;
+  resultCount: number;
+  resultUrls: string[];
+}
+
 export interface ResearchPlan {
   depth: ResearchDepth;
   questions: string[];

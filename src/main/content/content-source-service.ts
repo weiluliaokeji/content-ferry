@@ -53,6 +53,24 @@ export interface RelatedContentArticle {
   excerpt: string;
 }
 
+export interface StyleSampleArticle {
+  title: string;
+  relativePath: string;
+  createdAt: string;
+  status: "published" | "draft" | null;
+  archived: boolean;
+}
+
+export interface StyleSampleArticleDateRange {
+  createdFrom?: string;
+  createdTo?: string;
+}
+
+export interface StyleSampleArticleList {
+  items: StyleSampleArticle[];
+  truncated: boolean;
+}
+
 export interface ArticleResourceMetadata {
   resourcePath: string;
   mimeType: string;
@@ -246,7 +264,13 @@ export class ContentSourceService {
     };
   }
 
-  searchRelatedArticles(workspaceId: string, query: string, excludeRelativePath?: string | null, limit = 3): RelatedContentArticle[] {
+  searchRelatedArticles(
+    workspaceId: string,
+    query: string,
+    excludeRelativePath?: string | null,
+    limit = 3,
+    allowedRelativePaths?: ReadonlySet<string>
+  ): RelatedContentArticle[] {
     const config = this.getSourceConfig(workspaceId);
     if (!config || !query.trim() || limit <= 0) return [];
     const { rootPath, pattern } = config;
@@ -267,7 +291,8 @@ export class ContentSourceService {
     const ranked: Array<RelatedContentArticle & { score: number }> = [];
     for (const filePath of filePaths) {
       const relativePath = toPortablePath(path.relative(rootPath, filePath));
-      if (!isArticlePath(path.relative(rootPath, filePath), pattern) || relativePath === excludeRelativePath) continue;
+      if (!isArticlePath(path.relative(rootPath, filePath), pattern) || relativePath === excludeRelativePath
+        || (allowedRelativePaths && !allowedRelativePaths.has(relativePath))) continue;
       try {
         const raw = fs.readFileSync(filePath, "utf8");
         const frontMatter = parseFrontMatter(raw, config.sourceType);
@@ -291,6 +316,64 @@ export class ContentSourceService {
     return ranked.sort((left, right) => right.score - left.score || left.relativePath.localeCompare(right.relativePath, "zh-CN"))
       .slice(0, Math.min(limit, 5))
       .map(({ title, relativePath, excerpt }) => ({ title, relativePath, excerpt }));
+  }
+
+  listStyleSampleArticles(workspaceId: string, dateRange: StyleSampleArticleDateRange = {}, limit = 200): StyleSampleArticleList {
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) return { items: [], truncated: false };
+    const { rootPath, pattern } = config;
+    this.requireReadableDirectory(rootPath);
+    const paths: string[] = [];
+    const walk = (directory: string) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (!ignoredDirectories.has(entry.name) && !pattern.extraIgnoreDirs.includes(entry.name)) walk(path.join(directory, entry.name));
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md") && isArticlePath(path.relative(rootPath, path.join(directory, entry.name)), pattern)) {
+          paths.push(path.join(directory, entry.name));
+        }
+      }
+    };
+    walk(rootPath);
+
+    const items: StyleSampleArticle[] = [];
+    for (const filePath of paths) {
+      try {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const metadata = parseFrontMatter(raw, config.sourceType);
+        const sampleStatus = parseStyleSampleStatus(raw, config.sourceType, metadata.status);
+        if (sampleStatus === "draft") continue;
+        const { body } = splitFrontMatter(raw);
+        const relativePath = toPortablePath(path.relative(rootPath, filePath));
+        const title = metadata.title?.trim() || extractLeadingArticleTitle(body) || path.basename(path.dirname(filePath));
+        const createdAt = resolveCreatedAt(metadata.createdAt, fs.statSync(filePath).birthtime);
+        const createdDate = createdAt.slice(0, 10);
+        if (dateRange.createdFrom && createdDate < dateRange.createdFrom) continue;
+        if (dateRange.createdTo && createdDate > dateRange.createdTo) continue;
+        items.push({ title, relativePath, createdAt, status: sampleStatus, archived: metadata.archived });
+      } catch { /* An unreadable article cannot be offered as a style sample. */ }
+    }
+    items.sort((left, right) => parseCreatedTimestamp(right.createdAt) - parseCreatedTimestamp(left.createdAt)
+      || left.relativePath.localeCompare(right.relativePath, "zh-CN"));
+    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 200));
+    return { items: items.slice(0, safeLimit), truncated: items.length > safeLimit };
+  }
+
+  getStyleSampleArticle(workspaceId: string, relativePath: string): StyleSampleArticle | null {
+    const config = this.getSourceConfig(workspaceId);
+    if (!config) throw new ContentSourceError("请先配置文章库，再挑选账号代表样本。");
+    const filePath = this.resolveArticlePath(workspaceId, relativePath);
+    if (!isArticlePath(path.relative(config.rootPath, filePath), config.pattern)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const metadata = parseFrontMatter(raw, config.sourceType);
+    const status = parseStyleSampleStatus(raw, config.sourceType, metadata.status);
+    const { body } = splitFrontMatter(raw);
+    return {
+      title: metadata.title?.trim() || extractLeadingArticleTitle(body) || path.basename(path.dirname(filePath)),
+      relativePath: toPortablePath(path.relative(config.rootPath, filePath)),
+      createdAt: resolveCreatedAt(metadata.createdAt, fs.statSync(filePath).birthtime),
+      status,
+      archived: metadata.archived
+    };
   }
 
   getArticleTags(workspaceId: string, relativePath: string): string[] {
@@ -1369,6 +1452,25 @@ function parsePublicationStatus(value: string | undefined, sourceType: ContentSo
   return /^(published|publish|true|yes|1)$/.test(normalized) ? "published" : /^(draft|false|no|0)$/.test(normalized) ? "draft" : null;
 }
 
+function parseStyleSampleStatus(
+  markdown: string,
+  sourceType: ContentSourceType,
+  parsedStatus: "draft" | "published" | null
+): "draft" | "published" | null {
+  if (sourceType !== "vitepress" || !markdown.startsWith("---")) return parsedStatus;
+  const closing = markdown.indexOf("\n---", 3);
+  if (closing < 0) return parsedStatus;
+  const publishValue = markdown.slice(3, closing).split(/\r?\n/u)
+    .map((line) => /^publish:\s*(.+?)\s*$/u.exec(line.trim())?.[1])
+    .find((value): value is string => Boolean(value));
+  const normalized = publishValue?.trim().replace(/^['"]|['"]$/gu, "").toLowerCase();
+  // VitePress `publish: false` only means the page is not published. Keep it
+  // eligible for explicit author confirmation; only an explicit `draft`
+  // marker is excluded from account style samples.
+  if (/^(false|no|0)$/u.test(normalized ?? "")) return null;
+  return parsedStatus;
+}
+
 /**
  * 从 front matter 文本中解析 tags。兼容两种常见写法：
  * 1) 逗号/分号分隔的标量：tags: AI安全, 实战教程
@@ -1423,6 +1525,10 @@ function parseCreatedTimestamp(value: string | null): number {
   const normalized = value.includes("T") ? value : value.replace(" ", "T");
   const timestamp = Date.parse(normalized);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function resolveCreatedAt(value: string | null, fallback: Date): string {
+  return value && parseCreatedTimestamp(value) > 0 ? value.trim() : fallback.toISOString();
 }
 
 function splitFrontMatter(markdown: string): { frontMatter: string; body: string } {

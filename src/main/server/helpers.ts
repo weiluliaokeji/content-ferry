@@ -81,14 +81,20 @@ export function selectionActionLabel(action: z.infer<typeof selectionEditInput>[
 export async function streamMarkdownGeneration(
   request: FastifyRequest,
   reply: FastifyReply,
-  generate: (onDelta: (markdown: string) => void, onStatus: (message: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown }>,
+  generate: (onDelta: (markdown: string) => void, onStatus: (message: string) => void, signal: AbortSignal) => Promise<{ value: { markdown: string }; provider: string; usage: unknown; styleSelectionNote?: string }>,
   projectId: string,
   sourceRelativePath?: string | null,
   // Optional hook that persists the finished markdown before the stream closes
   // (the practice plan is saved as a draft right away). Its return value is
   // merged into the `complete` frame so the renderer does not need to re-read
   // the record with a second request.
-  finalize?: (markdown: string) => Promise<Record<string, unknown>>
+  finalize?: (markdown: string, onStatus: (message: string) => void) => Promise<Record<string, unknown>>,
+  lifecycle: {
+    onOpen?: (send: (event: string, data: unknown) => void) => void;
+    onStatus?: (message: string, send: (event: string, data: unknown) => void) => void;
+    onComplete?: (result: Record<string, unknown>, send: (event: string, data: unknown) => void) => void;
+    onError?: (error: unknown, cancelled: boolean, send: (event: string, data: unknown) => void) => void;
+  } = {}
 ) {
   const controller = new AbortController();
   const abort = () => {
@@ -118,12 +124,14 @@ export async function streamMarkdownGeneration(
   };
   const startedAt = Date.now();
   send("status", { phase: "connecting", elapsedSeconds: 0, message: "正在连接 AI…" });
+  lifecycle.onOpen?.(send);
   // Codex can spend a while reasoning before its first Markdown item is
   // emitted. Keep the SSE connection visibly alive during that period so the
   // renderer can distinguish "still working" from a frozen dialog.
   let latestPhase = "正在连接 AI…";
   const reportStatus = (message: string) => {
     latestPhase = message;
+    lifecycle.onStatus?.(message, send);
     send("status", { phase: "generating", elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), message });
   };
   const progressTimer = setInterval(() => {
@@ -136,9 +144,12 @@ export async function streamMarkdownGeneration(
   }, 2_000);
   try {
     const generated = await generate((markdown) => send("delta", { markdown }), reportStatus, controller.signal);
-    const finalized = finalize ? await finalize(generated.value.markdown) : undefined;
-    send("complete", { projectId, markdown: generated.value.markdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage, ...finalized });
+    const finalized = finalize ? await finalize(generated.value.markdown, reportStatus) : undefined;
+    const finalMarkdown = typeof finalized?.markdown === "string" ? finalized.markdown : generated.value.markdown;
+    lifecycle.onComplete?.(finalized ?? {}, send);
+    send("complete", { projectId, markdown: finalMarkdown, generatedFromBrief: true, sourceRelativePath, provider: generated.provider, usage: generated.usage, ...(generated.styleSelectionNote ? { styleSelectionNote: generated.styleSelectionNote } : {}), ...finalized });
   } catch (error) {
+    lifecycle.onError?.(error, controller.signal.aborted, send);
     send("error", { error: error instanceof Error ? error.message : "AI 生成失败。", cancelled: controller.signal.aborted });
   } finally {
     clearInterval(progressTimer);
@@ -260,6 +271,19 @@ export function describeValidationIssue(issue: z.core.$ZodIssue | undefined): st
 export function initialArticleTitle(topic: string, title?: string): string {
   if (title) return title;
   const normalizedTopic = topic.replace(/\s+/g, " ").trim();
+  const quotedTitle = /[《「“「『]([^》」”』]{2,120})[》」”』]/.exec(normalizedTopic)?.[1]?.trim();
+  if (quotedTitle) return quotedTitle;
+
+  const commandPrefix = /^(?:(?:请\s*)?(?:帮我\s*)?|麻烦\s*)?(?:撰写|编写|创作|生成|起草|写作|写|制作)\s*(?:(?:一篇|一则|一份|一个)\s*|(?:关于|有关|围绕|以)\s*)/u;
+  const startsWithInstruction = commandPrefix.test(normalizedTopic);
+  const instructionFreeTopic = startsWithInstruction
+    ? normalizedTopic
+      .replace(commandPrefix, "")
+      .replace(/^(?:关于|有关|围绕|以)\s*/u, "")
+      .replace(/\s*(?:的)?(?:微信公众号|公众号|微信公号|微信|博客园|博客|知乎|掘金|CSDN)?(?:推文|文章|长文)\s*$/u, "")
+      .trim()
+    : normalizedTopic;
+  if (instructionFreeTopic && instructionFreeTopic.length <= 120) return instructionFreeTopic;
   if (normalizedTopic.length <= 120) return normalizedTopic;
   const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13);
   return `创作草稿-${timestamp}`;

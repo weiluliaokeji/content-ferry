@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { execFile } from "node:child_process";
-import { app, dialog, ipcMain, Menu, Notification, safeStorage, shell, type OpenDialogOptions } from "electron";
+import { app, dialog, ipcMain, Menu, net, Notification, safeStorage, shell, type OpenDialogOptions } from "electron";
 import { openDatabase } from "./db/database";
 import { AccountRepository } from "./accounts/account-repository";
 import { getDataDirectory } from "./config/paths";
@@ -250,7 +250,8 @@ async function fullBootstrap(reuseExistingWindow: boolean): Promise<void> {
     searchWithVisibleResearchBrowser,
     confirmCsdnBrowserPublish,
     undefined,
-    buildId
+    buildId,
+    (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init)
   );
   server.log.info({ buildId }, "文渡运行版本");
   state.runtimeInfoLogger = (details, message) => server.log.info(details, message);

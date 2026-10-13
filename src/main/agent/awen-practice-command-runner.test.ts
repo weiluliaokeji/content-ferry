@@ -46,6 +46,34 @@ describe("AwenPracticeCommandRunner", () => {
     expect(runs.require(result.runId).request.args).toEqual(["-e", "console.log('generic-cli-ok')"]);
   });
 
+  it("marks terminal output as merged so diagnostic lines do not hide valid results", async () => {
+    database = openInMemoryDatabase();
+    temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-command-stream-test-"));
+    const runs = new ExecutionRepository(database.connection);
+    const execution = new ExecutionService();
+    const codeRunner = new AwenPracticeCodeRunner(execution, runs, { list: async () => [] }, temporaryRoot);
+    const tools = { async resolveCommand(command: string) { return command === "node" ? { id: "cli:node", command, path: hostNode, version: "test", capabilities: ["task_cli"] } : null; } } as unknown as SystemToolRegistry;
+    const runner = new AwenPracticeCommandRunner(execution, runs, tools, codeRunner);
+    const workflowId = "86227d51-a8a9-4f64-bba4-0e21d67e52f0";
+    const script = "process.stderr.write('diagnostic-only\\n'); process.stdout.write('valid-result-row\\n')";
+    const input = await runner.validate({ command: "node", args: ["-e", script] });
+
+    const result = await runner.run(input, {
+      workflowId,
+      target: runner.getTarget(undefined, workflowId, input.command, input.args),
+      authorization: { confirmed: true, decisionSource: "permission_grant", checks: [{ action: "read", decision: "allow", reason: "approved for this task", matchedScope: "task" }] }
+    }) as { status: string; exitCode: number; stdout: string; stderr: string; outputCaptureMode: string };
+
+    expect(result).toMatchObject({ status: "completed", exitCode: 0 });
+    expect(result.stdout).toContain("valid-result-row");
+    if (process.platform === "win32") {
+      expect(result).toMatchObject({ stderr: "", outputCaptureMode: "conpty_combined" });
+      expect(result.stdout).toContain("diagnostic-only");
+    } else {
+      expect(result).toMatchObject({ stderr: "diagnostic-only\n", outputCaptureMode: "separate_streams" });
+    }
+  });
+
   it("captures the complete output of a discovered Windows command launcher", async () => {
     database = openInMemoryDatabase();
     temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-awen-launcher-test-"));

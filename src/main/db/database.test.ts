@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { openInMemoryDatabase, initialiseDatabase, type AppDatabase } from "./database";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDatabase, openInMemoryDatabase, initialiseDatabase, type AppDatabase } from "./database";
+import { AccountRepository } from "../accounts/account-repository";
+import { CONTENT_GENERATION_REVIEW_MIGRATION_VERSION } from "../content/content-generation-review-migration";
+import { CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION } from "../content/content-generation-review-repair-rounds-migration";
+import { ARTICLE_DRAFT_RUN_MIGRATION_VERSION } from "../content/article-draft-run-migration";
+import { CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION } from "../content/content-brief-depth-preference-migration";
+import { ContentGenerationReviewRepository } from "../content/content-generation-review-repository";
+import { ContentBriefRepository } from "../content/content-brief-repository";
+import { ContentProjectRepository } from "../content/content-project-repository";
 
 describe("article settings schema", () => {
   let database: AppDatabase | undefined;
@@ -39,6 +50,201 @@ describe("independent practice while article suggestions await saving", () => {
       .toBe("waiting_edit_confirmation");
     expect(conn.pragma("foreign_key_check")).toEqual([]);
     expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = 5").get()).toBeTruthy();
+  });
+});
+
+describe("account style sample migration", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("upgrades a v5 database without changing account writing style or existing account data", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const accounts = new AccountRepository(conn);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "wechat_official", displayName: "迁移测试账号" });
+    accounts.updateProfile(account.id, { ...account.profile, writingStyle: "作者手动风格" });
+    conn.exec("DROP TABLE account_style_samples; DELETE FROM schema_migrations WHERE version = 6;");
+
+    initialiseDatabase(conn);
+
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = 6").get()).toBeTruthy();
+    expect(accounts.requireAccount(account.id).profile.writingStyle).toBe("作者手动风格");
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("account style profile migration", () => {
+  let database: AppDatabase | undefined;
+
+  afterEach(() => database?.close());
+
+  it("adds proposal and version storage without changing selected samples or manual writing style", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const accounts = new AccountRepository(conn);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "wechat_official", displayName: "风格迁移账号" });
+    accounts.updateProfile(account.id, { ...account.profile, writingStyle: "保持我的手动风格" });
+    conn.prepare(`INSERT INTO account_style_samples (account_id, source_relative_path, attribution_basis, selected_at)
+      VALUES (?, ?, 'author_confirmed', ?)`).run(account.id, "posts/old/index.md", "2026-01-01T00:00:00Z");
+    conn.exec("DROP TABLE account_style_profile_active; DROP TABLE account_style_profile_versions; DROP TABLE account_style_profile_proposals; DELETE FROM schema_migrations WHERE version = 7;");
+
+    initialiseDatabase(conn);
+
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = 7").get()).toBeTruthy();
+    expect(conn.prepare("SELECT source_relative_path FROM account_style_samples WHERE account_id = ?").get(account.id))
+      .toEqual({ source_relative_path: "posts/old/index.md" });
+    expect(accounts.requireAccount(account.id).profile.writingStyle).toBe("保持我的手动风格");
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("content generation review migration", () => {
+  let database: AppDatabase | undefined;
+  let temporaryDirectory: string | undefined;
+
+  afterEach(() => {
+    database?.close();
+    if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  it("adds append-only review records to a v7 database and can reopen it", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const accounts = new AccountRepository(conn);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_GENERATION_REVIEW_MIGRATION_VERSION);
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION);
+    conn.exec("DROP TABLE content_generation_reviews");
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(ARTICLE_DRAFT_RUN_MIGRATION_VERSION);
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION);
+    conn.exec("DROP TABLE article_draft_run_events; DROP TABLE article_draft_runs; ALTER TABLE content_briefs DROP COLUMN draft_depth_preference");
+
+    initialiseDatabase(conn);
+
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(CONTENT_GENERATION_REVIEW_MIGRATION_VERSION)).toBeTruthy();
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION)).toBeTruthy();
+    const table = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'content_generation_reviews'").get();
+    expect(table).toBeTruthy();
+    expect(conn.prepare("SELECT id FROM workspaces WHERE id = ?").get(workspace.id)).toBeTruthy();
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("backs up and upgrades an on-disk v7 database while preserving existing article data", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const accounts = new AccountRepository(conn);
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const account = accounts.createAccount({ workspaceId: workspace.id, platform: "wechat_official", displayName: "评审迁移账号" });
+    accounts.updateProfile(account.id, { ...account.profile, writingStyle: "保留手动风格" });
+    conn.prepare("INSERT INTO content_projects (id, workspace_id, topic, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("review-project", workspace.id, "保留的文章项目", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+    conn.exec("DROP TABLE content_generation_reviews; DROP TABLE article_draft_run_events; DROP TABLE article_draft_runs; ALTER TABLE content_briefs DROP COLUMN draft_depth_preference; DELETE FROM schema_migrations WHERE version IN (8, 9, 10, 11);");
+    temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-review-migration-"));
+    const databasePath = path.join(temporaryDirectory, "contentferry.db");
+    conn.prepare("VACUUM INTO ?").run(databasePath);
+    database.close();
+    database = openDatabase(temporaryDirectory);
+
+    const upgraded = database.connection;
+    expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 8").get()).toBeTruthy();
+    expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 9").get()).toBeTruthy();
+    expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE version = 10").get()).toBeTruthy();
+    expect(upgraded.prepare("SELECT topic FROM content_projects WHERE id = 'review-project'").get()).toEqual({ topic: "保留的文章项目" });
+    expect(new AccountRepository(upgraded).requireAccount(account.id).profile.writingStyle).toBe("保留手动风格");
+    expect(upgraded.pragma("foreign_key_check")).toEqual([]);
+    expect(fs.readdirSync(path.join(temporaryDirectory, "backups")).some((name) => name.endsWith(".db"))).toBe(true);
+  });
+
+  it("upgrades a v8 review table to accept five repair rounds and preserves prior reports", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const workspace = new AccountRepository(conn).getOrCreateDefaultWorkspace();
+    const project = new ContentProjectRepository(conn).create({ workspaceId: workspace.id, topic: "提纲迁移" });
+    const reviews = new ContentGenerationReviewRepository(conn);
+    reviews.save(project.id, "outline", {
+      status: "needs_author", markdown: "# 原提纲", findings: [], evidenceUsed: [], summary: "旧评审记录", repairRounds: 3
+    });
+
+    conn.exec(`
+      DROP INDEX idx_content_generation_reviews_project_created;
+      CREATE TABLE content_generation_reviews_v8 (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES content_projects(id) ON DELETE CASCADE,
+        artifact_type TEXT NOT NULL CHECK(artifact_type IN ('outline', 'draft', 'channel_draft_csdn', 'channel_draft_cnblogs', 'channel_draft_juejin', 'channel_draft_51cto')),
+        revision_sha256 TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('passed', 'needs_author', 'review_failed')),
+        repair_rounds INTEGER NOT NULL CHECK(repair_rounds BETWEEN 0 AND 3),
+        report_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO content_generation_reviews_v8 SELECT * FROM content_generation_reviews;
+      DROP TABLE content_generation_reviews;
+      ALTER TABLE content_generation_reviews_v8 RENAME TO content_generation_reviews;
+    `);
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_GENERATION_REVIEW_REPAIR_ROUNDS_MIGRATION_VERSION);
+
+    initialiseDatabase(conn);
+
+    expect(reviews.latest(project.id, "outline", "# 原提纲")).toMatchObject({ status: "needs_author", repairRounds: 3, report: { summary: "旧评审记录" } });
+    const latest = reviews.save(project.id, "outline", {
+      status: "needs_author", markdown: "# 新提纲", findings: [], evidenceUsed: [], summary: "第五轮后保留", repairRounds: 5
+    });
+    expect(latest.repairRounds).toBe(5);
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("content brief depth preference repair migration", () => {
+  let database: AppDatabase | undefined;
+  let temporaryDirectory: string | undefined;
+
+  afterEach(() => {
+    database?.close();
+    if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  });
+
+  it("repairs a v10 database whose ledger is current but whose brief column is missing", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const workspace = new AccountRepository(conn).getOrCreateDefaultWorkspace();
+    const project = new ContentProjectRepository(conn).create({ workspaceId: workspace.id, topic: "旧版开发库提纲" });
+    conn.prepare("INSERT INTO content_briefs (project_id, topic, objective, audience, angle, source_notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(project.id, "旧版开发库提纲", "生成提纲", "开发者", "实用", "", "2026-10-01T00:00:00.000Z");
+    conn.exec("ALTER TABLE content_briefs DROP COLUMN draft_depth_preference");
+    conn.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION);
+
+    initialiseDatabase(conn);
+
+    const briefColumns = conn.prepare("PRAGMA table_info(content_briefs)").all() as Array<{ name: string }>;
+    expect(briefColumns.map((column) => column.name)).toContain("draft_depth_preference");
+    expect(conn.prepare("SELECT topic, objective FROM content_briefs WHERE project_id = ?").get(project.id))
+      .toEqual({ topic: "旧版开发库提纲", objective: "生成提纲" });
+    expect(new ContentBriefRepository(conn).get(project.id).draftDepthPreference).toBeNull();
+    expect(conn.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(CONTENT_BRIEF_DEPTH_PREFERENCE_MIGRATION_VERSION)).toBeTruthy();
+    expect(conn.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("backs up the database before repairing the recorded v10 schema on disk", () => {
+    database = openInMemoryDatabase();
+    const conn = database.connection;
+    const workspace = new AccountRepository(conn).getOrCreateDefaultWorkspace();
+    const project = new ContentProjectRepository(conn).create({ workspaceId: workspace.id, topic: "需备份的旧库" });
+    conn.prepare("INSERT INTO content_briefs (project_id, topic, objective, audience, angle, source_notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(project.id, "需备份的旧库", "保留内容", "开发者", "实用", "", "2026-10-01T00:00:00.000Z");
+    conn.exec("ALTER TABLE content_briefs DROP COLUMN draft_depth_preference");
+    // Keep v11 recorded to cover structural repair when the migration ledger
+    // says current but the column is missing.
+    temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "contentferry-brief-depth-repair-"));
+    conn.prepare("VACUUM INTO ?").run(path.join(temporaryDirectory, "contentferry.db"));
+    database.close();
+
+    database = openDatabase(temporaryDirectory);
+
+    expect(new ContentBriefRepository(database.connection).get(project.id).objective).toBe("保留内容");
+    expect(fs.readdirSync(path.join(temporaryDirectory, "backups")).some((name) => name.endsWith(".db"))).toBe(true);
   });
 });
 

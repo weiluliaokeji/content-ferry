@@ -1,8 +1,9 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownOffsetAtTextareaTop } from "../utils";
+import { appendDraftRunEvent } from "../draft-run-events";
 import { continueAfterProjectCreation, resolveInitialResearchDepth, type ProjectCreationMode } from "./project-creation-flow";
-import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
+import type { AccountPlatform, AccountProfile, ContentBrief, ContentDraft, ContentGenerationReview, ContentOutline, ContentProject, ContentResearch, ContentReview, ContentSourceArticle, ContentSourcePreview, DraftRunEvent, MediaAccount, ResearchDepth, ResearchSource, SpecifiedSource, TitleSuggestion, WechatPublishJob, ZhuqueReport } from "../types";
 
 export interface UseWorkbenchParams {
   accounts: MediaAccount[];
@@ -53,7 +54,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [publishPendingPageSize, setPublishPendingPageSize] = useState(5);
   const [publishCompletedPageSize, setPublishCompletedPageSize] = useState(5);
   const [sourceArticle, setSourceArticle] = useState<ContentSourceArticle>();
-  const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "preview" | "settings">("assistant");
+  const [articleWorkspacePanel, setArticleWorkspacePanel] = useState<"assistant" | "activity" | "preview" | "settings">("assistant");
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [projectCreationMode, setProjectCreationMode] = useState<ProjectCreationMode>("research");
   const [projectTopic, setProjectTopic] = useState("");
@@ -90,6 +91,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [outlineRefinementInstruction, setOutlineRefinementInstruction] = useState("");
   const [outlineRefinementMode, setOutlineRefinementMode] = useState<"structure" | "title">("structure");
   const [outlineRefinementProposal, setOutlineRefinementProposal] = useState<string>();
+  const [outlineRefinementBaseMarkdown, setOutlineRefinementBaseMarkdown] = useState<string>();
   const [outlineTitleSuggestions, setOutlineTitleSuggestions] = useState<string[]>([]);
   const [outlineTitleSuggesting, setOutlineTitleSuggesting] = useState(false);
   const [outlineRefining, setOutlineRefining] = useState(false);
@@ -160,8 +162,9 @@ export function useWorkbench(params: UseWorkbenchParams) {
   const [draft, setDraft] = useState<ContentDraft>();
   const [draftGenerating, setDraftGenerating] = useState(false);
   const [draftGenerationStatus, setDraftGenerationStatus] = useState("");
+  const [draftRunId, setDraftRunId] = useState<string>();
+  const [draftRunEvents, setDraftRunEvents] = useState<DraftRunEvent[]>([]);
   const draftAbortRef = useRef<AbortController | undefined>(undefined);
-  const activePracticeTaskIdRef = useRef<string | undefined>(undefined);
   const setDraftAbortRef = (value: AbortController | undefined) => {
     draftAbortRef.current = value;
   };
@@ -346,7 +349,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     if (!briefProject || !brief) return;
     setSaving(true);
     try {
-      await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ topic: brief.topic, objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes }) });
+      await request<ContentBrief>(`/content-projects/${briefProject.id}/brief`, { method: "PUT", body: JSON.stringify({ topic: brief.topic, objective: brief.objective, audience: brief.audience, angle: brief.angle, sourceNotes: brief.sourceNotes, draftDepthPreference: brief.draftDepthPreference }) });
       if (briefTitle.trim() && briefTitle.trim() !== briefProject.topic) {
         await request<ContentProject>(`/content-projects/${briefProject.id}/title`, { method: "PUT", body: JSON.stringify({ title: briefTitle.trim() }) });
       }
@@ -382,7 +385,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
       }
     }
   };
-  const changeBrief = (field: keyof Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">, value: string) => setBrief((current) => current ? { ...current, [field]: value } : current);
+  const changeBrief = (field: keyof Omit<ContentBrief, "projectId" | "generatedFromAccountProfile">, value: string | null) => setBrief((current) => current ? { ...current, [field]: value as ContentBrief[typeof field] } : current);
   const waitForResearchTask = async (project: ContentProject, taskId: string, signal: AbortSignal): Promise<ContentResearch> => {
     for (let attempt = 0; attempt < 300; attempt += 1) {
       if (signal.aborted) throw new Error("已停止本次补研；已保存的资料卡仍保留，可以稍后重试。");
@@ -639,14 +642,14 @@ export function useWorkbench(params: UseWorkbenchParams) {
     finally { setResearchFollowingUp(false); }
   };
   const generateOutline = async (project: ContentProject, previousMarkdown?: string) => {
-    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…"); setOutlineRefinementProposal(undefined); setOutlinePreviousMarkdown(previousMarkdown);
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineGenerationStatus("正在准备生成任务…"); setOutlineRefinementProposal(undefined); setOutlineRefinementBaseMarkdown(undefined); setOutlinePreviousMarkdown(previousMarkdown);
     try {
       const controller = new AbortController();
       outlineAbortRef.current = controller;
       setOutlineGenerating(true);
       setOutline({ projectId: project.id, markdown: "", generatedFromBrief: true });
       const generated = await streamGeneration<ContentOutline>(`/content-projects/${project.id}/outline/generate/stream`, controller.signal, (event, data) => {
-        if (event === "delta") setOutline((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+      if (event === "delta") setOutline((current) => current ? { ...current, markdown: String(data.markdown ?? ""), generationReview: data.generationReview as ContentOutline["generationReview"] } : current);
         if (event === "status") setOutlineGenerationStatus(String(data.message ?? "AI 正在生成…"));
       });
       setOutline(generated);
@@ -655,13 +658,32 @@ export function useWorkbench(params: UseWorkbenchParams) {
     finally { setOutlineGenerating(false); outlineAbortRef.current = undefined; }
   };
   const openOutline = async (project: ContentProject) => {
-    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0); setOutlineRefinementMode("structure"); setOutlineRefinementInstruction(""); setOutlineRefinementProposal(undefined); setOutlineTitleSuggestions([]); setOutlineTitleSuggesting(false); setOutlinePreviousMarkdown(undefined); setOutlineRegenerated(false);
+    setOutlineProject(project); setOutline(undefined); setOutlineHasDraft(false); setSaving(false); setOutlineEditorMode("visual"); setOutlineModeScrollOffset(0); setOutlineRefinementMode("structure"); setOutlineRefinementInstruction(""); setOutlineRefinementProposal(undefined); setOutlineRefinementBaseMarkdown(undefined); setOutlineTitleSuggestions([]); setOutlineTitleSuggesting(false); setOutlinePreviousMarkdown(undefined); setOutlineRegenerated(false);
     try {
       const draft = await request<ContentOutline | null>(`/content-projects/${project.id}/outline/draft`);
-      if (draft?.markdown.trim()) { setOutline(draft); setOutlineHasDraft(true); return; }
-      if (project.outlineReady) { setOutline(await request<ContentOutline>(`/content-projects/${project.id}/outline`)); return; }
+      if (draft?.markdown.trim()) {
+        const review = await request<{ review: NonNullable<ContentOutline["generationReview"]> | null }>(`/content-projects/${project.id}/outline/generation-review`);
+        setOutline({ ...draft, generationReview: review.review }); setOutlineHasDraft(true); return;
+      }
+      if (project.outlineReady) {
+        const saved = await request<ContentOutline>(`/content-projects/${project.id}/outline`);
+        const review = await request<{ review: NonNullable<ContentOutline["generationReview"]> | null }>(`/content-projects/${project.id}/outline/generation-review`);
+        setOutline({ ...saved, generationReview: review.review }); return;
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法读取文章提纲。"); setOutlineProject(undefined); return; }
     await generateOutline(project);
+  };
+  const reviewOutline = async () => {
+    if (!outlineProject || !outline || outlineGenerating) return;
+    setOutlineGenerating(true); setOutlineGenerationStatus("独立评审正在检查提纲；未通过时会保留内容并说明原因…");
+    try {
+      const reviewed = await request<{ markdown: string; generationReview: NonNullable<ContentOutline["generationReview"]> }>(`/content-projects/${outlineProject.id}/outline/review`, {
+        method: "POST", body: JSON.stringify({ markdown: outline.markdown })
+      });
+      setOutline({ ...outline, markdown: reviewed.markdown, generationReview: reviewed.generationReview });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提纲评审失败。");
+    } finally { setOutlineGenerating(false); setOutlineGenerationStatus(""); }
   };
   const regenerateOutline = async (project: ContentProject) => {
     if (outlineGenerating) return;
@@ -739,13 +761,16 @@ export function useWorkbench(params: UseWorkbenchParams) {
   };
   const refineOutline = async () => {
     if (!outlineProject || !outline || !outlineRefinementInstruction.trim() || outlineGenerating) return;
+    const baseMarkdown = outline.markdown;
     setOutlineRefining(true); setOutlineRefinementProposal(undefined);
+    setOutlineRefinementBaseMarkdown(undefined);
     try {
       const refined = await request<ContentOutline>(`/content-projects/${outlineProject.id}/outline/refine`, {
         method: "POST",
         body: JSON.stringify({ markdown: outline.markdown, instruction: outlineRefinementInstruction.trim() })
       });
       setOutlineRefinementProposal(refined.markdown);
+      setOutlineRefinementBaseMarkdown(baseMarkdown);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "提纲优化失败。");
     } finally { setOutlineRefining(false); }
@@ -771,23 +796,27 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutlineTitleSuggestions([]);
   };
   const applyOutlineRefinement = () => {
-    if (!outline || !outlineRefinementProposal?.trim()) return;
+    if (!outline || !outlineRefinementProposal?.trim() || outlineRefinementBaseMarkdown === undefined || outline.markdown !== outlineRefinementBaseMarkdown) return;
     setOutlinePreviousMarkdown(outline.markdown);
     setOutline({ ...outline, markdown: outlineRefinementProposal });
     setOutlineRefinementProposal(undefined);
+    setOutlineRefinementBaseMarkdown(undefined);
     setOutlineRefinementInstruction("");
   };
-  const discardOutlineRefinement = () => setOutlineRefinementProposal(undefined);
+  const discardOutlineRefinement = () => { setOutlineRefinementProposal(undefined); setOutlineRefinementBaseMarkdown(undefined); };
   const undoOutlineRefinement = () => {
     if (!outline || outlinePreviousMarkdown === undefined) return;
     setOutline({ ...outline, markdown: outlinePreviousMarkdown });
     setOutlinePreviousMarkdown(undefined);
     setOutlineRegenerated(false);
   };
-  const openDraftAfterPracticePlan = async (project: ContentProject) => {
+  const openDraftByWorkflow = async (project: ContentProject) => {
     setDraftProject(project); setDraft(undefined); setSaving(false); setDraftGenerationStatus("");
     setArticleWorkspacePanel("assistant");
     try {
+      const previousRun = await request<{ run: { id: string } | null; events: DraftRunEvent[] }>(`/content-projects/${project.id}/draft-runs/latest`);
+      setDraftRunId(previousRun.run?.id);
+      setDraftRunEvents(previousRun.events);
       let opened: ContentDraft;
       if (project.draftReady) opened = await request<ContentDraft>(`/content-projects/${project.id}/draft`);
       else {
@@ -799,10 +828,11 @@ export function useWorkbench(params: UseWorkbenchParams) {
         opened = await streamGeneration<ContentDraft>(`/content-projects/${project.id}/draft/generate/stream`, controller.signal, (event, data) => {
           if (event === "delta") setDraft((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
           if (event === "status") setDraftGenerationStatus(String(data.message ?? "AI 正在起草正文…"));
+          if (event === "draft-run" && typeof data.runId === "string") { setDraftRunId(data.runId); setDraftRunEvents([]); }
+          if (event === "draft-event") setDraftRunEvents((current) => appendDraftRunEvent(current, data));
         });
       }
       setDraft(opened);
-      activePracticeTaskIdRef.current = undefined;
       if (opened.sourceRelativePath && opened.sourceRelativePath !== project.sourceRelativePath) {
         setDraftProject({ ...project, sourceRelativePath: opened.sourceRelativePath });
       }
@@ -810,81 +840,36 @@ export function useWorkbench(params: UseWorkbenchParams) {
     catch (cause) { if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) setError(cause instanceof Error ? cause.message : "无法起草正文。"); setDraftProject(undefined); }
     finally { setDraftGenerating(false); draftAbortRef.current = undefined; }
   };
-  const openDraftWithPractice = async (project: ContentProject) => {
-    setDraftProject(project); setDraft(undefined); setSaving(false); setArticleWorkspacePanel("assistant");
-    const controller = new AbortController();
-    draftAbortRef.current = controller;
-    setDraftGenerating(true);
-    setDraftGenerationStatus("阿文正在判断是否需要实践…");
-    setDraft({ projectId: project.id, markdown: "", generatedFromOutline: true, sourceRelativePath: project.sourceRelativePath });
-    let taskStatus: string | undefined;
-    try {
-      const started = await request<{ task: { id: string; status: string }; workflow: unknown }>(`/content-projects/${project.id}/practice-task/start`, {
-        method: "POST",
-        body: JSON.stringify({ goal: `为“${project.topic}”按已确认提纲准备正文；自行判断是否值得实践。` })
-      });
-      activePracticeTaskIdRef.current = started.task.id;
-      taskStatus = started.task.status;
-      while (!controller.signal.aborted) {
-        const current = await request<{ task: { id: string; status: string; waitingReason: string | null } | null }>(`/content-projects/${project.id}/practice-task`);
-        if (!current.task) throw new Error("文章实践任务已结束，无法继续起草。");
-        taskStatus = current.task.status;
-        if (taskStatus === "stopped") {
-          setDraftProject(undefined);
-          setDraft(undefined);
-          return;
-        }
-        if (taskStatus === "drafting") break;
-        if (taskStatus === "waiting_permission") setDraftGenerationStatus("阿文需要一项授权，请在右侧“执行活动”查看并处理。等待期间不会自动继续。");
-        else if (taskStatus === "waiting_feedback") setDraftGenerationStatus(`阿文遇到一个无法继续的步骤，正在等待你的指示：${current.task.waitingReason ?? "请查看执行活动"}`);
-        else if (taskStatus === "waiting_stop_choice") setDraftGenerationStatus("实践已停止，等待你选择是否继续起草。");
-        else if (taskStatus === "waiting_resume_choice") setDraftGenerationStatus("发现上次中断的实践，请在右侧“执行活动”选择如何处理。");
-        else if (taskStatus === "assessing") setDraftGenerationStatus("阿文正在判断是否需要实践…");
-        else setDraftGenerationStatus("阿文正在准备实践；完成后会继续起草正文…");
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
-      }
-      if (controller.signal.aborted) throw new Error("已停止本次 AI 生成");
-      const opened = await streamGeneration<ContentDraft>(`/content-projects/${project.id}/draft/generate/stream`, controller.signal, (event, data) => {
-        if (event === "delta") setDraft((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
-        if (event === "status") setDraftGenerationStatus(String(data.message ?? "AI 正在起草正文…"));
-      });
-      setDraft(opened);
-      if (opened.sourceRelativePath && opened.sourceRelativePath !== project.sourceRelativePath) setDraftProject({ ...project, sourceRelativePath: opened.sourceRelativePath });
-    } catch (cause) {
-      if (controller.signal.aborted) {
-        try {
-          const current = await request<{ task: { id: string; checkpoint: { workflowId?: string } } | null }>(`/content-projects/${project.id}/practice-task`);
-          if (current.task?.checkpoint.workflowId) await request(`/article-chat/workflows/${current.task.checkpoint.workflowId}/cancel`, { method: "POST" });
-          else if (current.task) await request(`/content-projects/${project.id}/practice-task/${current.task.id}/stop`, { method: "POST" });
-        } catch { /* The task remains durable and will be reconciled when the article is reopened. */ }
-        setDraftGenerationStatus("已请求停止；请在右侧“执行活动”选择后续处理。");
-      } else {
-        setError(cause instanceof Error ? cause.message : "无法完成自主实践与正文起草。");
-        setDraftProject(undefined);
-      }
-    } finally {
-      setDraftGenerating(false);
-      draftAbortRef.current = undefined;
-      if (taskStatus === "completed" || taskStatus === "completed_with_gaps" || taskStatus === "stopped") activePracticeTaskIdRef.current = undefined;
-    }
-  };
   const stopDraftGeneration = async () => {
-    const taskId = activePracticeTaskIdRef.current;
-    if (taskId && draftProject) {
-      try {
-        const current = await request<{ task: { status: string; checkpoint: { workflowId?: string } } | null }>(`/content-projects/${draftProject.id}/practice-task`);
-        if (current.task && current.task.status !== "drafting") {
-          if (current.task.checkpoint.workflowId) await request(`/article-chat/workflows/${current.task.checkpoint.workflowId}/cancel`, { method: "POST" });
-          else await request(`/content-projects/${draftProject.id}/practice-task/${taskId}/stop`, { method: "POST" });
-          return;
-        }
-      } catch (cause) { setError(cause instanceof Error ? cause.message : "无法停止当前步骤。"); }
-    }
     draftAbortRef.current?.abort();
   };
   const openDraft = async (project: ContentProject) => {
-    if (project.draftReady) return openDraftAfterPracticePlan(project);
-    return openDraftWithPractice(project);
+    if (project.draftReady) return openDraftByWorkflow(project);
+    try {
+      const previous = await request<{ run: { id: string; status: string } | null; events: DraftRunEvent[];
+        candidate: { markdown: string; revisionSha256: string } | null; candidateOutlineMatches: boolean;
+        candidateArticleMatches: boolean; candidateReview: ContentGenerationReview | null }>(`/content-projects/${project.id}/draft-runs/latest`);
+      if (previous.run && previous.candidate) {
+        setDraftProject(project);
+        setDraftRunId(previous.run.id);
+        setDraftRunEvents(previous.events);
+        setDraft({ projectId: project.id, markdown: previous.candidate.markdown, generatedFromOutline: true,
+          sourceRelativePath: project.sourceRelativePath, recoveredCandidate: true,
+          generationReview: previous.candidateReview,
+          recoveryOutlineChanged: !previous.candidateOutlineMatches,
+          recoveryArticleChanged: !previous.candidateArticleMatches });
+        setDraftGenerating(false);
+        setDraftGenerationStatus(previous.candidateOutlineMatches
+          ? "已恢复上次未保存的候选正文；请核对评审与实践记录。"
+          : "已恢复上次未保存的候选正文；提纲后来发生变化，请重新核对内容。");
+        setArticleWorkspacePanel("activity");
+        return;
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法检查上次的正文候选稿，请重试。");
+      return;
+    }
+    return openDraftByWorkflow(project);
   };
   const openDraftDirectly = async (project: ContentProject) => {
     if (!project.sourceRelativePath) {
@@ -907,16 +892,45 @@ export function useWorkbench(params: UseWorkbenchParams) {
       setSaving(false);
     }
   };
+  const resumeDraftCandidate = async (scopeAdjustment?: string) => {
+    if (!draftProject || !draftRunId || draftGenerating) return;
+    if (draft?.recoveredCandidate || scopeAdjustment) {
+      const controller = new AbortController();
+      draftAbortRef.current = controller;
+      setDraftGenerating(true);
+      setDraftGenerationStatus(scopeAdjustment ? "正在按你确认的文章范围修订并复审…" : "正在从已保存候选正文继续评审…");
+      try {
+        const opened = await streamGeneration<ContentDraft>(`/content-projects/${draftProject.id}/draft/generate/stream`, controller.signal, (event, data) => {
+          if (event === "delta") setDraft((current) => current ? { ...current, markdown: String(data.markdown ?? "") } : current);
+          if (event === "status") setDraftGenerationStatus(String(data.message ?? "正在复核候选正文…"));
+          if (event === "draft-run" && typeof data.runId === "string") { setDraftRunId(data.runId); setDraftRunEvents([]); }
+          if (event === "draft-event") setDraftRunEvents((current) => appendDraftRunEvent(current, data));
+        }, JSON.stringify({ resumeCandidateRunId: draftRunId, ...(scopeAdjustment ? { scopeAdjustment } : {}) }));
+        setDraft({ ...opened, recoveredCandidate: false, recoveryOutlineChanged: false, recoveryArticleChanged: false });
+      } catch (cause) {
+        if (!(cause instanceof Error && /已停止本次 AI 生成/.test(cause.message))) {
+          setError(cause instanceof Error ? cause.message : "无法继续评审已恢复的候选正文。");
+        }
+      } finally {
+        setDraftGenerating(false);
+        draftAbortRef.current = undefined;
+      }
+      return;
+    }
+  };
   const continueDraftAfterPractice = async () => {
     if (!draftProject || draftGenerating) return;
-    await openDraftAfterPracticePlan(draftProject);
+    if (draft?.recoveredCandidate && draftRunId) return resumeDraftCandidate();
+    await openDraftByWorkflow(draftProject);
   };
+  const adjustDraftScope = async (scopeAdjustment: string) => resumeDraftCandidate(scopeAdjustment);
   const saveDraft = async (): Promise<{ success: boolean; markdown?: string; error?: string }> => {
     if (!draftProject || !draft) return { success: false, error: "没有可保存的草稿。" };
     setSaving(true);
     try {
       const saved = await request<ContentDraft>(`/content-projects/${draftProject.id}/draft`, { method: "PUT", body: JSON.stringify({ markdown: draft.markdown }) });
-      setDraft((current) => current ? { ...current, markdown: saved.markdown, sourceRelativePath: saved.sourceRelativePath } : current);
+      setDraft((current) => current ? { ...current, markdown: saved.markdown, sourceRelativePath: saved.sourceRelativePath,
+        recoveredCandidate: false, recoveryOutlineChanged: false, recoveryArticleChanged: false } : current);
       if (saved.sourceRelativePath) setDraftProject((current) => current ? { ...current, sourceRelativePath: saved.sourceRelativePath ?? current.sourceRelativePath } : current);
       await loadProjects();
       return { success: true, markdown: saved.markdown };
@@ -1061,6 +1075,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     setOutlineRefinementMode,
     outlineRefinementProposal,
     setOutlineRefinementProposal,
+    outlineRefinementBaseMarkdown,
     outlineTitleSuggestions,
     setOutlineTitleSuggestions,
     outlineTitleSuggesting,
@@ -1116,6 +1131,8 @@ export function useWorkbench(params: UseWorkbenchParams) {
     draftGenerating,
     setDraftGenerating,
     draftGenerationStatus,
+    draftRunId,
+    draftRunEvents,
     setDraftGenerationStatus,
     draftAbortRef,
     setDraftAbortRef,
@@ -1161,6 +1178,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     addManualResearchSource,
     generateOutline,
     openOutline,
+    reviewOutline,
     regenerateOutline,
     switchOutlineToMarkdown,
     switchOutlineToVisual,
@@ -1186,6 +1204,7 @@ export function useWorkbench(params: UseWorkbenchParams) {
     openDraftDirectly,
     stopDraftGeneration,
     continueDraftAfterPractice,
+    adjustDraftScope,
     saveDraft,
     openReview,
     openZhuque,

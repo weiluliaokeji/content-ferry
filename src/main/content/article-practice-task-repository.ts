@@ -147,7 +147,22 @@ export class ArticlePracticeTaskRepository {
 
   waitForFeedback(taskId: string, reason: string, now = new Date()): ArticlePracticeTask {
     const deadline = new Date(now.getTime() + FEEDBACK_WAIT_MS).toISOString();
-    return this.move(taskId, ["practicing", "waiting_permission"], "waiting_feedback", "practice_blocked", { reason, deadline }, now);
+    return this.move(taskId, ["assessing", "practicing", "waiting_permission"], "waiting_feedback", "practice_blocked", { reason, deadline }, now);
+  }
+
+  reconcileFailedWorkflow(taskId: string, reason: string, now = new Date()): ArticlePracticeTask {
+    const task = this.require(taskId);
+    const canRecoverDraft = task.status === "waiting_resume_choice" && task.resumeStatus === "drafting";
+    const canRecoverResume = task.status === "waiting_resume_choice"
+      && ["assessing", "practicing", "waiting_permission"].includes(task.resumeStatus ?? "");
+    if (!["assessing", "practicing", "waiting_permission"].includes(task.status) && !canRecoverResume && !canRecoverDraft) return task;
+    if (canRecoverDraft) {
+      return this.move(taskId, ["waiting_resume_choice"], "drafting", "resumed_draft_with_gaps",
+        { reason, recoveredTerminalWorkflow: true, hasGaps: true }, now);
+    }
+    const deadline = new Date(now.getTime() + FEEDBACK_WAIT_MS).toISOString();
+    return this.move(taskId, canRecoverResume ? ["waiting_resume_choice"] : ["assessing", "practicing", "waiting_permission"],
+      "waiting_feedback", "practice_blocked", { reason, deadline, recoveredTerminalWorkflow: true }, now);
   }
 
   expireFeedback(taskId: string, now = new Date()): ArticlePracticeTask {

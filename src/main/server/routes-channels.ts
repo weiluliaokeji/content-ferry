@@ -12,9 +12,34 @@ import {
 } from "./schemas";
 import type { ServerContext } from "./server-context";
 import { lifecycleStatusForOutcome, type PublishAdapterOutcome } from "../publishing/publish-lifecycle";
+import { ChannelDraftReviewService } from "../ai/channel-draft-review-service";
+import type { ReviewedArtifactType } from "../content/content-generation-review-repository";
 
 export function registerChannelsRoutes(ctx: ServerContext): void {
-  const { server, accounts, csdnChannels, cnblogsChannels, juejinChannels, fiftyoneCtoChannels, csdnBrowserConfirm } = ctx;
+  const { server, accounts, contentProjects, contentSources, contentGenerationReviews, modelProvider, webSearch, csdnChannels, cnblogsChannels, juejinChannels, fiftyoneCtoChannels, csdnBrowserConfirm } = ctx;
+  const channelReview = new ChannelDraftReviewService(modelProvider, webSearch);
+  const findChannelProjectId = (projectId: string | null, relativePath: string, workspaceId: string) => projectId ?? contentProjects.findBySource(workspaceId, relativePath)?.id;
+  const attachChannelReview = <T extends { projectId: string | null; sourceRelativePath: string; markdown: string }>(draft: T, artifactType: ReviewedArtifactType) => {
+    const workspace = accounts.getOrCreateDefaultWorkspace();
+    const projectId = findChannelProjectId(draft.projectId, draft.sourceRelativePath, workspace.id);
+    return projectId ? { ...draft, generationReview: contentGenerationReviews.latest(projectId, artifactType, draft.markdown) } : draft;
+  };
+  const reviewChannelRewrite = async <T extends { id: string; accountId: string; projectId: string | null; sourceRelativePath: string; generationMode: string; title: string; markdown: string; author: string | null; digest: string | null; coverSource: string | null }>(
+    draft: T, platform: string, artifactType: ReviewedArtifactType,
+    save: (id: string, input: { title: string; markdown: string; author?: string; digest?: string; coverSource?: string }) => T
+  ) => {
+    if (draft.generationMode !== "rewrite") return attachChannelReview(draft, artifactType);
+    const account = accounts.requireAccount(draft.accountId);
+    const projectId = findChannelProjectId(draft.projectId, draft.sourceRelativePath, account.workspaceId);
+    if (!projectId) throw new Error("渠道稿没有关联到文渡文章项目，无法保存独立评审记录。");
+    const source = contentSources.getArticle(account.workspaceId, draft.sourceRelativePath);
+    const reviewed = await channelReview.review({ platform, title: draft.title, markdown: draft.markdown, sourceMarkdown: source.markdown,
+      positioning: account.profile.positioning, audience: account.profile.targetAudience, writingStyle: account.profile.writingStyle,
+      prohibitedTopics: account.profile.prohibitedTopics, confirmedStyleProfile: accounts.getConfirmedStyleProfile(account.id) });
+    const saved = save(draft.id, { title: draft.title, markdown: reviewed.markdown, author: draft.author ?? "", digest: draft.digest ?? "", coverSource: draft.coverSource ?? "" });
+    const generationReview = contentGenerationReviews.save(projectId, artifactType, { ...reviewed, markdown: saved.markdown });
+    return { ...saved, generationReview };
+  };
 
   server.get("/api/publish-lifecycle/jobs/:jobId/events", async (request) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
@@ -38,12 +63,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
   server.get("/api/integrations/csdn/channel-drafts", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
-    return { items: csdnChannels.listDrafts(workspace.id, query.accountId) };
+    return { items: csdnChannels.listDrafts(workspace.id, query.accountId).map((draft) => attachChannelReview(draft, "channel_draft_csdn")) };
   });
 
   server.post("/api/integrations/csdn/channel-drafts", async (request, reply) => {
     const input = csdnChannelDraftInput.parse(request.body);
-    return reply.code(201).send(await csdnChannels.createFromSource(input));
+    const draft = await csdnChannels.createFromSource(input);
+    return reply.code(201).send(await reviewChannelRewrite(draft, "CSDN", "channel_draft_csdn", (id, value) => csdnChannels.saveDraft(id, value)));
   });
 
   server.post("/api/integrations/csdn/channel-drafts/:draftId/approve", async (request) => {
@@ -143,12 +169,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
   server.get("/api/integrations/cnblogs/channel-drafts", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
-    return { items: cnblogsChannels.listDrafts(workspace.id, query.accountId) };
+    return { items: cnblogsChannels.listDrafts(workspace.id, query.accountId).map((draft) => attachChannelReview(draft, "channel_draft_cnblogs")) };
   });
 
   server.post("/api/integrations/cnblogs/channel-drafts", async (request, reply) => {
     const input = cnblogsChannelDraftInput.parse(request.body);
-    return reply.code(201).send(await cnblogsChannels.createFromSource(input));
+    const draft = await cnblogsChannels.createFromSource(input);
+    return reply.code(201).send(await reviewChannelRewrite(draft, "博客园", "channel_draft_cnblogs", (id, value) => cnblogsChannels.saveDraft(id, value)));
   });
 
   server.post("/api/integrations/cnblogs/channel-drafts/:draftId/approve", async (request) => {
@@ -227,12 +254,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
   server.get("/api/integrations/juejin/channel-drafts", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
-    return { items: juejinChannels.listDrafts(workspace.id, query.accountId) };
+    return { items: juejinChannels.listDrafts(workspace.id, query.accountId).map((draft) => attachChannelReview(draft, "channel_draft_juejin")) };
   });
 
   server.post("/api/integrations/juejin/channel-drafts", async (request, reply) => {
     const input = juejinChannelDraftInput.parse(request.body);
-    return reply.code(201).send(await juejinChannels.createFromSource(input));
+    const draft = await juejinChannels.createFromSource(input);
+    return reply.code(201).send(await reviewChannelRewrite(draft, "掘金", "channel_draft_juejin", (id, value) => juejinChannels.saveDraft(id, value)));
   });
 
   server.post("/api/integrations/juejin/channel-drafts/:draftId/approve", async (request) => {
@@ -304,12 +332,13 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
   server.get("/api/integrations/51cto/channel-drafts", async (request) => {
     const workspace = accounts.getOrCreateDefaultWorkspace();
     const query = z.object({ accountId: z.string().uuid().optional() }).parse(request.query);
-    return { items: fiftyoneCtoChannels.listDrafts(workspace.id, query.accountId) };
+    return { items: fiftyoneCtoChannels.listDrafts(workspace.id, query.accountId).map((draft) => attachChannelReview(draft, "channel_draft_51cto")) };
   });
 
   server.post("/api/integrations/51cto/channel-drafts", async (request, reply) => {
     const input = fiftyoneCtoChannelDraftInput.parse(request.body);
-    return reply.code(201).send(await fiftyoneCtoChannels.createFromSource(input));
+    const draft = await fiftyoneCtoChannels.createFromSource(input);
+    return reply.code(201).send(await reviewChannelRewrite(draft, "51CTO", "channel_draft_51cto", (id, value) => fiftyoneCtoChannels.saveDraft(id, value)));
   });
 
   server.post("/api/integrations/51cto/channel-drafts/:draftId/approve", async (request) => {

@@ -14,12 +14,25 @@ export const providerName = (provider: ModelProviderId | null) => provider === n
  *  For custom providers (e.g. OpenRouter), falls back to the connection displayName. */
 export const skillModelStatus = (skill: ManagedSkill, modelConnections?: ModelConnection[]) => {
   if (skill.category === "检测") return providerName(null);
+  if (skill.providerInherited) {
+    const connectionName = modelConnections?.find((connection) => connection.provider === skill.provider)?.displayName;
+    const providerLabel = skill.provider === null ? "默认模型" : providerName(skill.provider);
+    return `跟随撰写模型 · ${connectionName ?? providerLabel ?? skill.provider}`;
+  }
   if (skill.provider === null) return "未选择模型";
   const builtIn = providerName(skill.provider);
   if (builtIn) return builtIn;
   const connection = modelConnections?.find((c) => c.provider === skill.provider);
   return connection?.displayName ?? skill.provider;
 };
+
+export function skillUsesSameConnectionAsWriter(
+  skill: Pick<ManagedSkill, "provider" | "providerInherited">,
+  writingSkill: Pick<ManagedSkill, "provider">
+): boolean {
+  const skillProvider = skill.providerInherited ? writingSkill.provider : skill.provider;
+  return (skillProvider ?? "openai_codex") === (writingSkill.provider ?? "openai_codex");
+}
 
 export function markdownTitle(markdown: string): string | undefined {
   return markdown.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() || undefined;

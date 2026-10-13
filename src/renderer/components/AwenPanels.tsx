@@ -521,7 +521,7 @@ export function ArticlePracticeTaskCard({ task, busy, onDecision, onOpenAwen, on
       <label>核对该步骤的当前状态<textarea value={reconciliation} onChange={(event) => setReconciliation(event.target.value)} maxLength={1000} placeholder="记录你确认到的实际结果" /></label>
       <button type="button" onClick={() => void onDecision("resume", reconciliation.trim())} disabled={busy || !reconciliation.trim()}>记录核对结果并继续</button>
     </>}
-    {!task.checkpoint.uncertainSideEffect && <button type="button" onClick={() => void onDecision("resume")} disabled={busy}>从中断处续做</button>}
+    {!task.checkpoint.uncertainSideEffect && <button type="button" onClick={() => void onDecision("resume")} disabled={busy}>{busy ? "正在恢复…" : "从中断处续做"}</button>}
     <div className="awen-pending-review-actions">
       <button type="button" className="secondary-button" onClick={() => void onDecision("continue_draft")} disabled={busy}>用已完成结果起草，缺口标待核查</button>
       <button type="button" className="secondary-button" onClick={() => void onDecision("stop_draft")} disabled={busy}>停止起草</button>
@@ -533,7 +533,7 @@ export function ArticlePracticeTaskCard({ task, busy, onDecision, onOpenAwen, on
     {task.feedbackDeadline && <small>等待反馈至 {new Date(task.feedbackDeadline).toLocaleTimeString()}；届时若没有指示，会继续起草并标记待核查。</small>}
     <div className="awen-pending-review-actions">
       <button type="button" className="secondary-button" onClick={() => onOpenAwen()}>告诉阿文如何处理</button>
-      <button type="button" className="secondary-button" onClick={() => onOpenAwen(RETRY_FAILED_PRACTICE_STEP_PROMPT)}>重试上次失败的步骤</button>
+      <button type="button" className="secondary-button" onClick={() => onOpenAwen(RETRY_FAILED_PRACTICE_STEP_PROMPT)}>重试上次失败或无结果的步骤</button>
     </div>
   </section>;
   if (task.status === "waiting_edit_confirmation") return <section className="awen-tool-permission" aria-label="实践建议待确认">
@@ -569,7 +569,7 @@ export function getArticlePracticeDraftingLabel(task: ArticlePracticeTask): stri
     : "实践已完成，正在准备正文";
 }
 
-export const RETRY_FAILED_PRACTICE_STEP_PROMPT = "请只重试上一次实践中失败的步骤，不要重新执行已经完成的步骤。如果失败原因要求调整参数或扩大影响范围，请先说明并等我确认。";
+export const RETRY_FAILED_PRACTICE_STEP_PROMPT = "请只重试上一次实践中最后一个失败或没有产生有效观察的工具步骤，不要重新执行已取得有效结果的步骤。工具、操作、目标和参数必须与原调用完全相同；如果无法还原原调用，或需要调整参数、目标或扩大影响范围，请先说明并等我确认。";
 
 type PracticeEventView = NonNullable<ArticlePracticeTask["events"]>[number];
 

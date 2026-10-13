@@ -85,7 +85,7 @@ export function useSkillsSettings(params: UseSkillsSettingsParams) {
         body: JSON.stringify({
           markdown: selectedPath === "SKILL.md" ? selectedContent : editingSkill.markdown,
           enabled: editingSkill.enabled,
-          provider: editingSkill.provider
+          provider: editingSkill.providerInherited ? null : editingSkill.provider
         })
       });
       setEditingSkill(saved);
