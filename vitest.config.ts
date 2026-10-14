@@ -13,11 +13,11 @@ export default defineConfig({
     // Electron's forked test subprocess loses its IPC channel under load on the
     // Windows CI runner, which surfaces as `[vitest-worker]: Timeout calling
     // "onTaskUpdate"` (and `ERR_IPC_CHANNEL_CLOSED` at teardown) even though every
-    // test passes. worker_threads communicate over an in-process MessageChannel
-    // instead of a child_process IPC pipe, so the channel-loss race disappears.
-    pool: "threads",
-    // Keep concurrency bounded so the 2-core CI runner is not oversubscribed.
-    maxWorkers: 4,
+    // test passes. The regression was forcing maxWorkers: 4 — four heavy electron
+    // forks on the 2-core CI runner oversubscribe it and the IPC pipe drops.
+    // Keep concurrency close to the runner's core count so each fork keeps a
+    // healthy channel. v0.3.1 passed with the default (~1-2) worker count.
+    maxWorkers: 2,
     // 全仓 35+ 个测试文件并行 + Windows CI 2 核 runner 会让真实磁盘 IO / resvg
     // 光栅化这类重型用例远超 vitest 默认 5s 预算（v0.1.4 release 两次挂在
     // create-server 的 SVG 预览用例上；本地全量跑也偶发 content-source /
