@@ -232,11 +232,11 @@ export class SkillRegistry {
         const skillSeed = seedState[definition.id] ?? {};
         for (const [name, builtInContent] of Object.entries(definition.references)) {
           if (!/^[a-z0-9-]+\.md$/.test(name)) throw new Error("内置技能引用文件名不合法。");
-          const normalizedBuiltIn = builtInContent.trimEnd() + "\n";
+          const normalizedBuiltIn = normalizeLineEndings(builtInContent).trimEnd() + "\n";
           const referencePath = path.join(referenceDirectory, name);
           const builtInHash = hashContent(normalizedBuiltIn);
           const currentHash = fs.existsSync(referencePath)
-            ? hashContent(fs.readFileSync(referencePath, "utf8"))
+            ? hashContent(normalizeLineEndings(fs.readFileSync(referencePath, "utf8")).trimEnd() + "\n")
             : undefined;
           // First seed, or the file still matches what we last seeded: keep it
           // in sync with the built-in. If the user edited it (hash differs),
@@ -323,6 +323,10 @@ function isBrowserAutomationSkill(skillId: string): boolean {
 
 function normalizeMarkdown(value: string): string {
   return value.replace(/\r\n/g, "\n").trim();
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function hashContent(content: string): string {
