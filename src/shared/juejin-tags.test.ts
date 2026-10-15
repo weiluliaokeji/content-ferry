@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { inferJuejinTags, inferJuejinCategory, JUEJIN_MAX_TAGS } from "./juejin-tags";
+import { inferJuejinTags, inferJuejinCategory, JUEJIN_MAX_TAGS, isFirstJuejinTagClick, toggleJuejinTagId } from "./juejin-tags";
 
 const POOL = [
   { id: "t-python", name: "Python" },
@@ -33,6 +33,29 @@ describe("inferJuejinTags", () => {
     const result = inferJuejinTags("", markdown, bigPool);
     expect(result.length).toBeLessThanOrEqual(JUEJIN_MAX_TAGS);
     expect(result).toEqual(["tag-0", "tag-1", "tag-2"]);
+  });
+
+  it("同一个官方标签 id 在输入列表重复时只推荐一次", () => {
+    const duplicatedPool = [
+      { id: "t-python", name: "Python" },
+      { id: "t-python", name: "Python" },
+      { id: "t-java", name: "Java" }
+    ];
+    expect(inferJuejinTags("", "Python 和 Java", duplicatedPool)).toEqual(["t-python", "t-java"]);
+  });
+
+  it("移除重复状态中的一个标签时保留其他不同标签", () => {
+    expect(toggleJuejinTagId(["t-python", "t-python", "t-java"], "t-python")).toEqual(["t-java"]);
+  });
+
+  it("新增标签前先清理重复项并遵守最多三个标签", () => {
+    expect(toggleJuejinTagId(["t-python", "t-python", "t-java"], "t-go")).toEqual(["t-python", "t-java", "t-go"]);
+    expect(toggleJuejinTagId(["t-python", "t-java", "t-go"], "t-rust")).toEqual(["t-python", "t-java", "t-go"]);
+  });
+
+  it("双击时只处理第一下，避免标签重排后第二下误删相邻标签", () => {
+    expect(isFirstJuejinTagClick(1)).toBe(true);
+    expect(isFirstJuejinTagClick(2)).toBe(false);
   });
 
   it("中文标签名按子串命中并参与排序", () => {

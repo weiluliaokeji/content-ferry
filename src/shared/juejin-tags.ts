@@ -16,6 +16,23 @@
  */
 export const JUEJIN_MAX_TAGS = 3;
 
+/** 去除重复标签 ID 并保持原顺序，避免同一逻辑标签被 UI 显示或发送多次。 */
+export function normalizeJuejinTagIds(tagIds: readonly string[]): string[] {
+  return [...new Set(tagIds.filter((id) => id.length > 0))].slice(0, JUEJIN_MAX_TAGS);
+}
+
+/** 以单个逻辑标签为单位切换选择，先修复历史/外部输入中的重复 ID。 */
+export function toggleJuejinTagId(selectedTagIds: readonly string[], id: string): string[] {
+  const normalized = normalizeJuejinTagIds(selectedTagIds);
+  if (normalized.includes(id)) return normalized.filter((tagId) => tagId !== id);
+  return normalized.length >= JUEJIN_MAX_TAGS ? normalized : [...normalized, id];
+}
+
+/** Ignore the second click in a native double-click sequence so a reflowed neighbor isn't toggled. */
+export function isFirstJuejinTagClick(clickDetail: number): boolean {
+  return clickDetail <= 1;
+}
+
 /** 掘金固定分类 ID（来自 PsChina/web-publish adapters/juejin.yaml 实测）。 */
 export const JUEJIN_CATEGORIES: Array<{ label: string; id: string }> = [
   { label: "后端", id: "6809637769959178254" },
@@ -110,9 +127,12 @@ export function inferJuejinTags(title: string, markdown: string, availableTags: 
   const body = `${title}\n${markdown}`.toLowerCase();
   const titleLower = title.toLowerCase();
   const scored: Array<{ id: string; score: number }> = [];
+  const seenIds = new Set<string>();
   for (const tag of availableTags) {
     const name = tag.name.trim();
     if (!name) continue;
+    if (seenIds.has(tag.id)) continue;
+    seenIds.add(tag.id);
     const occurrences = countKeywordMatches(body, name);
     if (occurrences === 0) continue;
     let score = occurrences;

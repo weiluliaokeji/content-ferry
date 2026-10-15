@@ -185,7 +185,7 @@ describe("JuejinChannelService", () => {
       generateStructured: async (req: { prompt: string }) => {
         expect(req.prompt).toContain("Docker");
         expect(req.prompt).toContain("可选分类");
-        return { value: { categoryId: "6809637769959178254", tagIds: ["tag-1", "tag-2", "not-a-real-tag"] } };
+        return { value: { categoryId: "6809637769959178254", tagIds: ["tag-1", "tag-1", "tag-2"] } };
       }
     } as unknown as ModelProvider;
     const { account, service } = setupHarness({ ...defaultHandlers(), "query_tag_list": tagHandler }, provider);
@@ -196,7 +196,7 @@ describe("JuejinChannelService", () => {
     });
 
     expect(recommendation.categoryId).toBe("6809637769959178254");
-    // 非法 tag id 被剔除，只保留官方清单内的 id。
+    // 重复 tag id 归一化，避免相同标签在 UI 出现两次并在一次移除时一起消失。
     expect(recommendation.tagIds).toEqual(["tag-1", "tag-2"]);
   });
 

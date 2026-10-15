@@ -61,7 +61,7 @@ function juejinJobLabel(status: JuejinPublishJobShape["status"]): string {
   }
 }
 
-import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
+import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags, isFirstJuejinTagClick, normalizeJuejinTagIds, toggleJuejinTagId } from "../../shared/juejin-tags";
 
 function normalizeImageMime(file: File): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
   if (file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/gif" || file.type === "image/webp") return file.type;
@@ -348,7 +348,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
       setPublishCategory(inferJuejinCategory(draft.title, draft.markdown));
     }
     if (draft.suggestedTagIds && draft.suggestedTagIds.length > 0) {
-      setSelectedTagIds(draft.suggestedTagIds.slice(0, JUEJIN_MAX_TAGS));
+      setSelectedTagIds(normalizeJuejinTagIds(draft.suggestedTagIds));
     } else if (availableTags.length > 0) {
       setSelectedTagIds(inferJuejinTags(draft.title, draft.markdown, availableTags));
     }
@@ -356,11 +356,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
 
   const toggleTag = (id: string) => {
     userTouchedPublishRef.current = true;
-    setSelectedTagIds((current) =>
-      current.includes(id)
-        ? current.filter((tagId) => tagId !== id)
-        : current.length >= JUEJIN_MAX_TAGS ? current : [...current, id]
-    );
+    setSelectedTagIds((current) => toggleJuejinTagId(current, id));
   };
 
   const switchToMarkdown = () => {
@@ -586,12 +582,13 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
             <button type="button" className="secondary-button" onClick={() => void generateSummary()} disabled={!isDraft || saving || summaryBusy}>{summaryBusy ? "AI 正在提炼摘要…" : draft.digest ? "AI 重新生成摘要" : "AI 生成适配摘要"}</button>
           </label>
           <label>分类（必选）<select value={publishCategory} disabled={!canEditPublishOptions} onChange={(event) => { userTouchedPublishRef.current = true; setPublishCategory(event.target.value); }}><option value="">请选择分类…</option>{JUEJIN_CATEGORIES.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select><small>掘金要求必选一个分类；草稿已创建且任务进行中时不可修改。</small></label>
-          <label>标签（必选 1~{JUEJIN_MAX_TAGS} 个）
+          <div className="juejin-tag-field">
+            <span className="juejin-tag-field-title">标签（必选 1~{JUEJIN_MAX_TAGS} 个）</span>
             {tagsLoading ? <p className="hint">正在加载掘金官方标签…</p> : <>
               {selectedTagList.length > 0 && (
                 <div className="juejin-selected-tags">
                   {selectedTagList.map((tag) => (
-                    <button type="button" key={tag.id} className="juejin-selected-tag" disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)} title="点击移除该标签">
+                    <button type="button" key={tag.id} className="juejin-selected-tag" disabled={!canEditPublishOptions} onClick={(event) => { if (isFirstJuejinTagClick(event.detail)) toggleTag(tag.id); }} title="点击移除该标签">
                       {tag.name}<span className="juejin-selected-tag-remove" aria-hidden>×</span>
                     </button>
                   ))}
@@ -601,7 +598,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
               <div className="juejin-tag-options-scroll">
                 <div className="juejin-tag-options">
                   {visibleTags.map((tag) => (
-                    <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={() => toggleTag(tag.id)}>{tag.name}</button>
+                    <button type="button" key={tag.id} className={selectedTagIds.includes(tag.id) ? "active" : ""} disabled={!canEditPublishOptions} onClick={(event) => { if (isFirstJuejinTagClick(event.detail)) toggleTag(tag.id); }}>{tag.name}</button>
                   ))}
                 </div>
               </div>
@@ -612,7 +609,7 @@ export function JuejinDraftWorkspace({ draft, accountDisplay, saving, job, error
               )}
               <small>已选 {selectedTagIds.length}/{JUEJIN_MAX_TAGS} 个 · 掘金最多允许 {JUEJIN_MAX_TAGS} 个{tagsError ? `（加载失败：${tagsError}，已回退内置常用标签）` : ""}；草稿已创建且任务进行中时不可修改。{tagSearch.trim() === "" && availableTags.length > JUEJIN_TAG_VISIBLE_LIMIT ? `（标签区可滚动，点击上方按钮${showAllTags ? "收起" : "展开全部"}）` : ""}</small>
             </>}
-          </label>
+          </div>
           <div className="cnblogs-publish-flow"><strong>发布流程</strong><small>1. 点击「发布到掘金」，渠道稿冻结为快照并创建掘金草稿；2. 草稿创建完成后可先到掘金草稿箱预览；3. 点击「确认公开」后文章正式对外可见。</small></div>
           <div className="settings-cover-section">
             <strong>封面</strong>

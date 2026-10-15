@@ -404,6 +404,8 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .pagination-size-label > span { line-height: 1; }
 .pagination-size { padding: .2rem .4rem; border: 1px solid #d7deeb; border-radius: .375rem; background: #fff; color: #334155; font-size: .85rem; cursor: pointer; }
 .juejin-tag-options-scroll { max-height: 11rem; overflow-y: auto; margin: .5rem 0 .35rem; padding-right: .25rem; }
+.juejin-tag-field { display: grid; gap: .4rem; color: #44516a; font-size: .9rem; }
+.juejin-tag-field-title { font-weight: 400; }
 .juejin-tag-options { display: flex; flex-wrap: wrap; gap: .45rem; }
 .juejin-tag-options button { padding: .28rem .7rem; border: 1px solid #d7deeb; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; font-size: .85rem; }
 .juejin-tag-options button:hover:not(:disabled) { border-color: #2b5fd0; color: #2b5fd0; }

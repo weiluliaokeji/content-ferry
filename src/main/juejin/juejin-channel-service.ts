@@ -27,7 +27,7 @@ import { findChannelCrossPromotion } from "../publishing/channel-cross-promotion
 import { JuejinApiError, JuejinClient, type JuejinDraftPayload } from "./juejin-client";
 import { inlineJuejinLocalImages } from "./juejin-image-inliner";
 import { JuejinImageUploader } from "./juejin-image-uploader";
-import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags } from "../../shared/juejin-tags";
+import { JUEJIN_CATEGORIES, JUEJIN_KNOWN_TAGS, JUEJIN_MAX_TAGS, inferJuejinCategory, inferJuejinTags, normalizeJuejinTagIds } from "../../shared/juejin-tags";
 import {
   buildPublishIdempotencyKey,
   computePublishSnapshotHash,
@@ -242,7 +242,7 @@ export class JuejinChannelService {
       const categoryId = JUEJIN_CATEGORIES.some((category) => category.id === generated.value.categoryId)
         ? generated.value.categoryId
         : deterministicCategory;
-      const tagIds = generated.value.tagIds.filter((id) => allowedTagIds.has(id)).slice(0, JUEJIN_MAX_TAGS);
+      const tagIds = normalizeJuejinTagIds(generated.value.tagIds.filter((id) => allowedTagIds.has(id)));
       return {
         categoryId,
         tagIds: tagIds.length > 0 ? tagIds : inferJuejinTags(input.title, input.markdown, tags)
@@ -437,7 +437,7 @@ export class JuejinChannelService {
   createPublishJob(channelDraftId: string, options?: { categoryId?: string; tagIds?: string[] }): JuejinPublishJob {
     const draft = this.requireDraft(channelDraftId);
     if (draft.status !== "approved") throw new JuejinChannelError("请先审核并冻结掘金渠道稿，再创建发布任务。");
-    const publishOptions = { categoryId: options?.categoryId ?? "", tagIds: [...(options?.tagIds ?? [])] };
+    const publishOptions = { categoryId: options?.categoryId ?? "", tagIds: normalizeJuejinTagIds(options?.tagIds ?? []) };
     const renderedPackageHash = computePublishSnapshotHash({
       platform: "juejin",
       accountId: draft.accountId,
@@ -965,7 +965,7 @@ function parseJuejinTagSuggestion(value: unknown): { categoryId: string; tagIds:
   const record = value as Record<string, unknown>;
   const categoryId = typeof record.categoryId === "string" ? record.categoryId : "";
   const tagIds = Array.isArray(record.tagIds) ? record.tagIds.filter((id) => typeof id === "string") : [];
-  return { categoryId, tagIds: tagIds.slice(0, JUEJIN_MAX_TAGS) };
+  return { categoryId, tagIds: normalizeJuejinTagIds(tagIds) };
 }
 
 function buildJuejinTagSuggestionPrompt(input: {
@@ -1022,7 +1022,7 @@ function mapDraft(row: Record<string, string | null>): JuejinChannelDraft {
   if (!Array.isArray(suggestedTagIds)) suggestedTagIds = [];
   // 归一化：只保留字符串 id，并截断到平台上限。
   // 历史草稿可能存有超过上限的推荐标签（接口会拒绝），读回时一并收敛。
-  suggestedTagIds = suggestedTagIds.filter((id): id is string => typeof id === "string").slice(0, JUEJIN_MAX_TAGS);
+  suggestedTagIds = normalizeJuejinTagIds(suggestedTagIds.filter((id): id is string => typeof id === "string"));
   return {
     id: row.id!, workspaceId: row.workspace_id!, accountId: row.account_id!, projectId: row.project_id,
     sourceRelativePath: row.source_relative_path!, sourceHash: row.source_hash!,
