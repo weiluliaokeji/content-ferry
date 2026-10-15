@@ -1,0 +1,31 @@
+{
+  "description": "ContentFerry bug-fix test protection",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(?:apply_patch|Bash|mcp__.*|Write|Edit|Delete|Move|Rename|Create|Update|Save|Append|Remove|Replace|Truncate|Overwrite|Patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/verify-fix-test-immutability.mjs\" --hook",
+            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) 'scripts/verify-fix-test-immutability.mjs') --hook",
+            "statusMessage": "Checking protected test files"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(?:apply_patch|Bash|mcp__.*|Write|Edit|Delete|Move|Rename|Create|Update|Save|Append|Remove|Replace|Truncate|Overwrite|Patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/verify-fix-test-immutability.mjs\" --post-hook",
+            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) 'scripts/verify-fix-test-immutability.mjs') --post-hook",
+            "statusMessage": "Verifying protected test files"
+          }
+        ]
+      }
+    ]
+  }
+}
