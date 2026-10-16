@@ -245,7 +245,7 @@ ${input.afterText || "无"}
     const generated = await effectiveModelProvider.generateStructured({
       task: "cover_prompt",
       skillId: "cover-prompt-generation",
-      prompt: `请根据文章标题和完整正文生成一段可编辑的 16:9 文章封面生图提示词。
+      prompt: `请根据文章标题和完整正文生成一段可编辑的文章封面生图提示词。
 
 文章标题：${input.title || "未单独提供"}
 

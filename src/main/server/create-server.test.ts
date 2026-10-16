@@ -2451,7 +2451,7 @@ describe("local API scaffold", () => {
       async generateStructured<T>(request: GenerateStructuredRequest<T>) {
         requests.push(request as GenerateStructuredRequest<unknown>);
         return {
-          value: request.parse({ prompt: "16:9 横版，蓝绿色调，一座连接内容与读者的桥，右侧留出干净标题区域，不含文字和水印。" }),
+          value: request.parse({ prompt: "2.35:1 横版，蓝绿色调，一座连接内容与读者的桥，右侧留出干净标题区域，不含文字和水印。" }),
           provider: "test-cover-prompt-ai",
           model: "test-model",
           usage: null
@@ -2469,7 +2469,7 @@ describe("local API scaffold", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ provider: "test-cover-prompt-ai" });
-    expect(response.json().prompt).toContain("16:9");
+    expect(response.json().prompt).toContain("2.35:1");
     expect(requests[0]).toMatchObject({ task: "cover_prompt", skillId: "cover-prompt-generation" });
   });
 
