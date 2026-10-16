@@ -1,0 +1,8 @@
+# 渲染/中间产物
+*.mp4
+*.log
+_*.txt
+_*.json
+_narr_*
+*.wav
+node_modules/

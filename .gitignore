@@ -32,3 +32,4 @@ build/*
 .cto-image-verify/out/
 .mermaid-verify/*.txt
 .claude/
+assets/skills/tech-video-creator/examples/*
