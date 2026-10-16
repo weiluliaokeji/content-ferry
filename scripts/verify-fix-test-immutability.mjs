@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
 const testPathPatterns = [
   /(^|\/)(__tests__|tests?)(\/|$)/i,
@@ -10,6 +11,12 @@ const mutationVerbPattern = "(?:write|edit|patch|replace|delete|remove|move|rena
 const mutationActionPrefix = new RegExp(`^${mutationVerbPattern}(?:$|[_:.-])`, "i");
 const camelCaseMutationActionPrefix = new RegExp(`^${mutationVerbPattern}[A-Z]`);
 const mutationActionSuffix = new RegExp(`(?:^|[_:.-])${mutationVerbPattern}$`, "i");
+const TEST_COMMIT_MARKER_NAME = "contentferry-fix-test-commit";
+const FIX_TEST_POLICY_PATHS = [
+  /(?:^|[\\/])scripts[\\/]verify-fix-test-immutability\.mjs$/i,
+  /(?:^|[\\/])\.codex[\\/]hooks\.json$/i,
+  /(?:^|[\\/])contentferry-fix-test-commit$/i
+];
 
 function runGit(args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, { encoding: "utf8" });
@@ -27,6 +34,11 @@ function isTestPath(filePath) {
   return testPathPatterns.some((pattern) => pattern.test(normalized));
 }
 
+function isProtectedWritePath(filePath) {
+  const normalized = filePath.replaceAll("\\", "/");
+  return isTestPath(normalized) || FIX_TEST_POLICY_PATHS.some((pattern) => pattern.test(normalized));
+}
+
 function changedPaths(args) {
   const result = runGit(args);
   return result.stdout ? result.stdout.split(/\r?\n/) : [];
@@ -37,8 +49,14 @@ export function findProtectedTestChanges(changedSinceTestCommit, untrackedPaths)
 }
 
 function getConfiguredTestCommit() {
-  const result = runGit(["config", "--local", "--get", "contentferry.fixTestCommit"], { allowFailure: true });
-  return result.status === 0 ? result.stdout : null;
+  const markerPath = runGit(["rev-parse", "--path-format=absolute", "--git-path", TEST_COMMIT_MARKER_NAME]).stdout;
+  try {
+    const testCommit = readFileSync(markerPath, "utf8").trim();
+    return testCommit || null;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 function validateTestCommit(testCommit) {
@@ -92,20 +110,26 @@ function beginProtection(testCommit) {
   if (existingTestChanges.length > 0) {
     throw new Error(`开启保护前工作区已存在测试文件改动：${existingTestChanges.join("、")}`);
   }
-  runGit(["config", "--local", "contentferry.fixTestCommit", testCommit]);
+  const markerPath = runGit(["rev-parse", "--path-format=absolute", "--git-path", TEST_COMMIT_MARKER_NAME]).stdout;
+  writeFileSync(markerPath, `${testCommit}\n`, "utf8");
+  if (getConfiguredTestCommit() !== testCommit) {
+    throw new Error("测试保护标记写入后无法回读，未能开启测试保护。");
+  }
   console.log(`已开启测试保护，基准提交为 ${testCommit}。Codex hook 将拦截已识别的测试文件写入；结束前请运行 npm run fix:verify。`);
 }
 
 function endProtection() {
   const testCommit = getConfiguredTestCommit();
   if (testCommit) verifyTestCommit(testCommit);
-  const result = runGit(["config", "--local", "--unset", "contentferry.fixTestCommit"], { allowFailure: true });
-  if (result.status !== 0 && getConfiguredTestCommit() === null) {
-    console.log("本地测试保护当前未开启。");
-    return;
-  }
-  if (result.status !== 0) {
-    throw new Error(result.stderr || "清除本地测试保护标记失败。");
+  const markerPath = runGit(["rev-parse", "--path-format=absolute", "--git-path", TEST_COMMIT_MARKER_NAME]).stdout;
+  try {
+    unlinkSync(markerPath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      console.log("本地测试保护当前未开启。");
+      return;
+    }
+    throw error;
   }
   console.log("已关闭本地测试保护。");
 }
@@ -116,7 +140,7 @@ function isTestPathInPatch(command) {
     const patchHeader = line.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/);
     const unifiedHeader = line.match(/^\+\+\+ (?:b\/)?(.+)$/) ?? line.match(/^--- a\/(.+)$/);
     const filePath = patchHeader?.[1] ?? unifiedHeader?.[1];
-    if (filePath && filePath !== "/dev/null" && isTestPath(filePath)) {
+    if (filePath && filePath !== "/dev/null" && isProtectedWritePath(filePath)) {
       paths.push(filePath);
     }
   }
@@ -127,7 +151,7 @@ function extractPaths(text) {
   const tokens = text.match(/"(?:[^"\\]|\\.)*"|'[^']*'|`[^`]*`|[^\s]+/g) ?? [];
   return tokens
     .map((token) => token.replace(/^["'`([{,]+|["'`),;:]+$/g, ""))
-    .filter((token) => isTestPath(token));
+    .filter((token) => isProtectedWritePath(token));
 }
 
 function isKnownTestCommand(command) {
@@ -140,6 +164,10 @@ function isReadOnlyInspectionCommand(command) {
 
 function hasShellWriteSyntax(command) {
   return /(?:^|\s)(?:Set-Content|Add-Content|Out-File|Clear-Content|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item|del|erase|rm|mv|cp|tee)\b|\bsed\s+-[a-z]*i\b|\b(?:git\s+)?(?:checkout|restore|reset|clean|mv|rm)\b|(?:^|[^\d])>{1,2}/i.test(command);
+}
+
+function isProtectionControlCommand(command) {
+  return /\bfix:end\b|verify-fix-test-immutability\.mjs[^\r\n]*\s--end\b|contentferry-fix-test-commit/i.test(command);
 }
 
 function isMutatingTool(toolName) {
@@ -177,6 +205,9 @@ export function evaluateToolCall(toolName, toolInput) {
 
   if (toolName === "Bash") {
     const command = typeof toolInput?.command === "string" ? toolInput.command : "";
+    if (isProtectionControlCommand(command)) {
+      return { reason: "测试保护期间禁止由 Codex 结束保护或修改保护配置；完成修复后请由用户在 Codex 外运行 npm run fix:end。" };
+    }
     const paths = extractPaths(command);
     if (paths.length === 0) return null;
     if (hasShellWriteSyntax(command)) {
@@ -191,9 +222,9 @@ export function evaluateToolCall(toolName, toolInput) {
   if (targetPaths.length === 0) {
     return { reason: `无法确认写入目标（工具：${toolName}）；保护期内拒绝未提供目标路径的文件写入。` };
   }
-  const paths = targetPaths.filter(isTestPath);
+  const paths = targetPaths.filter(isProtectedWritePath);
   if (paths.length === 0) return null;
-  return { reason: `缺陷修复期间测试文件受保护：${paths.join("、")}` };
+  return { reason: `缺陷修复期间测试文件和保护配置受保护：${paths.join("、")}` };
 }
 
 function getPostToolViolation(testCommit) {
