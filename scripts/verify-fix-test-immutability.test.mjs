@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -9,7 +10,7 @@ import { evaluateToolCall, findProtectedTestChanges } from "./verify-fix-test-im
 const scriptPath = resolve("scripts/verify-fix-test-immutability.mjs");
 
 function createProtectedRepo() {
-  const directory = join(process.cwd(), `.tmp-fix-test-${randomUUID()}`);
+  const directory = join(tmpdir(), `.tmp-fix-test-${randomUUID()}`);
   mkdirSync(directory);
   execFileSync("git", ["init", "-q"], { cwd: directory });
   execFileSync("git", ["config", "user.name", "Codex Test"], { cwd: directory });
@@ -19,7 +20,11 @@ function createProtectedRepo() {
   execFileSync("git", ["add", "src/example.test.ts"], { cwd: directory });
   execFileSync("git", ["commit", "-qm", "test baseline"], { cwd: directory });
   const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim();
-  execFileSync("git", ["config", "--local", "contentferry.fixTestCommit", commit], { cwd: directory });
+  const markerPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "contentferry-fix-test-commit"], {
+    cwd: directory,
+    encoding: "utf8"
+  }).trim();
+  writeFileSync(markerPath, `${commit}\n`);
   return directory;
 }
 
@@ -79,11 +84,51 @@ test("fix:end keeps protection enabled until deleted tests are restored", () => 
     rmSync(join(directory, "src/example.test.ts"));
     const result = runHook(directory, "--end");
     assert.equal(result.status, 1);
-    assert.match(execFileSync("git", ["config", "--local", "--get", "contentferry.fixTestCommit"], {
+    const markerPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "contentferry-fix-test-commit"], {
       cwd: directory,
       encoding: "utf8"
-    }), /^[0-9a-f]+\s*$/i);
+    }).trim();
+    assert.match(readFileSync(markerPath, "utf8"), /^[0-9a-f]+\s*$/i);
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("fix:begin stores its marker in the linked worktree and enables the hook", () => {
+  const directory = join(tmpdir(), `.tmp-fix-test-worktree-${randomUUID()}`);
+  const linkedDirectory = `${directory}-linked`;
+  mkdirSync(directory);
+  execFileSync("git", ["init", "-q"], { cwd: directory });
+  execFileSync("git", ["config", "user.name", "Codex Test"], { cwd: directory });
+  execFileSync("git", ["config", "user.email", "codex-test@example.invalid"], { cwd: directory });
+  mkdirSync(join(directory, "scripts"));
+  writeFileSync(join(directory, "scripts/example.test.mjs"), "test baseline\n");
+  execFileSync("git", ["add", "scripts/example.test.mjs"], { cwd: directory });
+  execFileSync("git", ["commit", "-qm", "test baseline"], { cwd: directory });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim();
+  execFileSync("git", ["worktree", "add", "-q", "-b", "hook-smoke", linkedDirectory, commit], { cwd: directory });
+
+  try {
+    const begin = spawnSync(process.execPath, [scriptPath, "--begin", commit], {
+      cwd: linkedDirectory,
+      encoding: "utf8"
+    });
+    assert.equal(begin.status, 0, begin.stderr);
+
+    const markerPath = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "contentferry-fix-test-commit"], {
+      cwd: linkedDirectory,
+      encoding: "utf8"
+    }).trim();
+    assert.equal(readFileSync(markerPath, "utf8").trim(), commit);
+
+    const preHook = runHook(linkedDirectory, "--hook", {
+      tool_name: "apply_patch",
+      tool_input: { command: "*** Begin Patch\n*** Update File: scripts/example.test.mjs\n" }
+    });
+    assert.equal(preHook.status, 0);
+    assert.equal(JSON.parse(preHook.stdout).hookSpecificOutput.permissionDecision, "deny");
+  } finally {
+    rmSync(linkedDirectory, { recursive: true, force: true });
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -152,6 +197,27 @@ test("blocks shell redirection to a test file", () => {
   });
 
   assert.match(result?.reason ?? "", /src\/example\.test\.ts/);
+});
+
+test("blocks Codex from disabling or altering the active test protection", () => {
+  for (const command of [
+    "npm run fix:end",
+    "npm.cmd run fix:end",
+    "node scripts/verify-fix-test-immutability.mjs --end",
+    "Remove-Item .git/worktrees/ContentFerry-hook-smoke/contentferry-fix-test-commit"
+  ]) {
+    const result = evaluateToolCall("Bash", { command });
+    assert.match(result?.reason ?? "", /测试保护期间禁止由 Codex 结束保护/);
+  }
+
+  for (const [toolName, targetPath] of [
+    ["mcp__filesystem__delete_file", ".git/worktrees/ContentFerry-hook-smoke/contentferry-fix-test-commit"],
+    ["mcp__filesystem__write_file", "scripts/verify-fix-test-immutability.mjs"],
+    ["mcp__filesystem__write_file", ".codex/hooks.json"]
+  ]) {
+    const result = evaluateToolCall(toolName, { path: targetPath });
+    assert.match(result?.reason ?? "", /测试文件和保护配置受保护/);
+  }
 });
 
 test("allows test commands that mention a test file", () => {
