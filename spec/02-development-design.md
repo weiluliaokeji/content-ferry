@@ -479,7 +479,7 @@ CSDN 渠道稿由主稿派生，但与主稿、微信公众号稿保持独立版
 
 视觉布局、浏览器/Electron 环境差异、原生模块或外部平台缺陷可能不适合稳定的自动化测试。如果测试成本高于风险收益或测试本身脆弱，可用截图对照、手工复现/复验以及日志或平台回执作为验证证据，并记录没有新增自动化测试的理由与操作步骤。数据丢失、安全、数据库迁移、发布状态/副作用和恢复逻辑属于高风险范围，必须增加针对性自动化测试并验证失败路径。
 
-对采用独立测试提交基线的修复，基线提交必须新增或修改至少一个测试文件，且不能改其他文件。`npm run fix:begin -- <复现测试提交>` 将基线提交号写入当前 worktree 的 Git 管理目录标记文件，并回读确认成功；各 worktree 独立保存保护状态，避免共用仓库配置导致串扰。启用前工作区不能有基线之后的测试文件变化。Codex `.codex/hooks.json` 的 `PreToolUse` 检查 `apply_patch`、`Bash`、MCP 调用，以及明确列出的本地编辑工具名；MCP 调用进入脚本后按工具动作名分类，命中测试文件写入时阻止调用，事后检查跳过只读 MCP 调用；shell 命令带有测试路径但无法确认只读时也会阻止。保护期间，Codex 不能调用 `fix:end` 或直接修改保护标记、hook 配置和保护脚本；由用户在 Codex 外的 PowerShell 结束保护。驼峰工具名若以写操作动词开头，也按写操作处理；只读工具必须使用 `get`、`list`、`check`、`read`、`inspect` 等查询动词开头，不能以 `write`、`edit`、`create`、`update` 等写操作动词开头。匹配器不因只读工具名中间出现 `write`、`edit` 等字样就触发。修改 MCP 动词时只需更新脚本分类和测试；增加本地工具名时必须同步更新 `PreToolUse` 与 `PostToolUse` 两处 matcher。测试会校验两处 matcher完全相同，并覆盖写操作、只读调用、保护绕过尝试及 linked worktree 状态隔离。`PostToolUse` 对相关调用复查工作区；如果发现测试文件被修改、删除或新增，会向 agent 返回阻断反馈，但无法撤销已完成的工具副作用。`npm run fix:verify` 检查基线提交之后的跟踪文件差异和未跟踪测试文件，`npm run fix:end` 只有在验证通过后才清除标记。专用脚本测试运行方式为 `npm run fix:test`。
+对采用独立测试提交基线的修复，基线提交必须新增或修改至少一个测试文件，且不能改其他文件。`npm run fix:begin -- <复现测试提交>` 将基线提交号写入当前 worktree 的 Git 管理目录标记文件，并回读确认成功；各 worktree 独立保存保护状态，避免共用仓库配置导致串扰。启用前工作区不能有基线之后的测试文件变化。Codex `.codex/hooks.json` 的 `PreToolUse` 检查 `apply_patch`、`Bash`、MCP 调用，以及明确列出的本地编辑工具名；MCP 调用进入脚本后按工具动作名分类，命中测试文件写入时阻止调用，事后检查跳过只读 MCP 调用；shell 命令带有测试路径但无法确认只读时也会阻止。保护期间，Codex 不能调用 `fix:end` 或直接修改保护标记、hook 配置和 `.codex/hooks/verify-fix-test-immutability.mjs`；由用户在 Codex 外的 PowerShell 结束保护。驼峰工具名若以写操作动词开头，也按写操作处理；只读工具必须使用 `get`、`list`、`check`、`read`、`inspect` 等查询动词开头，不能以 `write`、`edit`、`create`、`update` 等写操作动词开头。匹配器不因只读工具名中间出现 `write`、`edit` 等字样就触发。修改 MCP 动词时只需更新脚本分类和测试；增加本地工具名时必须同步更新 `PreToolUse` 与 `PostToolUse` 两处 matcher。测试会校验两处 matcher完全相同，并覆盖写操作、只读调用、保护绕过尝试及 linked worktree 状态隔离。`PostToolUse` 对相关调用复查工作区；如果发现测试文件被修改、删除或新增，会向 agent 返回阻断反馈，但无法撤销已完成的工具副作用。`npm run fix:verify` 检查基线提交之后的跟踪文件差异和未跟踪测试文件，`npm run fix:end` 只有在验证通过后才清除标记。专用脚本测试运行方式为 `npm run fix:test`。
 
 该本地 hook 是降低误改概率的加强门禁，不是安全沙箱：任意 shell、被调用脚本或未接入 Codex hook 的工具可能产生间接副作用，故仍需运行 `fix:verify` 并 review 最终差异。Codex 首次加载项目 hook 时须在 hook review 中检查并信任 `.codex/` 配置；未信任时 hook 不会运行。它不能证明测试曾因预期原因失败，也不替代测试运行、失败证据、视觉/人工验证和 review。CI/远端代码托管若要强制执行，需要在相应流水线中提供复现测试提交引用。
 
@@ -800,7 +800,8 @@ Windows 本机通用 CLI 以结构化程序路径和独立 argv 调用 `node-pty
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
-| 2.0 | 2026-10-15 | Codex 保护期内禁止关闭测试保护或修改保护标记、hook 配置和保护脚本 |
+| 2.1 | 2026-10-16 | 将测试保护 hook 脚本集中到 `.codex/hooks/`，同步更新调用路径和保护规则 |
+| 2.0 | 2026-10-15 | Codex 保护期内禁止关闭测试保护或修改保护标记、hook 配置和 `.codex/hooks/verify-fix-test-immutability.mjs` |
 | 1.9 | 2026-10-15 | 测试保护状态改存当前 worktree 的 Git 管理目录，并增加回读确认和 linked worktree 用例 |
 | 1.8 | 2026-10-15 | MCP matcher 改为统一路由并由脚本分类；跳过只读 MCP 事后扫描，扩展命名与 shell 只读检查用例 |
 | 1.7 | 2026-10-15 | 扩展 Codex 测试保护到 shell/MCP 写入前检查和工具后审计；验证覆盖测试文件删除 |

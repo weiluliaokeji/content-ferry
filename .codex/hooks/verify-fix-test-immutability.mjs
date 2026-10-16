@@ -13,7 +13,7 @@ const camelCaseMutationActionPrefix = new RegExp(`^${mutationVerbPattern}[A-Z]`)
 const mutationActionSuffix = new RegExp(`(?:^|[_:.-])${mutationVerbPattern}$`, "i");
 const TEST_COMMIT_MARKER_NAME = "contentferry-fix-test-commit";
 const FIX_TEST_POLICY_PATHS = [
-  /(?:^|[\\/])scripts[\\/]verify-fix-test-immutability\.mjs$/i,
+  /(?:^|[\\/])\.codex[\\/]hooks[\\/]verify-fix-test-immutability\.mjs$/i,
   /(?:^|[\\/])\.codex[\\/]hooks\.json$/i,
   /(?:^|[\\/])contentferry-fix-test-commit$/i
 ];

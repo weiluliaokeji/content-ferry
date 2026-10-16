@@ -5,9 +5,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { evaluateToolCall, findProtectedTestChanges } from "./verify-fix-test-immutability.mjs";
+import { evaluateToolCall, findProtectedTestChanges } from "../.codex/hooks/verify-fix-test-immutability.mjs";
 
-const scriptPath = resolve("scripts/verify-fix-test-immutability.mjs");
+const scriptPath = resolve(".codex/hooks/verify-fix-test-immutability.mjs");
 
 function createProtectedRepo() {
   const directory = join(tmpdir(), `.tmp-fix-test-${randomUUID()}`);
@@ -203,7 +203,7 @@ test("blocks Codex from disabling or altering the active test protection", () =>
   for (const command of [
     "npm run fix:end",
     "npm.cmd run fix:end",
-    "node scripts/verify-fix-test-immutability.mjs --end",
+    "node .codex/hooks/verify-fix-test-immutability.mjs --end",
     "Remove-Item .git/worktrees/ContentFerry-hook-smoke/contentferry-fix-test-commit"
   ]) {
     const result = evaluateToolCall("Bash", { command });
@@ -212,7 +212,7 @@ test("blocks Codex from disabling or altering the active test protection", () =>
 
   for (const [toolName, targetPath] of [
     ["mcp__filesystem__delete_file", ".git/worktrees/ContentFerry-hook-smoke/contentferry-fix-test-commit"],
-    ["mcp__filesystem__write_file", "scripts/verify-fix-test-immutability.mjs"],
+    ["mcp__filesystem__write_file", ".codex/hooks/verify-fix-test-immutability.mjs"],
     ["mcp__filesystem__write_file", ".codex/hooks.json"]
   ]) {
     const result = evaluateToolCall(toolName, { path: targetPath });

@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/scripts/verify-fix-test-immutability.mjs\" --hook",
-            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) 'scripts/verify-fix-test-immutability.mjs') --hook",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/verify-fix-test-immutability.mjs\" --hook",
+            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/verify-fix-test-immutability.mjs') --hook",
             "statusMessage": "Checking protected test files"
           }
         ]
@@ -20,8 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/scripts/verify-fix-test-immutability.mjs\" --post-hook",
-            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) 'scripts/verify-fix-test-immutability.mjs') --post-hook",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/verify-fix-test-immutability.mjs\" --post-hook",
+            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/verify-fix-test-immutability.mjs') --post-hook",
             "statusMessage": "Verifying protected test files"
           }
         ]
