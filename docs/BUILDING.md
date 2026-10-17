@@ -22,7 +22,7 @@
 ## 2. 开发者先决条件
 
 - Windows 10 1809+（x64）。
-- Node.js 20+；建议使用项目自带的托管版 Node.js（路径形如 `C:\Users\<用户名>\.workbuddy\binaries\node\versions\<版本>\node.exe`）。
+- Node.js 22.19+；当前 Undici 8 的运行要求不支持更早的 Node.js。建议使用项目自带的托管版 Node.js（路径形如 `C:\Users\<用户名>\.workbuddy\binaries\node\versions\<版本>\node.exe`）。
 - Visual Studio Build Tools（含 C++ 桌面开发组件，用于 `better-sqlite3` 编译）。
 - Python 3（electron-rebuild 在 Windows 上需要）。
 - 磁盘至少 5 GB 空闲（Electron + node_modules + 中间产物 + 安装包）。
@@ -45,6 +45,8 @@ npm run pack
 # 仅校验 release/ 下的产物
 npm run verify:installer
 ```
+
+发布前对生产依赖执行 `npm audit --omit=dev --registry=https://registry.npmjs.org`，并核对锁文件中的已知漏洞修复版本。`npmmirror` 可用于安装依赖，但目前不提供 npm 的安全审计接口；审计命令只在本次调用使用官方仓库，不修改本机默认镜像设置。高危和中危告警应在发布前处理或逐项记录不可达的依据。
 
 ### 隔离开发版用户数据
 

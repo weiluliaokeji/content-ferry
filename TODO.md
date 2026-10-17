@@ -4,6 +4,8 @@
 
 ## 待处理
 
+- 清理数学排版链剩余的 KaTeX 低危告警：当前编辑器关闭 LaTeX，报告中的原型污染绕过还需要额外前提；Mermaid 11 与 `micromark-extension-math` 仍锁有旧版 KaTeX。待 Mermaid 主版本兼容性和新增依赖许可证核验完成后，再升级其数学渲染链或用上游兼容修复替换；完成条件是生产依赖审计不再报告该链，且公式、流程图和安装包渲染复验通过。
+
 - [研究资料来源可信度与精确引用](https://github.com/weiluliaokeji/content-ferry/issues/38)（`needs-triage`）
 - [补齐 Git 结果应用为文章建议动作](https://github.com/weiluliaokeji/content-ferry/issues/39)（`needs-triage`）
 - [高级记忆维护与冲突版本确认](https://github.com/weiluliaokeji/content-ferry/issues/40)（`needs-triage`）

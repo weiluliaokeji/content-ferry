@@ -31,5 +31,7 @@ build/*
 .mermaid-verify/out/
 .cto-image-verify/out/
 .mermaid-verify/*.txt
+# 发布安全核查的打包产物（release/ 之外的临时构建目录）
+release-security-check*/
 .claude/
 assets/skills/tech-video-creator/examples/*

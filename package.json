@@ -40,18 +40,18 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
-    "@milkdown/crepe": "^7.21.3",
-    "@milkdown/kit": "^7.21.3",
-    "@milkdown/react": "^7.21.3",
+    "@milkdown/crepe": "^7.22.3",
+    "@milkdown/kit": "^7.22.3",
+    "@milkdown/react": "^7.22.3",
     "@openai/codex-sdk": "^0.156.1",
     "@resvg/resvg-js": "2.6.2",
     "better-sqlite3": "^12.4.1",
-    "fastify": "^5.6.0",
+    "fastify": "^5.12.7",
     "mermaid": "^11.17.2",
     "node-pty": "1.2.0-beta.15",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "undici": "^8.7.0",
+    "undici": "^8.12.2",
     "zod": "^4.1.5"
   },
   "devDependencies": {

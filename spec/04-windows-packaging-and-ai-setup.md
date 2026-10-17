@@ -19,6 +19,8 @@
 
 `node-pty` 使用上游提供的 N-API Windows 预构建文件并以未压缩资源随包分发；安装/构建阶段不编译 ConPTY C++ 工程，避免要求开发机配置 Visual Studio Spectre 库。Windows 安装包门禁检查三个必需文件都存在；Electron 37 启动验证和 Portable 中的真实控制台程序验收负责确认运行兼容性。`postinstall` 和 `rebuild:native` 仍为 `better-sqlite3` 执行 Electron ABI 重建。
 
+生产依赖的安全补丁以锁文件固定并在发布前复扫；当前 Undici 8 需要 Node.js 22.19+，须同时验证开发机 Node 与安装包内 Electron 的 Node 运行时满足要求。安全审计使用支持 npm audit 接口的仓库，不能把镜像站不支持审计接口误判为无漏洞。
+
 Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自行实现 ChatGPT OAuth、保存和刷新令牌，并直接请求 ChatGPT Codex 后端，因此不需要 Codex CLI 或 SDK 运行组件。该实现更轻，但它依赖的 ChatGPT 后端地址不是面向第三方应用承诺稳定的公开 API。ContentFerry 不应在没有兼容层、回退方案和持续维护承诺的情况下把这条路径作为唯一生产依赖。
 
 一期保留两层选择：
