@@ -3,9 +3,10 @@ import { Crepe } from "@milkdown/crepe";
 import { commandsCtx, editorViewCtx, serializerCtx } from "@milkdown/kit/core";
 import type { Ctx } from "@milkdown/kit/ctx";
 import { redo, undo } from "@milkdown/kit/prose/history";
-import { isMarkSelectedCommand } from "@milkdown/kit/preset/commonmark";
+import { isMarkSelectedCommand, remarkPreserveEmptyLinePlugin } from "@milkdown/kit/preset/commonmark";
 import { replaceAll } from "@milkdown/kit/utils";
 import { highlightIcon, highlightSchema, toggleHighlightCommand, useHighlight } from "../milkdown-highlight";
+import { useCodeHighlight } from "../milkdown-code-highlight";
 import { useMermaidPreview } from "../milkdown-mermaid";
 import { suggestionOperation } from "./awen-suggestion-utils";
 import { centeredSuggestionScrollTop, shouldReportVisualEditorSelection } from "./visual-editor-utils";
@@ -308,6 +309,9 @@ export function VisualMarkdownEditor({
     useHighlight(crepe.editor);
     // 同理，mermaid 预览也是装饰层插件，必须在 create() 之前挂上。
     useMermaidPreview(crepe.editor);
+    // 代码块语法高亮 + 行号，同为装饰层插件，且与 mermaid 共用 code_block 节点：
+    // 本插件跳过 mermaid 块，两层装饰互不干扰。
+    useCodeHighlight(crepe.editor);
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown, previousMarkdown) => {
         // Crepe may normalize Markdown while constructing the document. That is
@@ -322,7 +326,9 @@ export function VisualMarkdownEditor({
         }
       });
     });
-    void crepe.create().then(() => {
+    // Milkdown serializes an empty paragraph as a standalone <br /> while this
+    // plugin is installed. Keep source Markdown portable across editors.
+    void crepe.editor.remove(remarkPreserveEmptyLinePlugin).then(() => crepe.create()).then(() => {
       if (!disposed) {
         crepeRef.current = crepe;
         setEditorReady(true);

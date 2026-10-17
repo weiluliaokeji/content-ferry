@@ -1,7 +1,7 @@
 import { createElement, Fragment, type ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { isLocalArticleImageSource, renderPreviewInline, replaceMarkdownImageReference, resolveArticleImageUrl } from "./markdown-preview";
+import { isLocalArticleImageSource, renderPhonePreview, renderPreviewInline, replaceMarkdownImageReference, resolveArticleImageUrl } from "./markdown-preview";
 
 function renderInlineToHtml(markdown: string): string {
   const nodes: ReactNode[] = renderPreviewInline(markdown);
@@ -84,5 +84,32 @@ describe("renderPreviewInline（手机预览高亮）", () => {
     const html = renderInlineToHtml("==`code`==");
     expect(html).toContain("<mark");
     expect(html).toContain("code");
+  });
+});
+
+describe("renderPhonePreview 代码块（行号 + 语法高亮）", () => {
+  function renderArticle(markdown: string): string {
+    const nodes: ReactNode[] = renderPhonePreview(markdown, "ctx", undefined, "标题");
+    return renderToStaticMarkup(createElement(Fragment, null, ...nodes));
+  }
+
+  it("渲染行号、语言标签与 token 着色 class", () => {
+    const html = renderArticle("正文\n\n```js\nconst a = 1; // 注释\nconst b = 2;\n```\n");
+    expect(html).toContain("preview-code-block");
+    expect(html).toContain("<small>js</small>");
+    expect(html).toContain("cf-code-gutter");
+    expect(html).toContain("cf-code-tok cf-code-tok--keyword");
+    expect(html).toContain("cf-code-tok cf-code-tok--number");
+    expect(html).toContain("cf-code-tok cf-code-tok--comment");
+    // 两行代码 → 两个行号。
+    expect(html.match(/cf-code-gutter/g)).toHaveLength(2);
+  });
+
+  it("mermaid 块仍走 mermaid 渲染路径，不产生行号高亮", () => {
+    // 静态渲染不执行 useEffect：MermaidPreviewBlock 只输出“正在渲染图表…”，
+    // 不触碰 window.contentFerry，也不应出现代码行号。
+    const html = renderArticle("```mermaid\ngraph TD\nA-->B\n```\n");
+    expect(html).toContain("正在渲染图表");
+    expect(html).not.toContain("cf-code-gutter");
   });
 });

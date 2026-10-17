@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { apiBase } from "./api";
 import { matchHighlightToken } from "../shared/markdown-highlight";
+import { tokenizeCodeBlock } from "../shared/code-highlight";
 
 /** 与 `content-ferry-window.d.ts` 的 MermaidRenderResult 同构，从 API 签名推导避免漂移。 */
 type MermaidOutcome = Awaited<ReturnType<NonNullable<typeof window.contentFerry>["renderMermaid"]>>;
@@ -58,6 +59,39 @@ function MermaidPreviewBlock({ source }: { source: string }): ReactNode {
     );
   }
   return <div className="preview-mermaid-error">正在渲染图表…</div>;
+}
+
+/**
+ * 手机预览里的代码块：行号 + 语法高亮 + 横向滚动。
+ * 与编辑器（milkdown-code-highlight.ts）共用同一份 tokenizer 与 token 配色，
+ * 保证「编辑器里看到的颜色」和「预览里看到的颜色」一致。
+ */
+function PreviewCodeBlock({ language, code }: { language: string; code: string }): ReactNode {
+  const tokens = tokenizeCodeBlock(code, language);
+  return (
+    <div className="preview-code-block">
+      {language && <small>{language}</small>}
+      <div className="preview-code-scroll">
+        <pre>
+          <code>
+            {tokens.map((lineTokens, lineIndex) => (
+              <span className="preview-code-line" key={lineIndex}>
+                <span className="cf-code-gutter">{lineIndex + 1}</span>
+                <span className="preview-code-content">
+                  {lineTokens.map((token, tokenIndex) =>
+                    token.type === "plain"
+                      ? token.text
+                      : <span className={`cf-code-tok cf-code-tok--${token.type}`} key={tokenIndex}>{token.text}</span>
+                  )}
+                </span>
+                {"\n"}
+              </span>
+            ))}
+          </code>
+        </pre>
+      </div>
+    </div>
+  );
 }
 
 // 手机预览与图片地址解析（自 main.tsx 拆分）
@@ -131,7 +165,7 @@ export function renderPhonePreview(markdown: string, assetContextId: string, sou
         result.push(<MermaidPreviewBlock key={`mermaid-${index}`} source={code.join("\n")} />);
         continue;
       }
-      result.push(<div className="preview-code-block" key={`code-${index}`}>{language && <small>{language}</small>}<pre><code>{code.join("\n")}</code></pre></div>);
+      result.push(<PreviewCodeBlock key={`code-${index}`} language={language} code={code.join("\n")} />);
       continue;
     }
     if (!line.trim()) continue;

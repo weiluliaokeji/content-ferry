@@ -1210,3 +1210,54 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .article-research-link-status.status-needs_recheck { color: #a43721; }
 .article-research-link-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .visual-markdown-editor .research-source-pending { box-shadow: inset 3px 0 #e6a536; background: #fff9e8; }
+
+/* ===== 代码块：行号 + 语法高亮（编辑器与手机预览共用配色，参考公众号浅色风格） ===== */
+/* token 颜色：浅色底上的 GitHub Light 风格配色，编辑器/预览/差异预览三处共用。 */
+.cf-code-tok--keyword { color: #8250df; }
+.cf-code-tok--string { color: #0a7d37; }
+.cf-code-tok--comment { color: #8c959f; }
+.cf-code-tok--number { color: #b35900; }
+.cf-code-tok--function { color: #0969da; }
+.cf-code-tok--operator { color: #57606a; }
+.cf-code-tok--punctuation { color: #6e7781; }
+.cf-code-tok--property { color: #0550ae; }
+.cf-code-tok--variable { color: #9a6700; }
+.cf-code-tok--tag { color: #1a7f37; }
+.cf-code-tok--attr { color: #0550ae; }
+
+/* 行号列：横向滚动时钉在左侧（sticky），背景与代码块一致，避免滚动时文本透出。 */
+.cf-code-gutter {
+  display: inline-block;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 2.2em;
+  margin-right: 1.1em;
+  text-align: right;
+  color: #9aa4b5;
+  background: #f6f8fa;
+  user-select: none;
+  -webkit-user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 手机预览：浅色底 + 行号 + 高亮，外层滚动容器负责横向滚动（行号列 sticky 生效）。 */
+.preview-code-block { margin: .9rem 0; overflow: hidden; border: 1px solid #dce3ed; border-radius: 7px; background: #f6f8fa; color: #1f2328; }
+.preview-code-block > small { display: block; padding: .35rem .65rem; border-bottom: 1px solid #e5e9f0; color: #6e7781; font: .68rem/1.3 Consolas, monospace; }
+.preview-code-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+.preview-code-block pre { margin: 0; padding: .75rem; white-space: pre; }
+.preview-code-block code { font: .72rem/1.6 Consolas, "Microsoft YaHei UI", monospace; }
+
+/* 编辑器内代码块：装饰层把 cf-code-block 挂在 code_block 的 <pre> 上。
+   横向滚动 + max-width 保证长行不越出编辑器；行号列由 .cf-code-gutter 渲染。 */
+.milkdown pre.cf-code-block,
+.visual-markdown-editor .ProseMirror pre.cf-code-block,
+.outline-modal .ProseMirror pre.cf-code-block {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  border: 1px solid #dce3ed;
+  border-radius: 7px;
+  background: #f6f8fa;
+  color: #1f2328;
+}
