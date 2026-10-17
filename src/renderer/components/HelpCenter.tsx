@@ -133,6 +133,10 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
 
         <h2>常见问题</h2>
         <details>
+          <summary>为什么在其他 Markdown 编辑器里看到 &lt;br /&gt;？</summary>
+          <p>旧文章可能已经保存了 HTML 换行标签。切换到“Markdown 原文”可检查并删除段落之间多余的 <code>&lt;br /&gt;</code>。所见即所得模式的新空行不会再自动写入这种标签。</p>
+        </details>
+        <details>
           <summary>编辑文章时，左上角按钮会返回哪里？</summary>
           <p>按钮会显示打开文章前所在的页面。工作台打开的文章返回工作台，归档库打开的文章返回归档库；新建正文草稿返回工作台。</p>
         </details>
@@ -145,6 +149,11 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <summary>编辑时流程图怎么是代码，能直接看图吗？</summary>
           <p>可以。<code>mermaid</code> 代码块在编辑器里会直接渲染成图，和 Obsidian 一样。<strong>点一下图</strong>就切回源码供你修改，把光标移到别处又会自动变回图。</p>
           <p>图形还没写完整时会临时显示成代码块，写完即自动变回图；如果语法有误，代码块下方会说明原因，内容不会丢失。存回文件的始终是 <code>```mermaid</code> 代码块本身，不会变成图片，方便你继续用其它 Markdown 工具编辑。</p>
+        </details>
+        <details>
+          <summary>代码块有行号和颜色吗？</summary>
+          <p>有。编辑文章和手机预览里，普通代码块会带行号，并按语言给关键字、字符串、注释、数字等着色，方便看清结构；长行可以左右滑动查看，不会撑破版面。</p>
+          <p>这只是显示效果：保存回文件的仍是原来的代码块，行号不会被保存，复制代码也不会带出行号。发布到各平台后，代码块样式由平台决定，与编辑器里的着色无关。</p>
         </details>
         <details>
           <summary>正文里的流程图和代码块，发布后会变成什么样？</summary>
