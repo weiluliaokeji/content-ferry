@@ -326,20 +326,40 @@ export function VisualMarkdownEditor({
         }
       });
     });
+    // A destroyed ProseMirror view keeps an emptied element behind in the
+    // root. A live editor nests its view inside the `.milkdown` container,
+    // so only orphaned shells appear as direct children of the root here.
+    const removeOrphanedEditorShells = () => {
+      root.querySelectorAll(":scope > .ProseMirror").forEach((node) => node.remove());
+    };
     // Milkdown serializes an empty paragraph as a standalone <br /> while this
     // plugin is installed. Keep source Markdown portable across editors.
-    void crepe.editor.remove(remarkPreserveEmptyLinePlugin).then(() => crepe.create()).then(() => {
-      if (!disposed) {
-        crepeRef.current = crepe;
-        setEditorReady(true);
-        const visualValue = preserveVisualLineBreaks(valueRef.current);
-        if (crepe.getMarkdown() !== visualValue) crepe.editor.action(replaceAll(visualValue));
-        if (readOnlyRef.current) {
-          crepe.editor.action((ctx) => {
-            const view = ctx.get(editorViewCtx);
-            view.setProps({ editable: () => false });
-          });
-        }
+    void crepe.editor.remove(remarkPreserveEmptyLinePlugin).then(() => {
+      // The effect can already be cleaned up while remove() is in flight:
+      // React StrictMode remounts every effect once in development. Creating
+      // anyway would mount a second editor into the shared root element.
+      if (disposed) return undefined;
+      return crepe.create();
+    }).then(() => {
+      if (disposed) {
+        // The effect was cleaned up while create() was still running.
+        // Milkdown's Editor has no cancellation: the destroy() that cleanup
+        // issued ran before create() started, when there was nothing to
+        // clean up, and this pending create() has already mounted its DOM.
+        // Destroy the orphan now and drop the shell it leaves behind, or the
+        // article renders twice with two toolbars.
+        void crepe.destroy().then(removeOrphanedEditorShells);
+        return;
+      }
+      crepeRef.current = crepe;
+      setEditorReady(true);
+      const visualValue = preserveVisualLineBreaks(valueRef.current);
+      if (crepe.getMarkdown() !== visualValue) crepe.editor.action(replaceAll(visualValue));
+      if (readOnlyRef.current) {
+        crepe.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx);
+          view.setProps({ editable: () => false });
+        });
       }
     });
 
