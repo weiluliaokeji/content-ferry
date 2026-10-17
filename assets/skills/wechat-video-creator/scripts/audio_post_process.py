@@ -146,9 +146,15 @@ def update_segments(segments_path, speed_ratio):
         if s.get("duration") is not None:
             s["duration"] = round(s["duration"] * inv, 3)
 
-    for key in ["main_duration", "total_duration"]:
-        if key in data:
-            data[key] = round(data[key] * inv, 3)
+    if "main_duration" in data:
+        data["main_duration"] = round(data["main_duration"] * inv, 3)
+    if "total_duration" in data:
+        # CTA 音频不参与调速（cta_tail.mp3 原样拼接），总时长必须按
+        # 「调速后主配音 + 原始 CTA」重算。旧实现把含 CTA 的 total_duration
+        # 一起乘 1/speed，会让 GSAP 时间轴比 narration.mp3 短约 1s：
+        # 片尾 CTA 提前淡出成黑屏，ffmpeg -shortest 还会裁掉 CTA 尾音。
+        cta = data.get("cta_duration", 0) or 0
+        data["total_duration"] = round(data["main_duration"] + cta, 3)
 
     data["speed_ratio"] = speed_ratio
     with open(segments_path, "w", encoding="utf-8") as f:
