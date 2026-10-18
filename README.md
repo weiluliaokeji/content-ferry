@@ -163,6 +163,12 @@ src/shared/      跨进程纯类型与无副作用工具
 
 新增依赖前必须检查直接和传递许可证。GPL、AGPL、LGPL、SSPL、BSL、非商业条款或许可证不明的依赖与素材需要单独评估并取得明确确认，不能默认加入可分发安装包。
 
+## 代码评审
+
+评审遵循 [REVIEW.md](REVIEW.md)。本地可请求 `$contentferry-review` 评审指定分支、提交或工作区；[技能](.agents/skills/contentferry-review/SKILL.md) 随仓库共享，新加入后可在重新加载项目的会话中使用，也可直接要求读取该技能文件。通用 code-review 技能采用同一政策。
+
+PR 使用 [模板](.github/pull_request_template.md) 记录需求、评审提交、验证证据和未验证内容。CI、评审与 verifier 分别提供证据，维护者决定合并。GitHub Codex 自动评审与分支保护需要单独开启，仓库文件不会自动启用它们；评审质量 eval 尚未建立。
+
 ## 许可证
 
 本项目以 **MIT 许可证** 发布。详见 [LICENSE](LICENSE)。

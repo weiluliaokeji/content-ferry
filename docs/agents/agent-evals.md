@@ -1,10 +1,10 @@
 # Agent 快速 eval
 
-用于回归检查文渡编码 Agent 的配置：`AGENTS.md`、`.codex/` 和本套 eval 定义。它不评估产品内阿文的生成质量；`assets/skills/` 需要通过产品的实际技能执行链另行评估。
+用于回归检查文渡编码 Agent 的配置：`AGENTS.md`、`.codex/`、项目评审政策与技能和本套 eval 定义。它不评估产品内阿文的生成质量；`assets/skills/` 需要通过产品的实际技能执行链另行评估。
 
 ## 任务与检查
 
-任务、来源和检查条件保存在 `evals/agent/cases.json`。每题从当前工作区复制 `AGENTS.md`、hook、verifier 和本地界面验收说明，并装入独立的最小业务夹具；不会复制真实文章、账号、凭据或开发者的数据库。
+任务、来源和检查条件保存在 `evals/agent/cases.json`。每题从当前工作区复制 `AGENTS.md`、`REVIEW.md`、项目评审技能、hook、verifier 和本地界面验收说明，并装入独立的最小业务夹具；不会复制真实文章、账号、凭据或开发者的数据库。复制评审政策是为了让 AGENTS 的入口可读取；当前六题不评估评审质量。
 
 | 案例                         | 验收条件                                                         |
 | ---------------------------- | ---------------------------------------------------------------- |
@@ -46,7 +46,7 @@ runner 逐题启动新的 `codex exec --json --ephemeral --sandbox workspace-wri
 
 ## CI 配置
 
-`.github/workflows/agent-evals.yml` 在以下路径变化时检查 PR 与 `master` 推送，也支持手动运行：`AGENTS.md`（含子目录）、`.codex/**`、`evals/agent/**`、`docs/agents/**`、本 workflow、`package.json` 和锁文件。第一阶段不设置定时任务，也不运行 20–50 题的完整套件。
+`.github/workflows/agent-evals.yml` 在以下路径变化时检查 PR 与 `master` 推送，也支持手动运行：`AGENTS.md`（含子目录）、`.codex/**`、`.agents/skills/**`、`REVIEW.md`、`evals/agent/**`、`docs/agents/**`、本 workflow、`package.json` 和锁文件。第一阶段不设置定时任务，也不运行 20–50 题的完整套件。
 
 默认始终运行不带模型的 `Agent eval fixtures and graders` job，不需要 API Key。它通过也只代表夹具与评分器正常，GitHub job 摘要明确说明没有执行模型任务。
 

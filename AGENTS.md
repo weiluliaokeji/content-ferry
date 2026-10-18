@@ -143,7 +143,7 @@ npm run verify:boot
 
 ### 独立验收
 
-- 修改 `AGENTS.md`、`.codex/` 或 Agent eval 定义时，运行 `npm run eval:agent:test` 与 `npm run eval:agent -- --prepare-only`；真实模型回归及 CI 前置配置见 [Agent 快速 eval](docs/agents/agent-evals.md)。离线准备成功不得表述为真实 Agent eval 通过。
+- 修改 `AGENTS.md`、`.codex/`、`REVIEW.md`、`.agents/skills/` 或 Agent eval 定义时，运行 `npm run eval:agent:test` 与 `npm run eval:agent -- --prepare-only`；真实模型回归及 CI 前置配置见 [Agent 快速 eval](docs/agents/agent-evals.md)。离线准备成功不得表述为真实 Agent eval 通过。
 - 完成影响用户交互、preload/IPC/启动、持久化、发布副作用或恢复路径的修改后，在最终汇报前委派 Codex 项目级 `verifier`（`.codex/agents/verifier.toml`）。交接时提供变更范围、相关 `spec`、原缺陷复现步骤或新行为验收标准；等待其报告，失败项修复后重新验收。
 - `verifier` 负责运行本节要求的检查、实际操作目标行为与两个最近的相邻流程，并只报告结果。无法使用 subagent 时，主 Agent 按相同范围自行验收并说明；缺少 GUI 或安全测试环境时，明确标记未验证，不能将自动化检查通过等同于界面验收。
 - 对可通过本地 HTTP API 完成的界面流程，优先让项目级 `verifier` 使用沙箱内浏览器和隔离测试数据验收，按 [本地界面验收方法](docs/agents/gui-acceptance.md) 启动页面与本地服务、检查连通性，再实际操作目标流程和两个相邻流程。Electron 窗口启动失败时，先尝试文档中的浏览器与独立本地服务方案；只有实际探测失败后才将对应流程标为“未验证”。
@@ -208,6 +208,11 @@ npm run verify:boot
 - 通过关闭安全隔离、忽略证书、记录密钥或绕过平台风控来“快速打通”功能。
 - 把未完成能力展示成可用，或把任务提交状态展示成最终成功。
 - 为修复一个界面问题无关地重写整页、格式化全仓库或改动用户文章。
+
+## Code Review Rules
+
+- 评审 PR、分支、提交或工作区修改时，必须先读取根目录 [REVIEW.md](REVIEW.md)，按其固定范围、三轮检查、严重程度和证据格式报告。项目评审技能为 `.agents/skills/contentferry-review/SKILL.md`；使用通用 code-review 技能时也遵循同一政策。
+- 评审政策及项目技能变更按本文件的 Agent 配置验证要求执行；现有离线 eval 不代表评审质量已验证。
 
 ## Agent skills
 
