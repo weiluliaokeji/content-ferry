@@ -3,7 +3,7 @@ import { Crepe } from "@milkdown/crepe";
 import { commandsCtx, editorViewCtx, serializerCtx } from "@milkdown/kit/core";
 import type { Ctx } from "@milkdown/kit/ctx";
 import { redo, undo } from "@milkdown/kit/prose/history";
-import { isMarkSelectedCommand, remarkPreserveEmptyLinePlugin } from "@milkdown/kit/preset/commonmark";
+import { codeBlockSchema, inlineCodeSchema, isMarkSelectedCommand, paragraphSchema, remarkPreserveEmptyLinePlugin, setBlockTypeCommand, toggleInlineCodeCommand } from "@milkdown/kit/preset/commonmark";
 import { replaceAll } from "@milkdown/kit/utils";
 import { highlightIcon, highlightSchema, toggleHighlightCommand, useHighlight } from "../milkdown-highlight";
 import { useCodeHighlight } from "../milkdown-code-highlight";
@@ -17,6 +17,9 @@ export type VisualMarkdownSelection = {
   selectedMarkdown: string;
   documentMarkdown: string;
 };
+
+const codeBlockIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v3h16V5H4Zm2.8 6.2L4.5 13.5l2.3 2.3 1.4-1.4-0.9-.9 0.9-.9-1.4-1.4ZM11 15h6v-2h-6v2Z"/></svg>`;
+const inlineCodeIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M8.7 16.6 4.1 12l4.6-4.6L7.3 6l-6 6 6 6 1.4-1.4Zm6.6 0 4.6-4.6-4.6-4.6L16.7 6l6 6-6 6-1.4-1.4Z"/></svg>`;
 
 function remoteImageFromClipboard(clipboard: DataTransfer | null): { url: string; alt: string } | undefined {
   if (!clipboard) return undefined;
@@ -269,16 +272,64 @@ export function VisualMarkdownEditor({
               icon: highlightIcon,
               active: isHighlightActive,
               onRun: toggleHighlight
+            }).addItem("code-block", {
+              icon: codeBlockIcon,
+              label: "Code block",
+              active: (ctx: Ctx) => {
+                const view = ctx.get(editorViewCtx);
+                return view.state.selection.$from.parent.type === codeBlockSchema.type(ctx);
+              },
+              onRun: (ctx: Ctx) => {
+                userHasEdited = true;
+                const view = ctx.get(editorViewCtx);
+                const nodeType = view.state.selection.$from.parent.type === codeBlockSchema.type(ctx)
+                  ? paragraphSchema.type(ctx)
+                  : codeBlockSchema.type(ctx);
+                ctx.get(commandsCtx).call(setBlockTypeCommand.key, { nodeType });
+              }
+            }).addItem("inline-code", {
+              icon: inlineCodeIcon,
+              label: "Inline code",
+              active: (ctx: Ctx) => ctx.get(commandsCtx).call(isMarkSelectedCommand.key, inlineCodeSchema.type(ctx)),
+              onRun: (ctx: Ctx) => {
+                userHasEdited = true;
+                ctx.get(commandsCtx).call(toggleInlineCodeCommand.key);
+              }
             });
           }
         },
         [Crepe.Feature.TopBar]: {
+          codeBlockIcon,
+          codeIcon: inlineCodeIcon,
           buildTopBar: (builder) => {
             builder.getGroup("formatting").addItem("highlight", {
               icon: highlightIcon,
               active: isHighlightActive,
               onRun: toggleHighlight
             });
+            const formattingGroup = builder.getGroup("formatting").group;
+            const inlineCodeItemIndex = formattingGroup.items.findIndex((item) => item.key === "code");
+            const [inlineCodeItem] = inlineCodeItemIndex >= 0
+              ? formattingGroup.items.splice(inlineCodeItemIndex, 1)
+              : [];
+            const blockGroup = builder.getGroup("block").clear().addItem("code-block", {
+              icon: codeBlockIcon,
+              active: (ctx: Ctx) => ctx.get(editorViewCtx).state.selection.$from.parent.type === codeBlockSchema.type(ctx),
+              onRun: (ctx: Ctx) => {
+                userHasEdited = true;
+                const view = ctx.get(editorViewCtx);
+                const nodeType = view.state.selection.$from.parent.type === codeBlockSchema.type(ctx)
+                  ? paragraphSchema.type(ctx)
+                  : codeBlockSchema.type(ctx);
+                ctx.get(commandsCtx).call(setBlockTypeCommand.key, { nodeType });
+              }
+            });
+            if (inlineCodeItem) {
+              blockGroup.addItem("inline-code", {
+                ...inlineCodeItem,
+                icon: inlineCodeIcon
+              });
+            }
           }
         },
         [Crepe.Feature.ImageBlock]: {

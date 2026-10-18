@@ -165,6 +165,7 @@ button:focus-visible { outline: 2px solid #5472d3; outline-offset: 2px; }
 .visual-markdown-editor .milkdown-table-block::-webkit-scrollbar-thumb { border: 2px solid #fff; border-radius: 999px; background: #aab4c5; }
 .visual-markdown-editor .milkdown-table-block::-webkit-scrollbar-track { background: #eef1f6; }
 .visual-markdown-editor .milkdown button { width: auto; color: inherit; }
+.visual-markdown-editor .milkdown-toolbar [data-toolbar-item="code"] { display: none; }
 .visual-markdown-editor .milkdown input { width: auto; }
 .visual-editor-shell.read-only .visual-markdown-editor .milkdown-top-bar { display: none; }
 .visual-editor-shell.read-only .visual-markdown-editor .ProseMirror { cursor: default; }

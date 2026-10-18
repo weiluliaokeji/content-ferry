@@ -26,4 +26,19 @@ describe("visual editor mount lifecycle", () => {
     // and retries inside Milkdown. The cleanup must keep calling it.
     expect(visualMarkdownEditorSource).toContain("void crepe.destroy();");
   });
+
+  it("keeps code block conversion available in the selection toolbar while the top bar fades", () => {
+    expect(visualMarkdownEditorSource).toContain('.addItem("code-block"');
+    expect(visualMarkdownEditorSource).toContain('label: "Code block"');
+    expect(visualMarkdownEditorSource).toContain('.addItem("inline-code"');
+    expect(visualMarkdownEditorSource).toContain('label: "Inline code"');
+    expect(visualMarkdownEditorSource).toContain("setBlockTypeCommand.key");
+    expect(visualMarkdownEditorSource).toContain("codeBlockSchema.type(ctx)");
+    expect(visualMarkdownEditorSource).toContain("toggleInlineCodeCommand.key");
+    expect(visualMarkdownEditorSource).toContain('builder.getGroup("block").clear().addItem("code-block"');
+    expect(visualMarkdownEditorSource).toContain('item.key === "code"');
+    expect(visualMarkdownEditorSource).toContain('blockGroup.addItem("inline-code"');
+    expect(visualMarkdownEditorSource).toContain("codeIcon: inlineCodeIcon");
+    expect(visualMarkdownEditorSource).toContain("paragraphSchema.type(ctx)");
+  });
 });
