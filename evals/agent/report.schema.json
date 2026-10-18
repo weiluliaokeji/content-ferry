@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["passed", "failed", "unverified"] },
+    "decision": { "type": "string" },
+    "summary": { "type": "string" },
+    "evidence": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["status", "decision", "summary", "evidence"],
+  "additionalProperties": false
+}

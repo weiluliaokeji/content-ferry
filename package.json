@@ -29,6 +29,8 @@
     "fix:verify": "node .codex/hooks/verify-fix-test-immutability.mjs",
     "fix:end": "node .codex/hooks/verify-fix-test-immutability.mjs --end",
     "fix:test": "node --test scripts/verify-fix-test-immutability.test.mjs",
+    "eval:agent": "node evals/agent/run.mjs",
+    "eval:agent:test": "node --test evals/agent/harness.test.mjs",
     "postinstall": "electron-rebuild --only better-sqlite3",
     "rebuild:native": "electron-rebuild -f --only better-sqlite3",
     "pack": "node scripts/build-installer.mjs --dir",

@@ -1,0 +1,6 @@
+{
+  "codexVersion": "0.156.1",
+  "timeoutMs": 120000,
+  "maxOutputBytes": 8388608,
+  "reasoningEffort": "low"
+}

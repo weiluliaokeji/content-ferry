@@ -1,0 +1,117 @@
+name: Agent quick evals
+
+on:
+  pull_request:
+    paths:
+      - '**/AGENTS.md'
+      - 'AGENTS.md'
+      - '.codex/**'
+      - 'evals/agent/**'
+      - 'docs/agents/**'
+      - '.github/workflows/agent-evals.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  push:
+    branches: [master]
+    paths:
+      - '**/AGENTS.md'
+      - 'AGENTS.md'
+      - '.codex/**'
+      - 'evals/agent/**'
+      - 'docs/agents/**'
+      - '.github/workflows/agent-evals.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixtures:
+    name: Agent eval fixtures and graders
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check fixture and grader behavior without a model
+        run: |
+          node --test scripts/verify-fix-test-immutability.test.mjs
+          node --test evals/agent/harness.test.mjs
+          node evals/agent/run.mjs --prepare-only --output .cache/agent-evals/prepared
+          echo '### Agent eval fixture check' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Fixtures and graders checked. No model tasks were executed by this job.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Live CI requires repository variable AGENT_EVALS_ENABLED=true; alternatively run the suite locally with Codex account login.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload fixture preparation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-fixtures
+          path: .cache/agent-evals/prepared/results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  quick-evals:
+    name: Agent quick evals
+    needs: fixtures
+    if: >-
+      vars.AGENT_EVALS_ENABLED == 'true' &&
+      (github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
+    runs-on: ubuntu-latest
+    environment: agent-evals
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check eval configuration
+        env:
+          HAS_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          EVAL_MODEL: ${{ vars.AGENT_EVAL_MODEL }}
+        run: |
+          if [ "$HAS_API_KEY" != "true" ] || [ -z "$EVAL_MODEL" ]; then
+            echo "::error::Agent evals not run. Configure OPENAI_API_KEY and AGENT_EVAL_MODEL in the agent-evals environment."
+            exit 1
+          fi
+
+      # Setup-only invocation: this pinned Action starts its key proxy and drops
+      # sudo without running a prompt. The following runner captures each exec.
+      - name: Configure Codex through the API key proxy
+        uses: openai/codex-action@1d82a3dba7c7988ec71ecae1ed5b8e8db96495c5 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-version: '0.156.1'
+          codex-home: ${{ runner.temp }}/contentferry-agent-eval-codex
+          safety-strategy: drop-sudo
+
+      - name: Run six isolated Agent tasks
+        env:
+          CODEX_HOME: ${{ runner.temp }}/contentferry-agent-eval-codex
+          AGENT_EVAL_MODEL: ${{ vars.AGENT_EVAL_MODEL }}
+        run: node evals/agent/run.mjs --output .cache/agent-evals/ci
+
+      - name: Upload eval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-quick-evals
+          path: .cache/agent-evals/ci/results/
+          if-no-files-found: ignore
+          retention-days: 7

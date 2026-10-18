@@ -36,6 +36,9 @@ jobs:
       - name: Test bug-fix protection hooks
         run: npm run fix:test
 
+      - name: Test Agent eval graders
+        run: npm run eval:agent:test
+
       - name: Typecheck and build
         run: npm run build
 

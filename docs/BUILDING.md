@@ -126,12 +126,17 @@ Actions 页面可查看完整构建日志。工作流默认生成**未签名**�
 
 1. `npm ci`，按锁文件安装依赖并执行现有原生模块安装步骤；
 2. `npm run fix:test`，检查测试保护 hook 的脚本行为；
-3. `npm run build`，完成主进程、渲染进程的类型检查与生产编译；
-4. `npm test`，重建 SQLite 原生模块并在 Electron 运行时执行全量 Vitest 测试。
+3. `npm run eval:agent:test`，检查 Agent eval 评分器，避免把损坏轨迹、误改测试或超时判为通过；
+4. `npm run build`，完成主进程、渲染进程的类型检查与生产编译；
+5. `npm test`，重建 SQLite 原生模块并在 Electron 运行时执行全量 Vitest 测试。
 
 工作流只授予仓库读取权限，不持久保存 checkout 凭据，不需要模型或平台密钥。相同 PR 或分支的新运行会取消旧运行，单次作业上限为 30 分钟；未设置路径过滤，文档或 Agent 配置变更也会触发检查。hook 脚本测试不代表 Codex 会话中的 hook 已加载，后者仍须单独验收。
 
 此检查不生成安装包，也不验证 GUI、preload/IPC 或生产窗口启动，相关改动仍按 `AGENTS.md` 完成对应验证。要强制检查通过后才能合并，还需在 GitHub 分支保护或 ruleset 中将 `Windows checks` 设为必需状态检查；提交 workflow 文件本身不会开启合并限制。
+
+## 5.3 Agent 快速 eval
+
+编码 Agent 配置变更由 `.github/workflows/agent-evals.yml` 另行运行六个隔离任务，使用实际工具轨迹、文件指纹和独立测试评分。普通 CI 只运行不调用模型的评分器自测。模型认证、触发范围、报告与首次基线建立步骤见 [Agent 快速 eval](agents/agent-evals.md)。这套检查不替代 Windows 产品测试、GUI 或生产构建启动验证。
 
 ## 6. 代码签名（未启用）
 
