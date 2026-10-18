@@ -178,7 +178,7 @@ npm run verify:boot
 - `npm run verify:installer` 通过（含 `startup entry files present`、`preload bundled`、`startup path safety` 三项门禁，其中 `startup path safety` 静态禁止启动资产再用 `__dirname` 往上跳目录）；
 - `npm run verify:boot` 通过（无头启动打包后的 exe，确认主窗口能加载、不会白屏即退）。本地若已有其他文渡实例占用端口 4317 会误报，应在无其他实例时运行，或依赖 CI。
 
-CI 的 `dist:win` 流水线已把 `verify:installer` 与 `verify:boot` 串成发布前门禁；`master`/PR 暂无 CI，打 tag 之前务必在本地完成上述生产构建启动验证。
+普通 PR 和 `master` 推送由 `.github/workflows/ci.yml` 执行 Windows 检查（hook 测试、含类型检查的生产编译、全量自动化测试）。此检查不覆盖安装包或窗口启动；涉及上述生产启动路径的修改，仍须在本地完成生产构建启动验证。Tag 发布的 `dist:win` 流水线另有 `verify:installer` 与 `verify:boot` 发布前门禁。
 
 ## 新增依赖
 
