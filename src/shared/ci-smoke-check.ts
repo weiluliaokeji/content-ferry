@@ -1,0 +1,1 @@
+export const ciSmokeCheck: number = "intentional failure";
