@@ -118,6 +118,8 @@ npm run verify:installer
 
 详细的安装包、签名、代理和故障排查说明见 [Windows 构建与分发](docs/BUILDING.md)。
 
+所有 PR 和 `master` 推送都会运行 [CI](.github/workflows/ci.yml) 的 `Windows checks`：锁定依赖安装、测试保护 hook 测试、含类型检查的生产编译及全量自动化测试。该检查不调用模型，也不覆盖界面交互或安装包启动；需要这些验证的改动仍按 `AGENTS.md` 执行。
+
 推送与 `package.json` 版本一致的 `v<版本号>` tag 后，GitHub Actions 会在 Windows 环境自动构建并将安装包、Portable EXE 与 SHA-256 校验文件上传到 GitHub Release；当前发布包未启用代码签名。
 
 ## 平台支持

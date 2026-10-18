@@ -120,6 +120,19 @@ git push origin v0.1.1
 
 Actions 页面可查看完整构建日志。工作流默认生成**未签名**安装包；代码签名配置见下一节。
 
+## 5.2 GitHub Actions PR 检查
+
+`.github/workflows/ci.yml` 在所有 PR、`master` 推送和手动触发时运行。`Windows checks` 使用 Windows Runner、Node.js 22 和 npm 缓存，依次执行：
+
+1. `npm ci`，按锁文件安装依赖并执行现有原生模块安装步骤；
+2. `npm run fix:test`，检查测试保护 hook 的脚本行为；
+3. `npm run build`，完成主进程、渲染进程的类型检查与生产编译；
+4. `npm test`，重建 SQLite 原生模块并在 Electron 运行时执行全量 Vitest 测试。
+
+工作流只授予仓库读取权限，不持久保存 checkout 凭据，不需要模型或平台密钥。相同 PR 或分支的新运行会取消旧运行，单次作业上限为 30 分钟；未设置路径过滤，文档或 Agent 配置变更也会触发检查。hook 脚本测试不代表 Codex 会话中的 hook 已加载，后者仍须单独验收。
+
+此检查不生成安装包，也不验证 GUI、preload/IPC 或生产窗口启动，相关改动仍按 `AGENTS.md` 完成对应验证。要强制检查通过后才能合并，还需在 GitHub 分支保护或 ruleset 中将 `Windows checks` 设为必需状态检查；提交 workflow 文件本身不会开启合并限制。
+
 ## 6. 代码签名（未启用）
 
 本次不接 Windows 代码签名（用户决定）。拿到的 EV/OV 代码签名 PFX 后，扩展 `package.json#build` 即可：
