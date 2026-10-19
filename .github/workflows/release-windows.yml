@@ -24,13 +24,13 @@ jobs:
       artifact-id: ${{ steps.candidate.outputs.artifact-id }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -68,7 +68,7 @@ jobs:
 
       - name: Save verified candidate
         id: candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-candidate-${{ github.sha }}-${{ github.run_attempt }}
           path: .cache/release-candidate/
@@ -85,15 +85,15 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: Download the exact candidate artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
           path: .cache/release-candidate/

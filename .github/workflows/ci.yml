@@ -23,11 +23,11 @@ jobs:
       CONTENTFERRY_DIAGNOSTICS_DIR: .cache/ci-diagnostics/${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -60,7 +60,7 @@ jobs:
 
       - name: Upload sanitized CI diagnostic bundle
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ci-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.CONTENTFERRY_DIAGNOSTICS_DIR }}/bundle/

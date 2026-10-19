@@ -20,11 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -37,7 +37,7 @@ jobs:
         run: node scripts/ci-health-report.mjs
 
       - name: Upload CI health report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ci-health-${{ github.run_id }}-${{ github.run_attempt }}
           path: .cache/ci-health/ci-health-report.*
