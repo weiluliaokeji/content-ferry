@@ -9,3 +9,5 @@
 /scripts/approval-gates.test.mjs @weiluliaokeji
 /scripts/verify-fix-test-immutability.test.mjs @weiluliaokeji
 /package.json @weiluliaokeji
+/scripts/ci-*.mjs @weiluliaokeji
+/scripts/fixtures/rollback-v12.sql @weiluliaokeji

@@ -19,6 +19,8 @@ jobs:
     name: Windows checks
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      CONTENTFERRY_DIAGNOSTICS_DIR: .cache/ci-diagnostics/${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - uses: actions/checkout@v4
@@ -31,16 +33,37 @@ jobs:
           cache: npm
 
       - name: Install locked dependencies
-        run: npm ci
+        run: npm run ci:step -- install
+
+      - name: Test CI evidence and triage tooling
+        run: npm run ci:step -- tooling
 
       - name: Test bug-fix protection hooks
-        run: npm run fix:test
+        run: npm run ci:step -- gates
 
       - name: Test Agent eval graders
-        run: npm run eval:agent:test
+        run: npm run ci:step -- graders
 
       - name: Typecheck and build
-        run: npm run build
+        run: npm run ci:step -- build
 
       - name: Run automated tests
-        run: npm test
+        run: npm run ci:step -- tests
+
+      - name: Rehearse isolated data upgrade and recovery
+        run: npm run ci:step -- rollback
+
+      - name: Collect diagnostic evidence without changing the failed check
+        if: always()
+        continue-on-error: true
+        run: npm run ci:diagnostics
+
+      - name: Upload sanitized CI diagnostic bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CONTENTFERRY_DIAGNOSTICS_DIR }}/bundle/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

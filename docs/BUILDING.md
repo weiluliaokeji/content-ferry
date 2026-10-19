@@ -128,10 +128,13 @@ Actions 页面可查看完整构建日志。工作流默认生成**未签名**�
 `.github/workflows/ci.yml` 在所有 PR、`master` 推送和手动触发时运行。`Windows checks` 使用 Windows Runner、Node.js 22 和 npm 缓存，依次执行：
 
 1. `npm ci`，按锁文件安装依赖并执行现有原生模块安装步骤；
+   安装及后续检查通过 `ci:step` 包装，逐步保存退出码和脱敏日志。
 2. `npm run fix:test`，检查测试保护 hook 的脚本行为；
 3. `npm run eval:agent:test`，检查 Agent eval 评分器，避免把损坏轨迹、误改测试或超时判为通过；
 4. `npm run build`，完成主进程、渲染进程的类型检查与生产编译；
 5. `npm test`，重建 SQLite 原生模块并在 Electron 运行时执行全量 Vitest 测试。
+
+另外运行 `ci:tooling:test` 和 `verify:rollback`：前者验证诊断包、脱敏、退出码和只读分析准备；后者用固定的 v12 合成夹具演练数据迁移、生产备份与恢复，不覆盖真实用户库或旧版 EXE。始终尝试采集并上传白名单诊断包（保留 7 天），采集步骤不能把原始失败改为成功；取消或 runner 故障时上传可能缺失。本地准备与分析方法见 [CI 诊断](agents/ci-triage.md)。
 
 工作流只授予仓库读取权限，不持久保存 checkout 凭据，不需要模型或平台密钥。相同 PR 或分支的新运行会取消旧运行，单次作业上限为 30 分钟；未设置路径过滤，文档或 Agent 配置变更也会触发检查。hook 脚本测试不代表 Codex 会话中的 hook 已加载，后者仍须单独验收。
 

@@ -118,7 +118,7 @@ npm run verify:installer
 
 详细的安装包、签名、代理和故障排查说明见 [Windows 构建与分发](docs/BUILDING.md)。
 
-所有 PR 和 `master` 推送都会运行 [CI](.github/workflows/ci.yml) 的 `Windows checks`：锁定依赖安装、测试保护 hook 测试、含类型检查的生产编译及全量自动化测试。该检查不调用模型，也不覆盖界面交互或安装包启动；需要这些验证的改动仍按 `AGENTS.md` 执行。
+所有 PR 和 `master` 推送都会运行 [CI](.github/workflows/ci.yml) 的 `Windows checks`：锁定依赖安装、诊断工具与测试保护检查、含类型检查的生产编译、全量测试及隔离数据恢复演练。每步保留退出码和脱敏日志，并上传失败诊断包。可用 `npm run ci:triage` 准备本地只读分析，默认不调用模型；显式 `--run --model` 才调用本机 Codex。操作与边界见 [CI 诊断和回退演练](docs/agents/ci-triage.md)。此 CI 不覆盖界面交互、旧版 EXE 回退或安装包启动，相关改动仍按 `AGENTS.md` 验证。
 
 编码 Agent 配置变更另有 [Agent 快速 eval](docs/agents/agent-evals.md)：六个隔离任务检查工具轨迹、实际产物和流程约束。CI 默认检查夹具与评分器；真实模型任务可在本机用 Codex 账号登录后运行。若要启用云端模型 job，另需配置 API Key、固定模型与 `AGENT_EVALS_ENABLED=true`，并完成首次真实运行建立基线；离线检查通过不代表模型任务已通过。
 
