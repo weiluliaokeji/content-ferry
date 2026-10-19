@@ -58,7 +58,7 @@ function findExecutable(releaseDir) {
   }
   const unpackedExe = path.join(releaseDir, "win-unpacked", "文渡.exe");
   if (existsSync(unpackedExe)) return unpackedExe;
-  const portable = entries.find((name) => /^文渡-Portable-.*\.exe$/i.test(name));
+  const portable = entries.find((name) => /^ContentFerry-Portable-.*\.exe$/i.test(name));
   if (portable) return path.join(releaseDir, portable);
   return null;
 }

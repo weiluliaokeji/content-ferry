@@ -291,7 +291,7 @@ async function main() {
           (entry.name === "builder-debug.yml" ||
             (entry.name.includes(`-${buildId}.`) &&
               /\.(exe|dmg|AppImage|deb|rpm|zip|blockmap|yml)$/i.test(entry.name) &&
-              (!wantPortable || !entry.name.startsWith("文渡-Setup-"))))
+              (!wantPortable || !entry.name.startsWith("ContentFerry-Setup-"))))
       )
       .map((entry) => entry.name);
     for (const name of artifacts) {

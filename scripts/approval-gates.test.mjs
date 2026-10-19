@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -65,6 +65,26 @@ test("candidate verification binds exact files to tag, commit and run attempt", 
     manifest.files[0].name = "../escape.exe";
     writeFileSync(join(output, "release-manifest.json"), JSON.stringify(manifest));
     assert.throws(() => verifyCandidate(output, context));
+  } finally { rmSync(source, { recursive: true, force: true }); }
+});
+
+test("candidate rejects non-ASCII artifact names before upload reaches GitHub", () => {
+  const source = mkdtempSync(join(tmpdir(), "contentferry-release-ascii-"));
+  const output = join(source, "candidate");
+  const context = { tag: "v1.0.0", sha: "a".repeat(40), runId: "123", runAttempt: "1" };
+  try {
+    // GitHub 上传通路会丢弃资产名里的非 ASCII 前缀（v0.3.5 事故：文渡-Setup-*.exe 变成
+    // -Setup-*.exe），清单与草稿因此不一致。守卫必须在构建期就拒绝，而不是等发布期。
+    writeFileSync(join(source, "文渡-Setup-1.0.0.exe"), "isolated fixture, not an executable");
+    assert.throws(() => createCandidate(source, output, context), /ASCII/);
+    assert.equal(existsSync(output), false);
+    writeFileSync(join(source, "naïve-Portable-1.0.0.exe"), "non-ascii beyond cjk");
+    assert.throws(() => createCandidate(source, output, context), /ASCII/);
+    rmSync(join(source, "文渡-Setup-1.0.0.exe"));
+    rmSync(join(source, "naïve-Portable-1.0.0.exe"));
+    writeFileSync(join(source, "ContentFerry-Setup-1.0.0.exe"), "ascii is accepted");
+    createCandidate(source, output, context);
+    assert.deepEqual(verifyCandidate(output, context).files.map((file) => file.name).sort(), ["ContentFerry-Setup-1.0.0.exe", "SHA256SUMS.txt"]);
   } finally { rmSync(source, { recursive: true, force: true }); }
 });
 

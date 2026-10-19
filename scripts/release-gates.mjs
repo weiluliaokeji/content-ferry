@@ -39,6 +39,14 @@ export function createCandidate(source, destination, expected) {
   if (existsSync(destination)) throw new Error("候选包目录必须尚不存在，避免混入旧产物。");
   const names = readdirSync(source).filter((name) => /\.(exe|blockmap)$/i.test(name)).sort();
   if (!names.some((name) => name.endsWith(".exe"))) throw new Error("没有可发布的 Windows 安装包。");
+  // GitHub Release 上传通路会丢弃资产名中的非 ASCII 前缀（gh release create 实测：
+  // `文渡-Setup-1.0.0.exe` 落到 GitHub 变成 `-Setup-1.0.0.exe`），导致清单承诺的文件名
+  // 与草稿资产名不一致。在源头拒绝非 ASCII 产物名，把失败暴露在构建期而非发布期。
+  for (const name of names) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      throw new Error(`候选文件名必须仅含 ASCII 字母、数字、点、连字符和下划线：${name}。请把 electron-builder 的 artifactName 改为 ASCII 命名（例如 "ContentFerry-Setup-\${version}-\${env.CONTENTFERRY_BUILD_STAMP}.\${ext}"）。`);
+    }
+  }
   mkdirSync(destination, { recursive: true });
   for (const name of names) {
     const file = join(source, name);
@@ -60,7 +68,7 @@ export function verifyCandidate(directory, expected) {
       !manifest.files.some((file) => file.name === "SHA256SUMS.txt")) throw new Error("候选包与批准的版本、提交或运行不一致。");
   const names = new Set();
   for (const file of manifest.files) {
-    if (typeof file.name !== "string" || basename(file.name) !== file.name || /[\\/\r\n#]/.test(file.name) ||
+    if (typeof file.name !== "string" || basename(file.name) !== file.name || /[^\x20-\x7e]/.test(file.name) ||
         !/^(?:SHA256SUMS\.txt|.+\.(?:exe|blockmap))$/.test(file.name) || names.has(file.name)) throw new Error("候选清单包含不安全、重复或非发布文件。");
     names.add(file.name);
     const absolute = join(directory, file.name);

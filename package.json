@@ -143,7 +143,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-Setup-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}"
+      "artifactName": "ContentFerry-Setup-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -158,7 +158,7 @@
       "include": "build/installer.nsh"
     },
     "portable": {
-      "artifactName": "${productName}-Portable-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}",
+      "artifactName": "ContentFerry-Portable-${version}-${env.CONTENTFERRY_BUILD_STAMP}.${ext}",
       "requestExecutionLevel": "user"
     },
     "mac": {

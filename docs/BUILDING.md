@@ -60,12 +60,12 @@ npm run dev
 此目录不包含现有模型连接和凭据；未设置该变量时，开发版仍使用 Electron 默认用户配置。隔离目录中的文章和设置与日常配置相互独立。
 
 
-产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。文件名在版本号后附本次打包的 UTC 时间（`YYYYMMDDTHHMMSSZ`）；包内 `dist/build-info.json`、应用“关于文渡”和每条运行日志使用同一个构建标识，便于核对正在运行的包。目录中的旧版本会保留，构建报告只列出本次构建与目标对应的文件：
+产物写入 `release/`。`dist:portable` 只生成当前版本的 Portable EXE；`dist:win` 生成当前版本的 NSIS 安装包和 Portable EXE。文件名在版本号后附本次打包的 UTC 时间（`YYYYMMDDTHHMMSSZ`）；包内 `dist/build-info.json`、应用“关于文渡”和每条运行日志使用同一个构建标识，便于核对正在运行的包。目录中的旧版本会保留，构建报告只列出本次构建与目标对应的文件。产物名固定使用 ASCII 前缀 `ContentFerry-`（应用名仍是「文渡」）：GitHub Release 上传通路会丢弃资产名中的非 ASCII 前缀，中文产物名会导致发布清单与草稿资产名不一致，`scripts/release-gates.mjs` 在构建期强制校验 ASCII 命名：
 
 | 文件                            | 含义                                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `文渡-Setup-<version>-<UTC时间>.exe`        | NSIS 安装包（推荐给普通用户）                                                          |
-| `文渡-Portable-<version>-<UTC时间>.exe`     | 单文件便携版，无需安装                                                                 |
+| `ContentFerry-Setup-<version>-<UTC时间>.exe`    | NSIS 安装包（推荐给普通用户）                                                          |
+| `ContentFerry-Portable-<version>-<UTC时间>.exe` | 单文件便携版，无需安装                                                                 |
 | `win-unpacked/`               | 未压缩的可执行目录，便于开发自测或调查问题                                                 |
 | `latest.yml` / `*.blockmap` | `electron-builder` 默认生成的分块元数据，未配 `publish` 时只用于差分计算，不会被推上去 |
 
@@ -73,7 +73,7 @@ npm run dev
 
 流水线跑通后，请在 **未安装 Node.js、未安装 Codex CLI** 的 Windows x64 虚拟机或实体机上做以下验证（与 `spec/04 §5.5/§5.6` 对应）：
 
-1. 双击 `文渡-Setup-<version>-<UTC时间>.exe` 完成安装，确认：
+1. 双击 `ContentFerry-Setup-<version>-<UTC时间>.exe` 完成安装，确认：
    - 桌面和开始菜单出现"文渡 ContentFerry"快捷方式。
    - 卸载时**不**自动删除 `%APPDATA%\contentferry\app-settings.json` 和 `…\data`。
 2. 首次启动看到四步向导，按提示选数据目录、检测 Codex。允许跳过 AI 步骤，确认仍能进入主界面。
@@ -157,7 +157,7 @@ Actions 页面可查看完整构建日志。工作流默认生成**未签名**�
     { "target": "nsis", "arch": ["x64"] },
     { "target": "portable", "arch": ["x64"] }
   ],
-  "artifactName": "${productName}-Setup-${version}.${ext}",
+  "artifactName": "ContentFerry-Setup-${version}.${ext}",
   "signAndEditExecutable": true,
   "signtoolOptions": {
     "publisherName": "ContentFerry",
