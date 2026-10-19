@@ -82,6 +82,6 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 
 ### 5.1 GitHub Actions 发布
 
-推送与 `package.json` 版本一致的 `v<版本号>` tag 时，GitHub Actions 在 `windows-latest` 上执行完整 `npm run dist:win` 流水线，并创建同名 GitHub Release。Release 附带 NSIS 安装包、Portable EXE、blockmap 与 SHA-256 校验文件。该流程不携带开发机凭据，也不默认签名；拿到证书后再以 GitHub Secrets 注入签名凭据。
+推送与 `package.json` 版本一致的 `v<版本号>` tag 时，GitHub Actions 在 `windows-latest` 执行完整 `npm run dist:win`，保存绑定 tag、提交和运行次数的候选 artifact。发布 job 在 `release-production` 等待 `weiluliaokeji` 审批后下载同一 artifact，复验环境、批准记录、tag 与文件哈希，不重新构建。先创建草稿并核对远端资产摘要，再公开同名 Release；已有 Release 不自动覆盖。Release 包含 NSIS、Portable EXE、blockmap、SHA-256 校验文件及候选清单。环境需单独配置且禁止绕过；完整步骤见 [审批门](../docs/agents/approval-gates.md)。流程不携带开发机凭据，也不默认签名；拿到证书后再以 GitHub Secrets 注入。
 
 当前工程仍处于开发运行阶段。生成第一个对外安装包前必须补齐：AI 初始化界面、打包配置、应用图标与版本信息、代码签名、干净机器安装测试，以及当前 Electron 安全版本升级。

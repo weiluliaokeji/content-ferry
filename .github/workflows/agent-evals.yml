@@ -50,6 +50,7 @@ jobs:
       - name: Check fixture and grader behavior without a model
         run: |
           node --test scripts/verify-fix-test-immutability.test.mjs
+          node --test scripts/approval-gates.test.mjs
           node --test evals/agent/harness.test.mjs
           node evals/agent/run.mjs --prepare-only --output .cache/agent-evals/prepared
           echo '### Agent eval fixture check' >> "$GITHUB_STEP_SUMMARY"

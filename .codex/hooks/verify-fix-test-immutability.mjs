@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 
 const testPathPatterns = [
   /(^|\/)(__tests__|tests?)(\/|$)/i,
@@ -12,11 +14,55 @@ const mutationActionPrefix = new RegExp(`^${mutationVerbPattern}(?:$|[_:.-])`, "
 const camelCaseMutationActionPrefix = new RegExp(`^${mutationVerbPattern}[A-Z]`);
 const mutationActionSuffix = new RegExp(`(?:^|[_:.-])${mutationVerbPattern}$`, "i");
 const TEST_COMMIT_MARKER_NAME = "contentferry-fix-test-commit";
+const AUDIT_NAME = "contentferry-gate-audit.jsonl";
 const FIX_TEST_POLICY_PATHS = [
   /(?:^|[\\/])\.codex[\\/]hooks[\\/]verify-fix-test-immutability\.mjs$/i,
   /(?:^|[\\/])\.codex[\\/]hooks\.json$/i,
-  /(?:^|[\\/])contentferry-fix-test-commit$/i
+  /(?:^|[\\/])contentferry-fix-test-commit$/i,
+  /(?:^|[\\/])contentferry-gate-audit\.jsonl$/i
 ];
+
+function metadataPath(name) {
+  return runGit(["rev-parse", "--path-format=absolute", "--git-path", name]).stdout;
+}
+
+function hash(value) { return createHash("sha256").update(value).digest("hex"); }
+
+function audit(decision, rule, baseline, input = {}, details = {}) {
+  const callId = typeof input.tool_use_id === "string" && /^[\w-]{1,120}$/.test(input.tool_use_id) ? input.tool_use_id : null;
+  appendFileSync(metadataPath(AUDIT_NAME), `${JSON.stringify({
+    timestamp: new Date().toISOString(), decision, rule, baseline,
+    head: runGit(["rev-parse", "HEAD"]).stdout,
+    worktree: hash(runGit(["rev-parse", "--show-toplevel"]).stdout), callId, ...details
+  })}\n`, "utf8");
+}
+
+function approvalScope(baseline) {
+  const root = runGit(["rev-parse", "--show-toplevel"]).stdout;
+  const fingerprint = createHash("sha256").update(JSON.stringify({
+    baseline, root, head: runGit(["rev-parse", "HEAD"]).stdout,
+    staged: runGit(["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"]).stdout,
+    unstaged: runGit(["diff", "--binary", "--no-ext-diff", "--no-textconv"]).stdout
+  }));
+  const paths = runGit(["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean).sort();
+  for (const file of paths) {
+    const absolute = resolve(root, file);
+    const content = lstatSync(absolute).isSymbolicLink() ? readlinkSync(absolute) : readFileSync(absolute);
+    fingerprint.update(JSON.stringify([file, hash(content)]));
+  }
+  return fingerprint.digest("hex");
+}
+
+export async function requestEndApproval(scope, ask, { interactive, agentSession }) {
+  if (!interactive || agentSession) throw new Error("请由维护者在 Codex 外的交互终端运行 npm run fix:end；不接受管道输入或 Agent 会话代为批准。");
+  const actor = (await ask("批准人（维护者名称或 GitHub 登录名）： ")).trim();
+  if (!/^[\p{L}\p{N}_.@ -]{1,80}$/u.test(actor)) throw new Error("批准人不能为空，且只能使用姓名或账号字符。");
+  const reason = (await ask("原因：完成修复输入 completed；需要单独修订测试输入 test-correction： ")).trim();
+  if (!["completed", "test-correction"].includes(reason)) throw new Error("未选择有效的解锁原因。");
+  const challenge = `UNLOCK ${scope}`;
+  if ((await ask(`确认本次解锁请输入 ${challenge}： `)).trim() !== challenge) throw new Error("未明确确认本次解锁，保护保持开启。");
+  return { actor, reason, approvalId: randomUUID(), scope };
+}
 
 function runGit(args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, { encoding: "utf8" });
@@ -103,6 +149,9 @@ function verifyTestCommit(testCommit) {
 }
 
 function beginProtection(testCommit) {
+  testCommit = runGit(["rev-parse", "--verify", `${testCommit}^{commit}`]).stdout;
+  const active = getConfiguredTestCommit();
+  if (active && active !== testCommit) throw new Error("当前工作树已有不同的保护基线；请维护者先按原流程确认解锁，不能直接替换基线。");
   validateTestCommit(testCommit);
   const changedSinceTestCommit = changedPaths(["diff", "--name-only", testCommit, "--"]);
   const untrackedPaths = changedPaths(["ls-files", "--others", "--exclude-standard"]);
@@ -116,11 +165,25 @@ function beginProtection(testCommit) {
     throw new Error("测试保护标记写入后无法回读，未能开启测试保护。");
   }
   console.log(`已开启测试保护，基准提交为 ${testCommit}。Codex hook 将拦截已识别的测试文件写入；结束前请运行 npm run fix:verify。`);
+  audit("allow", "test-protection.begin", testCommit);
 }
 
-function endProtection() {
+async function endProtection() {
   const testCommit = getConfiguredTestCommit();
-  if (testCommit) verifyTestCommit(testCommit);
+  if (!testCommit) { console.log("本地测试保护当前未开启。"); return; }
+  verifyTestCommit(testCommit);
+  const scope = approvalScope(testCommit);
+  console.log(`即将结束当前工作树的测试保护。基准：${testCommit}；HEAD：${runGit(["rev-parse", "HEAD"]).stdout}；范围指纹：${scope}`);
+  let terminal;
+  try {
+    if (process.stdin.isTTY && process.stdout.isTTY) terminal = createInterface({ input: process.stdin, output: process.stdout });
+    const approval = await requestEndApproval(scope, (question) => terminal.question(question), {
+      interactive: Boolean(terminal), agentSession: Boolean(process.env.CODEX_THREAD_ID || process.env.CODEX_CI || process.env.CI)
+    });
+    verifyTestCommit(testCommit);
+    if (getConfiguredTestCommit() !== testCommit || approvalScope(testCommit) !== scope) throw new Error("确认期间提交、工作区或保护基线已变化，请重新运行并确认。");
+    audit("allow", "test-protection.approval", testCommit, {}, approval);
+  } finally { terminal?.close(); }
   const markerPath = runGit(["rev-parse", "--path-format=absolute", "--git-path", TEST_COMMIT_MARKER_NAME]).stdout;
   try {
     unlinkSync(markerPath);
@@ -131,7 +194,8 @@ function endProtection() {
     }
     throw error;
   }
-  console.log("已关闭本地测试保护。");
+  audit("allow", "test-protection.end", testCommit);
+  console.log("已关闭本地测试保护，批准记录已保存在当前工作树的 Git 管理目录。");
 }
 
 function isTestPathInPatch(command) {
@@ -167,7 +231,7 @@ function hasShellWriteSyntax(command) {
 }
 
 function isProtectionControlCommand(command) {
-  return /\bfix:end\b|verify-fix-test-immutability\.mjs[^\r\n]*\s--end\b|contentferry-fix-test-commit/i.test(command);
+  return /\bfix:(?:begin|end)\b|verify-fix-test-immutability\.mjs[^\r\n]*\s--(?:begin|end)\b|contentferry-(?:fix-test-commit|gate-audit)/i.test(command);
 }
 
 function isMutatingTool(toolName) {
@@ -253,13 +317,14 @@ async function runHook() {
   const input = await readHookInput();
   const toolName = typeof input?.tool_name === "string" ? input.tool_name : "";
   const violation = evaluateToolCall(toolName, input?.tool_input);
+  audit(violation ? "deny" : "allow", "test-protection.pre", testCommit, input);
   if (!violation) return;
 
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: `${violation.reason}（基准提交 ${testCommit}）。请修改产品代码；如测试定义有误，先结束本修复流程并单独修订测试。`
+      permissionDecisionReason: `${violation.reason}（基准提交 ${testCommit}）。请修改产品代码；如需解锁，由维护者在 Codex 外交互运行 npm run fix:end，填写批准人与原因并确认范围指纹，再单独修订测试。`
     }
   }));
 }
@@ -271,6 +336,7 @@ async function runPostHook() {
   const toolName = typeof input?.tool_name === "string" ? input.tool_name : "";
   if (toolName.startsWith("mcp__") && !isMutatingTool(toolName)) return;
   const changedTests = getPostToolViolation(testCommit);
+  audit(changedTests ? "deny" : "allow", "test-protection.post", testCommit, input);
   if (!changedTests) return;
   const callId = typeof input?.tool_use_id === "string" ? `（工具调用 ${input.tool_use_id}）` : "";
   process.stdout.write(JSON.stringify({
@@ -292,7 +358,7 @@ async function main() {
       beginProtection(testCommit);
     } else if (action === "--end") {
       if (process.argv.length !== 3) throw new Error("用法：npm run fix:end");
-      endProtection();
+      await endProtection();
     } else {
       const testCommit = process.argv[2] ?? getConfiguredTestCommit();
       if (!testCommit || process.argv.length > 3) throw new Error("用法：npm run fix:verify（或指定复现测试提交）");
@@ -312,6 +378,10 @@ async function main() {
     } else if (action === "--post-hook") {
       process.stdout.write(JSON.stringify({ decision: "block", reason: `测试保护事后检查失败：${message}` }));
     } else {
+      if (action === "--end") {
+        try { audit("deny", "test-protection.end", getConfiguredTestCommit()); }
+        catch { /* The original error remains visible; an unavailable audit cannot authorize unlock. */ }
+      }
       console.error(`测试保护检查失败：${message}`);
       process.exitCode = 1;
     }

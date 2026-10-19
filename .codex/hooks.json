@@ -10,6 +10,12 @@
             "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/verify-fix-test-immutability.mjs\" --hook",
             "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/verify-fix-test-immutability.mjs') --hook",
             "statusMessage": "Checking protected test files"
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/approval-gates.mjs\"",
+            "commandWindows": "node (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/approval-gates.mjs')",
+            "statusMessage": "Checking release approval gate"
           }
         ]
       }

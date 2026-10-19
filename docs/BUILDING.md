@@ -105,11 +105,14 @@ npm run dev
 
 1. `npm ci`；
 2. `npm run dist:win`（类型检查、原生模块重建、测试、构建、打包与产物校验）；
-3. 为两个 `.exe` 生成 `SHA256SUMS.txt`；
-4. 创建同名 GitHub Release，并上传 NSIS 安装包、Portable EXE、blockmap 和校验文件。
+3. 冻结安装包、blockmap、`SHA256SUMS.txt` 和 `release-manifest.json` 为绑定本次提交与运行次数的候选 artifact；
+4. 发布 job 在 `release-production` 环境等待 `weiluliaokeji` 人工批准；
+5. 下载同一 artifact，复验批准记录、tag 与全部文件哈希，先上传 Release 草稿并核对远端资产摘要，最后公开发布。
 
 `build/installer.nsh` 是 NSIS 的安装/卸载钩子，虽位于构建缓存目录旁，但必须随源码提交；`.gitignore` 只忽略 `build/` 下的其余生成内容。
-发布工作流为每个上传文件显式保留原始中文文件名；若同名 Release 已存在，则只覆盖同名资产，不删除已有 Release。
+发布工作流保留原始中文文件名；同名 Release 或草稿已存在时拒绝创建，不覆盖资产。失败的草稿需维护者核对处置；重新发布使用新的完整构建与审批，不仅重跑发布 job。发布 job 不安装项目依赖、不重新构建安装包。
+
+首次使用需配置 GitHub Environment `release-production`：唯一 Required reviewer 为 `weiluliaokeji`，关闭管理员绕过，单人维护允许本人审批自己的运行。流水线会检查该配置，未配置时失败。批准前下载本次候选 artifact，核对提交、版本、验证结果和清单；随后在 Actions 的 Review deployments 中批准。详情及本地测试解锁见 [人工审批门](agents/approval-gates.md)。
 
 Tag 必须与 `package.json` 中的版本一致。例如将版本改为 `0.1.1`、完成提交并推送后：
 

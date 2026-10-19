@@ -122,7 +122,7 @@ npm run verify:installer
 
 编码 Agent 配置变更另有 [Agent 快速 eval](docs/agents/agent-evals.md)：六个隔离任务检查工具轨迹、实际产物和流程约束。CI 默认检查夹具与评分器；真实模型任务可在本机用 Codex 账号登录后运行。若要启用云端模型 job，另需配置 API Key、固定模型与 `AGENT_EVALS_ENABLED=true`，并完成首次真实运行建立基线；离线检查通过不代表模型任务已通过。
 
-推送与 `package.json` 版本一致的 `v<版本号>` tag 后，GitHub Actions 会在 Windows 环境自动构建并将安装包、Portable EXE 与 SHA-256 校验文件上传到 GitHub Release；当前发布包未启用代码签名。
+推送与 `package.json` 版本一致的 `v<版本号>` tag 后，GitHub Actions 在 Windows 构建并保存带哈希清单的候选包。维护者 `weiluliaokeji` 在 `release-production` 环境批准后，独立发布 job 复验并发布同一批产物，不重新构建或覆盖已有 Release。环境需单独配置；见 [人工审批门](docs/agents/approval-gates.md)。当前发布包未启用代码签名。
 
 ## 平台支持
 

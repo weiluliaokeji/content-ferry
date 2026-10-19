@@ -69,7 +69,7 @@ function fixtureEnvironment() {
 
 export function prepareCase(item, workspace) {
   mkdirSync(workspace, { recursive: false });
-  for (const relative of ["AGENTS.md", "REVIEW.md", ".agents/skills/contentferry-review", ".codex/hooks.json", ".codex/hooks", ".codex/agents", "docs/agents/gui-acceptance.md"]) {
+  for (const relative of ["AGENTS.md", "REVIEW.md", ".agents/skills/contentferry-review", ".codex/hooks.json", ".codex/hooks", ".codex/agents", "docs/agents/gui-acceptance.md", "docs/agents/approval-gates.md"]) {
     const destination = safePath(workspace, relative);
     mkdirSync(path.dirname(destination), { recursive: true });
     cpSync(path.join(repositoryRoot, relative), destination, { recursive: true });

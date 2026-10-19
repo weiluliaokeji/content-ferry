@@ -4,23 +4,31 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    name: Build Windows installers
+  build:
+    name: Build and verify release candidate
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.candidate.outputs.artifact-id }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -29,35 +37,68 @@ jobs:
 
       - name: Ensure tag matches package version
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
         run: |
           $version = node -p "require('./package.json').version"
-          if ("v$version" -ne "${{ github.ref_name }}") {
-            throw "Tag ${{ github.ref_name }} must match package.json version v$version."
+          if ($env:RELEASE_REF_TYPE -ne "tag") {
+            throw "Release runs must select an existing version tag, including manual runs."
+          }
+          if ("v$version" -ne $env:RELEASE_TAG) {
+            throw "Tag $env:RELEASE_TAG must match package.json version v$version."
           }
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify required release approval configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-gates.mjs environment
+
+      - name: Test approval gates
+        run: npm run fix:test
+
       - name: Build, test and package
         run: npm run dist:win
 
-      - name: Write checksums
-        shell: pwsh
-        run: |
-          Get-ChildItem release -File -Filter *.exe |
-            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content release/SHA256SUMS.txt -Encoding ascii
+      - name: Freeze candidate files and publish approval summary
+        run: node scripts/release-gates.mjs prepare
 
-      - name: Create GitHub Release and upload artifacts
-        shell: pwsh
+      - name: Save verified candidate
+        id: candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          path: .cache/release-candidate/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+  publish:
+    name: Approve and publish the verified candidate
+    needs: build
+    runs-on: windows-latest
+    environment: release-production
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the exact candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: .cache/release-candidate/
+          merge-multiple: true
+      - name: Verify authorization and hashes, then publish without rebuilding
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $assets = Get-ChildItem release -File |
-            Where-Object { $_.Name -match '\.(exe|blockmap)$' -or $_.Name -eq 'SHA256SUMS.txt' } |
-            ForEach-Object { "$($_.FullName)#$($_.Name)" }
-          if (gh release view "${{ github.ref_name }}" 2>$null) {
-            gh release upload "${{ github.ref_name }}" @assets --clobber
-          } else {
-            gh release create "${{ github.ref_name }}" @assets --verify-tag --generate-notes --title "文渡 ${{ github.ref_name }}"
-          }
+        run: node scripts/release-gates.mjs publish

@@ -1,0 +1,11 @@
+# Review routing only. Required reviews and bypass policy are configured separately.
+/AGENTS.md @weiluliaokeji
+/REVIEW.md @weiluliaokeji
+/.agents/ @weiluliaokeji
+/.codex/ @weiluliaokeji
+/.github/CODEOWNERS @weiluliaokeji
+/.github/workflows/ @weiluliaokeji
+/scripts/release-gates.mjs @weiluliaokeji
+/scripts/approval-gates.test.mjs @weiluliaokeji
+/scripts/verify-fix-test-immutability.test.mjs @weiluliaokeji
+/package.json @weiluliaokeji

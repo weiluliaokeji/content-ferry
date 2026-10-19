@@ -36,6 +36,34 @@ function runHook(directory, action, input = {}) {
   });
 }
 
+test("fix:end cannot silently unlock from a non-interactive process", () => {
+  const directory = createProtectedRepo();
+  try {
+    const result = runHook(directory, "--end");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /交互终端/);
+    assert.ok(readFileSync(join(directory, ".git/contentferry-fix-test-commit"), "utf8").trim());
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("active protection audits allow and deny without storing command content", () => {
+  const directory = createProtectedRepo();
+  try {
+    runHook(directory, "--hook", { tool_name: "Bash", tool_use_id: "call-allow", tool_input: { command: "echo secret-canary" } });
+    runHook(directory, "--hook", { tool_name: "Bash", tool_use_id: "call-deny", tool_input: { command: "npm run fix:end" } });
+    const raw = readFileSync(join(directory, ".git/contentferry-gate-audit.jsonl"), "utf8");
+    const events = raw.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.map((event) => event.decision), ["allow", "deny"]);
+    assert.equal(events[1].callId, "call-deny");
+    assert.ok(events.every((event) => event.timestamp && event.baseline && event.head));
+    assert.ok(!raw.includes("secret-canary"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("the PreToolUse entry point blocks a protected MCP write", () => {
   const directory = createProtectedRepo();
   try {

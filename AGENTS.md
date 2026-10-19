@@ -214,6 +214,10 @@ npm run verify:boot
 - 评审 PR、分支、提交或工作区修改时，必须先读取根目录 [REVIEW.md](REVIEW.md)，按其固定范围、三轮检查、严重程度和证据格式报告。项目评审技能为 `.agents/skills/contentferry-review/SKILL.md`；使用通用 code-review 技能时也遵循同一政策。
 - 评审政策及项目技能变更按本文件的 Agent 配置验证要求执行；现有离线 eval 不代表评审质量已验证。
 
+## 人工审批门
+
+- 结束测试保护、正式发布安装包或修改治理配置时，遵循 [人工审批门](docs/agents/approval-gates.md)。Agent 准备可核对的结果；维护者在 Codex 外交互解锁测试，安装包由 GitHub 的 `release-production` 审批后发布。不得将本地身份声明或 Agent 可写的变量当作可信人工授权。
+
 ## Agent skills
 
 ### Issue tracker
