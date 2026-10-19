@@ -17,7 +17,7 @@
 
 这里的“内部运行组件”不是要求用户另行安装 Codex 软件，也不会出现一个需要用户维护的 Codex 应用。它和 SQLite 原生模块一样由安装包随 ContentFerry 一起部署、由 ContentFerry 在后台调用。`npm install`、原生模块重建和安装包构建只发生在开发/发布机器或 CI 中，不发生在最终用户电脑上。编辑器等前端依赖会被编译进应用资源，不以单独 SDK 的形式要求用户配置。
 
-`node-pty` 使用上游提供的 N-API Windows 预构建文件并以未压缩资源随包分发；安装/构建阶段不编译 ConPTY C++ 工程，避免要求开发机配置 Visual Studio Spectre 库。Windows 安装包门禁检查三个必需文件都存在；Electron 37 启动验证和 Portable 中的真实控制台程序验收负责确认运行兼容性。`postinstall` 和 `rebuild:native` 仍为 `better-sqlite3` 执行 Electron ABI 重建。
+`node-pty` 使用上游提供的 N-API Windows 预构建文件并以未压缩资源随包分发；安装/构建阶段不编译 ConPTY C++ 工程，避免要求开发机配置 Visual Studio Spectre 库。Windows 安装包门禁检查三个必需文件都存在；Electron 44.9.0 启动验证和 Portable 中的真实控制台程序验收负责确认运行兼容性。`postinstall` 和 `rebuild:native` 仍为 `better-sqlite3` 执行 Electron ABI 重建；安装包门禁按打包 Electron 版本验证本机原生模块 ABI 并比对包内二进制哈希。
 
 生产依赖的安全补丁以锁文件固定并在发布前复扫；当前 Undici 8 需要 Node.js 22.19+，须同时验证开发机 Node 与安装包内 Electron 的 Node 运行时满足要求。安全审计使用支持 npm audit 接口的仓库，不能把镜像站不支持审计接口误判为无漏洞。
 
@@ -84,4 +84,4 @@ Hermes Agent 的 `OpenAI Codex` provider 采用了另一条路径：Hermes 自�
 
 推送与 `package.json` 版本一致的 `v<版本号>` tag 时，GitHub Actions 在 `windows-latest` 执行完整 `npm run dist:win`，保存绑定 tag、提交和运行次数的候选 artifact。发布 job 在 `release-production` 等待 `weiluliaokeji` 审批后下载同一 artifact，复验环境、批准记录、tag 与文件哈希，不重新构建。先创建草稿并核对远端资产摘要，再公开同名 Release；已有 Release 不自动覆盖。Release 包含 NSIS、Portable EXE、blockmap、SHA-256 校验文件及候选清单。环境需单独配置且禁止绕过；完整步骤见 [审批门](../docs/agents/approval-gates.md)。流程不携带开发机凭据，也不默认签名；拿到证书后再以 GitHub Secrets 注入。
 
-当前工程仍处于开发运行阶段。生成第一个对外安装包前必须补齐：AI 初始化界面、打包配置、应用图标与版本信息、代码签名、干净机器安装测试，以及当前 Electron 安全版本升级。
+当前工程仍处于开发运行阶段。生成第一个对外安装包前必须补齐：AI 初始化界面、打包配置、应用图标与版本信息、代码签名和干净机器安装测试。Electron 已升级到 44.9.0；每次发布前仍需确认所用版本处于 Electron 支持周期并复查安全公告。
