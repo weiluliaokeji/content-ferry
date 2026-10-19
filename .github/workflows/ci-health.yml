@@ -1,0 +1,45 @@
+name: CI health snapshot
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ci-health-snapshot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Summarize recent CI outcomes
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build a read-only CI health report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          CI_HEALTH_OUTPUT_DIR: .cache/ci-health
+        run: node scripts/ci-health-report.mjs
+
+      - name: Upload CI health report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-health-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/ci-health/ci-health-report.*
+          if-no-files-found: error
+          retention-days: 90

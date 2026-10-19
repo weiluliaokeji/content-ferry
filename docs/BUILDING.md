@@ -138,6 +138,8 @@ Actions 页面可查看完整构建日志。工作流默认生成**未签名**�
 
 工作流只授予仓库读取权限，不持久保存 checkout 凭据，不需要模型或平台密钥。相同 PR 或分支的新运行会取消旧运行，单次作业上限为 30 分钟；未设置路径过滤，文档或 Agent 配置变更也会触发检查。hook 脚本测试不代表 Codex 会话中的 hook 已加载，后者仍须单独验收。
 
+另有独立的 `.github/workflows/ci-health.yml` 每周一生成只读 CI 健康快照，也可在 Actions 中手动运行并选择 `master`。它统计近 37 天 PR 检查与 `master` 推送的完成结果，不参与 PR 必需检查，不调用模型或触发自动行动；报告位于 workflow 摘要和 90 天 artifact 中。指标口径、样本上限提示及解释见 [CI 诊断与健康快照](agents/ci-triage.md)。
+
 此检查不生成安装包，也不验证 GUI、preload/IPC 或生产窗口启动，相关改动仍按 `AGENTS.md` 完成对应验证。要强制检查通过后才能合并，还需在 GitHub 分支保护或 ruleset 中将 `Windows checks` 设为必需状态检查；提交 workflow 文件本身不会开启合并限制。
 
 ## 5.3 Agent 快速 eval

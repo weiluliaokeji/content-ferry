@@ -35,7 +35,7 @@
     "ci:step": "node scripts/ci-diagnostics.mjs run",
     "ci:diagnostics": "node scripts/ci-diagnostics.mjs collect",
     "ci:triage": "node scripts/ci-triage.mjs",
-    "ci:tooling:test": "node --test scripts/ci-diagnostics.test.mjs",
+    "ci:tooling:test": "node --test scripts/ci-diagnostics.test.mjs scripts/ci-health-report.test.mjs",
     "verify:rollback": "npm run rebuild:native && npm run test:electron -- src/main/db/rollback-rehearsal.test.ts",
     "postinstall": "electron-rebuild --only better-sqlite3",
     "rebuild:native": "electron-rebuild -f --only better-sqlite3",
