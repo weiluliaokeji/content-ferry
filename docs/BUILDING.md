@@ -188,40 +188,36 @@ Actions 页面可查看完整构建日志。工作流默认生成**未签名**�
 | “打开完整说明”提示安装包缺少文件                              | 检查`resources/docs/USER-GUIDE.md`；确认`package.json#build.extraResources`仍包含`docs`规则。                                       |
 | 卸载时数据被删                                                | `nsis.deleteAppDataOnUninstall` 被改成 `true`；保持 `false` 即可。                                                                      |
 | 第一次启动无限弹向导                                          | `app-settings.json` 写入失败；查看 `%APPDATA%\contentferry\logs\` 下的运行日志。                                                          |
-| `ERROR: Cannot create symbolic link` 报在 `…\winCodeSign\<hash>\darwin\…\libcrypto.dylib` | `winCodeSign-2.6.0.7z` 内的 `darwin/` 目录含 macOS 符号链接，7-Zip 21.07 在 Windows 上无法重建。流水线已自动用 `-snld -xr!darwin` 预先解压跳过该子目录，正常情况下看不到这个错误。**仅当 cache 目录被手动弄坏** 时才会出现，删 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\` 后重跑 `npm run dist:win` 即可。 |
-| winCodeSign 预解压失败，提示 `7-Zip finished but …signtool.exe is missing` | 归档文件损坏或被改过。运行 `npm run dist:win -- --refresh-wincodesign` 强制清掉旧的 `.contentferry-pre-extracted` 哨兵和临时目录并重新解压。 |
+| `ERROR: Cannot create symbolic link` 报在 `…\winCodeSign\<hash>\darwin\…\libcrypto.dylib` | electron-builder ≤25 的 7-Zip 符号链接问题（历史 workaround 已退场，见 §7.1）。删 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\` 后重跑 `npm run dist:win`；仍不行则开启 Windows「开发人员模式」。 |
+| 打包时报 `ENOENT … mkdir …electron-builder\Cache\127.0.0.1:<port>\nsis-…` | 本地覆写服务与 app-builder-lib 26.17.0 的缓存目录推导冲突（v0.3.4 发布事故，0.3.5 已移除该服务，见 §7.1）。若在旧工作区复现：确认 `scripts/build-installer.mjs` 不再设置 `ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL`。 |
 
-## 7.1 winCodeSign 预解压：为什么流水线要自己跑 7-Zip
+## 7.1 winCodeSign 与本地覆写服务：一段已经退场的历史
 
-`electron-builder` 内部会下载 `winCodeSign-2.6.0.7z` 并调用其自带的 7-Zip 21.07 解压到
-`%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\<sha1>\`。该归档在 `darwin/10.12/lib/`
-下包含若干指向 `libcrypto.1.0.0.dylib` / `libssl.1.0.0.dylib` 的符号链接，**Windows 默认
-不开启"开发人员模式"时** 没有创建符号链接的权限，7-Zip 会以非零退出码失败并让
-electron-builder 终止。
+`winCodeSign-2.6.0.7z` 的 `darwin/10.12/lib/` 下含 macOS 符号链接。electron-builder ≤25
+调用 7-Zip 时传了并不存在的 `-snld` 参数，7-Zip 静默忽略后按默认行为尝试重建符号链接，
+未开启 Windows「开发人员模式」的机器会直接失败。流水线先后用过两代 workaround：
+预解压（`-snld -xr!darwin` + 哨兵文件）和本地 HTTP 覆写服务
+（`ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL` 指向 `127.0.0.1:<port>`，serve 剔除
+`darwin/` 后的归档，其余请求代理到 GitHub）。
 
-普通 macOS-only 仓库可以直接删掉 `darwin/`，但 ContentFerry 必须保留 winCodeSign 全部
-Windows 资产（`rcedit.exe`、`signtool.exe`、`makeappx.exe` 等），所以采用"流水线自己
-预解压"的方式：
+**两代 workaround 均已于 0.3.5 移除**，原因有两条，都有源码级证据：
 
-1. 找出 `Cache\winCodeSign\` 下所有 `<hash>.7z`（不一定是 `winCodeSign-2.6.0.7z`，
-   electron-builder 按 URL 的 SHA1 命名），以及对应的 `<hash>\` 目录。
-2. 对每个 `<hash>\` 检查 `.contentferry-pre-extracted` 哨兵 + `windows-10\x64\signtool.exe`、
-   `windows-6\signtool.exe`、`rcedit-x64.exe` 是否齐全；齐全就跳过。
-3. 否则**先清空**该目录（避免 7-Zip 失败留下的 0 字节残文件干扰），用
-   `node_modules\7zip-bin\win\x64\7za.exe x -bd -y -snld -xr!darwin -o<dir> <archive>`
-   重新解压。`-snld` 让 7-Zip **完全跳过符号链接创建**，`-xr!darwin` 是冗余防御。
-4. 解压后再检查上面三个关键文件大小 > 0；通过则写哨兵。
-5. `electron-builder` 随后看到 cache 已就绪、关键文件齐备，会跳过自己的解压步骤。
+1. electron-builder 26 不再传递 `-snld`（`app-builder-lib` 全仓已无该字符串），且其
+   winCodeSign 下载路径（`toolsets/windows.js` 的 `getLegacyWinCodeSignBin`）根本不读该
+   环境变量——覆写服务对 winCodeSign 早已不起作用。
+2. app-builder-lib 26.17.0 的 `binDownload.js#getBin` 改为从 override URL 的 basename
+   推导工具集缓存目录名，`http://127.0.0.1:<port>` 因此变成含英文冒号的目录名，而冒号在
+   Windows 是非法目录名字符：所有走 `getBinFromUrl` 的工具集（nsis、rcedit 等）在
+   `mkdir` 阶段即报 `ENOENT`。**v0.3.4 的发布构建（run 39223578350）正是死在这里**，
+   失败点在 NSIS 打包阶段的 `getNsisElevatePath`。本地最小复现：对该进程设置
+   `ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL=http://127.0.0.1:56370/` 后调用
+   `getBinFromUrl("nsis-3.0.4.1", …)`，无需真的起服务器就会得到同一 ENOENT；不设置则该
+   调用干净下载解压到 `Cache\nsis-3.0.4.1\`。上游 master 已把此处重构为"URL 只贡献哈希
+   后缀"，但修复尚未进入任何稳定版（稳定线最新即 26.17.0）。
 
-何时需要手工介入：
-
-- 主机从未解压过 `darwin/` 符号链接，**且** 没有开启开发人员模式 → 流水线自己就能解决。
-- 删 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\` → 下次构建会重新走预解压。
-- `npm run dist:win -- --refresh-wincodesign` → 强制忽略哨兵、从头解压，用于排查疑似缓存
-  损坏。
-- 想要彻底关闭这个 workaround → 开启 Windows「设置 → 隐私和安全 → 开发者选项 →
-  开发人员模式」，并把 `scripts/build-installer.mjs` 里的 `prepareWinCodeSignCache` 调用
-  包成 `if (false) { ... }`。
+现在所有工具集（nsis、winCodeSign、rcedit……）都从 GitHub 直接下载解压。
+`scripts/build-installer.test.mjs` 有一条防回归断言：流水线不得再设置
+`ELECTRON_BUILDER_BINARIES_DOWNLOAD_OVERRIDE_URL`，也不得再引入上述三个覆写服务函数。
 
 ## 8. 相关脚本
 
