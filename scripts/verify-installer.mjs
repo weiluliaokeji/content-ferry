@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findBetterSqliteBinary } from "./installer-native-module.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -268,21 +269,48 @@ async function main() {
     } else {
       pass("app.asar.unpacked exists", asarUnpackedDir);
 
-      // better-sqlite3 native module.
-      const sqliteCandidates = [
-        "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
-        "node_modules/better-sqlite3/bin/Release/better_sqlite3.node",
-        "node_modules/better-sqlite3/lib/binding/Release/node-v127-win32-x64/better_sqlite3.node",
-        "node_modules/better-sqlite3/lib/binding/Release/electron-v37-win32-x64/better_sqlite3.node"
-      ];
-      const sqliteHit = sqliteCandidates.find((rel) => existsSync(path.join(asarUnpackedDir, rel)));
-      if (sqliteHit) {
-        pass("better-sqlite3 native module unpacked", sqliteHit);
-      } else {
-        // Walk the unpacked tree for any better_sqlite3.node.
-        const found = findFile(asarUnpackedDir, "better_sqlite3.node");
-        if (found) pass("better-sqlite3 native module unpacked", path.relative(asarUnpackedDir, found));
-        else failCheck("better-sqlite3 native module unpacked", "no better_sqlite3.node found under app.asar.unpacked");
+      // Verify the native build metadata matches Electron and that the exact
+      // binary was copied into the package. The build metadata is stripped
+      // from app.asar.unpacked, so validate it in node_modules and compare the
+      // packaged binary hash with that validated source.
+      try {
+        const electronPackagePath = path.join(projectRoot, "node_modules", "electron", "package.json");
+        const electronVersion = JSON.parse(readFileSync(electronPackagePath, "utf8")).version;
+        const sqliteSource = findBetterSqliteBinary(projectRoot, electronVersion, "win32", "x64");
+        const sqlitePackaged = path.join(
+          asarUnpackedDir,
+          "node_modules",
+          "better-sqlite3",
+          "build",
+          "Release",
+          "better_sqlite3.node"
+        );
+        if (!sqliteSource) {
+          failCheck(
+            "better-sqlite3 native module matches Electron ABI",
+            `local native build metadata does not match Electron ${electronVersion} win32-x64`
+          );
+        } else if (!existsSync(sqlitePackaged)) {
+          failCheck(
+            "better-sqlite3 native module matches Electron ABI",
+            "no better_sqlite3.node found under app.asar.unpacked"
+          );
+        } else if (
+          createHash("sha256").update(readFileSync(sqliteSource)).digest("hex") !==
+          createHash("sha256").update(readFileSync(sqlitePackaged)).digest("hex")
+        ) {
+          failCheck(
+            "better-sqlite3 native module matches Electron ABI",
+            "packaged binary does not match the ABI-validated local build"
+          );
+        } else {
+          pass(
+            "better-sqlite3 native module matches Electron ABI",
+            `${path.relative(asarUnpackedDir, sqlitePackaged)} (Electron ${electronVersion})`
+          );
+        }
+      } catch (error) {
+        failCheck("better-sqlite3 native module matches Electron ABI", String(error));
       }
 
       // Codex native binary.

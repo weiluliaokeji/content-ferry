@@ -29,6 +29,7 @@
     "fix:verify": "node .codex/hooks/verify-fix-test-immutability.mjs",
     "fix:end": "node .codex/hooks/verify-fix-test-immutability.mjs --end",
     "fix:test": "node --test scripts/verify-fix-test-immutability.test.mjs scripts/approval-gates.test.mjs",
+    "test:installer-abi": "node --test scripts/installer-native-module.test.mjs",
     "eval:agent": "node evals/agent/run.mjs",
     "eval:agent:test": "node --test evals/agent/harness.test.mjs",
     "ci:step": "node scripts/ci-diagnostics.mjs run",
@@ -54,7 +55,7 @@
     "@resvg/resvg-js": "2.6.2",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.12.7",
-    "mermaid": "^11.17.2",
+    "mermaid": "^12.2.0",
     "node-pty": "1.2.0-beta.15",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
@@ -62,6 +63,7 @@
     "zod": "^4.1.5"
   },
   "devDependencies": {
+    "7zip-bin": "^5.2.0",
     "@electron/rebuild": "^4.2.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.3.0",
@@ -70,11 +72,12 @@
     "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.0.0",
-    "electron": "^37.4.0",
-    "electron-builder": "^25.1.8",
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3",
+    "node-abi": "^3.94.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.4",
-    "vitest": "^3.2.4",
+    "vitest": "^4.1.12",
     "wait-on": "^8.0.3"
   },
   "build": {
@@ -168,5 +171,8 @@
       "category": "Office"
     },
     "publish": null
+  },
+  "overrides": {
+    "katex": "^0.19.0"
   }
 }
