@@ -345,7 +345,7 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
     const params = z.object({ projectId: z.string().uuid() }).parse(request.params);
     const project = contentProjects.require(params.projectId);
     if (!project.sourceRelativePath) throw new ContentSourceError("这篇旧草稿尚未迁移到 VitePress 文章库，请先打开正文完成迁移。");
-    const staged = contentSources.stageArticleDeletion(project.workspaceId, project.sourceRelativePath);
+    const staged = contentSources.stageArticleDeletionIfPresent(project.workspaceId, project.sourceRelativePath);
     try {
       csdnChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
       cnblogsChannels.deleteDraftsBySource(project.workspaceId, project.sourceRelativePath, assetStore);
@@ -360,12 +360,12 @@ export function registerProjectsRoutes(ctx: ServerContext): void {
           .run(`project:${project.id}`, `source:${project.sourceRelativePath}`);
         database.connection.prepare("DELETE FROM content_projects WHERE id = ?").run(project.id);
       })();
-      staged.finalize();
+      staged?.finalize();
       agentMemory.forget(`project:${project.id}`, "all");
       agentMemory.forget(`source:${project.sourceRelativePath}`, "all");
       return reply.code(204).send();
     } catch (error) {
-      staged.rollback();
+      staged?.rollback();
       throw error;
     }
   });

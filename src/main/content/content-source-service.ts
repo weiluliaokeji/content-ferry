@@ -528,8 +528,12 @@ export class ContentSourceService {
     return this.getArticle(workspaceId, relativePath);
   }
 
-  stageArticleDeletion(workspaceId: string, relativePath: string): StagedArticleDeletion {
-    const articlePath = this.resolveArticlePath(workspaceId, relativePath);
+  stageArticleDeletionIfPresent(workspaceId: string, relativePath: string): StagedArticleDeletion | undefined {
+    const articlePath = this.resolveArticlePath(workspaceId, relativePath, { allowMissing: true });
+    // The article may have been renamed or removed outside ContentFerry. In that
+    // case the stale project can still be cleaned up, but no guessed directory
+    // is moved or deleted.
+    if (!fs.existsSync(articlePath)) return undefined;
     const rootPath = this.getSource(workspaceId)!;
     const config = this.getSourceConfig(workspaceId)!;
     const postsRoot = path.resolve(rootPath, config.pattern.baseDir);
@@ -914,7 +918,7 @@ export class ContentSourceService {
     return pending;
   }
 
-  private resolveArticlePath(workspaceId: string, relativePath: string): string {
+  private resolveArticlePath(workspaceId: string, relativePath: string, options: { allowMissing?: boolean } = {}): string {
     const rootPath = this.getSource(workspaceId);
     if (!rootPath) throw new ContentSourceError("尚未设置文章库路径。");
     const normalizedRelativePath = relativePath.replaceAll("/", path.sep);
@@ -925,6 +929,7 @@ export class ContentSourceService {
     if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
       throw new ContentSourceError("文章路径超出已配置的文章库。");
     }
+    if (!fs.existsSync(resolved) && options.allowMissing) return resolved;
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       throw new ContentSourceError("找不到这篇文章，可能已被外部工具移动。");
     }
