@@ -21,6 +21,20 @@ function startDesktop() {
   const desktopArgs = ["."];
   const devUserDataDirectory = desktopEnv.CONTENTFERRY_DEV_USER_DATA_DIR?.trim();
   if (devUserDataDirectory) desktopArgs.push(`--user-data-dir=${path.resolve(devUserDataDirectory)}`);
+  const devToolsPortValue = desktopEnv.CONTENTFERRY_DEV_CDP_PORT?.trim();
+  if (devToolsPortValue) {
+    const devToolsPort = Number(devToolsPortValue);
+    if (!Number.isInteger(devToolsPort) || devToolsPort < 1024 || devToolsPort > 65535) {
+      throw new Error("CONTENTFERRY_DEV_CDP_PORT must be an integer between 1024 and 65535.");
+    }
+    // Temporary GUI acceptance only: bind CDP to loopback and require an
+    // explicit environment opt-in so normal developer launches expose no port.
+    desktopArgs.push(
+      `--remote-debugging-port=${devToolsPort}`,
+      "--remote-debugging-address=127.0.0.1",
+      `--remote-allow-origins=http://127.0.0.1:${devToolsPort}`
+    );
+  }
   desktop = spawn(electronExecutable, desktopArgs, {
     cwd: projectRoot,
     env: {
