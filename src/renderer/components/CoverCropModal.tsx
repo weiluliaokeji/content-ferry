@@ -1,16 +1,20 @@
 import { useRef, useState } from "react";
 import type { SelectedImage } from "../types";
 import { clamp } from "../utils";
+import { DEFAULT_WECHAT_COVER_ASPECT_RATIO } from "../../shared/image-aspect-ratio";
 
 // 文章封面与正文图片裁剪弹窗（自 main.tsx 拆分）
-export function CoverCropModal({ image, onCancel, onConfirm, purpose = "cover" }: {
+export function CoverCropModal({ image, onCancel, onConfirm, purpose = "cover", aspectRatio: requestedAspectRatio }: {
   image: SelectedImage;
   onCancel: () => void;
   onConfirm: (image: SelectedImage) => void | Promise<void>;
   purpose?: "cover" | "body";
+  aspectRatio?: number;
 }) {
+  const aspectRatio = requestedAspectRatio ?? DEFAULT_WECHAT_COVER_ASPECT_RATIO;
+  const coverHeight = Math.round(1280 / aspectRatio);
   const [sourceAspect, setSourceAspect] = useState(16 / 9);
-  const [targetAspect, setTargetAspect] = useState(purpose === "cover" ? 16 / 9 : undefined);
+  const [targetAspect, setTargetAspect] = useState(purpose === "cover" ? aspectRatio : undefined);
   const [selection, setSelection] = useState({ x: 10, y: 10, width: 80 });
   const [working, setWorking] = useState(false);
   const interaction = useRef<{ kind: "move" | "resize"; startX: number; startY: number; selection: typeof selection } | undefined>(undefined);
@@ -52,7 +56,7 @@ export function CoverCropModal({ image, onCancel, onConfirm, purpose = "cover" }
     }
   };
   const heading = purpose === "cover" ? "裁剪文章封面" : "裁剪正文图片";
-  return <div className="modal-backdrop crop-backdrop" role="presentation"><section className="modal-card crop-modal" role="dialog" aria-modal="true" aria-label={heading}><div className="section-heading"><div><p className="eyebrow">{purpose === "cover" ? "16:9 微信封面" : "保持原图比例"}</p><h2>拖动方框选择{purpose === "cover" ? "封面" : "正文图片"}区域</h2></div></div><div className="crop-stage" style={{ aspectRatio: String(sourceAspect) }}><img src={source} alt="待裁剪图片" onLoad={(event) => {
+  return <div className="modal-backdrop crop-backdrop" role="presentation"><section className="modal-card crop-modal" role="dialog" aria-modal="true" aria-label={heading}><div className="section-heading"><div><p className="eyebrow">{purpose === "cover" ? `${aspectRatio.toFixed(2)}:1 封面` : "保持原图比例"}</p><h2>拖动方框选择{purpose === "cover" ? "封面" : "正文图片"}区域</h2></div></div><div className="crop-stage" style={{ aspectRatio: String(sourceAspect) }}><img src={source} alt="待裁剪图片" onLoad={(event) => {
     const aspect = event.currentTarget.naturalWidth / event.currentTarget.naturalHeight;
     setSourceAspect(aspect);
     const nextAspect = targetAspect ?? aspect;
@@ -60,11 +64,11 @@ export function CoverCropModal({ image, onCancel, onConfirm, purpose = "cover" }
     const width = Math.min(80, 80 * nextAspect / aspect);
     const height = width * aspect / nextAspect;
     setSelection({ x: (100 - width) / 2, y: (100 - height) / 2, width });
-  }} /><div className="crop-shade" /><div className="crop-selection" style={{ left: `${selection.x}%`, top: `${selection.y}%`, width: `${selection.width}%`, height: `${selectionHeight}%` }} onPointerDown={(event) => startInteraction(event, "move")} onPointerMove={moveInteraction} onPointerUp={() => { interaction.current = undefined; }}><span>拖动调整位置</span><div className="crop-resize-handle" onPointerDown={(event) => startInteraction(event, "resize")} onPointerMove={moveInteraction} onPointerUp={() => { interaction.current = undefined; }} /></div></div><p className="hint">拖动蓝色方框调整位置，拖动右下角控制点改变取景范围。{purpose === "cover" ? "封面会生成 1280×720 图片，原图保留。" : "正文图片保持原图比例，生成新版本并保留原图与来源关系。"}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel} disabled={working}>取消</button><button onClick={() => void confirm()} disabled={working}>{working ? "正在裁剪…" : purpose === "cover" ? "确认使用此区域" : "裁剪并替换正文图片"}</button></div></section></div>;
+  }} /><div className="crop-shade" /><div className="crop-selection" style={{ left: `${selection.x}%`, top: `${selection.y}%`, width: `${selection.width}%`, height: `${selectionHeight}%` }} onPointerDown={(event) => startInteraction(event, "move")} onPointerMove={moveInteraction} onPointerUp={() => { interaction.current = undefined; }}><span>拖动调整位置</span><div className="crop-resize-handle" onPointerDown={(event) => startInteraction(event, "resize")} onPointerMove={moveInteraction} onPointerUp={() => { interaction.current = undefined; }} /></div></div><p className="hint">拖动蓝色方框调整位置，拖动右下角控制点改变取景范围。{purpose === "cover" ? `封面会生成 1280×${coverHeight} 图片，原图保留。` : "正文图片保持原图比例，生成新版本并保留原图与来源关系。"}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel} disabled={working}>取消</button><button onClick={() => void confirm()} disabled={working}>{working ? "正在裁剪…" : purpose === "cover" ? "确认使用此区域" : "裁剪并替换正文图片"}</button></div></section></div>;
 }
 
-export async function cropImageTo16x9(image: SelectedImage, x: number, y: number, width: number, height: number): Promise<SelectedImage> {
-  return cropImage(image, x, y, width, height, 16 / 9, "cover");
+export async function cropImageToWeChatCover(image: SelectedImage, x: number, y: number, width: number, height: number, aspectRatio = DEFAULT_WECHAT_COVER_ASPECT_RATIO): Promise<SelectedImage> {
+  return cropImage(image, x, y, width, height, aspectRatio, "cover");
 }
 
 async function cropImage(image: SelectedImage, x: number, y: number, width: number, height: number, aspect: number, purpose: "cover" | "body"): Promise<SelectedImage> {

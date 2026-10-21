@@ -11,6 +11,7 @@ import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { Modal, ProfileFields } from "./components/Modal";
 import { AccountStyleSamplesModal } from "./components/AccountStyleSamplesModal";
 import { CoverCropModal } from "./components/CoverCropModal";
+import { parsePromptAspectRatio } from "../shared/image-aspect-ratio";
 import { QualityWorkspace } from "./components/QualityWorkspace";
 import { ArticleWorkspace } from "./components/ArticleWorkspace";
 import { GenerationReviewSummary } from "./components/GenerationReviewSummary";
@@ -1908,7 +1909,7 @@ export function App() {
       <p className="hint">删除发布记录不会删除微信公众号中的草稿或已经发布的文章。</p>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setOrphanedWechatJob(undefined)} disabled={saving}>保留记录</button><button type="button" className="danger-button" onClick={() => void deleteWechatJob()} disabled={saving}>{saving ? "正在删除…" : "删除记录"}</button></div>
     </Modal>}
-    {publishCropImage && <CoverCropModal image={publishCropImage} onCancel={() => setPublishCropImage(undefined)} onConfirm={saveCroppedPublishCover} />}
+    {publishCropImage && <CoverCropModal image={publishCropImage} aspectRatio={parsePromptAspectRatio(modelScopePrompt)} onCancel={() => setPublishCropImage(undefined)} onConfirm={saveCroppedPublishCover} />}
 
     {sourceModalOpen && <Modal onClose={() => setSourceModalOpen(false)} disabled={saving} closeOnBackdrop={false} title="配置文章库" eyebrow="只读导入预览" wide><label>内容源类型<select value={sourceType} onChange={(event) => setSourceType(event.target.value as "vitepress" | "plain")}><option value="vitepress">VitePress 文章库</option><option value="plain">普通 Markdown 文章库</option></select></label><p className="hint">{sourceType === "vitepress" ? "选择 VitePress 仓库中的 `docs` 文件夹；只会识别 `posts/文章标题/index.md` 为文章。" : "选择包含多个 `<文章目录>/index.md` 的本地目录；不会套用 posts/ 或 public/ 约定。"}</p><form onSubmit={scanSource} className="source-form"><label>文章库路径<input autoFocus value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="例如：D:\\MySite\\docs" /></label><button type="button" className="secondary-button" onClick={() => void chooseDirectory()}>浏览…</button><button disabled={saving}>{saving ? "正在扫描…" : "保存并扫描"}</button></form>{sourcePreview && <div className="scan-result"><p><strong>发现 {sourcePreview.articleCount} 篇文章</strong><br /><small>{sourcePreview.rootPath}</small></p>{sourcePreview.sitePageCount > 0 && <p className="hint compact-hint">已自动排除 {sourcePreview.sitePageCount} 个站点页、列表页或配置页，不会作为文章导入。</p>}{sourcePreview.warnings.map((warning) => <p className="error" key={warning}>{warning}</p>)}<ul className="preview-list">{sourcePreview.items.map((item) => <li key={item.relativePath}><span><strong>{item.title ?? item.relativePath}</strong><small>{item.relativePath}</small></span><em>{item.frontMatterKeys.length ? item.frontMatterKeys.join(" · ") : "无 Front Matter"}</em></li>)}</ul>{sourcePreview.truncated && <p className="hint">预览已截断，但文章总数已完整统计。</p>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setSourceModalOpen(false)}>稍后再说</button><button type="button" onClick={() => { setSourceModalOpen(false); openProjectCreator(); }}>下一步：新建文章</button></div></div>}</Modal>}
 

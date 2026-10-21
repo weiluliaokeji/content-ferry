@@ -4,6 +4,7 @@ import type { AiAuditLog } from "../ai/ai-audit-log";
 import type { LocalAssetStore } from "./local-asset-store";
 import type { ContentSourceService } from "./content-source-service";
 import { delay } from "../automation/delay";
+import { nearestStandardAspectRatio, parsePromptAspectRatio } from "../../shared/image-aspect-ratio";
 
 type ImageMime = "image/jpeg" | "image/png" | "image/webp";
 type ExternalExchange = { method: string; url: string; request: string | null; response: string | null; error: string | null };
@@ -35,9 +36,11 @@ export class CoverGenerationService {
     const startedAt = Date.now();
     const connection = this.connections.get(provider);
     try {
+      const aspectRatio = parsePromptAspectRatio(prompt);
+      const providerAspectRatio = nearestStandardAspectRatio(aspectRatio);
       const generated = provider === "agnes"
-        ? await this.generateWithAgnes(prompt, exchanges)
-        : await this.generateWithModelScope(prompt, exchanges);
+        ? await this.generateWithAgnes(prompt, exchanges, providerAspectRatio.label)
+        : await this.generateWithModelScope(prompt, exchanges, providerAspectRatio.label);
       const saved = this.save(input, generated.mimeType, generated.base64);
       this.recordAudit({ provider, model: connection.modelId, prompt, exchanges, startedAt, ok: true, error: null });
       return saved;
@@ -47,7 +50,7 @@ export class CoverGenerationService {
     }
   }
 
-  private async generateWithModelScope(prompt: string, exchanges: ExternalExchange[]): Promise<{ mimeType: ImageMime; base64: string }> {
+  private async generateWithModelScope(prompt: string, exchanges: ExternalExchange[], ratio: string): Promise<{ mimeType: ImageMime; base64: string }> {
     const connection = this.connections.get("modelscope");
     const token = this.connections.getCredential("modelscope");
     const baseUrl = connection.baseUrl.replace(/\/+$/, "") || "https://api-inference.modelscope.cn";
@@ -59,7 +62,7 @@ export class CoverGenerationService {
         "content-type": "application/json",
         "x-modelscope-async-mode": "true"
       },
-      body: JSON.stringify({ model: connection.modelId || "Qwen/Qwen-Image-2512", prompt, n: 1, size: "1024x576" })
+      body: JSON.stringify({ model: connection.modelId || "Qwen/Qwen-Image-2512", prompt, n: 1, size: modelScopeSizeForRatio(ratio) })
     };
     // ModelScope 在突发调用 / 单分钟限流时会把 429 误报为 insufficient balance。
     // 首次撞限流时退避重试一次以屏蔽偶发节流；余额真的不足时第二次仍会失败并原样抛出。
@@ -97,7 +100,7 @@ export class CoverGenerationService {
     };
   }
 
-  private async generateWithAgnes(prompt: string, exchanges: ExternalExchange[]): Promise<{ mimeType: ImageMime; base64: string }> {
+  private async generateWithAgnes(prompt: string, exchanges: ExternalExchange[], ratio: string): Promise<{ mimeType: ImageMime; base64: string }> {
     const connection = this.connections.get("agnes");
     const apiKey = this.connections.getCredential("agnes");
     const baseUrl = connection.baseUrl.replace(/\/+$/, "") || "https://apihub.agnes-ai.com/v1";
@@ -110,7 +113,7 @@ export class CoverGenerationService {
         model,
         prompt,
         size: "1K",
-        ratio: "1:1",
+        ratio,
         n: 1,
         response_format: "b64_json"
       })
@@ -244,6 +247,15 @@ export function normalizeCoverImagePrompt(prompt: string | undefined): string {
   const normalized = prompt?.trim() ?? "";
   if (!normalized) throw new Error("请先让 AI 根据正文生成封面提示词，或自行填写提示词。");
   return normalized;
+}
+
+function modelScopeSizeForRatio(ratio: string): string {
+  const sizes: Record<string, string> = {
+    "1:1": "1024x1024", "9:16": "720x1280", "16:9": "1280x720",
+    "2:3": "832x1248", "3:2": "1248x832", "3:4": "864x1152",
+    "4:3": "1152x864", "21:9": "1568x672", "9:21": "672x1568"
+  };
+  return sizes[ratio] ?? "1280x720";
 }
 
 function normalizeImageMime(value: string | null): ImageMime {

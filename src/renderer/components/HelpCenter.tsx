@@ -231,6 +231,10 @@ export function HelpCenter({ onNavigate }: { onNavigate: (view: HelpCenterView) 
           <summary>生成 AI 封面很久没有结果怎么办？</summary>
           <p>图片模型的排队时间可能较长，但不会锁定正文编辑。可继续编辑文章；若开启“AI 调用审计”，可在“技能与模型”页面给出的审计日志目录查看图片任务的提交、轮询和下载结果。</p>
         </details>
+        <details>
+          <summary>如何调整封面宽高比？</summary>
+          <p>在最终确认的封面提示词里写明比例，例如“16:9”或“2.35:1”。生图会选择图片模型支持的最接近画幅，裁剪框则按提示词中的比例输出。未写比例时，微信公众号封面默认按 2.35:1 处理。</p>
+        </details>
       </section>
     </div>
   );
