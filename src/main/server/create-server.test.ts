@@ -2399,7 +2399,7 @@ describe("local API scaffold", () => {
       provider: "test-summary-ai"
     });
     expect(response.json().summary.length).toBeLessThanOrEqual(120);
-    expect(prompts[0]).toContain("最多 120 个字符");
+    expect(prompts[0]).toContain("最多 108 个字符");
     expect(prompts[0]).toContain("微信公众号");
   });
 

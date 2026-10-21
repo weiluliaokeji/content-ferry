@@ -154,18 +154,24 @@ export function registerChatRoutes(ctx: ServerContext): void {
       "51cto": { maxLength: 100, platformName: "51CTO" }
     } as const;
     const target = targets[input.platform];
-    const generated = await effectiveModelProvider.generateStructured({
-      task: "summary",
-      prompt: `请根据以下原文生成适合${target.platformName}的文章摘要。
+    // Leave room below the platform cap so a model that aims at its token/character
+    // boundary is less likely to produce a sentence that must be cut in half.
+    const generationLimit = Math.max(1, target.maxLength - Math.max(8, Math.floor(target.maxLength * 0.1)));
+    const buildPrompt = (retry: boolean) => `请根据以下原文生成适合${target.platformName}的文章摘要。
 
 硬性要求：
-- 摘要最多 ${target.maxLength} 个字符，中文标点也计入；
+- 摘要最多 ${generationLimit} 个字符，中文标点也计入；主动留出长度余量，不要写到上限；
+- 必须以完整句子和合适的句末标点结束，不能在词语或句子中间截断；
 - 只输出一段摘要，不换行，不使用 Markdown；
 - 不得补充原文中没有的事实；
+${retry ? "- 请进一步压缩，优先保留核心主题和读者价值，确保完整收尾。\n" : ""}
 - 标题：${input.title || "未单独提供"}
 
 原文：
-${input.markdown}`,
+${input.markdown}`;
+    const generate = (retry: boolean) => effectiveModelProvider.generateStructured({
+      task: "summary",
+      prompt: buildPrompt(retry),
       outputSchema: {
         type: "object",
         properties: { summary: { type: "string", maxLength: target.maxLength } },
@@ -174,9 +180,13 @@ ${input.markdown}`,
       },
       parse: (value) => articleSummaryOutput.parse(value)
     });
-    const summary = Array.from(generated.value.summary.replace(/\s+/g, " ").trim())
-      .slice(0, target.maxLength)
-      .join("");
+    let generated = await generate(false);
+    let summary = normalizeSummaryWhitespace(generated.value.summary);
+    if (Array.from(summary).length > generationLimit || !/[。！？!?\.]$/.test(summary)) {
+      generated = await generate(true);
+      summary = normalizeSummaryWhitespace(generated.value.summary);
+    }
+    summary = finishSummaryWithinLimit(summary, generationLimit);
     return {
       summary,
       maxLength: target.maxLength,
@@ -291,4 +301,32 @@ ${input.markdown}`,
     }
   });
 
+}
+
+function normalizeSummaryWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function finishSummaryWithinLimit(value: string, limit: number): string {
+  const characters = Array.from(value);
+  if (characters.length <= limit && /[。！？!?\.]$/.test(value)) return value;
+  if (characters.length < limit) return `${value}。`;
+  const bounded = characters.slice(0, limit);
+  const sentenceEnd = Math.max(...["。", "！", "？", "!", "?", "."].map((mark) => bounded.lastIndexOf(mark)));
+  if (sentenceEnd >= Math.floor(limit * 0.55)) return bounded.slice(0, sentenceEnd + 1).join("").trimEnd();
+  const clauseEnd = Math.max(...["，", ",", "；", ";"].map((mark) => bounded.lastIndexOf(mark)));
+  if (clauseEnd >= Math.floor(limit * 0.55)) {
+    const clause = bounded.slice(0, clauseEnd).join("").trimEnd();
+    return Array.from(clause).length < limit ? `${clause}。` : clause;
+  }
+  let safePrefix = "";
+  let safeLength = 0;
+  for (const item of new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(value)) {
+    const wordLength = Array.from(item.segment).length;
+    if (safeLength + wordLength > limit - 1) break;
+    safePrefix += item.segment;
+    safeLength += wordLength;
+  }
+  if (!safePrefix.trim()) throw new Error("摘要仍超出平台字数限制，且无法在完整词语处安全收尾。请再次生成。");
+  return `${safePrefix.trimEnd()}…`;
 }
