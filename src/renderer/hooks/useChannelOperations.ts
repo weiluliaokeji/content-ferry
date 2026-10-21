@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { request, streamGeneration } from "../api";
 import { markdownTitle, parseZhuqueReport } from "../utils";
-import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, defaultCorrectionStatus, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, fiftyoneCtoJobCanStart, fiftyoneCtoJobCanCorrect } from "../publish-labels";
+import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobLabel, cnblogsJobLabel, defaultCorrectionStatus, juejinJobLabel, wechatJobLabel, fiftyoneCtoJobLabel, fiftyoneCtoJobCanStart, fiftyoneCtoJobCanCorrect } from "../publish-labels";
 import { resolveArticleImageUrl } from "../markdown-preview";
 import type { AccountPlatform, ChannelRow, CnblogsChannelDraft, CnblogsPublishJob, CnblogsPublishOptions, ContentSourceArticle, CsdnChannelDraft, CsdnPublishJob, FiftyoneCtoChannelDraft, FiftyoneCtoPublishJob, FiftyoneCtoPublishOptions, JuejinChannelDraft, JuejinPublishJob, JuejinPublishOptions, MediaAccount, WechatPublishJob } from "../types";
 import type { UseWorkbenchReturn } from "./useWorkbench";
@@ -723,11 +723,10 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       setJuejinDraftSaving(false);
     }
   };
-  const startCsdnBrowserAssist = async (jobId: string) => {
-    // 提前检查桌面端能力：网页版（无 contentFerry 注入）无法打开可见浏览器，
-    // 必须在此明确提示，而不是先发请求、再静默抛错。
+  const startCsdnBrowserAssist = async (jobId: string, confirmAfterManual = false) => {
+    // 提前检查桌面端能力：网页版无法访问账号隔离的 CSDN 会话。
     if (!window.contentFerry) {
-      setError("CSDN 浏览器发布需要在文渡桌面应用中进行（当前是网页版，无法打开可见浏览器）。请使用桌面端打开文渡后再发布。");
+      setError("CSDN 发布需要在文渡桌面应用中进行（当前网页版无法访问本机保存的登录会话）。请使用桌面端打开文渡后再发布。");
       return;
     }
     // 防御：jobId 缺失（例如轮询把 csdnPublishJob 错写成 {job,draft} 导致顶层 id 丢失）
@@ -738,35 +737,20 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     }
     setCsdnDraftSaving(true);
     try {
-    // 已是“已填充 / 待用户补齐”的任务：窗口多半还活着，主进程会走轻量“重新打开”
-    // （仅提到前台 + 重启对话框轮询），不必再打 browser-assist 接口、刷新草稿列表，
-    // 否则会额外触发一次网络往返，体验上像“又重新加载了一遍”。
+    // 已准备的任务可以直接复用窗口；需要人工补齐时，仅“继续发布”动作会先记录本次用户确认。
     const knownJob = csdnJobs.find((entry) => entry.id === jobId);
-    const alreadyPrepared = knownJob?.status === "ready_for_final_confirmation" || knownJob?.status === "needs_user";
+    const alreadyPrepared = knownJob?.status === "needs_user" && !confirmAfterManual;
       if (!alreadyPrepared) {
         const assistedJob = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/browser-assist`, { method: "POST" });
         setCsdnPublishJob(assistedJob);
       }
-      // 打开可见浏览器属于独立交互，不应继续锁住“确认结果”等本地状态操作。
+      // 后台发布或必要时切换到人工接管后，不继续锁住其他本地操作。
       setCsdnDraftSaving(false);
       await window.contentFerry.openCsdnPublisher(jobId);
-      if (!alreadyPrepared) await loadCsdnChannelDrafts();
-      setError("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法启动 CSDN 浏览器发布流程。");
-    } finally {
-      setCsdnDraftSaving(false);
-    }
-  };
-  const confirmCsdnPublish = async (jobId: string) => {
-    setCsdnDraftSaving(true);
-    try {
-      const job = await request<CsdnPublishJob>(`/integrations/csdn/jobs/${jobId}/confirm`, { method: "POST" });
-      setCsdnPublishJob(job);
       await loadCsdnChannelDrafts();
       setError("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法确认 CSDN 发布结果。");
+      setError(cause instanceof Error ? cause.message : "无法启动 CSDN 浏览器发布流程。");
     } finally {
       setCsdnDraftSaving(false);
     }
@@ -893,6 +877,11 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
       const job = await request<CsdnPublishJob>(`/integrations/csdn/channel-drafts/${current.id}/jobs`, { method: "POST" });
       setCsdnPublishJob(job);
       createdJob = job;
+      setNotice("已创建 CSDN 发布任务，正在发布…");
+      setCsdnDraft(undefined);
+      setCsdnDraftSource(undefined);
+      setCsdnEntryChoices(null);
+      setActiveView("publish");
       setError("");
       void loadCsdnChannelDrafts();
     } catch (cause) {
@@ -915,7 +904,7 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     if (!csdnDraft) return;
     if (csdnDraft.status === "draft") {
       const confirmed = window.confirm(
-        "发布会把本 CSDN 渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并进入浏览器发布流程。\n\n是否继续？"
+        "发布会把本 CSDN 渠道稿锁定为内容快照（冻结）：之后主稿的修改不会影响已发布版本，如需改动只能重新生成渠道稿。\n\n确认后将自动保存未保存的修改、创建发布任务，并跳转到发布记录查看进度。\n\n是否继续？"
       );
       if (!confirmed) return;
     }
@@ -1563,7 +1552,6 @@ export function useChannelOperations(params: UseChannelOperationsParams) {
     generateJuejinChannelDraft,
     saveJuejinChannelDraft,
     startCsdnBrowserAssist,
-    confirmCsdnPublish,
     correctCsdnStatus,
     confirmCnblogsPublish,
     correctCnblogsStatus,

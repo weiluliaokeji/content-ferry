@@ -27,6 +27,8 @@ export const state = {
   // 已填充窗口（轻量：只提到前台 + 重启对话框轮询）还是需要重跑完整辅助流程
   // （重新抓稿、重传图片、重填编辑器）。窗口销毁时清空。
   csdnWindowJobId: undefined as string | undefined,
+  // 防止用户在“准备中”任务仍由主进程处理时重复触发同一 CSDN 自动化。
+  csdnPublisherActiveJobs: new Set<string>(),
   // 已上传到 CSDN 图床的「本地 source → 图片 URL」映射缓存，按 jobId 索引。
   // 用途：窗口被关闭后再点「重新打开 CSDN 后台」会走完整流程（csdnWindowJobId
   // 已随窗口销毁清空），此时若缓存命中且 source 集一致，就直接复用已传的 CSDN URL

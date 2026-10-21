@@ -34,18 +34,18 @@ interface CsdnDraftWorkspaceProps {
   onChange: (patch: CsdnDraftPatch) => void;
   onSave: () => Promise<void> | void;
   onPublish: () => void;
-  onStartBrowserAssist: (jobId: string) => Promise<void> | void;
+  onStartBrowserAssist: (jobId: string, confirmAfterManual?: boolean) => Promise<void> | void;
   onDelete: () => Promise<void> | void;
   onBack: () => void;
 }
 
 function csdnJobLabel(status: CsdnPublishJobShape["status"]): string {
   switch (status) {
-    case "queued": return "等待开始浏览器发布";
+    case "queued": return "等待你确认发布";
     case "needs_login": return "需要登录 CSDN";
-    case "filling": return "浏览器填充中";
+    case "filling": return "正在后台准备并提交";
     case "needs_user": return "部分字段未可靠填充，需手动补齐";
-    case "ready_for_final_confirmation": return "待你在文渡确认发布";
+    case "ready_for_final_confirmation": return "正在提交并读取回执";
     case "submitting": return "正在读取 CSDN 回执";
     case "published": return "已发布";
     case "needs_manual_reconciliation": return "待人工核对发布结果";
@@ -176,13 +176,13 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
     setDirty(false);
   };
 
-  // 浏览器发布按钮的本地 loading 状态：不依赖父级全局 saving 锁，
-  // 这样“在浏览器中完成发布”与“保存渠道稿 / 发布到 CSDN”互不阻塞，反馈也更明确。
+  // CSDN 发布按钮的本地 loading 状态：不依赖父级全局 saving 锁，
+  // 让确认发布与保存渠道稿互不阻塞。
   const handleStartBrowser = async () => {
     if (!job) return;
     setStartBusy(true);
     try {
-      await onStartBrowserAssist(job.id);
+      await onStartBrowserAssist(job.id, true);
     } catch {
       // 失败由 onStartBrowserAssist 内部统一 setError 上报，并在下方 error 条中显示
     } finally {
@@ -341,7 +341,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
         {job && <span className="hint csdn-inline-status">{csdnJobLabel(job.status)}</span>}
         {isDraft && <button onClick={() => void handleSave()} disabled={saving || !dirty}>保存渠道稿</button>}
         {!job && <button onClick={() => onPublish()} disabled={saving}>发布到 CSDN</button>}
-        {job && job.status !== "published" && <button onClick={() => void handleStartBrowser()} disabled={startBusy}>{startBusy ? "正在打开…" : "在浏览器中继续发布"}</button>}
+        {job && ["queued", "filling", "needs_login", "needs_user", "failed_before_submit", "failed"].includes(job.status) && <button onClick={() => void handleStartBrowser()} disabled={startBusy}>{startBusy ? "正在准备…" : job.status === "needs_login" ? "登录 CSDN 后继续" : job.status === "needs_user" ? "在窗口中补齐后继续" : job.status === "filling" ? "重新准备 CSDN 发布" : "确认并发布到 CSDN"}</button>}
         {job && job.status === "published" && (job.remoteUrl ? <a href={job.remoteUrl} target="_blank" rel="noreferrer" className="text-button">查看已发布文章</a> : <span className="status-badge success">已发布</span>)}
       </div>
     </header>
@@ -425,7 +425,7 @@ export function CsdnDraftWorkspace({ draft, accountDisplay, saving, job, error, 
             </details>
           </div>
           {!isDraft && <p className="status-badge success">已锁定发布快照（如需修改可重新生成渠道稿）</p>}
-          {!isDraft && !job && <p className="hint">渠道稿已锁定为快照。点击顶部的「发布到 CSDN」会自动打开浏览器、帮你登录并填充，之后你在 CSDN 点发布即可。</p>}
+          {!isDraft && !job && <p className="hint">渠道稿已锁定为快照。创建发布任务后，点击「确认并发布到 CSDN」即可在后台完成登录检查、内容填充和提交；登录失效或页面异常时才会打开窗口供你接管。</p>}
           <div className="settings-danger-section">
             <strong>删除渠道稿</strong>
             <small>删除后该渠道稿及已绑定的发布任务都会被清除，需从头重新生成。</small>

@@ -429,4 +429,6 @@ export const articleChatSuggestionStatusInput = z.object({
 export interface CsdnBrowserConfirmResult {
   remoteUrl: string | null;
   remoteContentId: string | null;
+  submitted?: boolean;
+  reason?: string;
 }

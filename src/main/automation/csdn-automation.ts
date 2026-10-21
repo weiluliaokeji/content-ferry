@@ -1,6 +1,6 @@
 import { BrowserWindow } from "electron";
 import { dialog, session } from "electron";
-import { FILL_CSDN_EDITOR_SCRIPT, FILL_CSDN_PUBLISH_DIALOG_SCRIPT } from "../csdn/csdn-editor-filler";
+import { FILL_CSDN_EDITOR_SCRIPT, FILL_CSDN_PUBLISH_DIALOG_SCRIPT, HAS_CSDN_PUBLISH_DIALOG_SCRIPT } from "../csdn/csdn-editor-filler";
 import { csdnDiagnosticsPath, resetCsdnDiagnostics, appendCsdnDiagnostics } from "../csdn/csdn-diagnostics";
 import { collectImageMatches } from "../csdn/csdn-image-inliner";
 import { extractCsdnUploadUrl } from "../csdn/csdn-upload-url";
@@ -26,13 +26,15 @@ async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
   const window = new BrowserWindow({
     width: 1280,
     height: 860,
-    show: true,
+    // Keep CSDN's authenticated renderer available for its first-party upload
+    // and publish calls, without opening a user-visible window.
+    show: false,
     title: "文渡 · CSDN 编辑器",
     icon: createWenduWindowIcon(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // 账号隔离且持久：登录态在本机会话中保留，符合 FR-15.3 的“持久且账号隔离的可见浏览器会话”。
+      // 账号隔离且持久：登录态在本机会话中保留，正常发布时窗口保持隐藏。
       partition: "persist:contentferry-csdn"
     }
   });
@@ -42,7 +44,6 @@ async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
     // 窗口销毁后其内容不再载在内存中的编辑器里，清空标记以便下次“重新打开”
     // 走完整流程重新填充（CSDN 编辑器窗口全局只有一个，无需判断“另一个窗口”）。
     state.csdnWindowJobId = undefined;
-    stopCsdnDialogPoller();
   });
   // CSDN 编辑器页面自身注册了 beforeunload（未保存内容拦截）。若不加处理器，
   // Electron 会静默尊重页面的 beforeunload、取消关闭——标题栏 × 点了没反应。
@@ -74,7 +75,7 @@ async function getOrCreateCsdnWindow(): Promise<BrowserWindow> {
       `<body style="font-family:system-ui,-apple-system,sans-serif;padding:40px;color:#222;line-height:1.7">` +
       `<h2 style="margin:0 0 12px">CSDN 编辑器加载失败</h2>` +
       `<p style="margin:0 0 10px">原因：${safeDesc}</p>` +
-      `<p style="margin:0 0 10px">如果你所在网络需要代理才能访问外网，请到文渡「设置 → 联网检索服务 → 检索代理」中填写代理地址（如 <code>http://127.0.0.1:7890</code>），保存后重新点击「在浏览器中完成发布」。</p>` +
+      `<p style="margin:0 0 10px">如果你所在网络需要代理才能访问外网，请到文渡「设置 → 联网检索服务 → 检索代理」中填写代理地址（如 <code>http://127.0.0.1:7890</code>），保存后重新点击「确认并发布到 CSDN」。</p>` +
       `</body></html>`;
     void window.loadURL(`data:text/html,${encodeURIComponent(html)}`).catch(() => undefined);
   });
@@ -91,14 +92,11 @@ function showCsdnAssistStatus(window: BrowserWindow, lines: string[]): void {
     if (!panel) {
       panel = document.createElement('div');
       panel.id = 'contentferry-csdn-assist-status';
-      panel.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:rgba(23,32,51,.82);color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;white-space:pre-line;cursor:move;user-select:none;';
+      panel.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:360px;padding:12px 14px;background:rgba(23,32,51,.82);color:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;line-height:1.6;white-space:pre-line;pointer-events:none;user-select:none;';
       document.body.appendChild(panel);
-      var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
-      panel.addEventListener('mousedown', function(e){ dragging = true; var r = panel.getBoundingClientRect(); sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top; panel.style.left = sl + 'px'; panel.style.top = st + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto'; e.preventDefault(); });
-      document.addEventListener('mousemove', function(e){ if(!dragging) return; var nl = Math.max(0, Math.min(sl + e.clientX - sx, window.innerWidth - panel.offsetWidth)); var nt = Math.max(0, Math.min(st + e.clientY - sy, window.innerHeight - panel.offsetHeight)); panel.style.left = nl + 'px'; panel.style.top = nt + 'px'; });
-      document.addEventListener('mouseup', function(){ dragging = false; });
     }
     panel.textContent = ${safe};
+    panel.style.pointerEvents = 'none';
   })()`).catch(() => undefined);
 }
 
@@ -115,15 +113,46 @@ async function waitForCsdnEditor(window: BrowserWindow, timeoutMs = 15_000): Pro
   return false;
 }
 
-async function persistCsdnFill(jobId: string, body: unknown): Promise<void> {
+async function persistCsdnFill(jobId: string, body: unknown): Promise<boolean> {
   try {
-    await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/fill`, {
+    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/fill`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
     });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 500);
+      logCsdnBrowserAssist("fill-persist-failed", { status: response.status, detail });
+      return false;
+    }
+    return true;
   } catch (error) {
     logCsdnBrowserAssist("fill-persist-failed", { error: error instanceof Error ? error.message : String(error) });
+    return false;
+  }
+}
+
+async function persistCsdnPreSubmitFailure(jobId: string, reason: string): Promise<boolean> {
+  const persisted = await persistCsdnFill(jobId, {
+    verifiedFields: [],
+    state: "failed_before_submit",
+    reason: reason.slice(0, 500)
+  });
+  if (state.csdnWindowJobId === jobId) state.csdnWindowJobId = undefined;
+  logCsdnBrowserAssist("failed-before-submit", { jobId, reason, persisted });
+  return persisted;
+}
+
+async function persistCsdnNeedsLogin(jobId: string, reason: string): Promise<void> {
+  try {
+    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/needs-login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason })
+    });
+    if (!response.ok) logCsdnBrowserAssist("needs-login-persist-failed", { jobId, status: response.status });
+  } catch (error) {
+    logCsdnBrowserAssist("needs-login-persist-failed", { jobId, error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -361,35 +390,63 @@ async function fetchCsdnJobAndDraft(jobId: string): Promise<{ status: string; dr
   }
 }
 
-export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
+async function runCsdnBrowserPublish(jobId: string): Promise<void> {
   resetCsdnDiagnostics();
   let window: BrowserWindow;
   try {
     window = await getOrCreateCsdnWindow();
   } catch (error) {
-    logCsdnBrowserAssist("window-create-failed", { error: error instanceof Error ? error.message : String(error) });
+    const reason = error instanceof Error ? error.message : String(error);
+    logCsdnBrowserAssist("window-create-failed", { error: reason });
+    const failurePersisted = await persistCsdnPreSubmitFailure(jobId, `无法打开 CSDN 编辑器窗口：${reason}`);
     // 不再静默吞掉：把错误抛回渲染进程，主窗口会显示提示，避免只剩一个白窗。
-    throw error instanceof Error ? error : new Error("无法打开 CSDN 发布浏览器窗口。");
+    const persistenceHint = failurePersisted ? "" : "任务状态暂时未能更新，请恢复文渡本地服务后刷新发布记录。";
+    throw new Error(`${error instanceof Error ? error.message : "无法打开 CSDN 发布浏览器窗口。"}${persistenceHint ? ` ${persistenceHint}` : ""}`);
   }
-  window.show();
-  window.focus();
+  window.hide();
 
-  // 轻量“重新打开”路径：同一份发布任务仍载在存活的编辑器窗口里（标题/正文已填好、
-  // 图片也已传过 CSDN 图床）。此时只把窗口提到前台、重启发布对话框轮询即可，
-  // 不要再抓稿、重传图片、重填编辑器——否则每次点“重新打开”都会重复上传一份草稿，
-  // 并可能覆盖用户在编辑器里的手动修改。窗口被关闭后 csdnWindowJobId 会被清空，
-  // 那时再点“重新打开”会走下面的完整流程重新填充。
+  // 若同一任务的窗口仍然存在，说明前一次执行可能停在人工处理节点；
+  // 只在需要登录或人工补齐时显示窗口。提交中/已提交任务绝不再次点击发布。
   if (state.csdnWindow && !state.csdnWindow.isDestroyed() && state.csdnWindowJobId === jobId) {
-    logCsdnBrowserAssist("reopen-skip-refill", { jobId });
-    showCsdnAssistStatus(window, [
-      "已切回 CSDN 编辑器窗口。",
-      "内容已在窗口中，请直接点击 CSDN 编辑器的“发布文章”按钮；发布设置框弹出后文渡会自动填充。"
-    ]);
     const loaded = await fetchCsdnJobAndDraft(jobId);
-    // 仅当内容已填充（ready / needs_user）才重启对话框轮询；needs_login 等状态下
-    // 编辑器尚未就绪，轮询只会产生无用的扫描循环。
-    if (loaded && (loaded.status === "ready_for_final_confirmation" || loaded.status === "needs_user")) {
-      startCsdnPublishDialogPoller(jobId, loaded.draft.digest, loaded.draft.coverDataUrl, window);
+    const loginRequired = await window.webContents.executeJavaScript(`(function(){
+      var u = (location.href || '').toLowerCase();
+      if (u.indexOf('passport.csdn.net') >= 0 || /\\/login/.test(u)) return true;
+      var loginEl = document.querySelector('a[href*="passport"], .login_box, #csdn-login, [class*="loginBtn"], [class*="login-btn"]');
+      return !!(loginEl && /登录/.test(loginEl.textContent || ''));
+    })()`).catch(() => false);
+    if (loginRequired) {
+      await persistCsdnNeedsLogin(jobId, "CSDN 编辑器未登录，请先在窗口登录后继续。");
+      // 登录完成后要重新走内容准备；不能把停在登录页的 renderer 当成已填充窗口复用。
+      state.csdnWindowJobId = undefined;
+      logCsdnBrowserAssist("reopen-human-handoff", { jobId, status: "needs_login" });
+      window.show();
+      window.focus();
+      showCsdnAssistStatus(window, ["CSDN 登录已过期。请在此窗口登录后，回到文渡点击“登录 CSDN 后继续”。"]);
+    } else if (loaded?.status === "needs_user") {
+      logCsdnBrowserAssist("reopen-manual-handoff", { jobId });
+      window.show();
+      window.focus();
+      showCsdnAssistStatus(window, ["请在 CSDN 窗口补齐未能自动填写的字段，确认无误后回到文渡继续发布。"]);
+    } else {
+      const readyPersisted = await persistCsdnFill(jobId, {
+        verifiedFields: [],
+        state: "ready_for_final_confirmation",
+        reason: "用户已在 CSDN 窗口补齐内容并确认继续发布。"
+      });
+      if (!readyPersisted) {
+        window.show();
+        window.focus();
+        showCsdnAssistStatus(window, ["无法保存 CSDN 发布准备状态，未提交文章。", "请恢复文渡本地服务后再继续。"]);
+        return;
+      }
+      logCsdnBrowserAssist("reopen-confirm-submission", { jobId, previousStatus: loaded?.status ?? "unknown" });
+      const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/confirm`, { method: "POST" });
+      if (!response.ok) {
+        window.show();
+        window.focus();
+        showCsdnAssistStatus(window, ["无法继续提交 CSDN 文章。", "请核对 CSDN 后台状态后再回到文渡处理，避免重复发布。"]);
+      }
     }
     return;
   }
@@ -419,9 +476,15 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
       imageCount: draft.images.length
     });
   } catch (error) {
-    logCsdnBrowserAssist("fetch-draft-failed", { error: error instanceof Error ? error.message : String(error) });
+    const reason = error instanceof Error ? error.message : String(error);
+    logCsdnBrowserAssist("fetch-draft-failed", { error: reason });
+    const failurePersisted = await persistCsdnPreSubmitFailure(jobId, `无法读取 CSDN 渠道稿内容：${reason}`);
+    window.show();
+    window.focus();
     showCsdnAssistStatus(window, [
       "无法读取 CSDN 渠道稿内容。",
+      "发布尚未提交。请检查文渡本地服务后，在发布记录中点击“重试发布”。",
+      ...(failurePersisted ? [] : ["任务状态暂时未能更新；恢复文渡本地服务后请刷新发布记录。"]),
       `完整诊断已写入文件：${csdnDiagnosticsPath()}`,
       "请把该文件的全部内容发给我，即可精准定位失败原因。"
     ]);
@@ -430,8 +493,16 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
 
   const ready = await waitForCsdnEditor(window);
   if (!ready) {
+    const reason = "CSDN 编辑器加载超时。";
     logCsdnBrowserAssist("editor-not-ready", {});
-    showCsdnAssistStatus(window, ["CSDN 编辑器加载超时。", "请确认浏览器已打开 CSDN 编辑器；若未登录请先登录，再重新发起。"]);
+    const failurePersisted = await persistCsdnPreSubmitFailure(jobId, reason);
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, [
+      reason,
+      "发布尚未提交。请确认网络或登录状态正常，再回到文渡点击“重试发布”。",
+      ...(failurePersisted ? [] : ["任务状态暂时未能更新；恢复文渡本地服务后请刷新发布记录。"])
+    ]);
     return;
   }
 
@@ -445,10 +516,12 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   })()`).catch(() => "ok");
   if (loginState === "login") {
     logCsdnBrowserAssist("needs-login", {});
-    await persistCsdnFill(jobId, { verifiedFields: [], state: "needs_login", reason: "CSDN 编辑器未登录，请先在浏览器登录后再发起发布。" });
-    // 窗口载着该任务（停在登录页），标记后“重新打开”只提到前台，不再重跑。
-    state.csdnWindowJobId = jobId;
-    showCsdnAssistStatus(window, ["CSDN 编辑器尚未登录。", "请在打开的浏览器中登录 CSDN，然后回到文渡重新点击“在浏览器中完成发布”。"]);
+    await persistCsdnNeedsLogin(jobId, "CSDN 编辑器未登录，请先在浏览器登录后再发起发布。");
+    // 该窗口尚未填充任务内容；登录后用户再次确认时必须走完整流程。
+    state.csdnWindowJobId = undefined;
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, ["CSDN 登录已过期。请在此窗口登录后，回到文渡重新点击“确认并发布到 CSDN”。"]);
     return;
   }
 
@@ -512,23 +585,60 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
   });
 
   if (!fill.title || !fill.content) {
-    await persistCsdnFill(jobId, {
+    const failurePersisted = await persistCsdnFill(jobId, {
       verifiedFields,
       state: fill.title || fill.content ? "needs_user" : "failed_before_submit",
-      reason: "未能可靠填充标题或正文；请在浏览器中手动补齐，再回到文渡点击“确认结果”。"
+      reason: "未能可靠填充标题或正文；请在 CSDN 窗口中手动补齐，再回到文渡点击“在窗口中补齐后继续”。"
     });
     // needs_user：窗口确实载着该任务（只是没填全），标记后“重新打开”只提到前台，
     // 不再重填，避免覆盖用户在编辑器里的手动补齐。failed_before_submit 不标记，
     // 因为内容基本是空的，下次应走完整流程重填。
-    if (fill.title || fill.content) state.csdnWindowJobId = jobId;
+    if (failurePersisted && (fill.title || fill.content)) state.csdnWindowJobId = jobId;
+    window.show();
+    window.focus();
     showCsdnAssistStatus(window, [
       "已打开 CSDN 编辑器，但标题或正文未能自动填充。",
-      "请在浏览器中手动补齐内容；确认无误后，回到文渡点击“确认结果”。"
+      "请在 CSDN 窗口中手动补齐内容；确认无误后，回到文渡点击“在窗口中补齐后继续”。",
+      ...(failurePersisted ? [] : ["文渡暂时无法保存任务状态；请先恢复本地服务，再刷新发布记录。"])
     ]);
     return;
   }
 
-  await persistCsdnFill(jobId, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+  if (imageUpload.failures.length > 0) {
+    const failurePersisted = await persistCsdnFill(jobId, {
+      verifiedFields: ["title", "content"],
+      state: "needs_user",
+      reason: `${imageUpload.failures.length} 张图片未能上传到 CSDN 图床，请在编辑器中处理后再继续发布。`
+    });
+    if (failurePersisted) state.csdnWindowJobId = jobId;
+    appendCsdnDiagnostics(`CSDN 图片上传失败明细（${imageUpload.failures.length} 张）：${JSON.stringify(imageUpload.failures)}`);
+    console.error("[contentferry] CSDN 图片上传失败明细：", JSON.stringify({
+      jobId,
+      uploadedCount: imageUpload.replaced.size,
+      failedCount: imageUpload.failures.length,
+      failures: imageUpload.failures
+    }, null, 2));
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, [
+      `有 ${imageUpload.failures.length} 张图片未能上传到 CSDN 图床，发布已暂停。`,
+      "请在 CSDN 编辑器中处理图片后，回到文渡点击“在窗口中补齐后继续”。",
+      `诊断文件：${csdnDiagnosticsPath()}`,
+      ...(failurePersisted ? [] : ["文渡暂时无法保存任务状态；请先恢复本地服务，再刷新发布记录。"])
+    ]);
+    return;
+  }
+
+  const fillPersisted = await persistCsdnFill(jobId, { verifiedFields: ["title", "content"], state: "ready_for_final_confirmation" });
+  if (!fillPersisted) {
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, [
+      "标题与正文已填入，但文渡暂时无法保存准备状态。",
+      "发布尚未提交。请恢复文渡本地服务后刷新发布记录，再继续操作。"
+    ]);
+    return;
+  }
   // 成功填充后标记窗口载着该任务：下次点“重新打开”走轻量路径（仅提到前台 + 重启轮询），
   // 不再抓稿/重传图片/重填编辑器。必须用持久化成功作为标记时机，避免一次失败的全流程
   // 让下次“重新打开”误判为轻量路径而跳过重填。
@@ -537,43 +647,34 @@ export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
     "已填充标题与正文。",
     imageUpload.replaced.size > 0 ? `已将 ${imageUpload.replaced.size} 张图片上传到 CSDN 图床并替换正文链接。` : (draft.images.length === 0 ? "" : "本文没有需要上传的本地图片。")
   ];
-  if (imageUpload.failures.length > 0) {
-    statusLines.push(`有 ${imageUpload.failures.length} 张图片未能上传到 CSDN 图床（CSDN 编辑器中这些图片会显示“转存失败”，需手动处理或重试）：`);
-    for (const failure of imageUpload.failures.slice(0, 8)) {
-      statusLines.push(`  • ${failure.source}`);
-      if (failure.reason) statusLines.push(`    原因：${failure.reason}`);
-    }
-    if (imageUpload.failures.length > 8) {
-      statusLines.push(`  … 还有 ${imageUpload.failures.length - 8} 张。`);
-    }
-    appendCsdnDiagnostics(`CSDN 图片上传失败明细（${imageUpload.failures.length} 张）：${JSON.stringify(imageUpload.failures)}`);
-    statusLines.push(`完整诊断已写入文件：${csdnDiagnosticsPath()}`);
-    statusLines.push("请把该文件的全部内容发给我，即可精准定位失败原因。");
-  }
-  statusLines.push("请在浏览器中点击 CSDN 编辑器的“发布文章”按钮；弹出设置框后，文渡会自动填充摘要、选项并提交。");
-  statusLines.push("若自动提交失败，可回到文渡点击“确认结果”手动记录。");
+  statusLines.push("已在后台填充发布设置并提交，正在核对 CSDN 回执。");
   showCsdnAssistStatus(window, statusLines.filter(Boolean));
 
-  // 启动后台轮询，等待用户点击“发布文章”后弹出的设置框并自动处理。
-  // 封面用主稿真实封面（getBrowserDraft 已解析为 dataUrl），不再用正文第一张图。
-  startCsdnPublishDialogPoller(jobId, draft.digest, draft.coverDataUrl, window);
-
-  if (imageUpload.failures.length > 0) {
-    console.error("[contentferry] CSDN 图片上传失败明细：", JSON.stringify({
-      jobId,
-      uploadedCount: imageUpload.replaced.size,
-      failedCount: imageUpload.failures.length,
-      failures: imageUpload.failures
-    }, null, 2));
+  // This IPC action is the user's final confirmation. The local confirm route
+  // transitions the task to submitting before clicking CSDN's final button,
+  // so an uncertain response can never be blindly retried.
+  try {
+    const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/confirm`, { method: "POST" });
+    if (!response.ok) throw new Error(`CSDN 提交状态回写失败（HTTP ${response.status}）。`);
+  } catch (error) {
+    logCsdnBrowserAssist("confirmed-publish-failed", { jobId, error: error instanceof Error ? error.message : String(error) });
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, ["CSDN 发布结果暂时无法自动核对。", "请先到 CSDN 后台确认是否已发布，再回到文渡校正状态；不要重复发布。"]);
   }
+
 }
 
-let activeCsdnDialogPoller: { jobId: string; timer: NodeJS.Timeout } | null = null;
-
-function stopCsdnDialogPoller(): void {
-  if (activeCsdnDialogPoller) {
-    clearInterval(activeCsdnDialogPoller.timer);
-    activeCsdnDialogPoller = null;
+export async function driveCsdnBrowserPublish(jobId: string): Promise<void> {
+  if (state.csdnPublisherActiveJobs.has(jobId)) {
+    logCsdnBrowserAssist("duplicate-assist-ignored", { jobId });
+    return;
+  }
+  state.csdnPublisherActiveJobs.add(jobId);
+  try {
+    await runCsdnBrowserPublish(jobId);
+  } finally {
+    state.csdnPublisherActiveJobs.delete(jobId);
   }
 }
 
@@ -598,86 +699,60 @@ async function waitForCsdnArticleUrl(window: BrowserWindow, budgetMs = 25000): P
   return null;
 }
 
-function startCsdnPublishDialogPoller(jobId: string, digest: string, coverDataUrl: string | undefined, window: BrowserWindow): void {
-  stopCsdnDialogPoller();
-  logCsdnBrowserAssist("dialog-poller-started", { jobId });
-  const timer = setInterval(async () => {
-    if (window.isDestroyed()) {
-      stopCsdnDialogPoller();
-      return;
-    }
-    const result = await window.webContents.executeJavaScript(`(function(digest, coverDataUrl){
-      ${FILL_CSDN_PUBLISH_DIALOG_SCRIPT}
-      return fillCsdnPublishDialog({digest: digest, coverDataUrl: coverDataUrl});
-    })(${JSON.stringify(digest)}, ${JSON.stringify(coverDataUrl)})`).catch((error: unknown) => ({
-      dialogFound: false,
-      error: error instanceof Error ? error.message : String(error)
-    }));
-    logCsdnBrowserAssist("dialog-scan", { jobId, ...result });
-    if (result.dialogFound && result.submitClicked) {
-      stopCsdnDialogPoller();
-      logCsdnBrowserAssist("dialog-submitted", { jobId });
-      const remoteUrl = await waitForCsdnArticleUrl(window, 25000);
-      if (remoteUrl) {
-        const contentIdMatch = /article\/details\/(\d+)/.exec(remoteUrl);
-        const remoteContentId = contentIdMatch ? contentIdMatch[1] : null;
-        logCsdnBrowserAssist("dialog-receipt-read", { jobId, remoteUrl, remoteContentId });
-        try {
-          await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}/record-submission`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ remoteUrl, remoteContentId })
-          });
-          showCsdnAssistStatus(window, ["已在 CSDN 发布，已回写文章链接：", remoteUrl]);
-        } catch (error) {
-          logCsdnBrowserAssist("dialog-record-submission-failed", { jobId, error: error instanceof Error ? error.message : String(error) });
-          showCsdnAssistStatus(window, ["已读取 CSDN 文章链接，但回写状态失败：", remoteUrl, "请回到文渡点击“我已在 CSDN 发布”完成记录。"]);
-        }
-      } else {
-        logCsdnBrowserAssist("dialog-receipt-timeout", { jobId });
-        showCsdnAssistStatus(window, ["已自动填写发布设置并点击发布，但未能自动读取文章链接。", "请在浏览器确认发布结果；如已发布，可人工校正并粘贴链接。"]);
-      }
-    }
-  }, 1500);
-  activeCsdnDialogPoller = { jobId, timer };
-}
-
-export async function confirmCsdnBrowserPublish(jobId: string): Promise<{ remoteUrl: string | null; remoteContentId: string | null } | null> {
-  stopCsdnDialogPoller();
+export async function confirmCsdnBrowserPublish(jobId: string): Promise<{ remoteUrl: string | null; remoteContentId: string | null; submitted?: boolean; reason?: string } | null> {
   const window = state.csdnWindow;
   if (!window || window.isDestroyed()) {
     logCsdnBrowserAssist("confirm-window-missing", { jobId });
     return null;
   }
-  window.show();
-  window.focus();
 
   // 读取渠道稿摘要与封面（封面为主稿真实封面，getBrowserDraft 已解析为 dataUrl）。
   let digest = "";
   let coverDataUrl: string | undefined;
+  let tags: string[] = [];
   try {
     const response = await fetch(`${CSDN_API_BASE}/api/integrations/csdn/jobs/${jobId}`);
     if (response.ok) {
-      const payload = await response.json() as { draft: { digest: string; images: Array<{ dataUrl: string }>; coverDataUrl?: string } };
+      const payload = await response.json() as { draft: { digest: string; tags?: string[]; images: Array<{ dataUrl: string }>; coverDataUrl?: string } };
       digest = payload.draft.digest || "";
+      tags = payload.draft.tags ?? [];
       coverDataUrl = payload.draft.coverDataUrl;
     }
   } catch (error) {
     logCsdnBrowserAssist("confirm-fetch-draft-failed", { jobId, error: error instanceof Error ? error.message : String(error) });
   }
 
-  showCsdnAssistStatus(window, ["正在点击 CSDN 的“发布文章”按钮……", "若页面要求二次确认，请在浏览器中完成。"]);
-  const clicked = await window.webContents.executeJavaScript(`(function(){
-    var buttons = Array.prototype.slice.call(document.querySelectorAll('button, .btn, a.btn'));
-    var target = buttons.find(function(b){ return /发布文章|发布$/.test((b.textContent || '').trim()); });
-    if (!target) return false;
-    target.click();
-    return true;
-  })()`).catch(() => false);
-  if (!clicked) {
-    logCsdnBrowserAssist("publish-button-not-found", { jobId });
-    showCsdnAssistStatus(window, ["未找到 CSDN 的“发布文章”按钮。", "请在浏览器中手动点击发布；发布成功后回到文渡点击“我已在 CSDN 发布”。"]);
+  const dialogAlreadyOpen = await window.webContents.executeJavaScript(`(function(){
+    ${HAS_CSDN_PUBLISH_DIALOG_SCRIPT}
+    return hasCsdnPublishDialog();
+  })()`).catch((error: unknown) => {
+    logCsdnBrowserAssist("publish-dialog-probe-failed", { jobId, error: error instanceof Error ? error.message : String(error) });
     return null;
+  });
+  if (dialogAlreadyOpen === null) return null;
+
+  if (!dialogAlreadyOpen) {
+    showCsdnAssistStatus(window, ["正在打开 CSDN 发布设置……"]);
+    const opened = await window.webContents.executeJavaScript(`(function(){
+      var dialogs = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], .el-dialog, .modal__publish-article, .publish-dialog'));
+      var buttons = Array.prototype.slice.call(document.querySelectorAll('button, .btn, a.btn'));
+      var target = buttons.find(function(b){
+        if ((b.textContent || '').replace(/\\s+/g, '').trim() !== '发布文章') return false;
+        return !dialogs.some(function(dialog){ return dialog.contains(b); });
+      });
+      if (!target) return false;
+      target.click();
+      return true;
+    })()`).catch(() => false);
+    if (!opened) {
+      logCsdnBrowserAssist("publish-button-not-found", { jobId });
+      window.show();
+      window.focus();
+      showCsdnAssistStatus(window, ["未找到 CSDN 编辑器的“发布文章”按钮。", "请在窗口中核对文章状态，再回到文渡处理；不要重复发布。"]);
+      return { remoteUrl: null, remoteContentId: null, submitted: false, reason: "未找到 CSDN 编辑器的发布按钮，文章尚未提交。" };
+    }
+  } else {
+    logCsdnBrowserAssist("publish-dialog-resume", { jobId });
   }
 
   // 等待弹框出现并自动填充摘要、封面、选项，然后点击弹框内的发布按钮。
@@ -685,18 +760,39 @@ export async function confirmCsdnBrowserPublish(jobId: string): Promise<{ remote
   let dialogResult: Record<string, unknown> = { dialogFound: false };
   for (let attempt = 0; attempt < 6; attempt++) {
     await delay(1200);
-    dialogResult = await window.webContents.executeJavaScript(`(function(digest, coverDataUrl){
+    dialogResult = await window.webContents.executeJavaScript(`(function(digest, coverDataUrl, tags){
       ${FILL_CSDN_PUBLISH_DIALOG_SCRIPT}
-      return fillCsdnPublishDialog({digest: digest, coverDataUrl: coverDataUrl});
-    })(${JSON.stringify(digest)}, ${JSON.stringify(coverDataUrl)})`).catch((error: unknown) => ({ dialogFound: false, error: error instanceof Error ? error.message : String(error) }));
+      return fillCsdnPublishDialog({digest: digest, coverDataUrl: coverDataUrl, tags: tags});
+    })(${JSON.stringify(digest)}, ${JSON.stringify(coverDataUrl)}, ${JSON.stringify(tags)})`).catch((error: unknown) => ({ dialogFound: false, error: error instanceof Error ? error.message : String(error) }));
     logCsdnBrowserAssist("confirm-dialog-fill", { jobId, attempt, ...dialogResult });
     if (dialogResult.submitClicked) break;
+  }
+
+  if (typeof dialogResult.error === "string") {
+    logCsdnBrowserAssist("confirm-dialog-result-uncertain", { jobId, error: dialogResult.error });
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, ["无法确认 CSDN 发布操作是否完成。", "请先到 CSDN 后台核对文章状态，再回到文渡校正；确认前不要重新发布。"]);
+    return null;
+  }
+
+  if (!dialogResult.submitClicked) {
+    window.show();
+    window.focus();
+    const reason = typeof dialogResult.reason === "string"
+      ? dialogResult.reason
+      : "CSDN 最终发布按钮未点击，文章尚未提交。";
+    logCsdnBrowserAssist("publish-not-submitted", { jobId, reason });
+    showCsdnAssistStatus(window, ["未点击 CSDN 最终发布按钮，文章尚未提交。", "请检查打开的 CSDN 发布设置后，回到文渡重新确认发布。"]);
+    return { remoteUrl: null, remoteContentId: null, submitted: false, reason };
   }
 
   const remoteUrl = await waitForCsdnArticleUrl(window, 20000);
   if (!remoteUrl) {
     logCsdnBrowserAssist("receipt-not-read", { jobId });
-    showCsdnAssistStatus(window, ["已尝试点击发布，但未能自动读取 CSDN 文章链接。", "请在浏览器确认发布结果；如已发布，可人工校正并粘贴链接。"]);
+    window.show();
+    window.focus();
+    showCsdnAssistStatus(window, ["已尝试点击发布，但未能自动读取 CSDN 文章链接。", "请核对当前 CSDN 编辑器和文章管理页的结果，再回到文渡校正状态；确认前不要重复发布。"]);
     return null;
   }
   const contentIdMatch = /article\/details\/(\d+)/.exec(remoteUrl);

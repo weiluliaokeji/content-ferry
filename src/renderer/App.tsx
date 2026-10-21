@@ -18,7 +18,7 @@ import { GenerationReviewSummary } from "./components/GenerationReviewSummary";
 import { MarkdownDiffPreview } from "./components/MarkdownDiffPreview";
 import { ZhuqueReportView } from "./components/ZhuqueReportViews";
 import { resolveArticleImageUrl } from "./markdown-preview";
-import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobCanStart, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
+import { bestWechatJob, csdnJobCanConfirm, csdnJobCanCorrect, csdnJobLabel, cnblogsJobLabel, isSettledPublishStatus, juejinJobLabel, wechatJobLabel } from "./publish-labels";
 import { emptyProfile, isHighAiDetectionResult, markdownOffsetAtTextareaTop, markdownTitle, parseZhuqueReport, providerName, runtimeLogLevel, skillModelStatus, skillUsesSameConnectionAsWriter, sourceAssetContextId } from "./utils";
 import { skillModelGroups } from "./app-constants";
 import { byUpdatedAtDesc, getPageTitle, PublishEntry } from "./app-helpers";
@@ -515,7 +515,6 @@ export function App() {
     generateJuejinChannelDraft,
     saveJuejinChannelDraft,
     startCsdnBrowserAssist,
-    confirmCsdnPublish,
     correctCsdnStatus,
     confirmCnblogsPublish,
     correctCnblogsStatus,
@@ -1193,7 +1192,7 @@ export function App() {
       onChange={(patch) => setCsdnDraft((current) => current ? { ...current, ...patch, generationReview: current.generationReview ? { ...current.generationReview, stale: true } : undefined } : current)}
       onSave={() => void saveCsdnChannelDraft()}
       onPublish={() => requestPublishCsdn()}
-      onStartBrowserAssist={(jobId) => void startCsdnBrowserAssist(jobId)}
+      onStartBrowserAssist={(jobId, confirmAfterManual) => void startCsdnBrowserAssist(jobId, confirmAfterManual)}
       onDelete={() => void deleteCsdnChannelDraft(csdnDraft.id)}
       onBack={() => { setCsdnDraftSource(undefined); setCsdnDraft(undefined); setCsdnPublishJob(undefined); }}
     />;
@@ -1620,8 +1619,6 @@ export function App() {
       retryWechatJob={retryWechatJob}
       startCsdnBrowserAssist={startCsdnBrowserAssist}
       openCsdnStatusCorrection={openCsdnStatusCorrection}
-      confirmCsdnPublish={confirmCsdnPublish}
-      csdnJobCanStart={csdnJobCanStart}
       csdnJobCanCorrect={csdnJobCanCorrect}
       confirmCnblogsPublish={confirmCnblogsPublish}
       openCnblogsStatusCorrection={openCnblogsStatusCorrection}

@@ -35,7 +35,10 @@ export function AccountsView(props: AccountsViewProps) {
       <div className="section-heading"><h2>已绑定账号</h2><button className="text-button" onClick={() => void loadAccounts()} disabled={loading}>刷新</button></div>
       {loading ? <p>正在读取本地账号…</p> : accounts.length === 0 ? <p className="muted">还没有账号。先添加“围炉聊科技”或你的测试公众号。</p> : <ul className="account-list bound-account-list">{accounts.map((account) => <li key={account.id}>
         <span className="bound-account-summary"><strong>{account.displayName}</strong><small>{platformName(account.platform)} · {account.profile.positioning ? "已设置定位" : "待设置定位"}</small></span>
-        <em className={`connection-status${account.credentialsConfigured ? " connected" : ""}`}>{account.credentialsConfigured ? "凭据已配置" : "待完成接入"}</em>
+        <em
+          className={`connection-status${account.platform !== "csdn" && account.credentialsConfigured ? " connected" : ""}`}
+          title={account.platform === "csdn" ? "CSDN 使用文渡的持久浏览器会话；发布时自动检查登录态，无需填写 Cookie 或密码。" : undefined}
+        >{account.platform === "csdn" ? "发布时检查登录" : account.credentialsConfigured ? "凭据已配置" : "待完成接入"}</em>
         <span className="account-row-actions">{account.platform === "wechat_official" && <button className="secondary-button compact-action" onClick={() => void openWechatConnection(account)}>连接微信</button>}{account.platform === "cnblogs" && <button className="secondary-button compact-action" onClick={() => void openCnblogsConnection(account)}>配置博客园凭据</button>}{account.platform === "juejin" && <button className="secondary-button compact-action" onClick={() => void openJuejinConnection(account)}>配置掘金凭据</button>}{account.platform === "51cto" && <button className="secondary-button compact-action" onClick={() => void openFiftyoneCtoConnection(account)}>配置 51CTO 凭据</button>}<button className="secondary-button compact-action" onClick={() => openProfile(account)}>编辑定位</button><button className="secondary-button compact-action" onClick={() => openStyleSamples(account)}>代表文章样本</button><button className="text-button danger-text compact-action" onClick={() => void deleteAccount(account)} disabled={saving}>删除</button></span>
       </li>)}</ul>}
     </section>

@@ -175,6 +175,50 @@ export function fillCsdnEditor(args: { title: string; markdown: string }): {
  */
 export const FILL_CSDN_EDITOR_SCRIPT = fillCsdnEditor.toString();
 
+/** Page-context probe used before opening the publish settings modal on retries. */
+export function hasCsdnPublishDialog(): boolean {
+  function visible(el: any) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const computed = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    return rect.width > 6 && rect.height > 6 && (!computed || computed.visibility !== "hidden");
+  }
+  function textOf(el: any) {
+    return (el.textContent || "").replace(/\s+/g, "").trim();
+  }
+  return Array.prototype.slice.call(
+    document.querySelectorAll("[role='dialog'], .el-dialog, .modal__publish-article, .publish-dialog")
+  ).some((dialog: any) => {
+    if (!visible(dialog) || textOf(dialog).indexOf("文章摘要") < 0) return false;
+    return Array.prototype.slice.call(
+      dialog.querySelectorAll("button, a, [role='button'], input[type='submit']")
+    ).some((button: any) => visible(button) && /^(发布文章|发布)$/.test(textOf(button)));
+  });
+}
+
+export const HAS_CSDN_PUBLISH_DIALOG_SCRIPT = hasCsdnPublishDialog.toString();
+
+export function missingCsdnRequiredPublishFields(
+  args: { digest: string; coverDataUrl?: string },
+  result: {
+    abstractFilled: boolean;
+    typeSelected: boolean;
+    visibilitySelected: boolean;
+    crossPublishSelected: boolean;
+    tagsSelected: boolean;
+    coverHandled: boolean;
+  }
+): string[] {
+  return [
+    ...(args.digest.trim() && !result.abstractFilled ? ["文章摘要"] : []),
+    ...(!result.typeSelected ? ["文章类型"] : []),
+    ...(!result.visibilitySelected ? ["可见范围"] : []),
+    ...(!result.crossPublishSelected ? ["多平台发布"] : []),
+    ...(!result.tagsSelected ? ["文章标签"] : []),
+    ...(args.coverDataUrl && !result.coverHandled ? ["文章封面"] : [])
+  ];
+}
+
 /**
  * Page-context script for filling the CSDN "publish article" settings dialog
  * that appears after the user clicks the main "发布文章" button in the editor.
@@ -184,7 +228,7 @@ export const FILL_CSDN_EDITOR_SCRIPT = fillCsdnEditor.toString();
  * fill the abstract from the draft digest, ensure the required options are
  * selected, and click the final "发布文章" button inside the dialog.
  */
-export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl?: string }) {
+export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl?: string; tags?: string[] }) {
   const result: Record<string, unknown> = {
     dialogFound: false,
     abstractFilled: false,
@@ -192,6 +236,7 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
     visibilitySelected: false,
     crossPublishSelected: false,
     categorySelected: false,
+    tagsSelected: false,
     coverHandled: false,
     coverMethod: null as string | null,
     publishButtonFound: false,
@@ -340,20 +385,23 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
     return false;
   }
 
-  // 1. Locate the dialog as the common container holding the known section labels.
-  const abstractGroup = fieldGroup("文章摘要");
-  const coverGroup = fieldGroup(["添加封面", "文章封面", "封面"]);
-  const dialog =
-    abstractGroup ||
-    coverGroup ||
-    (function () {
-      const markers = ["文章标签", "分类专栏", "文章类型", "可见范围", "多平台发布"];
-      for (const m of markers) {
-        const g = fieldGroup(m);
-        if (g) return g;
-      }
-      return null;
-    })();
+  // 1. Locate the actual publish modal as the common container holding its
+  //    fields and final action. The field groups themselves are too narrow to
+  //    contain the submit button; never fall back to an editor-level button.
+  const dialog = (function () {
+    const candidates = Array.prototype.slice.call(
+      document.querySelectorAll("[role='dialog'], .el-dialog, .modal__publish-article, .publish-dialog")
+    ).filter((el: any) => visible(el));
+    const matching = candidates.filter((el: any) => {
+      const labelText = textOf(el);
+      const hasSummary = labelText.indexOf("文章摘要") >= 0;
+      const hasPublishAction = Array.prototype.slice.call(
+        el.querySelectorAll("button, a, [role='button'], input[type='submit']")
+      ).some((button: any) => visible(button) && /^(发布文章|发布)$/.test(textOf(button)));
+      return hasSummary && hasPublishAction;
+    });
+    return matching.sort((a: any, b: any) => countDescendants(a) - countDescendants(b))[0] || null;
+  })();
   if (!dialog) {
     result.reason = "dialog-not-found";
     return result;
@@ -381,10 +429,9 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
   result.visibilitySelected = selectOption("可见范围", ["全部可见"]);
   result.crossPublishSelected = selectOption("多平台发布", ["否"], ["是"]);
 
-  // 3b. Category (分类专栏) — a REQUIRED field in CSDN's publish dialog. If we
-  //     leave it empty, CSDN rejects the submission with "提交的信息不符合要求：
-  //     填写内容格式不正确". We open the Element-Plus el-select and pick the
-  //     first available column. If none exists, we try to create a default one.
+  // 3b. Category (分类专栏) — select an existing column when available. CSDN
+  //     accounts may have no columns, and the current publish form does not
+  //     mark this field as required, so absence must not block publishing.
   async function selectCategory(): Promise<boolean> {
     const group = fieldGroup("分类专栏");
     if (!group) return false;
@@ -407,33 +454,51 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
       }
     }
 
-    // No existing category available: try "+ 新建分类专栏".
-    const createBtn = Array.prototype.slice
-      .call(group.querySelectorAll("button, a, span, div, i"))
-      .find((e: any) => visible(e) && /新建分类专栏|创建专栏|新增专栏/.test(textOf(e)));
-    if (createBtn) {
-      createBtn.click();
-      await sleep(500);
-      // The create dialog/popover usually has a single text input and a confirm button.
-      const nameInput =
-        document.querySelector(".el-dialog input[type='text'], .el-popover input[type='text'], .el-overlay input[type='text]") ||
-        document.querySelector("input[placeholder*='专栏名称'], input[placeholder*='分类专栏']");
-      if (nameInput) {
-        setValue(nameInput, "默认专栏");
-        await sleep(200);
-        const confirmBtn = Array.prototype.slice
-          .call(document.querySelectorAll("button, a, span"))
-          .find((e: any) => visible(e) && /创建|确定|确认|保存/.test(textOf(e)));
-        if (confirmBtn) {
-          confirmBtn.click();
-          await sleep(500);
-          return true;
-        }
-      }
-    }
     return false;
   }
   result.categorySelected = await selectCategory();
+
+  // CSDN requires at least one article tag. The source article's front matter is
+  // the existing user-authored source of truth; use CSDN's own tag picker and
+  // allow unmatched source labels as custom tags. Re-query after every Enter
+  // because the Vue picker replaces its input when a tag is accepted.
+  async function fillTags(): Promise<boolean> {
+    const tagGroup = dialog.querySelector(".mark_selection[typename='tags']");
+    if (!tagGroup) return false;
+    const openButton = tagGroup.querySelector("button.tag__btn-tag");
+    if (openButton && !tagGroup.querySelector(".mark_selection_box")) {
+      openButton.click();
+      await sleep(250);
+    }
+
+    const selectedTags = () => Array.prototype.slice
+      .call(tagGroup.querySelectorAll(".mark_selection_title_el_tag .el-tag"))
+      .map((el: any) => textOf(el).replace(/×$/, ""))
+      .filter((text: string) => text && text !== "添加文章标签");
+    let selected = selectedTags();
+    for (const rawTag of args.tags ?? []) {
+      const tag = typeof rawTag === "string" ? rawTag.trim() : "";
+      if (!tag || selected.some((current: string) => current.toLowerCase() === tag.toLowerCase())) continue;
+      if (selected.length >= 5) break;
+      const input = tagGroup.querySelector("input[placeholder*='搜索']");
+      if (!input) break;
+      setValue(input, tag);
+      // CSDN's autocomplete debounces for 300ms; wait for its suggestion list
+      // before pressing Enter so both official and custom tags are committed.
+      await sleep(400);
+      const enter = new Event("keydown", { bubbles: true });
+      Object.defineProperties(enter, {
+        key: { value: "Enter" }, code: { value: "Enter" }, keyCode: { value: 13 }, which: { value: 13 }
+      });
+      input.dispatchEvent(enter);
+      await sleep(250);
+      selected = selectedTags();
+    }
+    const close = tagGroup.querySelector(".mark_selection_box button[title='关闭']");
+    if (close && visible(close)) close.click();
+    return selectedTags().length > 0;
+  }
+  result.tagsSelected = await fillTags();
 
   // 4. Cover image. CSDN's publish dialog labels this section "添加封面" (not
   //    "文章封面"). We therefore use aliases to locate it. We must NEVER operate
@@ -494,8 +559,32 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
     const cover = args.coverDataUrl;
     if (!cover) return { handled: false, method: "no-cover-data" };
 
-    // The cover section label varies across CSDN builds ("添加封面" / "文章封面").
-    const cg = fieldGroup(["添加封面", "文章封面", "封面"]);
+    // The cover section label varies across CSDN builds ("添加封面" / "文章封面" / "封面").
+    // Match the label exactly: substring matching "封面" also catches the crop
+    // dialog's "封面图预览", which is not the upload control group.
+    function exactFieldGroup(markers: string[]): any {
+      const candidates = Array.prototype.slice.call(
+        document.querySelectorAll("label, span, div, p, h1, h2, h3, h4, h5, h6, dt, th, b, strong, em, i, a, li")
+      );
+      let markerEl: any = null;
+      for (const el of candidates) {
+        const dt = directText(el);
+        const tt = textOf(el);
+        if (!markers.some((marker) => dt === marker || tt === marker)) continue;
+        if (!markerEl || countDescendants(el) < countDescendants(markerEl)) markerEl = el;
+      }
+      if (!markerEl) return null;
+      let node: any = markerEl;
+      for (let i = 0; i < 8; i++) {
+        if (!node.parentElement) break;
+        node = node.parentElement;
+        if (node.querySelector && node.querySelector("input[type='file'], input[type='url'], input[type='text'], button, a")) {
+          return node;
+        }
+      }
+      return node;
+    }
+    const cg = exactFieldGroup(["添加封面", "文章封面", "封面"]);
     if (!cg) {
       return { handled: false, method: "no-cover-group" };
     }
@@ -504,17 +593,28 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
     // Ground-truth signal that CSDN actually accepted the cover.
     function coverImgPresent(): boolean {
       if (!scope || !scope.querySelectorAll) return false;
-      const imgs = scope.querySelectorAll("img");
-      for (let i = 0; i < imgs.length; i++) {
-        const src = imgs[i].getAttribute("src") || imgs[i].src || "";
-        if (src && src.indexOf("data:") !== 0 && src.indexOf("blob:") !== 0) return true;
-      }
-      const all = scope.querySelectorAll("*");
-      for (let i = 0; i < all.length; i++) {
-        const st = all[i].style && all[i].style.backgroundImage;
-        if (st && /url\(["']?https?:/.test(st)) return true;
-      }
-      return false;
+      const preview = scope.querySelector(".preview-box.hasImg img.preview, .preview-box img.preview");
+      const src = preview && (preview.getAttribute("src") || preview.src || "");
+      return Boolean(src && /^https?:\/\//i.test(src));
+    }
+
+    async function confirmCropUpload(): Promise<boolean> {
+      const crop = scope.querySelector(".vue-image-crop-upload");
+      if (!crop || !visible(crop)) return false;
+      const cropImage = crop.querySelector(".vicp-img");
+      const cropSource = cropImage && (cropImage.getAttribute("src") || cropImage.src || "");
+      if (!cropSource || cropSource === window.location.href) return false;
+      const confirm = Array.prototype.slice.call(crop.querySelectorAll(".vicp-operate-btn, button"))
+        .find((button: any) => visible(button) && textOf(button) === "确认上传");
+      if (!confirm) return false;
+      confirm.click();
+      await sleep(1600);
+      return coverImgPresent();
+    }
+
+    function cropUploadPending(): boolean {
+      const crop = scope.querySelector(".vue-image-crop-upload");
+      return Boolean(crop && visible(crop));
     }
 
     const uploadApi =
@@ -620,9 +720,19 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
       try {
         setFileInput(fileInput, coverFileFromDataUrl(cover));
         await sleep(1200);
+        if (cropUploadPending()) {
+          if (await confirmCropUpload()) {
+            return { handled: true, method: "file-input-crop-confirmed" };
+          }
+          // A visible crop dialog means CSDN has not committed the image yet.
+          // A preview URL alone can be a pending crop, so do not treat it as saved.
+          return { handled: false, method: "file-input-crop-unconfirmed" };
+        }
         if (coverImgPresent()) return { handled: true, method: "file-input-verified" };
-        return { handled: false, method: "file-input-no-preview" };
       } catch {
+        if (cropUploadPending()) {
+          return { handled: false, method: "file-input-crop-error" };
+        }
         /* fall through */
       }
     }
@@ -635,36 +745,96 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
       .filter((img: any) => visible(img) && (img.src || "").indexOf("http") === 0);
     if (smartCovers.length) {
       smartCovers[0].click();
-      await sleep(600);
+      await sleep(700);
+      if (cropUploadPending()) {
+        try {
+          if (await confirmCropUpload()) return { handled: true, method: "smart-cover-crop-confirmed" };
+        } catch {
+          return { handled: false, method: "smart-cover-crop-error" };
+        }
+        return { handled: false, method: "smart-cover-crop-unconfirmed" };
+      }
       if (coverImgPresent()) return { handled: true, method: "smart-cover-fallback" };
     }
 
     result.probe =
       (result.probe ? result.probe + " || " : "") +
       "COVER_NO_PATH:" + (cg.outerHTML || "").slice(0, 1200);
+    const cropWidget = cg.querySelector(".vue-image-crop-upload");
+    const cropImage = cropWidget && cropWidget.querySelector(".vicp-img") as unknown as {
+      getAttribute(name: string): string | null;
+      currentSrc?: string;
+      complete?: boolean;
+      naturalWidth?: number;
+      naturalHeight?: number;
+    };
+    const coverInput = cg.querySelector("input[type='file']") as unknown as {
+      outerHTML?: string;
+      files?: ArrayLike<{ size: number; type: string }> | null;
+    } | null;
+    const cropVm = cropWidget && (cropWidget as any).__vue__;
+    const cropData = cropVm && cropVm.$data;
+    const imageDataKeys = cropData
+      ? Object.keys(cropData).filter((key: string) => /img|file|src|url/i.test(key)).slice(0, 20)
+      : [];
+    const inputFile = coverInput && coverInput.files && coverInput.files[0];
+    result.probe += " || COVER_UPLOAD_STATE:" + JSON.stringify({
+      input: coverInput ? {
+        html: (coverInput.outerHTML || "").slice(0, 240),
+        fileCount: coverInput.files ? coverInput.files.length : null,
+        fileSize: inputFile ? inputFile.size : null,
+        fileType: inputFile ? inputFile.type : null
+      } : null,
+      cropImage: cropImage ? {
+        src: cropImage.getAttribute("src") || "",
+        currentSrc: cropImage.currentSrc || "",
+        complete: cropImage.complete,
+        naturalWidth: cropImage.naturalWidth,
+        naturalHeight: cropImage.naturalHeight,
+        style: cropImage.getAttribute("style") || ""
+      } : null,
+      cropDataKeys: imageDataKeys,
+      cropData: cropData ? imageDataKeys.reduce((memo: Record<string, unknown>, key: string) => {
+        const value = cropData[key];
+        memo[key] = typeof value === "string" ? value.slice(0, 160) : value == null ? value : typeof value;
+        return memo;
+      }, {}) : null
+    });
     return { handled: false, method: "all-failed" };
   }
   const cover = await fillCover();
   result.coverHandled = cover.handled;
   result.coverMethod = cover.method;
 
+  const missingRequired = missingCsdnRequiredPublishFields(args, result as {
+    abstractFilled: boolean;
+    typeSelected: boolean;
+    visibilitySelected: boolean;
+    crossPublishSelected: boolean;
+    tagsSelected: boolean;
+    coverHandled: boolean;
+  });
+  const optionalFieldsMissing = [
+    ...(!result.categorySelected ? ["分类专栏"] : [])
+  ];
+  if (optionalFieldsMissing.length > 0) {
+    result.reason = `optional-fields-unavailable:${optionalFieldsMissing.join(",")}`;
+  }
+  if (missingRequired.length > 0) {
+    result.reason = `required-fields-unavailable:${missingRequired.join(",")}`;
+    return result;
+  }
+
   // 5. Click the final publish button inside the dialog (scope to the dialog).
   function findPublishButton() {
     const buttons = Array.prototype.slice.call(
-      document.querySelectorAll("button, a, [role='button'], input[type='submit']")
+      dialog.querySelectorAll("button, a, [role='button'], input[type='submit']")
     );
-    const inDialog = buttons.find((b: any) => {
+    return buttons.find((b: any) => {
       if (!visible(b)) return false;
-      let n: any = b;
-      for (let i = 0; i < 10; i++) {
-        if (!n) break;
-        if (n === dialog) return true;
-        n = n.parentElement;
-      }
-      return false;
+      const label = textOf(b);
+      return label === "发布文章" || label === "发布";
     });
-    if (inDialog) return inDialog;
-    return buttons.find((b: any) => visible(b) && /发布文章/.test(textOf(b)));
   }
   const target = findPublishButton();
   if (target) {
@@ -712,4 +882,4 @@ export async function fillCsdnPublishDialog(args: { digest: string; coverDataUrl
 /**
  * Raw source of the page-context publish-dialog fill function.
  */
-export const FILL_CSDN_PUBLISH_DIALOG_SCRIPT = fillCsdnPublishDialog.toString();
+export const FILL_CSDN_PUBLISH_DIALOG_SCRIPT = `${missingCsdnRequiredPublishFields.toString()}\n${fillCsdnPublishDialog.toString()}`;

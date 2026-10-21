@@ -29,7 +29,7 @@ describe("CsdnChannelService", () => {
     fs.writeFileSync(path.join(sourceDirectory, "posts", "source", "index.md"), `---
 title: 主稿标题
 created: '2026-07-29 10:00:00'
-tags: []
+tags: [AI编程, 开发工具]
 publish: false
 ---
 
@@ -79,6 +79,8 @@ publish: false
     const job = service.createPublishJob(draft.id);
     expect(job).toMatchObject({ channelDraftId: draft.id, status: "queued", lifecycleStatus: "queued" });
     expect(service.createPublishJob(draft.id).id).toBe(job.id);
+    const browserDraft = await service.getBrowserDraft(job.id);
+    expect(browserDraft.tags).toEqual(["AI编程", "开发工具"]);
     expect(service.capabilities(account.id)).toMatchObject({ canCreateRemoteDraft: true, canSubmitAfterConfirmation: true, supportsScheduledPublish: false });
     service.deleteDraft(draft.id);
     expect(service.listDrafts(workspace.id)).toHaveLength(0);
@@ -201,12 +203,23 @@ publish: false
     // 浏览器辅助只能从可重启状态进入 filling。
     const filling = service.startBrowserAssist(job.id);
     expect(filling.status).toBe("filling");
+    expect(service.startBrowserAssist(job.id)).toEqual(filling);
 
     // 未登录回写。
     const needsLogin = service.recordNeedsLogin(job.id, "未登录");
     expect(needsLogin.status).toBe("needs_login");
 
-    // 重新进入浏览器辅助。
+    // 提交前遇到本地服务/窗口错误应回写可重试状态，不能永久卡在 filling。
+    const fillingAfterLogin = service.startBrowserAssist(job.id);
+    expect(fillingAfterLogin.status).toBe("filling");
+    const failedBeforeSubmit = service.recordFill(job.id, {
+      verifiedFields: [],
+      state: "failed_before_submit",
+      reason: "CSDN 编辑器加载超时"
+    });
+    expect(failedBeforeSubmit.status).toBe("failed_before_submit");
+
+    // 失败发生在发布提交之前，允许用户重新发起完整浏览器准备流程。
     const fillingAgain = service.startBrowserAssist(job.id);
     expect(fillingAgain.status).toBe("filling");
 
@@ -251,6 +264,32 @@ publish: false
 
     service.startBrowserAssist(job.id);
     service.recordFill(job.id, { verifiedFields: ["title"], state: "needs_user", reason: "摘要未填充" });
+    // 人工接管窗口会话失效时，needs_user 也能转为 needs_login 并在重新登录后继续。
+    expect(service.recordNeedsLogin(job.id, "会话失效").status).toBe("needs_login");
+    service.startBrowserAssist(job.id);
+    service.recordFill(job.id, { verifiedFields: ["title"], state: "needs_user", reason: "摘要未填充" });
+    expect(() => service.beginSubmit(job.id)).toThrow(CsdnChannelError);
+    expect(() => service.recordSubmission(job.id, {
+      remoteUrl: "https://blog.csdn.net/abc/article/details/123456",
+      remoteContentId: "123456",
+      state: "published"
+    })).toThrow(CsdnChannelError);
+    // 用户在可见编辑器补齐后点击文渡继续，任务重新进入 filling，再由单次确认提交。
+    expect(service.startBrowserAssist(job.id).status).toBe("filling");
+    expect(service.recordFill(job.id, {
+      verifiedFields: ["title", "content"],
+      state: "ready_for_final_confirmation"
+    }).status).toBe("ready_for_final_confirmation");
+    service.beginSubmit(job.id);
+    const notSubmitted = service.recordSubmissionNotAttempted(job.id, "发布设置未能自动完成");
+    expect(notSubmitted.status).toBe("needs_user");
+    expect(notSubmitted.statusNote).toContain("未提交");
+    // 未点击 CSDN 最终按钮后可接管窗口、再次确认；不会误记为结果不明。
+    expect(service.startBrowserAssist(job.id).status).toBe("filling");
+    expect(service.recordFill(job.id, {
+      verifiedFields: ["title", "content"],
+      state: "ready_for_final_confirmation"
+    }).status).toBe("ready_for_final_confirmation");
     service.beginSubmit(job.id);
     const reconciled = service.recordSubmission(job.id, { remoteUrl: null, remoteContentId: null, state: "needs_manual_reconciliation", reason: "读不到链接" });
     expect(reconciled.status).toBe("needs_manual_reconciliation");

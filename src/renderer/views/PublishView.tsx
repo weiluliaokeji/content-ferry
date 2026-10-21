@@ -102,10 +102,8 @@ export interface PublishViewProps {
   submitWechatJob: (job: WechatPublishJob, mode: "publish" | "mass") => Promise<void> | void;
   openWechatStatusCorrection: (job: WechatPublishJob) => void;
   retryWechatJob: (job: WechatPublishJob) => Promise<void> | void;
-  startCsdnBrowserAssist: (jobId: string) => Promise<void> | void;
+  startCsdnBrowserAssist: (jobId: string, confirmAfterManual?: boolean) => Promise<void> | void;
   openCsdnStatusCorrection: (job: CsdnPublishJob) => void;
-  confirmCsdnPublish: (jobId: string) => Promise<void> | void;
-  csdnJobCanStart: (job: CsdnPublishJob) => boolean;
   csdnJobCanCorrect: (job: CsdnPublishJob) => boolean;
   confirmCnblogsPublish: (jobId: string) => Promise<void> | void;
   openCnblogsStatusCorrection: (job: CnblogsPublishJob) => void;
@@ -130,8 +128,8 @@ export function PublishView(props: PublishViewProps) {
     wechatJobsRefreshedAt, wechatJobsRefreshing, csdnDraftSaving, cnblogsDraftSaving, juejinDraftSaving, fiftyoneCtoDraftSaving,
     csdnDrafts, cnblogsDrafts, juejinDrafts, fiftyoneCtoDrafts, setActiveView, refreshWechatStatus,
     startWechatBrowserAssist, openWechatDraftBox, submitWechatJob, openWechatStatusCorrection,
-    retryWechatJob, startCsdnBrowserAssist, openCsdnStatusCorrection, confirmCsdnPublish,
-    csdnJobCanStart, csdnJobCanCorrect, confirmCnblogsPublish, openCnblogsStatusCorrection,
+    retryWechatJob, startCsdnBrowserAssist, openCsdnStatusCorrection,
+    csdnJobCanCorrect, confirmCnblogsPublish, openCnblogsStatusCorrection,
     openCnblogsCredentialEntry, openExistingCnblogsDraft, confirmJuejinPublish,
     openJuejinStatusCorrection, openJuejinCredentialEntry, openExistingJuejinDraft,
     confirmFiftyoneCtoPublish, openFiftyoneCtoStatusCorrection, openFiftyoneCtoCredentialEntry, openExistingFiftyoneCtoDraft,
@@ -152,14 +150,10 @@ export function PublishView(props: PublishViewProps) {
             const account = accounts.find((item) => item.id === job.accountId);
             const draft = csdnDrafts.find((item) => item.id === job.channelDraftId);
             return <li key={job.id}><span><strong>{draft?.title ?? "CSDN 渠道稿"}</strong><small>{account ? `${platformName(account.platform)} · ${account.displayName} · ` : ""}{csdnJobLabel(job)} · {new Date(job.updatedAt).toLocaleString()}</small>{job.statusNote && <small className="hint compact-hint">{job.statusNote}</small>}{job.remoteUrl && <small><a href={job.remoteUrl} target="_blank" rel="noreferrer">查看已发布文章</a></small>}{job.errorMessage && <em className="error">{job.errorMessage}</em>}</span><span className="account-actions">
-              {job.status === "ready_for_final_confirmation" && <span className="status-badge">请在 CSDN 编辑器中确认发布</span>}
-              {job.status === "needs_user" && <span className="status-badge">内容未自动填充完整，请在 CSDN 编辑器中补齐</span>}
-              {(job.status === "ready_for_final_confirmation" || job.status === "needs_user") && <>
-                <button className="secondary-button" onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>{job.status === "needs_user" ? "打开 CSDN 补齐内容" : "打开 CSDN 核对发布"}</button>
-                <button onClick={() => openCsdnStatusCorrection(job)}>确认结果</button>
-                <details className="publish-more-actions"><summary>更多操作</summary><button className="text-button" onClick={() => void confirmCsdnPublish(job.id)} disabled={csdnDraftSaving}>自动点击发布并读取链接</button></details>
-              </>}
-              {job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && csdnJobCanStart(job) && <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>在浏览器中完成发布</button>}
+              {job.status === "ready_for_final_confirmation" && <><span className="status-badge">待文渡确认发布</span><button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>确认并发布到 CSDN</button></>}
+              {job.status === "filling" && <><span className="status-badge">CSDN 准备尚未完成；尚未提交</span><button className="secondary-button" onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>重新准备 CSDN 发布</button></>}
+              {job.status === "needs_user" && <><span className="status-badge">请在 CSDN 窗口补齐未能自动填写的内容</span><button className="secondary-button" onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>打开 CSDN 补齐内容</button><button onClick={() => void startCsdnBrowserAssist(job.id, true)} disabled={csdnDraftSaving}>在窗口中补齐后继续</button></>}
+              {["queued", "needs_login", "failed_before_submit", "failed"].includes(job.status) && <button onClick={() => void startCsdnBrowserAssist(job.id)} disabled={csdnDraftSaving}>{job.status === "needs_login" ? "登录 CSDN 后继续" : job.status === "failed_before_submit" || job.status === "failed" ? "重试发布" : "确认并发布到 CSDN"}</button>}
               {job.status === "submitting" && <span className="status-badge">正在读取回执</span>}
               {csdnJobCanCorrect(job) && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user" && <button className="text-button" onClick={() => openCsdnStatusCorrection(job)} disabled={csdnDraftSaving}>校正状态</button>}
             </span></li>;

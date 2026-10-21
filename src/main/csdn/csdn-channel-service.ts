@@ -119,15 +119,16 @@ export class CsdnChannelService {
       prepare: async () => ({
         outcome: "confirmed",
         nextStatus: "waiting_user",
-        statusNote: "等待用户启动 CSDN 浏览器辅助流程。"
+        statusNote: "等待用户确认并启动 CSDN 发布。"
       }),
       reconcile: async (task) => this.reconcilePublishTask(task.id)
     });
   }
 
   capabilities(_accountId: string): PublishCapabilities {
-    // CSDN 一期通过受控可见浏览器完成登录预检、表单填充与人工最终确认后的单次提交。
-    // 这里只声明“受控浏览器辅助”能力，不等于无人值守自动发布；最终发布点击仍由用户在浏览器内完成。
+    // CSDN uses its account-isolated persistent Electron session in the background.
+    // The explicit ContentFerry confirmation starts one submission; the session
+    // is shown only when login or manual recovery is required.
     return {
       canCreateRemoteDraft: true,
       canSubmitAfterConfirmation: true,
@@ -328,7 +329,7 @@ export class CsdnChannelService {
         (id, workspace_id, account_id, channel_draft_id, rendered_package_hash, idempotency_key, status, status_note, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`)
         .run(id, draft.workspaceId, draft.accountId, draft.id, renderedPackageHash, idempotencyKey,
-          "已创建 CSDN 发布任务，等待在浏览器中完成登录、填充与最终确认发布。", now, now);
+          "已创建 CSDN 发布任务，等待用户确认发布。", now, now);
       this.db.prepare(`INSERT INTO csdn_publish_job_events
         (id, job_id, previous_status, new_status, source, reason, created_at)
         VALUES (?, ?, '', 'queued', 'system', '创建冻结版本的发布任务', ?)`)
@@ -337,7 +338,7 @@ export class CsdnChannelService {
     this.publishTasks.create({
       id, platform: "csdn", workspaceId: draft.workspaceId, accountId: draft.accountId,
       channelDraftId: draft.id, renderedPackageHash, idempotencyKey, status: "queued",
-      statusNote: "已创建 CSDN 发布任务，等待在浏览器中完成登录、填充与最终确认发布。"
+      statusNote: "已创建 CSDN 发布任务，等待用户确认发布。"
     });
     return this.requireJob(id);
   }
@@ -356,7 +357,7 @@ export class CsdnChannelService {
     return this.requireDraft(job.channelDraftId);
   }
 
-  /** Return the draft content prepared for the visible browser assistant, plus
+  /** Return the draft content prepared for the background editor session, plus
    * every uploadable image resolved to a base64 data URL. The actual upload to
    * CSDN's image hosting is performed inside the already-logged-in editor page
    * (via its own `window.csdn.upload.uploadImg` API) by the caller, so it never
@@ -368,6 +369,8 @@ export class CsdnChannelService {
     markdown: string;
     author: string;
     digest: string;
+    /** Tags from the source article front matter, used to satisfy CSDN's required article tags. */
+    tags: string[];
     images: Array<{ source: string; dataUrl: string; mimeType: string; filename: string }>;
     /** The main article's cover resolved to a data URL, when available. */
     coverDataUrl?: string;
@@ -405,17 +408,21 @@ export class CsdnChannelService {
       markdown: mermaidMarkdown,
       author: draft.author,
       digest,
+      tags: this.contentSources.getArticleTags(draft.workspaceId, draft.sourceRelativePath),
       images,
       coverDataUrl
     };
   }
 
   /**
-   * 用户在文渡点击“在浏览器中完成发布”后调用：标记浏览器辅助流程已开始。
-   * 实际登录预检与表单填充由主进程可见浏览器驱动，再通过 recordNeedsLogin / recordFill 回写。
+   * 用户在文渡点击“确认并发布到 CSDN”后调用：标记一次发布已经获用户确认。
+   * 登录检查与表单提交由主进程后台会话驱动；必要时显示窗口供用户接管。
    */
   startBrowserAssist(jobId: string): CsdnPublishJob {
     const job = this.requireJob(jobId);
+    // “filling” is always before the irreversible CSDN submit checkpoint. Returning it unchanged
+    // lets a user safely resume an interrupted preparation after the app or local service restarts.
+    if (job.status === "filling") return job;
     const restartable: CsdnPublishJobStatus[] = [
       "queued", "needs_login", "filling", "needs_user", "ready_for_final_confirmation", "failed_before_submit", "failed"
     ];
@@ -423,26 +430,26 @@ export class CsdnChannelService {
       throw new CsdnChannelError("该 CSDN 发布任务已经结束或正在提交，无法重新进入浏览器辅助流程。");
     }
     return this.transitionJob(job, "filling", {
-      statusNote: "已打开 CSDN 编辑器，正在预检登录态并填充表单。",
+      statusNote: "正在后台检查 CSDN 登录态并准备已确认的发布任务。",
       errorMessage: null
     });
   }
 
-  /** 浏览器驱动发现未登录：交给用户在浏览器内登录，登录后重新发起。 */
+  /** 后台会话发现未登录：显示窗口供用户登录，登录后重新发起。 */
   recordNeedsLogin(jobId: string, reason: string): CsdnPublishJob {
     const job = this.requireJob(jobId);
-    if (job.status !== "filling" && job.status !== "needs_login") {
+    if (job.status !== "filling" && job.status !== "needs_login" && job.status !== "needs_user") {
       throw new CsdnChannelError("只有正在浏览器辅助的任务可以标记为需要登录。");
     }
     return this.transitionJob(job, "needs_login", {
-      statusNote: reason.trim().slice(0, 500) || "请在 CSDN 编辑器完成登录后，重新点击“在浏览器中完成发布”。",
+      statusNote: reason.trim().slice(0, 500) || "请在 CSDN 编辑器完成登录后，重新点击“登录 CSDN 后继续”。",
       errorMessage: null
     });
   }
 
   /**
    * 浏览器驱动完成一次表单填充尝试后的回写。
-   * state 必须是 ready_for_final_confirmation（填充成功，等待用户最终确认）、
+   * state 必须是 ready_for_final_confirmation（后台准备完成，即将进入单次提交）、
    * needs_user（部分字段未可靠填充，需人工接管）或 failed_before_submit（不可恢复失败）。
    */
   recordFill(jobId: string, input: {
@@ -457,13 +464,13 @@ export class CsdnChannelService {
     const reason = (input.reason ?? "").trim().slice(0, 500);
     if (input.state === "ready_for_final_confirmation") {
       return this.transitionJob(job, "ready_for_final_confirmation", {
-        statusNote: `已填充：${input.verifiedFields.join("、") || "无"}。请在浏览器中核对内容并点击发布；确认无误后在文渡点击“我已在 CSDN 发布”。`,
+        statusNote: `已填充：${input.verifiedFields.join("、") || "无"}。已收到文渡发布确认，正在提交并读取 CSDN 回执。`,
         errorMessage: null
       });
     }
     if (input.state === "needs_user") {
       return this.transitionJob(job, "needs_user", {
-        statusNote: reason || "部分字段未能可靠填充，请在浏览器中手动补齐后，回到文渡点击“我已在 CSDN 发布”。",
+        statusNote: reason || "部分字段未能可靠填充，已打开 CSDN 窗口供你接管。",
         errorMessage: null
       });
     }
@@ -484,8 +491,8 @@ export class CsdnChannelService {
     reason?: string;
   }): CsdnPublishJob {
     const job = this.requireJob(jobId);
-    if (job.status !== "submitting" && job.status !== "ready_for_final_confirmation" && job.status !== "needs_user") {
-      throw new CsdnChannelError("只有等待最终确认或正在提交的任务可以回写发布结果。");
+    if (job.status !== "submitting") {
+      throw new CsdnChannelError("只有进入提交阶段的 CSDN 任务可以回写发布结果。");
     }
     const reason = (input.reason ?? "").trim().slice(0, 500);
     if (input.state === "published") {
@@ -502,14 +509,27 @@ export class CsdnChannelService {
     });
   }
 
-  /** 用户在文渡点击“我已在 CSDN 发布”后，标记为正在提交，等待浏览器回执。 */
+  /** Preserve a retry path when the browser confirms the final publish action was never clicked. */
+  recordSubmissionNotAttempted(jobId: string, reason: string): CsdnPublishJob {
+    const job = this.requireJob(jobId);
+    if (job.status !== "submitting") {
+      throw new CsdnChannelError("只有正在提交的 CSDN 任务可以记录未提交结果。");
+    }
+    const normalizedReason = reason.trim().slice(0, 500) || "CSDN 最终发布按钮未点击，文章尚未提交。";
+    return this.transitionJob(job, "needs_user", {
+      statusNote: `未提交：${normalizedReason} 请检查 CSDN 窗口后重新确认发布。`,
+      errorMessage: null
+    });
+  }
+
+  /** Mark the confirmed background submission before the external publish click. */
   beginSubmit(jobId: string): CsdnPublishJob {
     const job = this.requireJob(jobId);
-    if (job.status !== "ready_for_final_confirmation" && job.status !== "needs_user") {
+    if (job.status !== "ready_for_final_confirmation") {
       throw new CsdnChannelError("只有等待最终确认的 CSDN 任务可以提交。");
     }
     return this.transitionJob(job, "submitting", {
-      statusNote: "已在浏览器点击发布，正在读取 CSDN 回执。",
+      statusNote: "正在提交已确认的 CSDN 发布，并读取回执。",
       errorMessage: null
     });
   }
@@ -612,7 +632,7 @@ export class CsdnChannelService {
     return mapPlatformStatusToAdapterResult(
       job.status,
       CSDN_RECONCILE_STATUS_MAP,
-      { outcome: "confirmed", nextStatus: "waiting_user", statusNote: "等待用户完成 CSDN 浏览器辅助流程。" },
+      { outcome: "confirmed", nextStatus: "waiting_user", statusNote: "等待用户确认并启动 CSDN 发布。" },
       { statusNote: job.statusNote ?? undefined, errorMessage: job.errorMessage, remoteUrl: job.remoteUrl, remoteContentId: job.remoteContentId }
     );
   }

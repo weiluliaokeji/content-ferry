@@ -123,6 +123,12 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
     return csdnChannels.recordFill(params.jobId, body);
   });
 
+  server.post("/api/integrations/csdn/jobs/:jobId/needs-login", async (request) => {
+    const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
+    const body = z.object({ reason: z.string().max(500).optional() }).parse(request.body);
+    return csdnChannels.recordNeedsLogin(params.jobId, body.reason ?? "CSDN 编辑器未登录，请先完成登录后继续。");
+  });
+
   server.post("/api/integrations/csdn/jobs/:jobId/confirm", async (request, reply) => {
     const params = z.object({ jobId: z.string().uuid() }).parse(request.params);
     if (!csdnBrowserConfirm) throw new CsdnChannelError("当前环境未启用 CSDN 浏览器发布能力。");
@@ -132,6 +138,9 @@ export function registerChannelsRoutes(ctx: ServerContext): void {
       receipt = await csdnBrowserConfirm(params.jobId);
     } catch (cause) {
       throw cause instanceof CsdnChannelError ? cause : new CsdnChannelError(cause instanceof Error ? cause.message : "CSDN 浏览器确认失败。");
+    }
+    if (receipt?.submitted === false) {
+      return csdnChannels.recordSubmissionNotAttempted(params.jobId, receipt.reason ?? "CSDN 最终发布按钮未点击，文章尚未提交。");
     }
     const outcome: PublishAdapterOutcome = receipt ? "confirmed" : "uncertain";
     const lifecycleStatus = lifecycleStatusForOutcome(outcome, "submit");
